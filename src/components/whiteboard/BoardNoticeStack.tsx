@@ -1,0 +1,12 @@
+import type { BoardNotices } from './boardNotices';
+
+/** The notices in one box above the board's bottom row, each with its own Dismiss, newest last. */
+export function BoardNoticeStack({ notices }: { readonly notices: BoardNotices }) {
+    if (!notices.list.length) return null;
+    return <div className="board-viewer-notice board-viewer-notices" role="status">
+        {notices.list.map(message => <div key={message} className="board-viewer-notice-dismissible">
+            <span>{message}</span>
+            <button type="button" className="disk-bar-btn" onClick={() => notices.dismiss(message)}>Dismiss</button>
+        </div>)}
+    </div>;
+}

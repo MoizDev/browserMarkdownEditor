@@ -1,0 +1,11 @@
+--- a/src/utils/agentMatcher/client.ts
++++ b/src/utils/agentMatcher/client.ts
+@@ -37,7 +37,7 @@
+     const stop = () => {
+         if (active !== lifetime) return;
+         client.cancelAll(() => true);
+-        void client.recycle('Agent search cancelled', { lazy: true }).catch(() => {});
++        // Deliberately leave the current worker running after its caller has settled.
+     };
+     signal.addEventListener('abort', stop, { once: true });
+     // TODO(C-03): replace root-handle identity with the vault activation id when it lands.

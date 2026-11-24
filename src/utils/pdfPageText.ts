@@ -21,7 +21,7 @@ export interface PdfItemInterval {
     role: PdfSemanticRole;
 }
 export interface PdfPageText {
-    schema: 1; physicalPageIndex: number; text: string;
+    schema: 1 | 2; physicalPageIndex: number; text: string;
     intervals: readonly PdfItemInterval[]; tokenBreaks: readonly number[];
     quality: 'available' | 'partial' | 'none'; reasons: readonly string[]; geometry: PdfPageGeometry;
 }

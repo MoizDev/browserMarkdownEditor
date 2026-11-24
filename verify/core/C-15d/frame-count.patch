@@ -1,0 +1,20 @@
+diff --git a/src/components/GraphView.tsx b/src/components/GraphView.tsx
+--- a/src/components/GraphView.tsx
++++ b/src/components/GraphView.tsx
+@@ -411,7 +411,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, theme
+                         }
+                         // Independent RAF clocks rarely expose the same latest
+                         // step; retain all 300 settling steps for exact TB-GR pairs.
+-                        data.ring.push({ step: ++data.steps, x, y });
++                        data.ring.push({ step: data.steps, x, y });
+                         if (data.ring.length > 512) data.ring.shift();
+                     }
+                 } catch { /* Measurement failures must not enter the app's path. */ }
+@@ -515,4 +515,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, theme
+         const loop = () => {
++            if (__BME_BENCH__) {
++                if (measurementRef.current) measurementRef.current.steps++;
++            }
+             const moved = step();
+             // The camera follows the layout while it settles, until the reader takes over.
+             if (moved && autoFitRef.current) fit();

@@ -1,0 +1,132 @@
+/* The app's context-menu surface and rows (index.css .context-menu, .context-menu-item), so the sheet
+   menu reads as one of the app's menus in both themes. Only position and width are its own. */
+.board-sheet-menu {
+    position: fixed;
+    z-index: 100;
+    width: 280px;
+    max-width: calc(100vw - 16px);
+    padding: 4px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-primary-alt);
+    color: var(--text-normal);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-theme="light"] .board-sheet-menu {
+    background: var(--background-primary);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+
+.board-sheet-menu-label {
+    padding: 6px 8px;
+    color: var(--text-muted);
+    font-size: var(--nav-item-size);
+}
+
+.board-sheet-list {
+    /* The rows scroll inside a pinned or auto-fit list, so the create button and the grip stay in view. */
+    max-height: min(56vh, 800px);
+    overflow: auto;
+}
+
+.board-sheet-row { display: flex; align-items: center; gap: 2px; }
+.board-sheet-row[data-dragging='true'] { opacity: 0.5; }
+.board-sheet-row[data-drop='before'] { box-shadow: inset 0 2px 0 var(--interactive-accent); }
+.board-sheet-row[data-drop='after'] { box-shadow: inset 0 -2px 0 var(--interactive-accent); }
+
+/* The grip is a thin strip under the list; its bar lights up once the list has a pinned height. */
+.board-sheet-grip {
+    position: relative;
+    height: 8px;
+    cursor: row-resize;
+}
+
+.board-sheet-grip::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 3px;
+    width: 32px;
+    height: 2px;
+    border-radius: 1px;
+    transform: translateX(-50%);
+    background: var(--background-modifier-border);
+}
+
+.board-sheet-grip[data-pinned='true']::after,
+.board-sheet-grip:hover::after {
+    background: var(--text-muted);
+}
+
+.board-sheet-select,
+.board-sheet-create {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    padding: 6px 8px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-s);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: var(--nav-item-size);
+    text-align: start;
+    cursor: pointer;
+}
+
+.board-sheet-select { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-sheet-select[aria-checked='true'] { color: var(--text-normal); font-weight: 600; }
+
+.board-sheet-more {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-s);
+    color: var(--text-muted);
+    font-size: var(--nav-item-size);
+    cursor: pointer;
+}
+
+.board-sheet-select:hover:not(:disabled),
+.board-sheet-create:hover:not(:disabled),
+.board-sheet-more:hover:not(:disabled) {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.board-sheet-select:focus-visible,
+.board-sheet-create:focus-visible,
+.board-sheet-more:focus-visible {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+    outline: 1px solid var(--interactive-accent);
+    outline-offset: -1px;
+}
+
+.board-sheet-more:disabled,
+.board-sheet-create:disabled {
+    color: var(--text-faint);
+    cursor: default;
+}
+
+.board-sheet-row input {
+    flex: 1;
+    min-width: 0;
+    padding: 5px 8px;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    color: var(--text-normal);
+    font-family: inherit;
+    font-size: var(--nav-item-size);
+}
+
+.board-sheet-row input:focus-visible {
+    outline: 1px solid var(--interactive-accent);
+    outline-offset: -1px;
+}

@@ -9,6 +9,7 @@ import type { HelperInfo, UpdateStatus } from '../../utils/agentBridge';
 import { installerAsset } from '../../utils/platform';
 import type { CpuArch, OsKind } from '../../utils/platform';
 import { X } from '../icons';
+import { writeStoredValue } from '../../utils/storage';
 
 /** The version whose "is available" strip the user closed. Per version, so the
  *  next release asks again. */
@@ -21,7 +22,7 @@ function readDismissed(): string | null {
 }
 
 function writeDismissed(version: string): void {
-    try { localStorage.setItem(DISMISSED_KEY, version); } catch { /* storage blocked — it shows again next load */ }
+    writeStoredValue(DISMISSED_KEY, version);
 }
 
 interface UpdateBarProps {

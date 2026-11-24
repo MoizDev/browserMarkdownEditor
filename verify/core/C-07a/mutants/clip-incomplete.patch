@@ -1,0 +1,11 @@
+--- a/src/utils/vaultAgentTools.ts
++++ b/src/utils/vaultAgentTools.ts
+@@ -719,7 +719,7 @@
+     // Measured: 295 acknowledged matches filled the 60k text cap and clipped a trailing timeout.
+     // Even query text is unbounded, so status must precede the summary as well as the rows.
+     const status = incomplete ? [`…[incomplete:true; ${answer.reason}]`] : [];
+-    return ok([...status, summary, ...out].join('\n'));
++    return ok([summary, ...out, ...status].join('\n'));
+ }
+
+ /* ───────────────────────── text edits ───────────────────────── */

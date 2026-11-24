@@ -1,0 +1,132 @@
+[
+  {
+    "name": "backreference-lookaround",
+    "args": {
+      "query": "(?<=prefix )([a-z]+) \\1(?= suffix)",
+      "regex": true,
+      "path": "controls.md"
+    },
+    "want": "controls.md:1: prefix echo echo suffix",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "1 match in 1 file for \"(?<=prefix )([a-z]+) \\\\1(?= suffix)\" in \"controls.md\" (format: path:line: text)\ncontrols.md:1: prefix echo echo suffix"
+        }
+      ]
+    }
+  },
+  {
+    "name": "empty-anchor",
+    "args": {
+      "query": "^$",
+      "regex": true,
+      "path": "controls.md"
+    },
+    "want": "controls.md:2: ",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "1 match in 1 file for \"^$\" in \"controls.md\" (format: path:line: text)\ncontrols.md:2: "
+        }
+      ]
+    }
+  },
+  {
+    "name": "filename",
+    "args": {
+      "query": "^controls\\.md$",
+      "regex": true
+    },
+    "want": "controls.md (file name matches)",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "1 match in 1 file for \"^controls\\\\.md$\" (format: path:line: text)\ncontrols.md (file name matches)"
+        }
+      ]
+    }
+  },
+  {
+    "name": "unicode-crlf",
+    "args": {
+      "query": "αβ 💡",
+      "path": "unicode.md"
+    },
+    "want": "unicode.md:1: before αβ 💡",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "1 match in 1 file for \"αβ 💡\" in \"unicode.md\" (format: path:line: text)\nunicode.md:1: before αβ 💡"
+        }
+      ]
+    }
+  },
+  {
+    "name": "huge-single-line",
+    "args": {
+      "query": "END$",
+      "regex": true,
+      "path": "huge.md"
+    },
+    "want": "huge.md:1: …XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXEND…",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "1 match in 1 file for \"END$\" in \"huge.md\" (format: path:line: text)\nhuge.md:1: …XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXEND…"
+        }
+      ]
+    }
+  },
+  {
+    "name": "per-file-cap",
+    "args": {
+      "query": "^a$",
+      "regex": true,
+      "path": "limits.md"
+    },
+    "want": "limits.md: …more matches in this file",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "50 matches in 1 file for \"^a$\" in \"limits.md\" (format: path:line: text)\nlimits.md:1: a\nlimits.md:2: a\nlimits.md:3: a\nlimits.md:4: a\nlimits.md:5: a\nlimits.md:6: a\nlimits.md:7: a\nlimits.md:8: a\nlimits.md:9: a\nlimits.md:10: a\nlimits.md:11: a\nlimits.md:12: a\nlimits.md:13: a\nlimits.md:14: a\nlimits.md:15: a\nlimits.md:16: a\nlimits.md:17: a\nlimits.md:18: a\nlimits.md:19: a\nlimits.md:20: a\nlimits.md:21: a\nlimits.md:22: a\nlimits.md:23: a\nlimits.md:24: a\nlimits.md:25: a\nlimits.md:26: a\nlimits.md:27: a\nlimits.md:28: a\nlimits.md:29: a\nlimits.md:30: a\nlimits.md:31: a\nlimits.md:32: a\nlimits.md:33: a\nlimits.md:34: a\nlimits.md:35: a\nlimits.md:36: a\nlimits.md:37: a\nlimits.md:38: a\nlimits.md:39: a\nlimits.md:40: a\nlimits.md:41: a\nlimits.md:42: a\nlimits.md:43: a\nlimits.md:44: a\nlimits.md:45: a\nlimits.md:46: a\nlimits.md:47: a\nlimits.md:48: a\nlimits.md:49: a\nlimits.md:50: a\nlimits.md: …more matches in this file (search it alone with path to see them)"
+        }
+      ]
+    }
+  },
+  {
+    "name": "max-results",
+    "args": {
+      "query": "^a$",
+      "regex": true,
+      "path": "limits.md",
+      "maxResults": 2
+    },
+    "want": "…[stopped at maxResults=2;",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "2 matches in 1 file for \"^a$\" in \"limits.md\" (format: path:line: text)\nlimits.md:1: a\nlimits.md:2: a\n…[stopped at maxResults=2; narrow the query, pass path to search one folder, or raise maxResults (≤ 500)]"
+        }
+      ]
+    }
+  },
+  {
+    "name": "syntax",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Error: Invalid regular expression: /(/i: Unterminated group"
+        }
+      ],
+      "isError": true
+    }
+  }
+]

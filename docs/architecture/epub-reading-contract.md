@@ -42,16 +42,18 @@ then resolves page bounds/quote and detects digest drift. Legacy surface:text re
 the old emphasis action, so restore Original with the same anchor/camera. New Text writes carry
 textChoice:manual; only that marker authorizes restoring Text. No global preference migration is
 needed: saved emphasis remains a paint preference and never selects a surface. Surface and location
-writes update the
-central record synchronously, with flushes on hide/unmount/pagehide. Original updates its legacy
-camera in memory before a header action. No new PDF proxy is created for a surface switch.
-Native PDF uses the exact pdf.js 6.1.200 original glyph/paint route (pdfNativeEmphasis), adding
-a thin same-color stroke before the original fill on eligible glyphs. Each completed render checks a temporary counterpart for a final pixel difference before
-publishing support, so clipped, off-page, white-on-white or occluded glyph calls cannot falsely
-enable the header. High-zoom bands use a bounded whole-page capability probe; no full-document
-raster pass runs. Temporary paints are cancelled with their target and released with the lease. Current-page Viewer and
-annotation backdrop results publish availability through PdfPane; unknown/loading pages are
-inactive. Per-render plans/method bindings are released with the page lease, not stored per vault.
+writes update the central record synchronously, with flushes on hide/unmount/pagehide. Original updates its legacy
+camera in memory before a header action. A surface switch opens no second copy of the document: both
+surfaces share the App source in the one PDF pool.
+Native PDF emphasis is drawn by the PDFium tile worker (`src/pdf/emphasis/`). The plan (`plan.ts`,
+algorithm `latin-prefix-v1`) finds eligible glyph prefixes in the page's text objects, builds each glyph's
+cell without flattening rotation or shear (`cell.ts`) and rejects a word whose stroke would collide with
+other ink (`collision.ts`); the tile render adds a thin same-colour stroke (`EMPHASIS_STROKE_EM`, 0.035 em)
+to those glyphs. Emphasis tiles are their own variant keyed by profile, so plain tiles stay valid.
+Capability is a per-page verdict (`controller.ts`) from a whole-page probe on opaque white, bounded to
+2^20 pixels (`EMPHASIS_MAX_PROBE_PIXELS`, profile `page-probe-v1`); verdicts are cached per page, so zoom
+does not repeat the probe. Unknown/loading pages are inactive; availability publishes through PdfPane
+(`utils/pdfEmphasisAvailability.ts`), and no result is stored in the vault.
 The Text agent reporter supplies actual bounded visible/selected canonical text and physical-page
 extraction. Text image capture is explicitly unsupported; it never substitutes an Original PNG.
 
@@ -63,8 +65,12 @@ stay out of vault search, graph and Markdown backlinks. Normal CLI/terminal poli
 
 Vite's `contained-epub-frame` plugin runs `node src/epub/build-frame.mjs` at
 `buildStart` in dev and build, and regenerates/reloads on contained source changes in dev.
-Generation removes previous outputs before bundling, rejects inline script terminators and
-hashes the exact inline script. Generated HTML/integrity are ignored, never checked-in fallbacks.
+Generation removes previous outputs before bundling. The neutral `platform/containedFrameBuild.mjs`
+bundles the fixed runtime, rejects inline script terminators and hashes the exact inline script;
+its source is included in the integrity inventory and the dev watcher. The reader's CSP and
+protocol remain EPUB-specific. `platform/containedFrame.ts` owns the opaque frame lifecycle and
+one-port handoff, while the reader still validates its own session, token and message envelopes.
+Generated HTML/integrity are ignored, never checked-in fallbacks.
 Preview serves the already-built dist; it does not rewrite a production artifact at startup.
 The lazy bridge imports HTML as raw text into srcdoc: no root-relative frame URL, remote runtime
 script or publisher resource URL depends on Vite base. Archive and hash worker URLs use Vite's

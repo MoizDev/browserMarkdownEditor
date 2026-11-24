@@ -1,0 +1,11 @@
+--- a/src/context/FileSystemContext.tsx
++++ b/src/context/FileSystemContext.tsx
+@@ -218,7 +218,7 @@
+ 
+ // Reuse the same locale/options ordering without constructing a collator for
+ // every comparison in a directory with thousands of siblings.
+-const treeNameCollator = new Intl.Collator(undefined, { sensitivity: 'base' });
++const treeNameCollator = new Intl.Collator(undefined, { sensitivity: 'variant' });
+ 
+ /**
+  * `buildFileTree` for one directory, plus the one thing about the directory

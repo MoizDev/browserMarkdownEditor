@@ -1,0 +1,10 @@
+diff --git a/src/editor/imageWidget.ts b/src/editor/imageWidget.ts
+--- a/src/editor/imageWidget.ts
++++ b/src/editor/imageWidget.ts
+@@ -273,5 +273,5 @@ export class ImageWidget extends WidgetType {
+         readonly selected: boolean,
+     ) {
+         super();
+-        if (__BME_BENCH__) { countEditorWidget(); }
++        countEditorWidget();
+     }

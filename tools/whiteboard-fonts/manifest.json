@@ -1,0 +1,120 @@
+{
+  "shantellRelease": {
+    "url": "https://github.com/arrowtype/shantell-sans/releases/download/1.011/Shantell_Sans_1.011.zip",
+    "sha256": "7562b90399eae6339f89079c917235823fca1cabda3bab624bbacaefa7abe558"
+  },
+  "faces": [
+    {
+      "file": "IBMPlexMono-Bold.woff2",
+      "family": "mono",
+      "tag": "@ibm/plex-mono@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-mono%401.1.0/packages/plex-mono/fonts/complete/woff2/IBMPlexMono-Bold.woff2",
+      "sha256": "5788454f0ba4bd6300752c474215c4dd926682fa173ae1c6252d57828b6a235d"
+    },
+    {
+      "file": "IBMPlexMono-BoldItalic.woff2",
+      "family": "mono",
+      "tag": "@ibm/plex-mono@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-mono%401.1.0/packages/plex-mono/fonts/complete/woff2/IBMPlexMono-BoldItalic.woff2",
+      "sha256": "b0bfaa05c90c662c164ca0515ec42baddac93129eab1af067f8872d84f10df46"
+    },
+    {
+      "file": "IBMPlexMono-Medium.woff2",
+      "family": "mono",
+      "tag": "@ibm/plex-mono@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-mono%401.1.0/packages/plex-mono/fonts/complete/woff2/IBMPlexMono-Medium.woff2",
+      "sha256": "8c2c290cbd998fa1f647e4572aca6ebbd72589551b0f3f9f8bb8628fbb8219d5"
+    },
+    {
+      "file": "IBMPlexMono-MediumItalic.woff2",
+      "family": "mono",
+      "tag": "@ibm/plex-mono@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-mono%401.1.0/packages/plex-mono/fonts/complete/woff2/IBMPlexMono-MediumItalic.woff2",
+      "sha256": "c82b35693328411c756b51c7b5cb48b6cd1f4f24a0b1261857831b137e6202b5"
+    },
+    {
+      "file": "IBMPlexSans-Bold.woff2",
+      "family": "sans",
+      "tag": "@ibm/plex-sans@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-sans%401.1.0/packages/plex-sans/fonts/complete/woff2/IBMPlexSans-Bold.woff2",
+      "sha256": "fa7130d854a660b39a7fc9e6e0f2dc23dba5f1346e2adea3e1fe37b6d884133d"
+    },
+    {
+      "file": "IBMPlexSans-BoldItalic.woff2",
+      "family": "sans",
+      "tag": "@ibm/plex-sans@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-sans%401.1.0/packages/plex-sans/fonts/complete/woff2/IBMPlexSans-BoldItalic.woff2",
+      "sha256": "73d57000ee0fa7d6e1dd3a9fe5901c2d7c71904af9a935dbbc1d44abc9574c1f"
+    },
+    {
+      "file": "IBMPlexSans-Medium.woff2",
+      "family": "sans",
+      "tag": "@ibm/plex-sans@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-sans%401.1.0/packages/plex-sans/fonts/complete/woff2/IBMPlexSans-Medium.woff2",
+      "sha256": "5660f8a658f8bb50dbc005232f885eadffd2bc1c235c4f6fbb63469d1f9cde6d"
+    },
+    {
+      "file": "IBMPlexSans-MediumItalic.woff2",
+      "family": "sans",
+      "tag": "@ibm/plex-sans@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-sans%401.1.0/packages/plex-sans/fonts/complete/woff2/IBMPlexSans-MediumItalic.woff2",
+      "sha256": "16f11ab3543e3d1e2704407378aafa4ddb570ad11f6a476eeaa4ec6e67fc30e8"
+    },
+    {
+      "file": "IBMPlexSerif-Bold.woff2",
+      "family": "serif",
+      "tag": "@ibm/plex-serif@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-serif%401.1.0/packages/plex-serif/fonts/complete/woff2/IBMPlexSerif-Bold.woff2",
+      "sha256": "1ba2fa015458f36efe822137627f75df1ee340e6d1c0d92c7ca5a3b423db75d9"
+    },
+    {
+      "file": "IBMPlexSerif-BoldItalic.woff2",
+      "family": "serif",
+      "tag": "@ibm/plex-serif@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-serif%401.1.0/packages/plex-serif/fonts/complete/woff2/IBMPlexSerif-BoldItalic.woff2",
+      "sha256": "cf7e4359cdfc697d90ea785091a9fa289db8f064aed5c099001b08dba97c1805"
+    },
+    {
+      "file": "IBMPlexSerif-Medium.woff2",
+      "family": "serif",
+      "tag": "@ibm/plex-serif@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-serif%401.1.0/packages/plex-serif/fonts/complete/woff2/IBMPlexSerif-Medium.woff2",
+      "sha256": "2eb75e035155ea1d0805fafaa012f7083e5034f935f17cfcc650b17bdf530c2d"
+    },
+    {
+      "file": "IBMPlexSerif-MediumItalic.woff2",
+      "family": "serif",
+      "tag": "@ibm/plex-serif@1.1.0",
+      "url": "https://raw.githubusercontent.com/IBM/plex/%40ibm%2Fplex-serif%401.1.0/packages/plex-serif/fonts/complete/woff2/IBMPlexSerif-MediumItalic.woff2",
+      "sha256": "4e2f4abd7970ec8d957041100dac8eee78e70efb94bfe3e4356628b833e78a30"
+    },
+    {
+      "file": "Shantell_Sans-Informal_Bold.woff2",
+      "family": "draw",
+      "tag": "1.011",
+      "url": "https://raw.githubusercontent.com/arrowtype/shantell-sans/1.011/fonts/Shantell%20Sans/Web/Static/Shantell_Sans-Informal_Bold.woff2",
+      "sha256": "cb7adae54f19a079b5650fd9d5db49c82eea0a01ab6ba36169b2ef8b7c1d317a"
+    },
+    {
+      "file": "Shantell_Sans-Informal_Bold_Italic.woff2",
+      "family": "draw",
+      "tag": "1.011",
+      "url": "https://raw.githubusercontent.com/arrowtype/shantell-sans/1.011/fonts/Shantell%20Sans/Web/Static/Shantell_Sans-Informal_Bold_Italic.woff2",
+      "sha256": "8935343b2a87cef2b064317c584776358bff5ece53d05cc7ad19a4f26e17ea59"
+    },
+    {
+      "file": "Shantell_Sans-Informal_Regular.woff2",
+      "family": "draw",
+      "tag": "1.011",
+      "url": "https://raw.githubusercontent.com/arrowtype/shantell-sans/1.011/fonts/Shantell%20Sans/Web/Static/Shantell_Sans-Informal_Regular.woff2",
+      "sha256": "a302805ba89622e957daa16a8837343567bc61890440bd4154f0592ce2027296"
+    },
+    {
+      "file": "Shantell_Sans-Informal_Regular_Italic.woff2",
+      "family": "draw",
+      "tag": "1.011",
+      "url": "https://raw.githubusercontent.com/arrowtype/shantell-sans/1.011/fonts/Shantell%20Sans/Web/Static/Shantell_Sans-Informal_Regular_Italic.woff2",
+      "sha256": "cd142fbf5a04e600a8cdbadb428813e1364513de07bd372d68247dc8c86c1e0f"
+    }
+  ]
+}

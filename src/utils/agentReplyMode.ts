@@ -21,6 +21,8 @@
 // half the time, and unfixable when it lies. Deciding here keeps the badge and
 // the prompt the same fact.
 
+import { writeStoredValue } from './storage';
+
 /** What the user pinned. `auto` is the default and what the cap shows unlit. */
 export type ReplyModePref = 'auto' | 'teach' | 'direct';
 
@@ -51,9 +53,7 @@ export function getReplyModePref(): ReplyModePref {
 export function setReplyModePref(next: ReplyModePref): void {
     if (next === pref) return;
     pref = next;
-    try {
-        localStorage.setItem(KEY, next);
-    } catch { /* still applies for this session */ }
+    writeStoredValue(KEY, next);
     for (const listener of listeners) listener();
 }
 

@@ -20,7 +20,7 @@
 // has vault_list / vault_search for that.
 //
 // Pure apart from awaiting reporters (which may render, for the picture). No
-// React, no tldraw, no pdf.js — this runs on every send, on the panel's path.
+// React, no board or PDF engine — this runs on every send, on the panel's path.
 
 import { CONTEXT_CLOSE_TAG, CONTEXT_OPEN_TAG } from '../../shared/vaultAgentProtocol';
 import type { AgentTabInfo, AgentWorkspaceSnapshot, RememberedPosition } from '../types/vaultAgent';
@@ -156,7 +156,7 @@ function livePosition(info: ViewInfo): string {
         }
         case 'drawing': {
             const v = info.viewport;
-            return `tldraw page "${info.pageName}" (${info.pageIndex + 1} of ${info.pageCount}), zoom ${zoomPct(info.camera.z)}, `
+            return `page "${info.pageName}" (${info.pageIndex + 1} of ${info.pageCount}), zoom ${zoomPct(info.camera.z)}, `
                 + `showing x ${r1(v.x)}…${r1(v.x + v.w)}, y ${r1(v.y)}…${r1(v.y + v.h)}, `
                 + `${plural(info.shapesTotal, 'shape')} in view${info.selectedShapeIds.length ? `, ${info.selectedShapeIds.length} selected` : ''}`;
         }
@@ -273,7 +273,7 @@ async function pdfPagesText(view: ViewReporter, pages: number[], budget: number)
     const got = await withTimeout(view.pdfText(wanted), PDF_TEXT_TIMEOUT_MS);
     if (!got) return 'Text of the pages on screen: could not be extracted in time (read it with vault_read).';
     const parts = got.sort((a, b) => a.page - b.page)
-        .map(p => `--- page ${p.page} ---\n${p.text.trim() || '(no text on this page — a scan or a drawing; see the picture or vault_view)'}`);
+        .map(p => `--- page ${p.page} ---\n${p.quality === 'partial' ? `[Extraction warning: ${p.warnings?.join(' ') || 'Text may be incomplete or out of order.'}]\n` : ''}${p.text.trim() || '(no text on this page — a scan or a drawing; see the picture or vault_view)'}`);
     if (pages.length > wanted.length) parts.push(`(pages ${pageList(pages.filter(p => !wanted.includes(p)))} are also on screen)`);
     return fit(`Text of the pages on screen:\n${parts.join('\n')}`, budget);
 }
@@ -387,9 +387,28 @@ export async function buildAgentContext(
     // Ask every mounted pane where the user is — in parallel, each bounded.
     const views = new Map<string, ViewReporter>();
     const infos = new Map<string, ViewInfo>();
+    const wholeSheet = new Set<string>();
+    const unreadable = new Map<string, string>();
     await Promise.all(workspace.tabs.map(async tab => {
         const view = getView(tab.path);
-        if (!view) return;
+        // A mounted native board is read through the host's live view below, exactly like one with no pane.
+        if (!view || view.live) {
+            // An open native canvas with no mounted pane (a drawing, notebook or PDF ink board) is read from its own
+            // session, bounded like a view. A failure or a refusal is named on its tab line, never silently skipped.
+            // A PDF or notebook that is not native has no session here and keeps its remembered position.
+            if (tab.kind !== 'drawing' && tab.kind !== 'notebook' && tab.kind !== 'pdf') return;
+            if (!workspace.nativeView) { if (tab.kind === 'drawing') unreadable.set(tab.path, 'its board is not available to read'); return; }
+            try {
+                const read = await workspace.nativeView(tab.path, AbortSignal.timeout(DESCRIBE_TIMEOUT_MS));
+                if (!read) { if (tab.kind === 'drawing') unreadable.set(tab.path, 'it is not open as a native board'); return; }
+                infos.set(tab.path, read.info);
+                if (read.wholeSheet) wholeSheet.add(tab.path);
+            } catch (error) {
+                unreadable.set(tab.path, error instanceof Error && error.name === 'TimeoutError' ? 'reading it timed out'
+                    : error instanceof Error ? error.message.slice(0, 200) : 'reading it failed');
+            }
+            return;
+        }
         views.set(tab.path, view);
         const info = await withTimeout(view.describe(), DESCRIBE_TIMEOUT_MS);
         if (info) infos.set(tab.path, info);
@@ -428,7 +447,10 @@ export async function buildAgentContext(
         const shown = onScreen && idx !== -1 && panes[idx].activePath === tab.path;
         const where = idx === -1 ? 'not in a pane' : `${shown ? 'on screen in' : 'behind another tab in'} pane ${idx + 1}`;
         const flags = [tab.dirty && 'unsaved changes', tab.unreadable && 'could not be read'].filter(Boolean).join(', ');
-        const position = info ? livePosition(info) : rememberedPosition(workspace.remembered(tab.path));
+        const position = info
+            ? (wholeSheet.has(tab.path) ? `${livePosition(info)}; never viewed, so this is the whole sheet` : livePosition(info))
+            : unreadable.has(tab.path) ? `not readable now (${unreadable.get(tab.path)})`
+                : rememberedPosition(workspace.remembered(tab.path));
         tabLines.push(`- ${tab.path} — ${kindLabel(tab, info)}${flags ? `, ${flags}` : ''}; ${where}; ${position}`);
     }
     if (tabLines.length) {

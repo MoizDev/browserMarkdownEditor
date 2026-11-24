@@ -1,0 +1,8 @@
+diff --git a/src/utils/fileTypes.ts b/src/utils/fileTypes.ts
+--- a/src/utils/fileTypes.ts
++++ b/src/utils/fileTypes.ts
+@@ -30,3 +30,3 @@
+ export function isCanvasFile(name: string): boolean {
+-    return isDrawingFile(name) || isNativeDrawingFile(name) || isNotebookFile(name);
++    return isDrawingFile(name) || isNotebookFile(name);
+ }

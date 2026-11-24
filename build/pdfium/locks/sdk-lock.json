@@ -1,0 +1,49 @@
+{
+  "emsdkCommit": "d223ae73c6998296e3ab27cf81dc2c2c9fd383de",
+  "version": "6.0.0",
+  "toolchainId": "772bb4648be4a897ca062d6adc65bc70223d2703",
+  "architecture": "arm64",
+  "nativeVolume": "bme-p-d-b0-toolchain",
+  "sdkRoot": "/toolchain/emsdk",
+  "fileInventorySha256": "79992ce21bcb270bdb0967ede0172035364ec50dab83cab99152ac7f648f2c61",
+  "fileInventoryEntries": 22959,
+  "emscriptenSourcePin": "afa15e0c56d1292e073c2c91bafc1d5e0cdf0dd3",
+  "archives": [
+    {
+      "file": "772bb4648be4a897ca062d6adc65bc70223d2703-wasm-binaries-arm64.tar.xz",
+      "url": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/linux/772bb4648be4a897ca062d6adc65bc70223d2703/wasm-binaries-arm64.tar.xz",
+      "bytes": 253974236,
+      "sha256": "88348221e50491cdc2765c5a76da7dcc51ff885ec86d10b2cd264426981e84fd"
+    },
+    {
+      "file": "node-v22.16.0-linux-arm64.tar.xz",
+      "url": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/deps/node-v22.16.0-linux-arm64.tar.xz",
+      "bytes": 29126496,
+      "sha256": "eab80cb88f8fda1e65f5e8d0420c9809bdb320b03fd34976ab7161b6e703b910"
+    }
+  ],
+  "criticalSourceFiles": [
+    {
+      "path": "src/lib/libcore.js",
+      "sourceUrl": "https://raw.githubusercontent.com/emscripten-core/emscripten/afa15e0c56d1292e073c2c91bafc1d5e0cdf0dd3/src/lib/libcore.js",
+      "sha256": "d5643c2835287e0babfed87cbc058de5f880d947202a7d486956d9a197a492a0",
+      "bytes": 91064
+    },
+    {
+      "path": "src/settings.js",
+      "sourceUrl": "https://raw.githubusercontent.com/emscripten-core/emscripten/afa15e0c56d1292e073c2c91bafc1d5e0cdf0dd3/src/settings.js",
+      "sha256": "8aeab7762253025221884f58fb117608abadcef538a722c9c467701865c600e3",
+      "bytes": 100668
+    },
+    {
+      "path": "system/lib/libc/sbrk.c",
+      "sourceUrl": "https://raw.githubusercontent.com/emscripten-core/emscripten/afa15e0c56d1292e073c2c91bafc1d5e0cdf0dd3/system/lib/libc/sbrk.c",
+      "sha256": "c5240534df9773b524c3385452e9ec7d45eb1d6c7c37c441cfbea156f0f7fa0e",
+      "bytes": 4158
+    }
+  ],
+  "emccVersion": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 6.0.0 (afa15e0c56d1292e073c2c91bafc1d5e0cdf0dd3)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+  "nodeVersion": "v22.16.0\n",
+  "clangVersion": "clang version 23.0.0git (https:/github.com/llvm/llvm-project c6c2ad52586c28e74a724570985a48dc0022d250)\nTarget: unknown\nThread model: posix\nInstalledDir: /toolchain/emsdk/upstream/bin\n",
+  "binaryenVersion": "wasm-opt version 130 (version_130-4-gb9c72894f)\n"
+}

@@ -1,0 +1,1422 @@
+{
+  "schema": 1,
+  "results": [
+    {
+      "fixture": {
+        "id": "GEN-08",
+        "sha256": "74c7441a53b5dd0fb552f692a9188a021dbbd34bc00e902325167ec2c47fb652",
+        "pages": 12,
+        "file": "rtl-cjk-unicode.pdf"
+      },
+      "identity": {
+        "appCommit": "d53ae0a5c6a4b000c01ec83d487d608bc3f11895",
+        "planningBase": "b10d0d3b24943b9f834a5b4c6169270f06312aa7",
+        "srcTree": "adb19b09faa1253f87a61bb639091e71dffc77ae",
+        "browser": "157.0.8103.39",
+        "driver": "1.63.0",
+        "driverSource": "pinned dev dependency",
+        "dpr": 1,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "buildMode": "production"
+      },
+      "expectedCorrect": {
+        "queries": [
+          {
+            "query": "office",
+            "pages": [
+              7,
+              8
+            ],
+            "count": 2
+          }
+        ],
+        "gestures": {
+          "title": {
+            "page": 1,
+            "from": [
+              42,
+              49
+            ],
+            "to": [
+              339.59999999999997,
+              49
+            ],
+            "correct": "Authored Unicode glyph controls"
+          },
+          "twoLine": {
+            "page": 1,
+            "from": [
+              42,
+              100
+            ],
+            "to": [
+              332.4,
+              120
+            ],
+            "correct": "Each logical string has an authored source.\nGlyph boxes and copy are separate witnesses."
+          },
+          "crossPage": {
+            "from": {
+              "page": 1,
+              "point": [
+                42,
+                748
+              ]
+            },
+            "to": {
+              "page": 2,
+              "point": [
+                378,
+                49
+              ]
+            },
+            "correct": "Unicode boundary ends with cedar.\nUnicode boundary begins with maple."
+          }
+        },
+        "selectAll": {
+          "length": 566,
+          "sha256": "23770978fc86a356aa91723438370b2eca53630fc5ba44a47e0467b719b56021",
+          "scope": {
+            "scope": "PDF source logical text only, in physical-page/content order",
+            "source": "Independently authored pageModels.lines[].text; sourceVisualUnicode is not the logical oracle."
+          }
+        }
+      },
+      "geometry": {
+        "first": {
+          "width": 1120,
+          "height": 1449.40625
+        },
+        "last": {
+          "width": 1120,
+          "height": 1449.40625
+        },
+        "pageCount": 12,
+        "equalBoxes": true,
+        "source": {
+          "viewBox": [
+            0,
+            0,
+            612,
+            792
+          ],
+          "rotation": 0,
+          "userUnit": 1,
+          "width": 612,
+          "height": 792
+        }
+      },
+      "initialInk": {
+        "width": 1120,
+        "height": 1449,
+        "darkPixels": 9782
+      },
+      "copy": {
+        "title": {
+          "selection": {
+            "text": "Authored Unicode glyph controls",
+            "length": 31,
+            "sha256": "20d9f6e04fdd861ebed7ade761399ba51ee6cb6d8c08823a31ca82e322ca1b41"
+          },
+          "clipboard": {
+            "text": "Authored Unicode glyph controls",
+            "length": 31,
+            "sha256": "20d9f6e04fdd861ebed7ade761399ba51ee6cb6d8c08823a31ca82e322ca1b41"
+          },
+          "selectedPages": [
+            1
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 369.3627450980392,
+              "y": 177.67320261437908,
+              "hitTag": "SPAN",
+              "hitText": "Authored"
+            },
+            {
+              "x": 912.7401960784313,
+              "y": 177.67320261437908,
+              "hitTag": "SPAN",
+              "hitText": "Unicode glyph controls"
+            }
+          ]
+        },
+        "twoLine": {
+          "selection": {
+            "text": "Each logical string has an authored source.\nGlyph boxes and copy are separate witnesses.",
+            "length": 88,
+            "sha256": "1d09123ae18bd6fa39040a8d9fc34b35e5f17642ba1200243e6b9343995c90a3"
+          },
+          "clipboard": {
+            "text": "Each logical string has an authored source.\nGlyph boxes and copy are separate witnesses.",
+            "length": 88,
+            "sha256": "1d09123ae18bd6fa39040a8d9fc34b35e5f17642ba1200243e6b9343995c90a3"
+          },
+          "selectedPages": [
+            1
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 369.3627450980392,
+              "y": 271.00653594771245,
+              "hitTag": "SPAN",
+              "hitText": "Each logical string has an authored"
+            },
+            {
+              "x": 899.563725490196,
+              "y": 307.6078431372549,
+              "hitTag": "SPAN",
+              "hitText": "witnesses."
+            }
+          ]
+        },
+        "crossPage": {
+          "selection": {
+            "text": "Unicode boundary ends with cedar.\nUnicode boundary begins with maple.",
+            "length": 69,
+            "sha256": "891b2336d70f4b5af126d6e319727b3e8674da445714e5aef804cb3ac11e761b"
+          },
+          "clipboard": {
+            "text": "Unicode boundary ends with cedar.\nUnicode boundary begins with maple.",
+            "length": 69,
+            "sha256": "891b2336d70f4b5af126d6e319727b3e8674da445714e5aef804cb3ac11e761b"
+          },
+          "selectedPages": [
+            1,
+            2
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 659.2450980392157,
+              "y": 241.55555555555554,
+              "hitTag": "SPAN",
+              "hitText": "Unicode boundary ends with cedar."
+            },
+            {
+              "x": 903.9558823529412,
+              "y": 323.6192810457516,
+              "hitTag": "SPAN",
+              "hitText": "maple."
+            }
+          ]
+        },
+        "selectAll": {
+          "selection": {
+            "text": "P00-vault\n\n\n\n\nAuthored Unicode glyph controls\nEach logical string has an authored source.\nGlyph boxes and copy are separate witnesses.\nسبب\nUnicode boundary ends with cedar.\nUnicode boundary begins with maple.\nABC 123אבג\nHorizontal Japanese and CJK\n日本三月\nVertical Japanese and CJK 日本三月\nCombining and joined emoji clustersé\n🙂👩‍💻\nSeparate zero-advance combining mark\né\nSequence ligature mapping\noffice\nPresentation ligature mapping\noffice\nNonembedded CID control 1\nسبب\nNonembedded CID control 2\nABC 123אבג\nNonembedded CID control 3\n日本三月\nNonembedded CID control 4\n日本三月\n\n\n\n\n\n−\n40%\n+",
+            "length": 581,
+            "sha256": "28cb376647e17b8e0aed46ca5e5c43b0b2d8ca8a306bbc9ba6a9d2b4402a977c"
+          },
+          "clipboard": {
+            "text": "P00-vault\n\n\n\n\nAuthored Unicode glyph controls\nEach logical string has an authored source.\nGlyph boxes and copy are separate witnesses.\nسبب\nUnicode boundary ends with cedar.\nUnicode boundary begins with maple.\nABC 123אבג\nHorizontal Japanese and CJK\n日本三月\nVertical Japanese and CJK 日本三月\nCombining and joined emoji clustersé\n🙂👩‍💻\nSeparate zero-advance combining mark\né\nSequence ligature mapping\noffice\nPresentation ligature mapping\noffice\nNonembedded CID control 1\nسبب\nNonembedded CID control 2\nABC 123אבג\nNonembedded CID control 3\n日本三月\nNonembedded CID control 4\n日本三月\n\n\n\n\n1\n−\n40%\n+",
+            "length": 582,
+            "sha256": "790d65aa0965f8e508215a5aa442c67ae5baa0c8613b8f16f4a8047d4741a2ea"
+          },
+          "selectedPages": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": false,
+          "includesChrome": true,
+          "clipboardChanged": true,
+          "gesture": {
+            "key": "Meta+A"
+          },
+          "classification": "known-bad witness: select-all captured app chrome"
+        }
+      },
+      "originalFind": {
+        "method": "trusted Meta+F routing witness, followed by labelled window.find browser DOM-engine diagnostic (not native toolbar automation)",
+        "key": {
+          "trusted": true,
+          "defaultPrevented": false
+        },
+        "before": [
+          {
+            "query": "office",
+            "expectedCount": 2,
+            "targetBuiltBefore": [
+              true,
+              true
+            ],
+            "hits": [
+              {
+                "page": 7,
+                "offset": 25,
+                "text": "office",
+                "nonzeroRange": true
+              },
+              {
+                "page": 8,
+                "offset": 29,
+                "text": "office",
+                "nonzeroRange": true
+              }
+            ],
+            "count": 2,
+            "wrapped": true
+          }
+        ],
+        "afterVisitingTargets": []
+      },
+      "storedText": [
+        {
+          "key": "pdfTextViewState",
+          "value": {
+            "<vault-id>\u0000rtl-cjk-unicode.pdf": {
+              "v": 1,
+              "surface": "text",
+              "rawFingerprint": "74c7441a53b5dd0fb552f692a9188a021dbbd34bc00e902325167ec2c47fb652",
+              "extractionSchema": 1,
+              "pageDigest": "6a8a369a854e98aaa7d004d34b0baeb08b9795800a29591278d03758e99af2d8",
+              "textAnchor": {
+                "physicalPageIndex": 0,
+                "offsetUTF16": 0,
+                "affinity": "after",
+                "quote": "Authored Unicode glyph controls\nEach logical str",
+                "before": "",
+                "after": "ing has an authored source.\nGlyph boxes and copy",
+                "alignHint": 0
+              },
+              "originalCheckpoint": {
+                "page": 0,
+                "offset": 0,
+                "zoom": 0.4,
+                "navigationRevision": 4
+              },
+              "textNavigationRevision": 1,
+              "textChoice": "manual"
+            }
+          }
+        }
+      ],
+      "textFind": [
+        {
+          "query": "office",
+          "expectedCount": 2,
+          "status": "1 matches · 12/12 pages searched · 5 pages have absent, partial or unavailable text",
+          "matches": [
+            {
+              "page": 7,
+              "snippet": "Page 7 · Sequence ligature mapping\noffice"
+            }
+          ]
+        }
+      ],
+      "sourceUnchanged": true,
+      "pageErrors": []
+    },
+    {
+      "fixture": {
+        "id": "GEN-11",
+        "sha256": "9c19a5a6d0bc698762e554d332974d3ed8f713ec528d5955ac07e0ae510362d6",
+        "pages": 6,
+        "file": "type3-tagged-text.pdf"
+      },
+      "identity": {
+        "appCommit": "d53ae0a5c6a4b000c01ec83d487d608bc3f11895",
+        "planningBase": "b10d0d3b24943b9f834a5b4c6169270f06312aa7",
+        "srcTree": "adb19b09faa1253f87a61bb639091e71dffc77ae",
+        "browser": "157.0.8103.39",
+        "driver": "1.63.0",
+        "driverSource": "pinned dev dependency",
+        "dpr": 1,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "buildMode": "production"
+      },
+      "expectedCorrect": {
+        "queries": [
+          {
+            "query": "NESTED-FORM-TEXT",
+            "pages": [
+              2
+            ],
+            "count": 1
+          },
+          {
+            "query": "DRAWN-TOKEN",
+            "pages": [
+              4
+            ],
+            "count": 1
+          },
+          {
+            "query": "REPLACEMENT-TOKEN",
+            "pages": [],
+            "count": 0
+          }
+        ],
+        "gestures": {
+          "title": {
+            "page": 1,
+            "from": [
+              42,
+              49
+            ],
+            "to": [
+              330,
+              49
+            ],
+            "correct": "Authored Type3 and tagged text"
+          },
+          "twoLine": {
+            "page": 1,
+            "from": [
+              42,
+              100
+            ],
+            "to": [
+              306,
+              120
+            ],
+            "correct": "Mappings and structure have separate witnesses.\nMissing Unicode is not silently guessed."
+          },
+          "crossPage": {
+            "from": {
+              "page": 1,
+              "point": [
+                42,
+                748
+              ]
+            },
+            "to": {
+              "page": 2,
+              "point": [
+                358.8,
+                49
+              ]
+            },
+            "correct": "Type3 boundary ends with cedar.\nType3 boundary begins with maple."
+          }
+        },
+        "selectAll": {
+          "length": 709,
+          "sha256": "030ff425f2c24f1b924f6affe2699131da5f993ca2ba2a5b2681469b7c2acfa6",
+          "scope": {
+            "scope": "Physical-page/content-order logical strings; unmapped Type3 is U+FFFD/partial, not guessed letters; ActualText not substituted",
+            "source": "Independently authored pageModels.lines[].text"
+          }
+        }
+      },
+      "geometry": {
+        "first": {
+          "width": 1120,
+          "height": 1449.40625
+        },
+        "last": {
+          "width": 1120,
+          "height": 1449.40625
+        },
+        "pageCount": 6,
+        "equalBoxes": true,
+        "source": {
+          "viewBox": [
+            0,
+            0,
+            612,
+            792
+          ],
+          "rotation": 0,
+          "userUnit": 1,
+          "width": 612,
+          "height": 792
+        }
+      },
+      "initialInk": {
+        "width": 1120,
+        "height": 1449,
+        "darkPixels": 20206
+      },
+      "copy": {
+        "title": {
+          "selection": {
+            "text": "Authored Type3 and tagged text",
+            "length": 30,
+            "sha256": "53d5639646f1a0a62c02e9fbef08064848319c6c1dab7a0d04f4229e8f184d07"
+          },
+          "clipboard": {
+            "text": "Authored Type3 and tagged text",
+            "length": 30,
+            "sha256": "53d5639646f1a0a62c02e9fbef08064848319c6c1dab7a0d04f4229e8f184d07"
+          },
+          "selectedPages": [
+            1
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 369.3627450980392,
+              "y": 177.67320261437908,
+              "hitTag": "SPAN",
+              "hitText": "Authored"
+            },
+            {
+              "x": 895.1715686274509,
+              "y": 177.67320261437908,
+              "hitTag": "SPAN",
+              "hitText": "text"
+            }
+          ]
+        },
+        "twoLine": {
+          "selection": {
+            "text": "Mappings and structure have separate witnesses.\nMissing Unicode is not silently guessed.",
+            "length": 88,
+            "sha256": "cac1676e9b5ace720a2ad03eb2f4ec5fbb8cea17f6312e64d711b786f567f256"
+          },
+          "clipboard": {
+            "text": "Mappings and structure have separate witnesses.\nMissing Unicode is not silently guessed.",
+            "length": 88,
+            "sha256": "cac1676e9b5ace720a2ad03eb2f4ec5fbb8cea17f6312e64d711b786f567f256"
+          },
+          "selectedPages": [
+            1
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 369.3627450980392,
+              "y": 271.00653594771245,
+              "hitTag": "SPAN",
+              "hitText": "Mappings and structure have separate"
+            },
+            {
+              "x": 851.25,
+              "y": 307.6078431372549,
+              "hitTag": "SPAN",
+              "hitText": "Missing Unicode is not silently guessed."
+            }
+          ]
+        },
+        "crossPage": {
+          "selection": {
+            "text": "Type3 boundary ends with cedar.\nType3 boundary begins with maple.",
+            "length": 65,
+            "sha256": "5a8e132bf4bfad728e7ae919a991b4de03815caaedb641b05068ab6634dc7701"
+          },
+          "clipboard": {
+            "text": "Type3 boundary ends with cedar.\nType3 boundary begins with maple.",
+            "length": 65,
+            "sha256": "5a8e132bf4bfad728e7ae919a991b4de03815caaedb641b05068ab6634dc7701"
+          },
+          "selectedPages": [
+            1,
+            2
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 659.2450980392157,
+              "y": 241.55555555555554,
+              "hitTag": "SPAN",
+              "hitText": "Type3 boundary ends with cedar."
+            },
+            {
+              "x": 889.9009803921568,
+              "y": 323.6192810457516,
+              "hitTag": "SPAN",
+              "hitText": "maple."
+            }
+          ]
+        },
+        "selectAll": {
+          "selection": {
+            "text": "P00-vault\n\n\n\n\nAuthored Type3 and tagged text\nMappings and structure have separate witnesses.\nMissing Unicode is not silently guessed.\nNo ToUnicode / nonsemantic encoding names:\n\nMapped control, exactly the same CharProcs:\nABC\nType3 boundary ends with cedar.\nType3 boundary begins with maple.\nThis page has no structural tagging.NESTED-FORM-TEXT\nHidden text is not visible-ink capability\nVISIBLE-CONTROL\nCLIPPED-GLYPHS\nINVISIBLE-GLYPHS\nCOVERED-GLYPHS\nTagged structure and explicit ActualText gap\nFirst structural heading\nSecond structural heading\nThird structural heading\nlet witness = 1;\nDRAWN-TOKEN\nMalformed structure control\nMALFORMED-STRUCTURE-TEXT\nCyclic structure control\nCYCLIC-STRUCTURE-TEXT\n\n\n\n\n\n−\n40%\n+",
+            "length": 715,
+            "sha256": "84bb820126c27012d5794ee2c95e0627706eb45e99c38edcf9fef5ea20637d7f"
+          },
+          "clipboard": {
+            "text": "P00-vault\n\n\n\n\nAuthored Type3 and tagged text\nMappings and structure have separate witnesses.\nMissing Unicode is not silently guessed.\nNo ToUnicode / nonsemantic encoding names:\n\nMapped control, exactly the same CharProcs:\nABC\nType3 boundary ends with cedar.\nType3 boundary begins with maple.\nThis page has no structural tagging.NESTED-FORM-TEXT\nHidden text is not visible-ink capability\nVISIBLE-CONTROL\nCLIPPED-GLYPHS\nINVISIBLE-GLYPHS\nCOVERED-GLYPHS\nTagged structure and explicit ActualText gap\nFirst structural heading\nSecond structural heading\nThird structural heading\nlet witness = 1;\nDRAWN-TOKEN\nMalformed structure control\nMALFORMED-STRUCTURE-TEXT\nCyclic structure control\nCYCLIC-STRUCTURE-TEXT\n\n\n\n\n1\n−\n40%\n+",
+            "length": 716,
+            "sha256": "efbeaadba60d368d555be83409f8ebb573b306d42f65f3c8c32155bd51726909"
+          },
+          "selectedPages": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": false,
+          "includesChrome": true,
+          "clipboardChanged": true,
+          "gesture": {
+            "key": "Meta+A"
+          },
+          "classification": "known-bad witness: select-all captured app chrome"
+        }
+      },
+      "originalFind": {
+        "method": "trusted Meta+F routing witness, followed by labelled window.find browser DOM-engine diagnostic (not native toolbar automation)",
+        "key": {
+          "trusted": true,
+          "defaultPrevented": false
+        },
+        "before": [
+          {
+            "query": "NESTED-FORM-TEXT",
+            "expectedCount": 1,
+            "targetBuiltBefore": [
+              true
+            ],
+            "hits": [
+              {
+                "page": 2,
+                "offset": 69,
+                "text": "NESTED-FORM-TEXT",
+                "nonzeroRange": true
+              }
+            ],
+            "count": 1,
+            "wrapped": true
+          },
+          {
+            "query": "DRAWN-TOKEN",
+            "expectedCount": 1,
+            "targetBuiltBefore": [
+              true
+            ],
+            "hits": [
+              {
+                "page": 4,
+                "offset": 133,
+                "text": "DRAWN-TOKEN",
+                "nonzeroRange": true
+              }
+            ],
+            "count": 1,
+            "wrapped": true
+          },
+          {
+            "query": "REPLACEMENT-TOKEN",
+            "expectedCount": 0,
+            "targetBuiltBefore": [],
+            "hits": [],
+            "count": 0,
+            "wrapped": false
+          }
+        ],
+        "afterVisitingTargets": []
+      },
+      "storedText": [
+        {
+          "key": "pdfTextViewState",
+          "value": {
+            "<vault-id>\u0000type3-tagged-text.pdf": {
+              "v": 1,
+              "surface": "text",
+              "rawFingerprint": "9c19a5a6d0bc698762e554d332974d3ed8f713ec528d5955ac07e0ae510362d6",
+              "extractionSchema": 1,
+              "pageDigest": "8df1eb59785442c0de84c96bdfbcc622d2d9ea18c203e47be56c7876e82dc006",
+              "textAnchor": {
+                "physicalPageIndex": 0,
+                "offsetUTF16": 0,
+                "affinity": "after",
+                "quote": "Authored Type3 and tagged text\nMappings and stru",
+                "before": "",
+                "after": "cture have separate witnesses.\nMissing Unicode i",
+                "alignHint": 0
+              },
+              "originalCheckpoint": {
+                "page": 0,
+                "offset": 0,
+                "zoom": 0.4,
+                "navigationRevision": 4
+              },
+              "textNavigationRevision": 1,
+              "textChoice": "manual"
+            }
+          }
+        }
+      ],
+      "textFind": [
+        {
+          "query": "NESTED-FORM-TEXT",
+          "expectedCount": 1,
+          "status": "1 matches · 6/6 pages searched · 1 pages have absent, partial or unavailable text",
+          "matches": [
+            {
+              "page": 2,
+              "snippet": "Page 2 ·  page has no structural tagging.NESTED-FORM-TEXT"
+            }
+          ]
+        },
+        {
+          "query": "DRAWN-TOKEN",
+          "expectedCount": 1,
+          "status": "1 matches · 6/6 pages searched · 1 pages have absent, partial or unavailable text",
+          "matches": [
+            {
+              "page": 4,
+              "snippet": "Page 4 · ctural heading\nlet witness = 1;\nDRAWN-TOKEN"
+            }
+          ]
+        },
+        {
+          "query": "REPLACEMENT-TOKEN",
+          "expectedCount": 0,
+          "status": "0 matches · 6/6 pages searched · 1 pages have absent, partial or unavailable text",
+          "matches": []
+        }
+      ],
+      "sourceUnchanged": true,
+      "pageErrors": []
+    },
+    {
+      "fixture": {
+        "id": "GEN-08",
+        "sha256": "74c7441a53b5dd0fb552f692a9188a021dbbd34bc00e902325167ec2c47fb652",
+        "pages": 12,
+        "file": "rtl-cjk-unicode.pdf"
+      },
+      "identity": {
+        "appCommit": "d53ae0a5c6a4b000c01ec83d487d608bc3f11895",
+        "planningBase": "b10d0d3b24943b9f834a5b4c6169270f06312aa7",
+        "srcTree": "adb19b09faa1253f87a61bb639091e71dffc77ae",
+        "browser": "157.0.8103.39",
+        "driver": "1.63.0",
+        "driverSource": "pinned dev dependency",
+        "dpr": 2,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "buildMode": "production"
+      },
+      "expectedCorrect": {
+        "queries": [
+          {
+            "query": "office",
+            "pages": [
+              7,
+              8
+            ],
+            "count": 2
+          }
+        ],
+        "gestures": {
+          "title": {
+            "page": 1,
+            "from": [
+              42,
+              49
+            ],
+            "to": [
+              339.59999999999997,
+              49
+            ],
+            "correct": "Authored Unicode glyph controls"
+          },
+          "twoLine": {
+            "page": 1,
+            "from": [
+              42,
+              100
+            ],
+            "to": [
+              332.4,
+              120
+            ],
+            "correct": "Each logical string has an authored source.\nGlyph boxes and copy are separate witnesses."
+          },
+          "crossPage": {
+            "from": {
+              "page": 1,
+              "point": [
+                42,
+                748
+              ]
+            },
+            "to": {
+              "page": 2,
+              "point": [
+                378,
+                49
+              ]
+            },
+            "correct": "Unicode boundary ends with cedar.\nUnicode boundary begins with maple."
+          }
+        },
+        "selectAll": {
+          "length": 566,
+          "sha256": "23770978fc86a356aa91723438370b2eca53630fc5ba44a47e0467b719b56021",
+          "scope": {
+            "scope": "PDF source logical text only, in physical-page/content order",
+            "source": "Independently authored pageModels.lines[].text; sourceVisualUnicode is not the logical oracle."
+          }
+        }
+      },
+      "geometry": {
+        "first": {
+          "width": 1120,
+          "height": 1449.40625
+        },
+        "last": {
+          "width": 1120,
+          "height": 1449.40625
+        },
+        "pageCount": 12,
+        "equalBoxes": true,
+        "source": {
+          "viewBox": [
+            0,
+            0,
+            612,
+            792
+          ],
+          "rotation": 0,
+          "userUnit": 1,
+          "width": 612,
+          "height": 792
+        }
+      },
+      "initialInk": {
+        "width": 2240,
+        "height": 2898,
+        "darkPixels": 37943
+      },
+      "copy": {
+        "title": {
+          "selection": {
+            "text": "Authored Unicode glyph controls",
+            "length": 31,
+            "sha256": "20d9f6e04fdd861ebed7ade761399ba51ee6cb6d8c08823a31ca82e322ca1b41"
+          },
+          "clipboard": {
+            "text": "Authored Unicode glyph controls",
+            "length": 31,
+            "sha256": "20d9f6e04fdd861ebed7ade761399ba51ee6cb6d8c08823a31ca82e322ca1b41"
+          },
+          "selectedPages": [
+            1
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 369.3627450980392,
+              "y": 177.67320261437908,
+              "hitTag": "SPAN",
+              "hitText": "Authored"
+            },
+            {
+              "x": 912.7401960784313,
+              "y": 177.67320261437908,
+              "hitTag": "SPAN",
+              "hitText": "Unicode glyph controls"
+            }
+          ]
+        },
+        "twoLine": {
+          "selection": {
+            "text": "Each logical string has an authored source.\nGlyph boxes and copy are separate witnesses.",
+            "length": 88,
+            "sha256": "1d09123ae18bd6fa39040a8d9fc34b35e5f17642ba1200243e6b9343995c90a3"
+          },
+          "clipboard": {
+            "text": "Each logical string has an authored source.\nGlyph boxes and copy are separate witnesses.",
+            "length": 88,
+            "sha256": "1d09123ae18bd6fa39040a8d9fc34b35e5f17642ba1200243e6b9343995c90a3"
+          },
+          "selectedPages": [
+            1
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 369.3627450980392,
+              "y": 271.00653594771245,
+              "hitTag": "SPAN",
+              "hitText": "Each logical string has an authored"
+            },
+            {
+              "x": 899.563725490196,
+              "y": 307.6078431372549,
+              "hitTag": "SPAN",
+              "hitText": "witnesses."
+            }
+          ]
+        },
+        "crossPage": {
+          "selection": {
+            "text": "Unicode boundary ends with cedar.\nUnicode boundary begins with maple.",
+            "length": 69,
+            "sha256": "891b2336d70f4b5af126d6e319727b3e8674da445714e5aef804cb3ac11e761b"
+          },
+          "clipboard": {
+            "text": "Unicode boundary ends with cedar.\nUnicode boundary begins with maple.",
+            "length": 69,
+            "sha256": "891b2336d70f4b5af126d6e319727b3e8674da445714e5aef804cb3ac11e761b"
+          },
+          "selectedPages": [
+            1,
+            2
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 659.2450980392157,
+              "y": 241.55555555555554,
+              "hitTag": "SPAN",
+              "hitText": "Unicode boundary ends with cedar."
+            },
+            {
+              "x": 903.9558823529412,
+              "y": 323.6192810457516,
+              "hitTag": "SPAN",
+              "hitText": "maple."
+            }
+          ]
+        },
+        "selectAll": {
+          "selection": {
+            "text": "P00-vault\n\n\n\n\nAuthored Unicode glyph controls\nEach logical string has an authored source.\nGlyph boxes and copy are separate witnesses.\nسبب\nUnicode boundary ends with cedar.\nUnicode boundary begins with maple.\nABC 123אבג\nHorizontal Japanese and CJK\n日本三月\nVertical Japanese and CJK 日本三月\nCombining and joined emoji clustersé\n🙂👩‍💻\nSeparate zero-advance combining mark\né\nSequence ligature mapping\noffice\nPresentation ligature mapping\noffice\nNonembedded CID control 1\nسبب\nNonembedded CID control 2\nABC 123אבג\nNonembedded CID control 3\n日本三月\nNonembedded CID control 4\n日本三月\n\n\n\n\n\n−\n40%\n+",
+            "length": 581,
+            "sha256": "28cb376647e17b8e0aed46ca5e5c43b0b2d8ca8a306bbc9ba6a9d2b4402a977c"
+          },
+          "clipboard": {
+            "text": "P00-vault\n\n\n\n\nAuthored Unicode glyph controls\nEach logical string has an authored source.\nGlyph boxes and copy are separate witnesses.\nسبب\nUnicode boundary ends with cedar.\nUnicode boundary begins with maple.\nABC 123אבג\nHorizontal Japanese and CJK\n日本三月\nVertical Japanese and CJK 日本三月\nCombining and joined emoji clustersé\n🙂👩‍💻\nSeparate zero-advance combining mark\né\nSequence ligature mapping\noffice\nPresentation ligature mapping\noffice\nNonembedded CID control 1\nسبب\nNonembedded CID control 2\nABC 123אבג\nNonembedded CID control 3\n日本三月\nNonembedded CID control 4\n日本三月\n\n\n\n\n1\n−\n40%\n+",
+            "length": 582,
+            "sha256": "790d65aa0965f8e508215a5aa442c67ae5baa0c8613b8f16f4a8047d4741a2ea"
+          },
+          "selectedPages": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": false,
+          "includesChrome": true,
+          "clipboardChanged": true,
+          "gesture": {
+            "key": "Meta+A"
+          },
+          "classification": "known-bad witness: select-all captured app chrome"
+        }
+      },
+      "originalFind": {
+        "method": "trusted Meta+F routing witness, followed by labelled window.find browser DOM-engine diagnostic (not native toolbar automation)",
+        "key": {
+          "trusted": true,
+          "defaultPrevented": false
+        },
+        "before": [
+          {
+            "query": "office",
+            "expectedCount": 2,
+            "targetBuiltBefore": [
+              true,
+              true
+            ],
+            "hits": [
+              {
+                "page": 7,
+                "offset": 25,
+                "text": "office",
+                "nonzeroRange": true
+              },
+              {
+                "page": 8,
+                "offset": 29,
+                "text": "office",
+                "nonzeroRange": true
+              }
+            ],
+            "count": 2,
+            "wrapped": true
+          }
+        ],
+        "afterVisitingTargets": []
+      },
+      "storedText": [
+        {
+          "key": "pdfTextViewState",
+          "value": {
+            "<vault-id>\u0000rtl-cjk-unicode.pdf": {
+              "v": 1,
+              "surface": "text",
+              "rawFingerprint": "74c7441a53b5dd0fb552f692a9188a021dbbd34bc00e902325167ec2c47fb652",
+              "extractionSchema": 1,
+              "pageDigest": "6a8a369a854e98aaa7d004d34b0baeb08b9795800a29591278d03758e99af2d8",
+              "textAnchor": {
+                "physicalPageIndex": 0,
+                "offsetUTF16": 0,
+                "affinity": "after",
+                "quote": "Authored Unicode glyph controls\nEach logical str",
+                "before": "",
+                "after": "ing has an authored source.\nGlyph boxes and copy",
+                "alignHint": 0
+              },
+              "originalCheckpoint": {
+                "page": 0,
+                "offset": 0,
+                "zoom": 0.4,
+                "navigationRevision": 4
+              },
+              "textNavigationRevision": 1,
+              "textChoice": "manual"
+            }
+          }
+        }
+      ],
+      "textFind": [
+        {
+          "query": "office",
+          "expectedCount": 2,
+          "status": "1 matches · 12/12 pages searched · 5 pages have absent, partial or unavailable text",
+          "matches": [
+            {
+              "page": 7,
+              "snippet": "Page 7 · Sequence ligature mapping\noffice"
+            }
+          ]
+        }
+      ],
+      "sourceUnchanged": true,
+      "pageErrors": []
+    },
+    {
+      "fixture": {
+        "id": "GEN-11",
+        "sha256": "9c19a5a6d0bc698762e554d332974d3ed8f713ec528d5955ac07e0ae510362d6",
+        "pages": 6,
+        "file": "type3-tagged-text.pdf"
+      },
+      "identity": {
+        "appCommit": "d53ae0a5c6a4b000c01ec83d487d608bc3f11895",
+        "planningBase": "b10d0d3b24943b9f834a5b4c6169270f06312aa7",
+        "srcTree": "adb19b09faa1253f87a61bb639091e71dffc77ae",
+        "browser": "157.0.8103.39",
+        "driver": "1.63.0",
+        "driverSource": "pinned dev dependency",
+        "dpr": 2,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "buildMode": "production"
+      },
+      "expectedCorrect": {
+        "queries": [
+          {
+            "query": "NESTED-FORM-TEXT",
+            "pages": [
+              2
+            ],
+            "count": 1
+          },
+          {
+            "query": "DRAWN-TOKEN",
+            "pages": [
+              4
+            ],
+            "count": 1
+          },
+          {
+            "query": "REPLACEMENT-TOKEN",
+            "pages": [],
+            "count": 0
+          }
+        ],
+        "gestures": {
+          "title": {
+            "page": 1,
+            "from": [
+              42,
+              49
+            ],
+            "to": [
+              330,
+              49
+            ],
+            "correct": "Authored Type3 and tagged text"
+          },
+          "twoLine": {
+            "page": 1,
+            "from": [
+              42,
+              100
+            ],
+            "to": [
+              306,
+              120
+            ],
+            "correct": "Mappings and structure have separate witnesses.\nMissing Unicode is not silently guessed."
+          },
+          "crossPage": {
+            "from": {
+              "page": 1,
+              "point": [
+                42,
+                748
+              ]
+            },
+            "to": {
+              "page": 2,
+              "point": [
+                358.8,
+                49
+              ]
+            },
+            "correct": "Type3 boundary ends with cedar.\nType3 boundary begins with maple."
+          }
+        },
+        "selectAll": {
+          "length": 709,
+          "sha256": "030ff425f2c24f1b924f6affe2699131da5f993ca2ba2a5b2681469b7c2acfa6",
+          "scope": {
+            "scope": "Physical-page/content-order logical strings; unmapped Type3 is U+FFFD/partial, not guessed letters; ActualText not substituted",
+            "source": "Independently authored pageModels.lines[].text"
+          }
+        }
+      },
+      "geometry": {
+        "first": {
+          "width": 1120,
+          "height": 1449.40625
+        },
+        "last": {
+          "width": 1120,
+          "height": 1449.40625
+        },
+        "pageCount": 6,
+        "equalBoxes": true,
+        "source": {
+          "viewBox": [
+            0,
+            0,
+            612,
+            792
+          ],
+          "rotation": 0,
+          "userUnit": 1,
+          "width": 612,
+          "height": 792
+        }
+      },
+      "initialInk": {
+        "width": 2240,
+        "height": 2898,
+        "darkPixels": 78647
+      },
+      "copy": {
+        "title": {
+          "selection": {
+            "text": "Authored Type3 and tagged text",
+            "length": 30,
+            "sha256": "53d5639646f1a0a62c02e9fbef08064848319c6c1dab7a0d04f4229e8f184d07"
+          },
+          "clipboard": {
+            "text": "Authored Type3 and tagged text",
+            "length": 30,
+            "sha256": "53d5639646f1a0a62c02e9fbef08064848319c6c1dab7a0d04f4229e8f184d07"
+          },
+          "selectedPages": [
+            1
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 369.3627450980392,
+              "y": 177.67320261437908,
+              "hitTag": "SPAN",
+              "hitText": "Authored"
+            },
+            {
+              "x": 895.1715686274509,
+              "y": 177.67320261437908,
+              "hitTag": "SPAN",
+              "hitText": "text"
+            }
+          ]
+        },
+        "twoLine": {
+          "selection": {
+            "text": "Mappings and structure have separate witnesses.\nMissing Unicode is not silently guessed.",
+            "length": 88,
+            "sha256": "cac1676e9b5ace720a2ad03eb2f4ec5fbb8cea17f6312e64d711b786f567f256"
+          },
+          "clipboard": {
+            "text": "Mappings and structure have separate witnesses.\nMissing Unicode is not silently guessed.",
+            "length": 88,
+            "sha256": "cac1676e9b5ace720a2ad03eb2f4ec5fbb8cea17f6312e64d711b786f567f256"
+          },
+          "selectedPages": [
+            1
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 369.3627450980392,
+              "y": 271.00653594771245,
+              "hitTag": "SPAN",
+              "hitText": "Mappings and structure have separate"
+            },
+            {
+              "x": 851.25,
+              "y": 307.6078431372549,
+              "hitTag": "SPAN",
+              "hitText": "Missing Unicode is not silently guessed."
+            }
+          ]
+        },
+        "crossPage": {
+          "selection": {
+            "text": "Type3 boundary ends with cedar.\nType3 boundary begins with maple.",
+            "length": 65,
+            "sha256": "5a8e132bf4bfad728e7ae919a991b4de03815caaedb641b05068ab6634dc7701"
+          },
+          "clipboard": {
+            "text": "Type3 boundary ends with cedar.\nType3 boundary begins with maple.",
+            "length": 65,
+            "sha256": "5a8e132bf4bfad728e7ae919a991b4de03815caaedb641b05068ab6634dc7701"
+          },
+          "selectedPages": [
+            1,
+            2
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": true,
+          "includesChrome": false,
+          "clipboardChanged": true,
+          "gesture": [
+            {
+              "x": 659.2450980392157,
+              "y": 241.55555555555554,
+              "hitTag": "SPAN",
+              "hitText": "Type3 boundary ends with cedar."
+            },
+            {
+              "x": 889.9009803921568,
+              "y": 323.6192810457516,
+              "hitTag": "SPAN",
+              "hitText": "maple."
+            }
+          ]
+        },
+        "selectAll": {
+          "selection": {
+            "text": "P00-vault\n\n\n\n\nAuthored Type3 and tagged text\nMappings and structure have separate witnesses.\nMissing Unicode is not silently guessed.\nNo ToUnicode / nonsemantic encoding names:\n\nMapped control, exactly the same CharProcs:\nABC\nType3 boundary ends with cedar.\nType3 boundary begins with maple.\nThis page has no structural tagging.NESTED-FORM-TEXT\nHidden text is not visible-ink capability\nVISIBLE-CONTROL\nCLIPPED-GLYPHS\nINVISIBLE-GLYPHS\nCOVERED-GLYPHS\nTagged structure and explicit ActualText gap\nFirst structural heading\nSecond structural heading\nThird structural heading\nlet witness = 1;\nDRAWN-TOKEN\nMalformed structure control\nMALFORMED-STRUCTURE-TEXT\nCyclic structure control\nCYCLIC-STRUCTURE-TEXT\n\n\n\n\n\n−\n40%\n+",
+            "length": 715,
+            "sha256": "84bb820126c27012d5794ee2c95e0627706eb45e99c38edcf9fef5ea20637d7f"
+          },
+          "clipboard": {
+            "text": "P00-vault\n\n\n\n\nAuthored Type3 and tagged text\nMappings and structure have separate witnesses.\nMissing Unicode is not silently guessed.\nNo ToUnicode / nonsemantic encoding names:\n\nMapped control, exactly the same CharProcs:\nABC\nType3 boundary ends with cedar.\nType3 boundary begins with maple.\nThis page has no structural tagging.NESTED-FORM-TEXT\nHidden text is not visible-ink capability\nVISIBLE-CONTROL\nCLIPPED-GLYPHS\nINVISIBLE-GLYPHS\nCOVERED-GLYPHS\nTagged structure and explicit ActualText gap\nFirst structural heading\nSecond structural heading\nThird structural heading\nlet witness = 1;\nDRAWN-TOKEN\nMalformed structure control\nMALFORMED-STRUCTURE-TEXT\nCyclic structure control\nCYCLIC-STRUCTURE-TEXT\n\n\n\n\n1\n−\n40%\n+",
+            "length": 716,
+            "sha256": "efbeaadba60d368d555be83409f8ebb573b306d42f65f3c8c32155bd51726909"
+          },
+          "selectedPages": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "rangeCount": 1,
+          "noncollapsed": true,
+          "endpointsInLayer": false,
+          "includesChrome": true,
+          "clipboardChanged": true,
+          "gesture": {
+            "key": "Meta+A"
+          },
+          "classification": "known-bad witness: select-all captured app chrome"
+        }
+      },
+      "originalFind": {
+        "method": "trusted Meta+F routing witness, followed by labelled window.find browser DOM-engine diagnostic (not native toolbar automation)",
+        "key": {
+          "trusted": true,
+          "defaultPrevented": false
+        },
+        "before": [
+          {
+            "query": "NESTED-FORM-TEXT",
+            "expectedCount": 1,
+            "targetBuiltBefore": [
+              true
+            ],
+            "hits": [
+              {
+                "page": 2,
+                "offset": 69,
+                "text": "NESTED-FORM-TEXT",
+                "nonzeroRange": true
+              }
+            ],
+            "count": 1,
+            "wrapped": true
+          },
+          {
+            "query": "DRAWN-TOKEN",
+            "expectedCount": 1,
+            "targetBuiltBefore": [
+              true
+            ],
+            "hits": [
+              {
+                "page": 4,
+                "offset": 133,
+                "text": "DRAWN-TOKEN",
+                "nonzeroRange": true
+              }
+            ],
+            "count": 1,
+            "wrapped": true
+          },
+          {
+            "query": "REPLACEMENT-TOKEN",
+            "expectedCount": 0,
+            "targetBuiltBefore": [],
+            "hits": [],
+            "count": 0,
+            "wrapped": false
+          }
+        ],
+        "afterVisitingTargets": []
+      },
+      "storedText": [
+        {
+          "key": "pdfTextViewState",
+          "value": {
+            "<vault-id>\u0000type3-tagged-text.pdf": {
+              "v": 1,
+              "surface": "text",
+              "rawFingerprint": "9c19a5a6d0bc698762e554d332974d3ed8f713ec528d5955ac07e0ae510362d6",
+              "extractionSchema": 1,
+              "pageDigest": "8df1eb59785442c0de84c96bdfbcc622d2d9ea18c203e47be56c7876e82dc006",
+              "textAnchor": {
+                "physicalPageIndex": 0,
+                "offsetUTF16": 0,
+                "affinity": "after",
+                "quote": "Authored Type3 and tagged text\nMappings and stru",
+                "before": "",
+                "after": "cture have separate witnesses.\nMissing Unicode i",
+                "alignHint": 0
+              },
+              "originalCheckpoint": {
+                "page": 0,
+                "offset": 0,
+                "zoom": 0.4,
+                "navigationRevision": 4
+              },
+              "textNavigationRevision": 1,
+              "textChoice": "manual"
+            }
+          }
+        }
+      ],
+      "textFind": [
+        {
+          "query": "NESTED-FORM-TEXT",
+          "expectedCount": 1,
+          "status": "1 matches · 6/6 pages searched · 1 pages have absent, partial or unavailable text",
+          "matches": [
+            {
+              "page": 2,
+              "snippet": "Page 2 ·  page has no structural tagging.NESTED-FORM-TEXT"
+            }
+          ]
+        },
+        {
+          "query": "DRAWN-TOKEN",
+          "expectedCount": 1,
+          "status": "1 matches · 6/6 pages searched · 1 pages have absent, partial or unavailable text",
+          "matches": [
+            {
+              "page": 4,
+              "snippet": "Page 4 · ctural heading\nlet witness = 1;\nDRAWN-TOKEN"
+            }
+          ]
+        },
+        {
+          "query": "REPLACEMENT-TOKEN",
+          "expectedCount": 0,
+          "status": "0 matches · 6/6 pages searched · 1 pages have absent, partial or unavailable text",
+          "matches": []
+        }
+      ],
+      "sourceUnchanged": true,
+      "pageErrors": []
+    }
+  ],
+  "loss": "Native browser toolbar is not automatable headless: Original find is explicitly a browser DOM-engine diagnostic. No timing, hardware-GPU, external-document, second-host or save-latency claim. Random vault identity alone is canonicalized; Text digests/anchors are unmodified."
+}

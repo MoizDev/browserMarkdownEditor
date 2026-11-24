@@ -1,0 +1,11 @@
+--- a/src/context/FileSystemContext.tsx
++++ b/src/context/FileSystemContext.tsx
+@@ -775,7 +775,7 @@
+     const fileTreeRef = useRef<FileTreeNode[]>([]);
+     const treeOwnerRef = useRef<FileSystemDirectoryHandle | null>(null);
+     useEffect(() => {
+-        if (__BME_BENCH__) {
++        if (true) {
+             try {
+                 perfRoot().tree = {
+                     paths: () => {

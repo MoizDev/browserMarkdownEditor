@@ -1,0 +1,311 @@
+{
+  "schema": 1,
+  "stream": "platform",
+  "fixtures": [
+    {
+      "invocation": "platform/geometry",
+      "id": "GEN-01/geometry-invalid-non-finite.pdf",
+      "file": "geometry-invalid-non-finite.pdf",
+      "sha256": "9246406c56e73850433bcd3fc639f4a56210a2a27de115276b673f579d608678",
+      "bytes": 218,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "GEN-01: 24 rotated/cropped/nonzero-origin/UserUnit/inherited/mixed-width pages and independent coordinate landmarks",
+      "gates": [
+        "V-05",
+        "X-REGISTER",
+        "F-GEOM",
+        "F-LINK",
+        "D6"
+      ],
+      "generator": "verify/fixtures/platform/generators/geometry.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [],
+      "validity": "invalid",
+      "knownFailures": [
+        "Intentionally invalid page box; not a renderability golden"
+      ]
+    },
+    {
+      "invocation": "platform/geometry",
+      "id": "GEN-01/geometry-invalid-zero-width.pdf",
+      "file": "geometry-invalid-zero-width.pdf",
+      "sha256": "3b94a66fcde3e4adf129801bcbdc8f8779e9044bf483fb7192219c70510bf433",
+      "bytes": 216,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "GEN-01: 24 rotated/cropped/nonzero-origin/UserUnit/inherited/mixed-width pages and independent coordinate landmarks",
+      "gates": [
+        "V-05",
+        "X-REGISTER",
+        "F-GEOM",
+        "F-LINK",
+        "D6"
+      ],
+      "generator": "verify/fixtures/platform/generators/geometry.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [],
+      "validity": "invalid",
+      "knownFailures": [
+        "Intentionally invalid page box; not a renderability golden"
+      ]
+    },
+    {
+      "invocation": "platform/geometry",
+      "id": "GEN-01/geometry.oracle.json",
+      "file": "geometry.oracle.json",
+      "sha256": "66d53917afbc9bd7b5cb07858892cfc8a3b67f25847eda75bf947e110cdea7ad",
+      "bytes": 51105,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "GEN-01: 24 rotated/cropped/nonzero-origin/UserUnit/inherited/mixed-width pages and independent coordinate landmarks",
+      "gates": [
+        "V-05",
+        "X-REGISTER",
+        "F-GEOM",
+        "F-LINK",
+        "D6"
+      ],
+      "generator": "verify/fixtures/platform/generators/geometry.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": []
+    },
+    {
+      "invocation": "platform/geometry",
+      "id": "GEN-01/geometry.pdf",
+      "file": "geometry.pdf",
+      "sha256": "2d676f68019751e8479fd2da42096abcec3692ac8f913c6b31bc32ba290749f9",
+      "bytes": 25267,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "GEN-01: 24 rotated/cropped/nonzero-origin/UserUnit/inherited/mixed-width pages and independent coordinate landmarks",
+      "gates": [
+        "V-05",
+        "X-REGISTER",
+        "F-GEOM",
+        "F-LINK",
+        "D6"
+      ],
+      "generator": "verify/fixtures/platform/generators/geometry.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [],
+      "pages": 24,
+      "expected": "geometry.oracle.json"
+    },
+    {
+      "invocation": "platform/damage",
+      "id": "platform/damage/geometry-bit-flips.pdf",
+      "file": "geometry-bit-flips.pdf",
+      "sha256": "d03d1cccda796f7dacc0d5d666b4d99238732cd5705f7630d7f23c3be2b5bdc1",
+      "bytes": 25267,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Seeded truncation, bit flips, deep nesting and huge declared count mutations of GEN-01",
+      "gates": [
+        "V-05",
+        "F-ERROR"
+      ],
+      "generator": "verify/fixtures/platform/generators/damage.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--input",
+        "$ROOT/platform/geometry/geometry.pdf"
+      ]
+    },
+    {
+      "invocation": "platform/damage",
+      "id": "platform/damage/geometry-damage.oracle.json",
+      "file": "geometry-damage.oracle.json",
+      "sha256": "a3af7407fe6b4f3fcfeed4d528ab5bb4f9e9ebbe680c82411fadf960b8a6f4d1",
+      "bytes": 2114,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Seeded truncation, bit flips, deep nesting and huge declared count mutations of GEN-01",
+      "gates": [
+        "V-05",
+        "F-ERROR"
+      ],
+      "generator": "verify/fixtures/platform/generators/damage.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--input",
+        "$ROOT/platform/geometry/geometry.pdf"
+      ]
+    },
+    {
+      "invocation": "platform/damage",
+      "id": "platform/damage/geometry-deep-nesting.json",
+      "file": "geometry-deep-nesting.json",
+      "sha256": "ef1142ca78492c9015f70c5ba36cc22ae36099dfe13d21d9bf37409d13e464d6",
+      "bytes": 8570,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Seeded truncation, bit flips, deep nesting and huge declared count mutations of GEN-01",
+      "gates": [
+        "V-05",
+        "F-ERROR"
+      ],
+      "generator": "verify/fixtures/platform/generators/damage.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--input",
+        "$ROOT/platform/geometry/geometry.pdf"
+      ]
+    },
+    {
+      "invocation": "platform/damage",
+      "id": "platform/damage/geometry-huge-count.pdf",
+      "file": "geometry-huge-count.pdf",
+      "sha256": "8fa68f359cde316413465aa7bde45ff6fb90f17e1d7395969755b640cc03cecd",
+      "bytes": 168,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Seeded truncation, bit flips, deep nesting and huge declared count mutations of GEN-01",
+      "gates": [
+        "V-05",
+        "F-ERROR"
+      ],
+      "generator": "verify/fixtures/platform/generators/damage.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--input",
+        "$ROOT/platform/geometry/geometry.pdf"
+      ]
+    },
+    {
+      "invocation": "platform/damage",
+      "id": "platform/damage/geometry-truncated-10.pdf",
+      "file": "geometry-truncated-10.pdf",
+      "sha256": "ecf39cd6e5abd8caef2313ad6f9870475c554a5ee5e30a21fc1fa502dfcb06e7",
+      "bytes": 2526,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Seeded truncation, bit flips, deep nesting and huge declared count mutations of GEN-01",
+      "gates": [
+        "V-05",
+        "F-ERROR"
+      ],
+      "generator": "verify/fixtures/platform/generators/damage.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--input",
+        "$ROOT/platform/geometry/geometry.pdf"
+      ]
+    },
+    {
+      "invocation": "platform/damage",
+      "id": "platform/damage/geometry-truncated-60.pdf",
+      "file": "geometry-truncated-60.pdf",
+      "sha256": "8cc063db81d97f88c3de6b20e63a9627d4037e00425d802ee4501dfd5ab95f5b",
+      "bytes": 15160,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Seeded truncation, bit flips, deep nesting and huge declared count mutations of GEN-01",
+      "gates": [
+        "V-05",
+        "F-ERROR"
+      ],
+      "generator": "verify/fixtures/platform/generators/damage.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--input",
+        "$ROOT/platform/geometry/geometry.pdf"
+      ]
+    },
+    {
+      "invocation": "platform/damage",
+      "id": "platform/damage/geometry-truncated-99.pdf",
+      "file": "geometry-truncated-99.pdf",
+      "sha256": "35a2c3acd2cc7531eda667d22721bc4d0156fd958e0e084e7ca9c658a86da5e4",
+      "bytes": 25014,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Seeded truncation, bit flips, deep nesting and huge declared count mutations of GEN-01",
+      "gates": [
+        "V-05",
+        "F-ERROR"
+      ],
+      "generator": "verify/fixtures/platform/generators/damage.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [
+        "--input",
+        "$ROOT/platform/geometry/geometry.pdf"
+      ]
+    },
+    {
+      "invocation": "platform/pictures",
+      "id": "platform/pictures/picture-pages.oracle.json",
+      "file": "picture-pages.oracle.json",
+      "sha256": "19b46c6c65f9c277f4b7f1292a18b88404238e5b6a29cdc48616e1d556e71d30",
+      "bytes": 793,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Checker, translucent source-over overlap and fractional hairline picture pages",
+      "gates": [
+        "V-06",
+        "X-REGISTER"
+      ],
+      "generator": "verify/fixtures/platform/generators/pictures.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": []
+    },
+    {
+      "invocation": "platform/pictures",
+      "id": "platform/pictures/picture-pages.pdf",
+      "file": "picture-pages.pdf",
+      "sha256": "62d8f647a11c800c6e4243643df871f429927ccb8bd888f3e24c35558577afbc",
+      "bytes": 3588,
+      "tier": 1,
+      "licence": "NOASSERTION",
+      "proposedLicence": "CC0-1.0",
+      "sourceNotice": "Independently authored synthetic fixture; CC0-1.0 proposed, not yet approved for redistribution. No private or third-party content.",
+      "purpose": "Checker, translucent source-over overlap and fractional hairline picture pages",
+      "gates": [
+        "V-06",
+        "X-REGISTER"
+      ],
+      "generator": "verify/fixtures/platform/generators/pictures.mjs",
+      "version": 1,
+      "seed": 123456789,
+      "args": [],
+      "pages": 3,
+      "expected": "picture-pages.oracle.json"
+    }
+  ]
+}

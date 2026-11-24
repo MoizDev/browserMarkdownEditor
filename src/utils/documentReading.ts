@@ -1,24 +1,65 @@
 import type { OpenTab, EditorMode } from '../types';
+import type { ContentSource } from './documentBuffers';
 import type { DocumentRepresentation, LoadedDocumentKind, ReaderCapabilities, ReaderIdentity, ReaderToken } from '../types/reading';
-import { isCanvasFile,isCodeFile,isDrawingFile,isEpubFile,isMarkdownFile,isNotebookFile,isPdfFile,isTexFile } from './fileTypes';
+import { isCanvasFile,isCodeFile,isDrawingFile,isNativeDrawingFile,isEpubFile,isMarkdownFile,isNotebookFile,isPdfFile,isTexFile } from './fileTypes';
 import { isTextFile } from './vaultSearch';
+import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
+import { routeEngines, type CanvasEngineKind } from './engineRouting';
+
+/** Applied once when native representation is acquired, including PDF ink.
+ * A pane and its App-owned session must use this same frozen authority. */
+export function withNativeCanvasPolicy(representation:DocumentRepresentation,kind:CanvasEngineKind):DocumentRepresentation {
+ return {...representation,nativeCanvasKind:kind,emergencyReadOnly:routeEngines(kind).canvas[kind].emergencyReadOnly};
+}
 export function classifyRequestedKind(name:string,isHelp=false):LoadedDocumentKind {
  if(isHelp||isMarkdownFile(name))return 'markdown';
  if(isEpubFile(name))return 'epub';if(isPdfFile(name))return 'pdf';
- if(isDrawingFile(name))return 'drawing';if(isNotebookFile(name))return 'notebook';
+ if(isDrawingFile(name)||isNativeDrawingFile(name))return 'drawing';if(isNotebookFile(name))return 'notebook';
+ // Native canvases must not inherit text write authority in the guard build.
+ if(isCanvasFile(name))return 'unsupported';
  if(isTexFile(name))return 'tex';if(isCodeFile(name))return 'code';return isTextFile(name)?'text':'unsupported';
 }
-export function opensInApp(name:string):boolean{return isTextFile(name)||isPdfFile(name)||isEpubFile(name)}
+export function opensInApp(name:string):boolean{return isTextFile(name)||isPdfFile(name)||isEpubFile(name)||isNativeDrawingFile(name)}
 export function representationFor(name:string,isHelp=false,generation=0,unavailable=false):DocumentRepresentation {
- const loadedKind=classifyRequestedKind(name,isHelp),binary=loadedKind==='epub'||loadedKind==='pdf'||loadedKind==='unsupported';
+ const loadedKind=classifyRequestedKind(name,isHelp),binary=loadedKind==='epub'||loadedKind==='pdf'||loadedKind==='unsupported'||isNativeDrawingFile(name);
  return {generation,loadedKind,status:unavailable?'unavailable':'ready',bufferKind:binary?'unavailable':'text',contentWritable:!unavailable&&!binary&&!isHelp};
+}
+// Every App tab transition passes here, including restore, disk reload and
+// retarget. Guarding just the pane would still let a clean Cmd+S replace bytes.
+const canvasSniffs = new Map<string, { source: ContentSource; name: string; sniff: ReturnType<typeof sniffCanvas> }>();
+export function classifyLoadedTabs(next: OpenTab[], previous: OpenTab[], sourceForDocument: (id: string) => ContentSource | undefined): OpenTab[] {
+ if (next === previous) return next;
+ const ids = new Set(next.map(tab => tab.id));
+ for (const id of canvasSniffs.keys()) if (!ids.has(id)) canvasSniffs.delete(id);
+ return next.map(tab => {
+  const r = tab.representation;
+  if (r.loadedKind !== 'drawing' && r.loadedKind !== 'notebook') return tab;
+  const source = sourceForDocument(tab.id);
+  let cached = canvasSniffs.get(tab.id);
+  if (source === undefined) { cached = undefined; canvasSniffs.delete(tab.id); }
+  else if (!cached || cached.source !== source || cached.name !== tab.file.name) {
+   let data: ReturnType<Exclude<ContentSource, string>['read']> | undefined;
+   try { data = typeof source === 'string' ? source : source.read(); } catch { data = undefined; }
+   cached = typeof data === 'string' ? { source, name: tab.file.name, sniff: sniffCanvas(data, tab.file.name) } : undefined;
+   if (cached) canvasSniffs.set(tab.id, cached); else canvasSniffs.delete(tab.id);
+  }
+  const sniff = cached?.sniff;
+  const policy = sniff?.format === 'native' && !r.nativeCanvasKind
+   ? withNativeCanvasPolicy(r, r.loadedKind === 'notebook' ? 'notebook' : 'drawing') : r;
+  const admittedNative = policy.nativeCanvasSession !== undefined && !!policy.nativeCanvasKind
+   && !policy.emergencyReadOnly && sniff?.format === 'native' && !sniff.kindMismatch;
+  const writable = policy.status === 'ready' && policy.bufferKind === 'text' && !tab.readError && !tab.file.isHelp && !policy.emergencyReadOnly
+   && !!sniff && (admittedNative || !canvasReadOnlyReason(sniff));
+  return policy === r && r.contentWritable === writable ? tab : {...tab, representation: {...policy, contentWritable: writable}};
+ });
 }
 export function canReadTabText(tab:OpenTab):boolean{return !tab.readError&&tab.representation?.status==='ready'&&tab.representation.bufferKind==='text'}
 export function canUpdateTabContent(tab:OpenTab,source:'user'|'disk'|'annotation'='user'):boolean {
  const r=tab.representation;if(!r||tab.readError||r.status!=='ready'||r.loadedKind==='epub'||r.loadedKind==='unsupported'||tab.file.isHelp)return false;
+ if(r.emergencyReadOnly && source!=='disk')return false;
  return (r.bufferKind==='text'&&r.contentWritable)||(r.loadedKind==='pdf'&&source==='annotation');
 }
-export function canFlushTab(tab:OpenTab):boolean {return canUpdateTabContent(tab)||(!tab.readError&&tab.representation?.status==='ready'&&tab.representation.loadedKind==='pdf'&&tab.representation.bufferKind==='annotationSnapshot'&&tab.representation.contentWritable)}
+export function canFlushTab(tab:OpenTab):boolean {return !tab.representation?.emergencyReadOnly&&(canUpdateTabContent(tab)||(!tab.readError&&tab.representation?.status==='ready'&&tab.representation.loadedKind==='pdf'&&tab.representation.bufferKind==='annotationSnapshot'&&tab.representation.contentWritable))}
 export function canChangeTabMode(tab:OpenTab,_mode?:EditorMode):boolean {return !tab.file.isHelp&&!tab.readError&&tab.representation?.status==='ready'&&!['epub','unsupported','drawing','notebook'].includes(tab.representation.loadedKind)}
 export function readingCapabilities(tab:OpenTab,live?:ReaderCapabilities):ReaderCapabilities {
  if(tab.readerStatus && ['error','missing','stale','loading'].includes(tab.readerStatus.phase)) return {surface:'unsupported',emphasis:{kind:'inactive',reason:tab.readerStatus.message??'Reading content is unavailable'},text:'none',find:false,appearance:'none',copy:false};
@@ -31,7 +72,7 @@ export function readingCapabilities(tab:OpenTab,live?:ReaderCapabilities):Reader
  if(!canReadTabText(tab)||isCanvasFile(tab.file.name)||kind==='code'||kind==='tex')return base;
  return {...base,surface:tab.mode==='read'?'markdown-read':'edit',text:'available',copy:true,find:true,emphasis:tab.mode==='read'?{kind:'toggle'}:{kind:'inactive',reason:'Switch to Reading mode to apply Word emphasis'}};
 }
-export interface ReadingSurfaceController {capabilities():ReaderCapabilities;showPdfText?():Promise<void>;showPdfOriginal?():Promise<void>;findReading?():void;showBookPanel?(panel:'contents'|'search'|'appearance'):void;bookFlow?():import('../types/reading').ReaderFlow;setBookFlow?(flow:import('../types/reading').ReaderFlow):void;captureReading?():Promise<void>;focusReading():void}
+export interface ReadingSurfaceController {capabilities():ReaderCapabilities;showPdfText?():Promise<void>;showPdfOriginal?():Promise<void>;printPdf?():void;findReading?():void;showBookPanel?(panel:'contents'|'search'|'appearance'):void;bookFlow?():import('../types/reading').ReaderFlow;setBookFlow?(flow:import('../types/reading').ReaderFlow):void;captureReading?():Promise<void>;focusReading():void}
 const surfaces=new Map<string,{identity:ReaderIdentity;controller:ReadingSurfaceController}>(),listeners=new Set<()=>void>();
 export function sameReaderToken(a:ReaderToken,b:ReaderToken):boolean{return a.vaultId===b.vaultId&&a.vaultEpoch===b.vaultEpoch&&a.documentId===b.documentId&&a.byteGeneration===b.byteGeneration}
 export function registerReadingSurface(identity:ReaderIdentity,controller:ReadingSurfaceController):()=>void {const entry={identity,controller};surfaces.set(identity.documentId,entry);listeners.forEach(f=>f());return ()=>{if(surfaces.get(identity.documentId)===entry){surfaces.delete(identity.documentId);listeners.forEach(f=>f())}}}

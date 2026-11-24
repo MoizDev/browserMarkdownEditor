@@ -107,7 +107,6 @@ export interface OpenTab {
    */
   id: string;
   file: ActiveFile;        // the open doc's metadata (name, path, handle, isHelp…)
-  content: string;         // in-memory text, edited live
   mode: EditorMode;        // 'read' | 'edit', remembered per tab
   dirty: boolean;          // has unsaved edits since the last disk write
   /**
@@ -117,9 +116,8 @@ export interface OpenTab {
    * the path survives in the stored session: skipping it once used to drop it
    * from the vault's saved tabs for good (issue #8).
    *
-   * While it is set, `content` is '' and is NOT the file's text. Nothing may
-   * write it, search it, diff it for assets, or build an editor or canvas from
-   * it — ⌘S force-flushes the focused tab, and would put '' over the note.
+   * While it is set, the buffer is not the file's text. Nothing may write it,
+   * search it, diff it for assets, or build an editor or canvas from it.
    *
    * Session-only, like `id`: the stored session records only paths.
    */
@@ -131,6 +129,9 @@ export interface OpenTab {
    * Session-only, like `readError`.
    */
   disk?: 'conflict' | 'deleted';
+  /** PDF rebuild choice is separate from a disk conflict: a kept legacy copy
+   *  informs the reader but does not suspend autosave. Session-only. */
+  pdfRebuild?: PdfRebuildNotice;
   /**
    * Bumped each time a canvas document (drawing, notebook, annotated PDF) is
    * reloaded from disk in place. Part of those panes' React keys, so they
@@ -214,9 +215,8 @@ export interface TabLayout {
 
 /* ─────────────────────────────────────────────────────────────────────────
  * GRAPH MODEL
- * Built by buildGraph() (graph.js:71-142). Node objects are documented at
- * graph.js:66-69 and constructed at graph.js:82-89 (resolved) & 110-117
- * (unresolved placeholder). Consumed by GraphView, BacklinksPanel, App,
+ * Built by the vault-index worker, with current tree nodes attached by the host
+ * (context/vaultIndex/graphView.ts). Consumed by GraphView, BacklinksPanel, App,
  * EditorPane (via getBacklinkNodes).
  * ───────────────────────────────────────────────────────────────────────── */
 
@@ -309,7 +309,8 @@ export interface RecentVault extends StoredVault {
  *  FileSystemContext's switchInFlightRef): nothing happened and nothing is
  *  wrong, but nothing happening is exactly what a caller with somewhere to say
  *  it must still say — a control that greys and un-greys reads as broken. */
-export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error' | 'busy';
+export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error' | 'busy'
+    | { status: 'error'; message: string };
 
 /* ─────────────────────────────────────────────────────────────────────────
  * TRASH
@@ -410,9 +411,37 @@ export type AssetUrlResolver = (fileName: string) => Promise<string | null>;
  * and EditorPane (EditorPane.jsx:20).
  * ───────────────────────────────────────────────────────────────────────── */
 
+export interface BoardOwnerAccess {
+  root: FileSystemDirectoryHandle;
+  parent: FileSystemDirectoryHandle;
+  owner: FileSystemFileHandle;
+  signal: AbortSignal;
+  isCurrent: () => boolean;
+}
+
+export interface BoardAssetAccess extends BoardOwnerAccess {
+  hash: string;
+  preferredName?: string | null;
+}
+
+export interface VaultHandleIO {
+  file: (handle: FileSystemFileHandle) => Promise<File>;
+  fileIn: (dir: FileSystemDirectoryHandle, name: string, create?: boolean) => Promise<FileSystemFileHandle>;
+  dirIn: (dir: FileSystemDirectoryHandle, name: string, create?: boolean) => Promise<FileSystemDirectoryHandle>;
+  entries: (dir: FileSystemDirectoryHandle) => AsyncIterableIterator<[string, FileSystemFileHandle | FileSystemDirectoryHandle]>;
+  remove: (dir: FileSystemDirectoryHandle, name: string) => Promise<void>;
+  relativeTo: (dir: FileSystemDirectoryHandle, handle: FileSystemHandle) => Promise<string[] | null>;
+  sameEntry: (a: FileSystemHandle, b: FileSystemHandle) => Promise<boolean>;
+}
+
 export interface FileSystemContextValue {
+  handleIO: VaultHandleIO;
+  ensureVaultId: (root: FileSystemDirectoryHandle, writeFile: (handle: FileSystemFileHandle, text: string) => Promise<unknown>) => Promise<string | null>;
   // ── state ──
   rootHandle: FileSystemDirectoryHandle | null;          // FileSystemContext.jsx:70
+  /** Synchronous ownership token; A→B→A has three distinct activations. */
+  getVaultActivation: () => number;
+  registerBeforeRootChange: (callback: () => Promise<void>) => () => void;
   fileTree: FileTreeNode[];                               // FileSystemContext.jsx:71
   isLoading: boolean;                                     // FileSystemContext.jsx:72
   previousVault: FileSystemDirectoryHandle | null;       // FileSystemContext.jsx:73
@@ -427,6 +456,12 @@ export interface FileSystemContextValue {
   currentVaultId: string | null;
 
   // ── actions ──
+  resolveVaultDir: (root: FileSystemDirectoryHandle, path: string) => Promise<FileSystemDirectoryHandle>;
+  resolveVaultFile: (root: FileSystemDirectoryHandle, path: string) => Promise<{ handle: FileSystemFileHandle; parentHandle: FileSystemDirectoryHandle }>;
+  /** Resolve the path again; a retained handle alone may refer to a moved entry. */
+  verifyVaultFileIdentity: (root: FileSystemDirectoryHandle, path: string, handle: FileSystemFileHandle) => Promise<boolean>;
+  vaultDirExists: (root: FileSystemDirectoryHandle, path: string) => Promise<boolean>;
+  nameTaken: (dir: FileSystemDirectoryHandle, name: string) => Promise<boolean>;
   /** Open the OS folder picker and switch to what comes back. Reports its
    *  outcome like the other two raisers — "Open folder…" is a menu row, and a
    *  refused picker has to be able to say so. A cancelled pick is 'ok'. */
@@ -458,13 +493,29 @@ export interface FileSystemContextValue {
   createFolder: (parentDirHandle: FileSystemDirectoryHandle, folderName: string) => Promise<FileSystemDirectoryHandle>; // :176
   getAssetUrl: (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<string | null>; // :188
   saveAsset: (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<void>; // :218
-  /** Move an asset out of a folder's .Assets and into its .Garbage, once no
-   *  note in that folder refers to it any more. Returns whether it moved. */
-  retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+  /** Board media are content-addressed but retain their actual collision-free leaf name. */
+  readBoardAsset: (request: BoardAssetAccess) => Promise<{ name: string; blob: Blob } | null>;
+  /** Read one local legacy reference relative to the current board's actual folder. */
+  readLegacyBoardAsset: (request: BoardOwnerAccess & { src: string }) => Promise<Blob | null>;
+  putBoardAsset: (request: BoardAssetAccess & { extension: string; blob: Blob }) => Promise<string>;
+  /** Preserve exact original bytes in the owning folder's Trash without changing the source. */
+  keepConversionBackup: (request: BoardAssetAccess & { blob: Blob }) => Promise<TrashItem>;
+  /** Copy a verified pre-conversion backup out of Trash without removing it. */
+  restoreConversionCopy: (request: BoardAssetAccess, item: TrashItem) => Promise<string>;
+  copyTrashFile: (item: TrashItem, root: FileSystemDirectoryHandle, isCurrent: () => boolean) => Promise<string>;
+  /** Move an asset into the folder's .Garbage only while its activation and
+   *  reference proof remain valid, including after the copy. */
+  retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   /** The inverse, for when the reference comes back (undo, cut-and-paste). */
-  restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+  restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle, guard: () => boolean) => Promise<boolean>;
   restoreVault: () => Promise<void>;                     // :241
+  /** Regrant only the activation that raised an index permission problem. */
+  requestIndexPermission: (root: FileSystemDirectoryHandle, activation: number) => Promise<boolean>;
   moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
+  /** Preserve supplied bytes in this folder's `.Garbage`, never touching the
+   *  source. Resolves after close to its collision-free physical basename;
+   *  rejects on failure so the caller must not rebuild. */
+  keepCopyInGarbage: (dir: FileSystemDirectoryHandle, name: string, bytes: Uint8Array) => Promise<string>;
   /** Crawl every `.Garbage` in the vault and return the bin's flat root list,
    *  newest-deleted first. Uncached by design — see the crawl's own comment. */
   listTrash: () => Promise<TrashItem[]>;
@@ -488,20 +539,26 @@ export interface FileSystemContextValue {
   /** readFile, plus the DiskVersion of exactly the bytes read. */
   readFileVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ text: string; version: DiskVersion }>;
   readBytesVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ bytes: Uint8Array; version: DiskVersion }>;
+  inspectExportTarget: (dir: FileSystemDirectoryHandle, name: string) => Promise<DiskVersion | null>;
+  writeNotebookExport: (dir: FileSystemDirectoryHandle, parentPath: string, name: string, bytes: Uint8Array, expected: DiskVersion | null, isCurrent: () => boolean) => Promise<{ status: 'written'; version: DiskVersion } | { status: 'changed' | 'cancelled' }>;
   /** `{lastModified, size}` without reading the bytes; null if the file is gone. */
   statFile: (fileHandle: FileSystemFileHandle) => Promise<DiskStat | null>;
   /** THE document write: writes only if the file still is `expected` (equal
    *  stat, or equal hash when only the stat moved). Never recreates a missing
    *  file. Every document save goes through it. */
-  writeFileVersioned: (fileHandle: FileSystemFileHandle, data: string | Uint8Array, expected: DiskVersion | null) => Promise<VersionedWriteResult>;
+  writeFileVersioned: (fileHandle: FileSystemFileHandle, data: string | Uint8Array | Blob, expected: DiskVersion | null) => Promise<VersionedWriteResult>;
   /** Write `data` beside `filePath` as `stem (conflict).ext` (then
    *  `(conflict 2)`, …), never over anything, re-making deleted parent folders.
    *  `vaultRoot`: the document's vault, when it may no longer be the open one
    *  (a vault switch). Resolves to the copy's path. */
-  writeConflictCopy: (filePath: string, data: string | Uint8Array, vaultRoot?: FileSystemDirectoryHandle | null) => Promise<string>;
+  writeConflictCopy: (filePath: string, data: string | Uint8Array | Blob, vaultRoot?: FileSystemDirectoryHandle | null, guard?: () => boolean) => Promise<string>;
+  /** A new, collision-free copy only; never grants a write to the source. */
+  writeDistinctCopy: (parent: FileSystemDirectoryHandle, parentPath: string, name: string, data: Blob, isCurrent: () => boolean) => Promise<{
+    path: string; name: string; handle: FileSystemFileHandle; version: DiskVersion;
+  }>;
   /** Re-create a file deleted outside the app (and any missing parent folders)
    *  only if nothing is at `filePath` now. */
-  recreateFile: (filePath: string, data: string | Uint8Array) => Promise<
+  recreateFile: (filePath: string, data: string | Uint8Array | Blob) => Promise<
     { status: 'written'; version: DiskVersion; handle: FileSystemFileHandle } | { status: 'exists' }>;
   /** A fresh handle for a vault path, resolved from the root; null if missing. */
   resolveFileHandle: (filePath: string) => Promise<FileSystemFileHandle | null>;
@@ -517,11 +574,21 @@ export interface FileSystemContextValue {
  *  so the tab stays clean and nothing is scheduled to be written. */
 export interface ContentChangeOptions {
   fromDisk?: boolean;
+  fromJournal?: boolean;
 }
 
 /** What the DiskBar's buttons ask App to do (OpenTab.disk): 'reload' and
  *  'keep' resolve a conflict, 'save' and 'close' a deletion. */
-export type DiskAction = 'reload' | 'keep' | 'save' | 'close' | 'retry';
+export type DiskAction = 'reload' | 'keep' | 'save' | 'close' | 'retry' | 'keep-pdf' | 'rebuild-pdf';
+
+export interface PdfRebuildNotice {
+  state: 'foreign' | 'kept';
+  generation: string;
+  reason?: 'mismatch' | 'unsupported' | 'malformed';
+  approved?: boolean;
+  copyName?: string;
+  error?: string;
+}
 
 export type VersionedWriteResult =
   | { status: 'written'; version: DiskVersion }

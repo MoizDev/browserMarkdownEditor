@@ -45,6 +45,18 @@ export function assetEmbeds(text: string): Set<string> {
     return names;
 }
 
+/** Names addressed by wiki links or embeds, used to restore a retired asset on undo. */
+export function assetReferences(text: string): Set<string> {
+    const names = new Set<string>();
+    const wikiRegex = /!?\[\[([^\]\n]+?)\]\]/g;
+    let match: RegExpExecArray | null;
+    while ((match = wikiRegex.exec(text)) !== null) {
+        const name = match[1].split('|')[0].split('#')[0].trim();
+        if (isAssetName(name)) names.add(name);
+    }
+    return names;
+}
+
 /**
  * Does this document still point at `name` in any way at all?
  *

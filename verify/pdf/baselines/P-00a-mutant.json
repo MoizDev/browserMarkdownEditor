@@ -1,0 +1,19 @@
+{
+  "error": "TimeoutError: page.waitForFunction: Timeout 30000ms exceeded.",
+  "mutant": "pdf-pane-boot-throw",
+  "mutantFired": true,
+  "diagnostics": [
+    {
+      "kind": "console",
+      "message": "Failed to load resource: net::ERR_FAILED"
+    },
+    {
+      "kind": "pageerror",
+      "message": "Error: P00 MUTANT: PDF pane chunk did not boot"
+    },
+    {
+      "kind": "body",
+      "message": ""
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+diff --git a/src/components/GraphView.tsx b/src/components/GraphView.tsx
+index 9a76ea9..dcdba8b 100644
+--- a/src/components/GraphView.tsx
++++ b/src/components/GraphView.tsx
+@@ -520,2 +520,9 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
+             const moved = step();
++            // The camera follows the layout while it settles, until the reader takes over.
++            if (moved && autoFitRef.current) fit();
++            // Only repaint when something actually changed — a settled graph idles.
++            if (moved || dirtyRef.current) {
++                draw();
++                dirtyRef.current = false;
++            }
+             if (__BME_BENCH__) {
+@@ -533,9 +540,2 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
+             }
+-            // The camera follows the layout while it settles, until the reader takes over.
+-            if (moved && autoFitRef.current) fit();
+-            // Only repaint when something actually changed — a settled graph idles.
+-            if (moved || dirtyRef.current) {
+-                draw();
+-                dirtyRef.current = false;
+-            }
+             rafRef.current = requestAnimationFrame(loop);

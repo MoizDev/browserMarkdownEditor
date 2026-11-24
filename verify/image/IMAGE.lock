@@ -1,0 +1,642 @@
+{
+  "schema": 1,
+  "platform": "linux/amd64",
+  "base": "node:26.0.0-bookworm-slim@sha256:52d70d606181ef3b3c2137a190196a8c452e0358e6d0971573d0e59135ada9fc",
+  "basePulledAt": "2026-11-13",
+  "node": "26.0.0",
+  "playwright": "1.63.0",
+  "pngjs": "7.0.0",
+  "browser": {
+    "product": "Chrome for Testing",
+    "version": "157.0.8103.39",
+    "platform": "linux64",
+    "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.39/linux64/chrome-linux64.zip",
+    "sha256": "e4cffe4c057c8dd96832e0ac3060e79eecc3b1c7fb5cd18cdf2e23702a13ac55",
+    "bytes": 203505426,
+    "executable": "/opt/chrome-linux64/chrome"
+  },
+  "packages": {
+    "playwright": "1.63.0",
+    "playwright-core": "1.63.0",
+    "pngjs": "7.0.0"
+  },
+  "dockerfileSha256": "1941f071f74dbfab6dbb6927599aa3fb57e90c44429fb5cff720dab74b278802",
+  "fontconfigSha256": "3f4d14e06c43783893b9e38832186aa64c4909c5908b891f98bf323c576ff7f4",
+  "fontManifestSha256": "e851a21848e187aa72d1bb81cdbdc633c1c116b852b0194c128f5df06294103c",
+  "fonts": [
+    {
+      "file": "00b26ac825e2095056396e0553b8ac26d3f8ad158c3826e28b4c45b385c4714a.woff2",
+      "sha256": "00b26ac825e2095056396e0553b8ac26d3f8ad158c3826e28b4c45b385c4714a",
+      "bytes": 12028,
+      "sources": [
+        "assets/KaTeX_SansSerif-Italic-C3H0VqGB.woff2"
+      ]
+    },
+    {
+      "file": "036d4e95149b69ff9bcc0cd55771efeb25ffa3947293e69acd78d5ac328c684b.woff2",
+      "sha256": "036d4e95149b69ff9bcc0cd55771efeb25ffa3947293e69acd78d5ac328c684b",
+      "bytes": 9644,
+      "sources": [
+        "assets/KaTeX_Script-Regular-D3wIWfF6.woff2"
+      ]
+    },
+    {
+      "file": "071f39874fcae274e7096eb85a5ac43975ba3dcdc2aa4929d734a13b31cffbba.woff2",
+      "sha256": "071f39874fcae274e7096eb85a5ac43975ba3dcdc2aa4929d734a13b31cffbba",
+      "bytes": 153500,
+      "sources": [
+        "assets/Shantell_Sans-Informal_Regular-DT813UET.woff2"
+      ]
+    },
+    {
+      "file": "07d8e303ce4fc12b4bb54f1004170dd190a1f3db45d400fe68060df3e0897268.ttf",
+      "sha256": "07d8e303ce4fc12b4bb54f1004170dd190a1f3db45d400fe68060df3e0897268",
+      "bytes": 12368,
+      "sources": [
+        "assets/KaTeX_Caligraphic-Bold-ATXxdsX0.ttf"
+      ]
+    },
+    {
+      "file": "08ce98e51b04d58945a301e639e02b6998af29fdfd61a7b8afdd07bbfc479d4a.ttf",
+      "sha256": "08ce98e51b04d58945a301e639e02b6998af29fdfd61a7b8afdd07bbfc479d4a",
+      "bytes": 31308,
+      "sources": [
+        "assets/KaTeX_Math-Italic-flOr_0UB.ttf"
+      ]
+    },
+    {
+      "file": "0cdd387c9590a1a9f9794560022dbb59654a7d86f187aa0c81495ad42d3a7308.woff2",
+      "sha256": "0cdd387c9590a1a9f9794560022dbb59654a7d86f187aa0c81495ad42d3a7308",
+      "bytes": 28076,
+      "sources": [
+        "assets/KaTeX_AMS-Regular-BQhdFMY1.woff2"
+      ]
+    },
+    {
+      "file": "0d85ae7cc30f23790a7f1a58c4a112fdca8aae769b6ba11429af1d98b1b6cb3a.ttf",
+      "sha256": "0d85ae7cc30f23790a7f1a58c4a112fdca8aae769b6ba11429af1d98b1b6cb3a",
+      "bytes": 33580,
+      "sources": [
+        "assets/KaTeX_Main-Italic-3WenGoN9.ttf"
+      ]
+    },
+    {
+      "file": "0f60d1b897938ec918c8ce073092411baf9438f6739465693ff18b0f9d20b021.woff2",
+      "sha256": "0f60d1b897938ec918c8ce073092411baf9438f6739465693ff18b0f9d20b021",
+      "bytes": 25324,
+      "sources": [
+        "assets/KaTeX_Main-Bold-Cx986IdX.woff2"
+      ]
+    },
+    {
+      "file": "11e4dc8a6471ff6d6ee561d53d10fde8f7489e798257ff449c5d37c197435605.woff",
+      "sha256": "11e4dc8a6471ff6d6ee561d53d10fde8f7489e798257ff449c5d37c197435605",
+      "bytes": 12316,
+      "sources": [
+        "assets/KaTeX_SansSerif-Regular-CS6fqUqJ.woff"
+      ]
+    },
+    {
+      "file": "138ac28d1663b3037e9c5f52371fa5c63d8324f4a38d22cd573e6ea3a3fd0cf8.ttf",
+      "sha256": "138ac28d1663b3037e9c5f52371fa5c63d8324f4a38d22cd573e6ea3a3fd0cf8",
+      "bytes": 51336,
+      "sources": [
+        "assets/KaTeX_Main-Bold-waoOVXN0.ttf"
+      ]
+    },
+    {
+      "file": "16f11ab3543e3d1e2704407378aafa4ddb570ad11f6a476eeaa4ec6e67fc30e8.woff2",
+      "sha256": "16f11ab3543e3d1e2704407378aafa4ddb570ad11f6a476eeaa4ec6e67fc30e8",
+      "bytes": 71204,
+      "sources": [
+        "assets/IBMPlexSans-MediumItalic-SdO5NnXo.woff2"
+      ]
+    },
+    {
+      "file": "1ae6bd7475590e97e7f145a89e09ccde322f7a6bc0b91607b1c8b8ee28290fed.woff",
+      "sha256": "1ae6bd7475590e97e7f145a89e09ccde322f7a6bc0b91607b1c8b8ee28290fed",
+      "bytes": 7716,
+      "sources": [
+        "assets/KaTeX_Caligraphic-Bold-BEiXGLvX.woff"
+      ]
+    },
+    {
+      "file": "1ba2fa015458f36efe822137627f75df1ee340e6d1c0d92c7ca5a3b423db75d9.woff2",
+      "sha256": "1ba2fa015458f36efe822137627f75df1ee340e6d1c0d92c7ca5a3b423db75d9",
+      "bytes": 68940,
+      "sources": [
+        "assets/IBMPlexSerif-Bold-DfPAuzEv.woff2"
+      ]
+    },
+    {
+      "file": "1c67f068fea8bb09bf099c088b1cf64bd27516a6e07f4684344873564bb66a67.ttf",
+      "sha256": "1c67f068fea8bb09bf099c088b1cf64bd27516a6e07f4684344873564bb66a67",
+      "bytes": 16648,
+      "sources": [
+        "assets/KaTeX_Script-Regular-C5JkGWo-.ttf"
+      ]
+    },
+    {
+      "file": "1e6f9579e90e2cac37f8f60a597c436e075c114385652b7cbeb0dec0421291b3.ttf",
+      "sha256": "1e6f9579e90e2cac37f8f60a597c436e075c114385652b7cbeb0dec0421291b3",
+      "bytes": 19572,
+      "sources": [
+        "assets/KaTeX_Fraktur-Regular-CB_wures.ttf"
+      ]
+    },
+    {
+      "file": "1ece03f79f95277d57dc7f6b435a74e1379b0d46104a8530286b60ff49369ea0.ttf",
+      "sha256": "1ece03f79f95277d57dc7f6b435a74e1379b0d46104a8530286b60ff49369ea0",
+      "bytes": 24504,
+      "sources": [
+        "assets/KaTeX_SansSerif-Bold-CFMepnvq.ttf"
+      ]
+    },
+    {
+      "file": "2014c523c3210bcc166648c4d4cc57f05b747df07a24277bf71c51e67dc79e3d.woff",
+      "sha256": "2014c523c3210bcc166648c4d4cc57f05b747df07a24277bf71c51e67dc79e3d",
+      "bytes": 6188,
+      "sources": [
+        "assets/KaTeX_Size2-Regular-oD1tc_U0.woff"
+      ]
+    },
+    {
+      "file": "2eb75e035155ea1d0805fafaa012f7083e5034f935f17cfcc650b17bdf530c2d.woff2",
+      "sha256": "2eb75e035155ea1d0805fafaa012f7083e5034f935f17cfcc650b17bdf530c2d",
+      "bytes": 72604,
+      "sources": [
+        "assets/IBMPlexSerif-Medium-BpRXNayp.woff2"
+      ]
+    },
+    {
+      "file": "30da91e84c893f875e252689faebdc590b2871145e8adc7f9a9d4dbd8ce0b251.woff",
+      "sha256": "30da91e84c893f875e252689faebdc590b2871145e8adc7f9a9d4dbd8ce0b251",
+      "bytes": 33516,
+      "sources": [
+        "assets/KaTeX_AMS-Regular-DMm9YOAa.woff"
+      ]
+    },
+    {
+      "file": "3398dd02302557a793f2863f88e02d96ce10df2abffa07c8e9fa90775116e65c.woff",
+      "sha256": "3398dd02302557a793f2863f88e02d96ce10df2abffa07c8e9fa90775116e65c",
+      "bytes": 7656,
+      "sources": [
+        "assets/KaTeX_Caligraphic-Regular-CTRA-rTL.woff"
+      ]
+    },
+    {
+      "file": "3931dd81faed86ba021bb2bbdc36f5bed9a38d6b4f4077aca59b265aa1b02083.ttf",
+      "sha256": "3931dd81faed86ba021bb2bbdc36f5bed9a38d6b4f4077aca59b265aa1b02083",
+      "bytes": 22364,
+      "sources": [
+        "assets/KaTeX_SansSerif-Italic-YYjJ1zSn.ttf"
+      ]
+    },
+    {
+      "file": "4e2f4abd7970ec8d957041100dac8eee78e70efb94bfe3e4356628b833e78a30.woff2",
+      "sha256": "4e2f4abd7970ec8d957041100dac8eee78e70efb94bfe3e4356628b833e78a30",
+      "bytes": 77900,
+      "sources": [
+        "assets/IBMPlexSerif-MediumItalic-Bj_1Y4Ju.woff2"
+      ]
+    },
+    {
+      "file": "500e04d54f0d51666332c9d2089aa803be22aa878eca539e59fa53c6e522b082.ttf",
+      "sha256": "500e04d54f0d51666332c9d2089aa803be22aa878eca539e59fa53c6e522b082",
+      "bytes": 7588,
+      "sources": [
+        "assets/KaTeX_Size3-Regular-DgpXs0kz.ttf"
+      ]
+    },
+    {
+      "file": "51814d270d06ff0255dba0799994fa4d8c84d11f09951d47595f4abb1f3602dc.woff2",
+      "sha256": "51814d270d06ff0255dba0799994fa4d8c84d11f09951d47595f4abb1f3602dc",
+      "bytes": 11316,
+      "sources": [
+        "assets/KaTeX_Fraktur-Regular-CTYiF6lA.woff2"
+      ]
+    },
+    {
+      "file": "5660f8a658f8bb50dbc005232f885eadffd2bc1c235c4f6fbb63469d1f9cde6d.woff2",
+      "sha256": "5660f8a658f8bb50dbc005232f885eadffd2bc1c235c4f6fbb63469d1f9cde6d",
+      "bytes": 66740,
+      "sources": [
+        "assets/IBMPlexSans-Medium-BQLKo0ot.woff2"
+      ]
+    },
+    {
+      "file": "5788454f0ba4bd6300752c474215c4dd926682fa173ae1c6252d57828b6a235d.woff2",
+      "sha256": "5788454f0ba4bd6300752c474215c4dd926682fa173ae1c6252d57828b6a235d",
+      "bytes": 46684,
+      "sources": [
+        "assets/IBMPlexMono-Bold-DXjtWYQI.woff2"
+      ]
+    },
+    {
+      "file": "5d53e70ad607c2352162dec9e0923fb54ecdafaccbf604cd8dcf7d00facb989b.woff2",
+      "sha256": "5d53e70ad607c2352162dec9e0923fb54ecdafaccbf604cd8dcf7d00facb989b",
+      "bytes": 6908,
+      "sources": [
+        "assets/KaTeX_Caligraphic-Regular-Di6jR-x-.woff2"
+      ]
+    },
+    {
+      "file": "5e28753be717dac97f559f49bc10be9cf3c124ddcabda6659d11cb68febc6463.woff",
+      "sha256": "5e28753be717dac97f559f49bc10be9cf3c124ddcabda6659d11cb68febc6463",
+      "bytes": 13208,
+      "sources": [
+        "assets/KaTeX_Fraktur-Regular-Dxdc4cR9.woff"
+      ]
+    },
+    {
+      "file": "68534840bcfdd2bffb6f0e8deb48684dd01e7f04ea2813267577afb906de1d13.ttf",
+      "sha256": "68534840bcfdd2bffb6f0e8deb48684dd01e7f04ea2813267577afb906de1d13",
+      "bytes": 63632,
+      "sources": [
+        "assets/KaTeX_AMS-Regular-DRggAlZN.ttf"
+      ]
+    },
+    {
+      "file": "68e8c73ef42afd3ccec58bf0fba302cce448938e7fc020a5e31f8a952eee1342.woff2",
+      "sha256": "68e8c73ef42afd3ccec58bf0fba302cce448938e7fc020a5e31f8a952eee1342",
+      "bytes": 10344,
+      "sources": [
+        "assets/KaTeX_SansSerif-Regular-DDBCnlJ7.woff2"
+      ]
+    },
+    {
+      "file": "6ab6b62e9b62dae2c00dd90f791bd10950be0ecc3490d7d6045f51c2e8fe0949.woff",
+      "sha256": "6ab6b62e9b62dae2c00dd90f791bd10950be0ecc3490d7d6045f51c2e8fe0949",
+      "bytes": 4420,
+      "sources": [
+        "assets/KaTeX_Size3-Regular-CTq5MqoE.woff"
+      ]
+    },
+    {
+      "file": "6b47c40166b6dbe21a5dfca7718413f2147fd2399be1ba605d8ad39cedf25dfe.woff2",
+      "sha256": "6b47c40166b6dbe21a5dfca7718413f2147fd2399be1ba605d8ad39cedf25dfe",
+      "bytes": 5468,
+      "sources": [
+        "assets/KaTeX_Size1-Regular-mCD8mA8B.woff2"
+      ]
+    },
+    {
+      "file": "70ee1f64a20f2048c21940ef46d0144fd215baa953ca69afd1e31e98544f708f.ttf",
+      "sha256": "70ee1f64a20f2048c21940ef46d0144fd215baa953ca69afd1e31e98544f708f",
+      "bytes": 32968,
+      "sources": [
+        "assets/KaTeX_Main-BoldItalic-DzxPMmG6.ttf"
+      ]
+    },
+    {
+      "file": "71d517d67827787cfabdf186914cc3358eda539e37931941f2b2fd4a21f68c0b.woff2",
+      "sha256": "71d517d67827787cfabdf186914cc3358eda539e37931941f2b2fd4a21f68c0b",
+      "bytes": 13568,
+      "sources": [
+        "assets/KaTeX_Typewriter-Regular-CO6r4hn1.woff2"
+      ]
+    },
+    {
+      "file": "73d57000ee0fa7d6e1dd3a9fe5901c2d7c71904af9a935dbbc1d44abc9574c1f.woff2",
+      "sha256": "73d57000ee0fa7d6e1dd3a9fe5901c2d7c71904af9a935dbbc1d44abc9574c1f",
+      "bytes": 66632,
+      "sources": [
+        "assets/IBMPlexSans-BoldItalic-BgMlRJc-.woff2"
+      ]
+    },
+    {
+      "file": "74444efd593c005e3f4573b44524704c0af0a937fe911cca9e94068d0d140d3f.woff2",
+      "sha256": "74444efd593c005e3f4573b44524704c0af0a937fe911cca9e94068d0d140d3f",
+      "bytes": 11348,
+      "sources": [
+        "assets/KaTeX_Fraktur-Bold-CL6g_b3V.woff2"
+      ]
+    },
+    {
+      "file": "75451f6e8dcfa19aeaedaa5e794f72588c86be18c28bbf95bdabb21c10f18ac6.woff2",
+      "sha256": "75451f6e8dcfa19aeaedaa5e794f72588c86be18c28bbf95bdabb21c10f18ac6",
+      "bytes": 155424,
+      "sources": [
+        "assets/Shantell_Sans-Informal_Regular_Italic-FZdkI0Vo.woff2"
+      ]
+    },
+    {
+      "file": "7af58c5ec8f132a2ddde9027c6d7814decce4d3b822a11192a42a20e2e973264.woff2",
+      "sha256": "7af58c5ec8f132a2ddde9027c6d7814decce4d3b822a11192a42a20e2e973264",
+      "bytes": 16440,
+      "sources": [
+        "assets/KaTeX_Math-Italic-t53AETM-.woff2"
+      ]
+    },
+    {
+      "file": "850c0af5c2238497febaf5e461d880bf458c341f42f4f330f1b1ab5698b1998e.woff",
+      "sha256": "850c0af5c2238497febaf5e461d880bf458c341f42f4f330f1b1ab5698b1998e",
+      "bytes": 18668,
+      "sources": [
+        "assets/KaTeX_Math-BoldItalic-iY-2wyZ7.woff"
+      ]
+    },
+    {
+      "file": "8a8d244581371912b8f3f5a23e2437cb2a59cd9bcaebb0346e722c05737a2571.woff",
+      "sha256": "8a8d244581371912b8f3f5a23e2437cb2a59cd9bcaebb0346e722c05737a2571",
+      "bytes": 18748,
+      "sources": [
+        "assets/KaTeX_Math-Italic-DA0__PXp.woff"
+      ]
+    },
+    {
+      "file": "8c2c290cbd998fa1f647e4572aca6ebbd72589551b0f3f9f8bb8628fbb8219d5.woff2",
+      "sha256": "8c2c290cbd998fa1f647e4572aca6ebbd72589551b0f3f9f8bb8628fbb8219d5",
+      "bytes": 46724,
+      "sources": [
+        "assets/IBMPlexMono-Medium-B772pXP5.woff2"
+      ]
+    },
+    {
+      "file": "9163df9c7122432e6495b4229fa9071cf9ae86a758ae5efc4924ec2e1a6dbce1.ttf",
+      "sha256": "9163df9c7122432e6495b4229fa9071cf9ae86a758ae5efc4924ec2e1a6dbce1",
+      "bytes": 19584,
+      "sources": [
+        "assets/KaTeX_Fraktur-Bold-BdnERNNW.ttf"
+      ]
+    },
+    {
+      "file": "91ee67500cc0129aa0ace3ac5c61ff1692102f0f31d02b69347fba35dcb75bf2.woff",
+      "sha256": "91ee67500cc0129aa0ace3ac5c61ff1692102f0f31d02b69347fba35dcb75bf2",
+      "bytes": 14112,
+      "sources": [
+        "assets/KaTeX_SansSerif-Italic-DN2j7dab.woff"
+      ]
+    },
+    {
+      "file": "95b6d2f1a50173bfedb8c63e1d1c99b10427d0a4df4201cb44513b226951a22b.ttf",
+      "sha256": "95b6d2f1a50173bfedb8c63e1d1c99b10427d0a4df4201cb44513b226951a22b",
+      "bytes": 12228,
+      "sources": [
+        "assets/KaTeX_Size1-Regular-Dbsnue_I.ttf"
+      ]
+    },
+    {
+      "file": "97479ca6cce906abc961ecac96faa5f9ca2e61b8e7670d475826bcdee9a7c267.woff2",
+      "sha256": "97479ca6cce906abc961ecac96faa5f9ca2e61b8e7670d475826bcdee9a7c267",
+      "bytes": 16988,
+      "sources": [
+        "assets/KaTeX_Main-Italic-NWA7e6Wa.woff2"
+      ]
+    },
+    {
+      "file": "99cd42a3c072d918f2f44984a807cf7aa16e13545fd0875fc07c6c65f99e715b.woff2",
+      "sha256": "99cd42a3c072d918f2f44984a807cf7aa16e13545fd0875fc07c6c65f99e715b",
+      "bytes": 16780,
+      "sources": [
+        "assets/KaTeX_Main-BoldItalic-DxDJ3AOS.woff2"
+      ]
+    },
+    {
+      "file": "99f9c6750b489c9462bf04900bd3f939df9b829339daaaaa99ef5495cdddea58.woff",
+      "sha256": "99f9c6750b489c9462bf04900bd3f939df9b829339daaaaa99ef5495cdddea58",
+      "bytes": 5980,
+      "sources": [
+        "assets/KaTeX_Size4-Regular-BF-4gkZK.woff"
+      ]
+    },
+    {
+      "file": "9be7ceb88004ab8ad124082246fbfcca4091e36385d4ec6ed1df67375dad50fb.woff",
+      "sha256": "9be7ceb88004ab8ad124082246fbfcca4091e36385d4ec6ed1df67375dad50fb",
+      "bytes": 13296,
+      "sources": [
+        "assets/KaTeX_Fraktur-Bold-BsDP51OF.woff"
+      ]
+    },
+    {
+      "file": "a4af7d414440a1c1790825cfb700cf9cf43b0f2c4b04f0ebc523011ad9853ec0.woff2",
+      "sha256": "a4af7d414440a1c1790825cfb700cf9cf43b0f2c4b04f0ebc523011ad9853ec0",
+      "bytes": 4928,
+      "sources": [
+        "assets/KaTeX_Size4-Regular-Dl5lxZxV.woff2"
+      ]
+    },
+    {
+      "file": "a6b2099fb555c60e3a0db3a08842ebf1d732c6eb4e4bf44913613bed4fc4e39b.ttf",
+      "sha256": "a6b2099fb555c60e3a0db3a08842ebf1d732c6eb4e4bf44913613bed4fc4e39b",
+      "bytes": 11508,
+      "sources": [
+        "assets/KaTeX_Size2-Regular-B7gKUWhC.ttf"
+      ]
+    },
+    {
+      "file": "a6f7ec0d846ac7ad975adb8959c37ed49b94acbc4ae436db9ce9e20287e4a64c.woff",
+      "sha256": "a6f7ec0d846ac7ad975adb8959c37ed49b94acbc4ae436db9ce9e20287e4a64c",
+      "bytes": 19412,
+      "sources": [
+        "assets/KaTeX_Main-BoldItalic-SpSLRI95.woff"
+      ]
+    },
+    {
+      "file": "b0bfaa05c90c662c164ca0515ec42baddac93129eab1af067f8872d84f10df46.woff2",
+      "sha256": "b0bfaa05c90c662c164ca0515ec42baddac93129eab1af067f8872d84f10df46",
+      "bytes": 50624,
+      "sources": [
+        "assets/IBMPlexMono-BoldItalic-BgXsX49L.woff2"
+      ]
+    },
+    {
+      "file": "c2342cd8b869e01752a9321dc17213fc40d4d04c79688c1d43f2cf316abd7866.woff2",
+      "sha256": "c2342cd8b869e01752a9321dc17213fc40d4d04c79688c1d43f2cf316abd7866",
+      "bytes": 26272,
+      "sources": [
+        "assets/KaTeX_Main-Regular-B22Nviop.woff2"
+      ]
+    },
+    {
+      "file": "c6368d87e8a1a3a5d337623d83d8dc4b868f242a9ad476237d6f8d1e0f168cdc.woff",
+      "sha256": "c6368d87e8a1a3a5d337623d83d8dc4b868f242a9ad476237d6f8d1e0f168cdc",
+      "bytes": 30772,
+      "sources": [
+        "assets/KaTeX_Main-Regular-Dr94JaBh.woff"
+      ]
+    },
+    {
+      "file": "c647367d1dd4e162468717d020e1fc0f1dc5c26ebfdffbe55261713bf88c5877.ttf",
+      "sha256": "c647367d1dd4e162468717d020e1fc0f1dc5c26ebfdffbe55261713bf88c5877",
+      "bytes": 10364,
+      "sources": [
+        "assets/KaTeX_Size4-Regular-DWFBv043.ttf"
+      ]
+    },
+    {
+      "file": "c76c5d696297d51b9cb1639c7da4334f0e7dec81b42b11213b5e25ef671bb822.woff",
+      "sha256": "c76c5d696297d51b9cb1639c7da4334f0e7dec81b42b11213b5e25ef671bb822",
+      "bytes": 29912,
+      "sources": [
+        "assets/KaTeX_Main-Bold-Jm3AIy58.woff"
+      ]
+    },
+    {
+      "file": "c82b35693328411c756b51c7b5cb48b6cd1f4f24a0b1261857831b137e6202b5.woff2",
+      "sha256": "c82b35693328411c756b51c7b5cb48b6cd1f4f24a0b1261857831b137e6202b5",
+      "bytes": 51344,
+      "sources": [
+        "assets/IBMPlexMono-MediumItalic-DcUpDvfM.woff2"
+      ]
+    },
+    {
+      "file": "c943cc986384f59e86bea5fd7dc50a9c4dfe567a7c05eb40d6790720dead97c9.woff",
+      "sha256": "c943cc986384f59e86bea5fd7dc50a9c4dfe567a7c05eb40d6790720dead97c9",
+      "bytes": 6496,
+      "sources": [
+        "assets/KaTeX_Size1-Regular-C195tn64.woff"
+      ]
+    },
+    {
+      "file": "cf7e4359cdfc697d90ea785091a9fa289db8f064aed5c099001b08dba97c1805.woff2",
+      "sha256": "cf7e4359cdfc697d90ea785091a9fa289db8f064aed5c099001b08dba97c1805",
+      "bytes": 73992,
+      "sources": [
+        "assets/IBMPlexSerif-BoldItalic-IdHRMZmK.woff2"
+      ]
+    },
+    {
+      "file": "d0332f52868370fd83ae7fa46470f90c8f2eab2fcf12bc4f88080b340c95a830.ttf",
+      "sha256": "d0332f52868370fd83ae7fa46470f90c8f2eab2fcf12bc4f88080b340c95a830",
+      "bytes": 53580,
+      "sources": [
+        "assets/KaTeX_Main-Regular-ypZvNtVU.ttf"
+      ]
+    },
+    {
+      "file": "d04c54219f9eaec6d4d4fd42dfb28785975a4794d6b2fc71e566b9cd6db842dd.woff2",
+      "sha256": "d04c54219f9eaec6d4d4fd42dfb28785975a4794d6b2fc71e566b9cd6db842dd",
+      "bytes": 5208,
+      "sources": [
+        "assets/KaTeX_Size2-Regular-Dy4dx90m.woff2"
+      ]
+    },
+    {
+      "file": "d22b90388a4bd185d87b7a8d64dbf2cea3134d1060266c7c06a9d8f113bb7d82.woff2",
+      "sha256": "d22b90388a4bd185d87b7a8d64dbf2cea3134d1060266c7c06a9d8f113bb7d82",
+      "bytes": 151268,
+      "sources": [
+        "assets/Shantell_Sans-Informal_Bold-CHc5U8I8.woff2"
+      ]
+    },
+    {
+      "file": "d96cdf2b3bdd4d64a8fd5f74a4c467f123a8a73931cd435889f08ffaf9bf947a.woff",
+      "sha256": "d96cdf2b3bdd4d64a8fd5f74a4c467f123a8a73931cd435889f08ffaf9bf947a",
+      "bytes": 10588,
+      "sources": [
+        "assets/KaTeX_Script-Regular-D5yQViql.woff"
+      ]
+    },
+    {
+      "file": "dc47344dbb6cb5b655c8460d561f4df5f501b90c804ad3c6cec65fe322351ab1.woff2",
+      "sha256": "dc47344dbb6cb5b655c8460d561f4df5f501b90c804ad3c6cec65fe322351ab1",
+      "bytes": 16400,
+      "sources": [
+        "assets/KaTeX_Math-BoldItalic-CZnvNsCZ.woff2"
+      ]
+    },
+    {
+      "file": "de7701e42cf1f4cf0b766c03fb27977207eee2f4fd5d76fa82188406da43ea4c.woff2",
+      "sha256": "de7701e42cf1f4cf0b766c03fb27977207eee2f4fd5d76fa82188406da43ea4c",
+      "bytes": 6912,
+      "sources": [
+        "assets/KaTeX_Caligraphic-Bold-Dq_IR9rO.woff2"
+      ]
+    },
+    {
+      "file": "dfa507b0e405543a6b3b822c5e6d5b5d0d23dc6beca7dea312ac0c08550e62a2.woff2",
+      "sha256": "dfa507b0e405543a6b3b822c5e6d5b5d0d23dc6beca7dea312ac0c08550e62a2",
+      "bytes": 1168572,
+      "sources": [
+        "fonts/SymbolsNerdFontMono.woff2"
+      ]
+    },
+    {
+      "file": "e14fed02b1aba7ce9f5afd5844b5d0321b22351febc720e0de8b8723527609f7.woff",
+      "sha256": "e14fed02b1aba7ce9f5afd5844b5d0321b22351febc720e0de8b8723527609f7",
+      "bytes": 16028,
+      "sources": [
+        "assets/KaTeX_Typewriter-Regular-C0xS9mPB.woff"
+      ]
+    },
+    {
+      "file": "e99ae51144bf1232efcc1bfe5add36262c6866b0faab24fa75740e1b98577a62.woff2",
+      "sha256": "e99ae51144bf1232efcc1bfe5add36262c6866b0faab24fa75740e1b98577a62",
+      "bytes": 12216,
+      "sources": [
+        "assets/KaTeX_SansSerif-Bold-D1sUS0GD.woff2"
+      ]
+    },
+    {
+      "file": "ece03cfd83e22c212cdef66feb8442d25a083beb988db3f1883f3f9738d750ba.woff",
+      "sha256": "ece03cfd83e22c212cdef66feb8442d25a083beb988db3f1883f3f9738d750ba",
+      "bytes": 14408,
+      "sources": [
+        "assets/KaTeX_SansSerif-Bold-DbIhKOiC.woff"
+      ]
+    },
+    {
+      "file": "ed0b74372feefcbb9c0666b2e210da37b7e49fa7fbbf3eeb11db5f693dacfbb7.ttf",
+      "sha256": "ed0b74372feefcbb9c0666b2e210da37b7e49fa7fbbf3eeb11db5f693dacfbb7",
+      "bytes": 12344,
+      "sources": [
+        "assets/KaTeX_Caligraphic-Regular-wX97UBjC.ttf"
+      ]
+    },
+    {
+      "file": "f01f3e87d9c6a61c0c081ceb577abd864eb00a612f7ac1620dd6915fad2ef5aa.ttf",
+      "sha256": "f01f3e87d9c6a61c0c081ceb577abd864eb00a612f7ac1620dd6915fad2ef5aa",
+      "bytes": 27556,
+      "sources": [
+        "assets/KaTeX_Typewriter-Regular-D3Ib7_Hf.ttf"
+      ]
+    },
+    {
+      "file": "f1d6ef86f3b11a528bd5185199bd2443ecb2b0dead96d88674b5a2c12be24bdf.woff",
+      "sha256": "f1d6ef86f3b11a528bd5185199bd2443ecb2b0dead96d88674b5a2c12be24bdf",
+      "bytes": 19676,
+      "sources": [
+        "assets/KaTeX_Main-Italic-BMLOBm91.woff"
+      ]
+    },
+    {
+      "file": "f238d9ed3e3f0337df368c70b4aee03ca59971028cf32370b296931f15e1f1be.woff2",
+      "sha256": "f238d9ed3e3f0337df368c70b4aee03ca59971028cf32370b296931f15e1f1be",
+      "bytes": 152332,
+      "sources": [
+        "assets/Shantell_Sans-Informal_Bold_Italic-ci_cB_6_.woff2"
+      ]
+    },
+    {
+      "file": "f36ea897e19f4a2e571d1e900e4e3710e438deb05a842486045ba0a3e616a4ad.ttf",
+      "sha256": "f36ea897e19f4a2e571d1e900e4e3710e438deb05a842486045ba0a3e616a4ad",
+      "bytes": 19436,
+      "sources": [
+        "assets/KaTeX_SansSerif-Regular-BNo7hRIc.ttf"
+      ]
+    },
+    {
+      "file": "f9377ab0271cda59af24bcffbd46a4d0c8a3572ffafdbb38de2ad5ea7b0d5ee5.ttf",
+      "sha256": "f9377ab0271cda59af24bcffbd46a4d0c8a3572ffafdbb38de2ad5ea7b0d5ee5",
+      "bytes": 31196,
+      "sources": [
+        "assets/KaTeX_Math-BoldItalic-B3XSjfu4.ttf"
+      ]
+    },
+    {
+      "file": "fa7130d854a660b39a7fc9e6e0f2dc23dba5f1346e2adea3e1fe37b6d884133d.woff2",
+      "sha256": "fa7130d854a660b39a7fc9e6e0f2dc23dba5f1346e2adea3e1fe37b6d884133d",
+      "bytes": 63012,
+      "sources": [
+        "assets/IBMPlexSans-Bold-CDYgCOW4.woff2"
+      ]
+    }
+  ],
+  "imageId": "sha256:40aad17092cafb7d1f597bf82cad8e93bb7ecdfb699172a11a5a85e7d7d4cffe",
+  "imageDigestKind": "Local Docker image config/content ID; not a registry tag or pushed digest",
+  "builtAt": "2026-11-13T23:05:06.656Z",
+  "fontconfigInventory": "/opt/fonts/files/00b26ac825e2095056396e0553b8ac26d3f8ad158c3826e28b4c45b385c4714a.woff2\tKaTeX_SansSerif\n/opt/fonts/files/036d4e95149b69ff9bcc0cd55771efeb25ffa3947293e69acd78d5ac328c684b.woff2\tKaTeX_Script\n/opt/fonts/files/071f39874fcae274e7096eb85a5ac43975ba3dcdc2aa4929d734a13b31cffbba.woff2\tShantell Sans Informal\n/opt/fonts/files/07d8e303ce4fc12b4bb54f1004170dd190a1f3db45d400fe68060df3e0897268.ttf\tKaTeX_Caligraphic\n/opt/fonts/files/08ce98e51b04d58945a301e639e02b6998af29fdfd61a7b8afdd07bbfc479d4a.ttf\tKaTeX_Math\n/opt/fonts/files/0cdd387c9590a1a9f9794560022dbb59654a7d86f187aa0c81495ad42d3a7308.woff2\tKaTeX_AMS\n/opt/fonts/files/0d85ae7cc30f23790a7f1a58c4a112fdca8aae769b6ba11429af1d98b1b6cb3a.ttf\tKaTeX_Main\n/opt/fonts/files/0f60d1b897938ec918c8ce073092411baf9438f6739465693ff18b0f9d20b021.woff2\tKaTeX_Main\n/opt/fonts/files/11e4dc8a6471ff6d6ee561d53d10fde8f7489e798257ff449c5d37c197435605.woff\tKaTeX_SansSerif\n/opt/fonts/files/138ac28d1663b3037e9c5f52371fa5c63d8324f4a38d22cd573e6ea3a3fd0cf8.ttf\tKaTeX_Main\n/opt/fonts/files/16f11ab3543e3d1e2704407378aafa4ddb570ad11f6a476eeaa4ec6e67fc30e8.woff2\tIBM Plex Sans,IBM Plex Sans Medm\n/opt/fonts/files/1ae6bd7475590e97e7f145a89e09ccde322f7a6bc0b91607b1c8b8ee28290fed.woff\tKaTeX_Caligraphic\n/opt/fonts/files/1ba2fa015458f36efe822137627f75df1ee340e6d1c0d92c7ca5a3b423db75d9.woff2\tIBM Plex Serif\n/opt/fonts/files/1c67f068fea8bb09bf099c088b1cf64bd27516a6e07f4684344873564bb66a67.ttf\tKaTeX_Script\n/opt/fonts/files/1e6f9579e90e2cac37f8f60a597c436e075c114385652b7cbeb0dec0421291b3.ttf\tKaTeX_Fraktur\n/opt/fonts/files/1ece03f79f95277d57dc7f6b435a74e1379b0d46104a8530286b60ff49369ea0.ttf\tKaTeX_SansSerif\n/opt/fonts/files/2014c523c3210bcc166648c4d4cc57f05b747df07a24277bf71c51e67dc79e3d.woff\tKaTeX_Size2\n/opt/fonts/files/2eb75e035155ea1d0805fafaa012f7083e5034f935f17cfcc650b17bdf530c2d.woff2\tIBM Plex Serif,IBM Plex Serif Medm\n/opt/fonts/files/30da91e84c893f875e252689faebdc590b2871145e8adc7f9a9d4dbd8ce0b251.woff\tKaTeX_AMS\n/opt/fonts/files/3398dd02302557a793f2863f88e02d96ce10df2abffa07c8e9fa90775116e65c.woff\tKaTeX_Caligraphic\n/opt/fonts/files/3931dd81faed86ba021bb2bbdc36f5bed9a38d6b4f4077aca59b265aa1b02083.ttf\tKaTeX_SansSerif\n/opt/fonts/files/4e2f4abd7970ec8d957041100dac8eee78e70efb94bfe3e4356628b833e78a30.woff2\tIBM Plex Serif,IBM Plex Serif Medm\n/opt/fonts/files/500e04d54f0d51666332c9d2089aa803be22aa878eca539e59fa53c6e522b082.ttf\tKaTeX_Size3\n/opt/fonts/files/51814d270d06ff0255dba0799994fa4d8c84d11f09951d47595f4abb1f3602dc.woff2\tKaTeX_Fraktur\n/opt/fonts/files/5660f8a658f8bb50dbc005232f885eadffd2bc1c235c4f6fbb63469d1f9cde6d.woff2\tIBM Plex Sans,IBM Plex Sans Medm\n/opt/fonts/files/5788454f0ba4bd6300752c474215c4dd926682fa173ae1c6252d57828b6a235d.woff2\tIBM Plex Mono\n/opt/fonts/files/5d53e70ad607c2352162dec9e0923fb54ecdafaccbf604cd8dcf7d00facb989b.woff2\tKaTeX_Caligraphic\n/opt/fonts/files/5e28753be717dac97f559f49bc10be9cf3c124ddcabda6659d11cb68febc6463.woff\tKaTeX_Fraktur\n/opt/fonts/files/68534840bcfdd2bffb6f0e8deb48684dd01e7f04ea2813267577afb906de1d13.ttf\tKaTeX_AMS\n/opt/fonts/files/68e8c73ef42afd3ccec58bf0fba302cce448938e7fc020a5e31f8a952eee1342.woff2\tKaTeX_SansSerif\n/opt/fonts/files/6ab6b62e9b62dae2c00dd90f791bd10950be0ecc3490d7d6045f51c2e8fe0949.woff\tKaTeX_Size3\n/opt/fonts/files/6b47c40166b6dbe21a5dfca7718413f2147fd2399be1ba605d8ad39cedf25dfe.woff2\tKaTeX_Size1\n/opt/fonts/files/70ee1f64a20f2048c21940ef46d0144fd215baa953ca69afd1e31e98544f708f.ttf\tKaTeX_Main\n/opt/fonts/files/71d517d67827787cfabdf186914cc3358eda539e37931941f2b2fd4a21f68c0b.woff2\tKaTeX_Typewriter\n/opt/fonts/files/73d57000ee0fa7d6e1dd3a9fe5901c2d7c71904af9a935dbbc1d44abc9574c1f.woff2\tIBM Plex Sans\n/opt/fonts/files/74444efd593c005e3f4573b44524704c0af0a937fe911cca9e94068d0d140d3f.woff2\tKaTeX_Fraktur\n/opt/fonts/files/75451f6e8dcfa19aeaedaa5e794f72588c86be18c28bbf95bdabb21c10f18ac6.woff2\tShantell Sans Informal\n/opt/fonts/files/7af58c5ec8f132a2ddde9027c6d7814decce4d3b822a11192a42a20e2e973264.woff2\tKaTeX_Math\n/opt/fonts/files/850c0af5c2238497febaf5e461d880bf458c341f42f4f330f1b1ab5698b1998e.woff\tKaTeX_Math\n/opt/fonts/files/8a8d244581371912b8f3f5a23e2437cb2a59cd9bcaebb0346e722c05737a2571.woff\tKaTeX_Math\n/opt/fonts/files/8c2c290cbd998fa1f647e4572aca6ebbd72589551b0f3f9f8bb8628fbb8219d5.woff2\tIBM Plex Mono,IBM Plex Mono Medm\n/opt/fonts/files/9163df9c7122432e6495b4229fa9071cf9ae86a758ae5efc4924ec2e1a6dbce1.ttf\tKaTeX_Fraktur\n/opt/fonts/files/91ee67500cc0129aa0ace3ac5c61ff1692102f0f31d02b69347fba35dcb75bf2.woff\tKaTeX_SansSerif\n/opt/fonts/files/95b6d2f1a50173bfedb8c63e1d1c99b10427d0a4df4201cb44513b226951a22b.ttf\tKaTeX_Size1\n/opt/fonts/files/97479ca6cce906abc961ecac96faa5f9ca2e61b8e7670d475826bcdee9a7c267.woff2\tKaTeX_Main\n/opt/fonts/files/99cd42a3c072d918f2f44984a807cf7aa16e13545fd0875fc07c6c65f99e715b.woff2\tKaTeX_Main\n/opt/fonts/files/99f9c6750b489c9462bf04900bd3f939df9b829339daaaaa99ef5495cdddea58.woff\tKaTeX_Size4\n/opt/fonts/files/9be7ceb88004ab8ad124082246fbfcca4091e36385d4ec6ed1df67375dad50fb.woff\tKaTeX_Fraktur\n/opt/fonts/files/a4af7d414440a1c1790825cfb700cf9cf43b0f2c4b04f0ebc523011ad9853ec0.woff2\tKaTeX_Size4\n/opt/fonts/files/a6b2099fb555c60e3a0db3a08842ebf1d732c6eb4e4bf44913613bed4fc4e39b.ttf\tKaTeX_Size2\n/opt/fonts/files/a6f7ec0d846ac7ad975adb8959c37ed49b94acbc4ae436db9ce9e20287e4a64c.woff\tKaTeX_Main\n/opt/fonts/files/b0bfaa05c90c662c164ca0515ec42baddac93129eab1af067f8872d84f10df46.woff2\tIBM Plex Mono\n/opt/fonts/files/c2342cd8b869e01752a9321dc17213fc40d4d04c79688c1d43f2cf316abd7866.woff2\tKaTeX_Main\n/opt/fonts/files/c6368d87e8a1a3a5d337623d83d8dc4b868f242a9ad476237d6f8d1e0f168cdc.woff\tKaTeX_Main\n/opt/fonts/files/c647367d1dd4e162468717d020e1fc0f1dc5c26ebfdffbe55261713bf88c5877.ttf\tKaTeX_Size4\n/opt/fonts/files/c76c5d696297d51b9cb1639c7da4334f0e7dec81b42b11213b5e25ef671bb822.woff\tKaTeX_Main\n/opt/fonts/files/c82b35693328411c756b51c7b5cb48b6cd1f4f24a0b1261857831b137e6202b5.woff2\tIBM Plex Mono,IBM Plex Mono Medm\n/opt/fonts/files/c943cc986384f59e86bea5fd7dc50a9c4dfe567a7c05eb40d6790720dead97c9.woff\tKaTeX_Size1\n/opt/fonts/files/cf7e4359cdfc697d90ea785091a9fa289db8f064aed5c099001b08dba97c1805.woff2\tIBM Plex Serif\n/opt/fonts/files/d0332f52868370fd83ae7fa46470f90c8f2eab2fcf12bc4f88080b340c95a830.ttf\tKaTeX_Main\n/opt/fonts/files/d04c54219f9eaec6d4d4fd42dfb28785975a4794d6b2fc71e566b9cd6db842dd.woff2\tKaTeX_Size2\n/opt/fonts/files/d22b90388a4bd185d87b7a8d64dbf2cea3134d1060266c7c06a9d8f113bb7d82.woff2\tShantell Sans Informal\n/opt/fonts/files/d96cdf2b3bdd4d64a8fd5f74a4c467f123a8a73931cd435889f08ffaf9bf947a.woff\tKaTeX_Script\n/opt/fonts/files/dc47344dbb6cb5b655c8460d561f4df5f501b90c804ad3c6cec65fe322351ab1.woff2\tKaTeX_Math\n/opt/fonts/files/de7701e42cf1f4cf0b766c03fb27977207eee2f4fd5d76fa82188406da43ea4c.woff2\tKaTeX_Caligraphic\n/opt/fonts/files/dfa507b0e405543a6b3b822c5e6d5b5d0d23dc6beca7dea312ac0c08550e62a2.woff2\tSymbols Nerd Font Mono\n/opt/fonts/files/e14fed02b1aba7ce9f5afd5844b5d0321b22351febc720e0de8b8723527609f7.woff\tKaTeX_Typewriter\n/opt/fonts/files/e99ae51144bf1232efcc1bfe5add36262c6866b0faab24fa75740e1b98577a62.woff2\tKaTeX_SansSerif\n/opt/fonts/files/ece03cfd83e22c212cdef66feb8442d25a083beb988db3f1883f3f9738d750ba.woff\tKaTeX_SansSerif\n/opt/fonts/files/ed0b74372feefcbb9c0666b2e210da37b7e49fa7fbbf3eeb11db5f693dacfbb7.ttf\tKaTeX_Caligraphic\n/opt/fonts/files/f01f3e87d9c6a61c0c081ceb577abd864eb00a612f7ac1620dd6915fad2ef5aa.ttf\tKaTeX_Typewriter\n/opt/fonts/files/f1d6ef86f3b11a528bd5185199bd2443ecb2b0dead96d88674b5a2c12be24bdf.woff\tKaTeX_Main\n/opt/fonts/files/f238d9ed3e3f0337df368c70b4aee03ca59971028cf32370b296931f15e1f1be.woff2\tShantell Sans Informal\n/opt/fonts/files/f36ea897e19f4a2e571d1e900e4e3710e438deb05a842486045ba0a3e616a4ad.ttf\tKaTeX_SansSerif\n/opt/fonts/files/f9377ab0271cda59af24bcffbd46a4d0c8a3572ffafdbb38de2ad5ea7b0d5ee5.ttf\tKaTeX_Math\n/opt/fonts/files/fa7130d854a660b39a7fc9e6e0f2dc23dba5f1346e2adea3e1fe37b6d884133d.woff2\tIBM Plex Sans\n",
+  "libraryInventory": "Package: at-spi2-common\nVersion: 2.46.0-5\nArchitecture: all\nPackage: ca-certificates\nVersion: 20250419~deb12u2\nArchitecture: all\nPackage: fontconfig-config\nVersion: 2.14.1-4\nArchitecture: amd64\nPackage: fontconfig\nVersion: 2.14.1-4\nArchitecture: amd64\nPackage: libasound2-data\nVersion: 1.2.8-1\nArchitecture: all\nPackage: libasound2\nVersion: 1.2.8-1+b1\nArchitecture: amd64\nPackage: libatk-bridge2.0-0\nVersion: 2.46.0-5\nArchitecture: amd64\nPackage: libatk1.0-0\nVersion: 2.46.0-5\nArchitecture: amd64\nPackage: libatspi2.0-0\nVersion: 2.46.0-5\nArchitecture: amd64\nPackage: libavahi-client3\nVersion: 0.8-10+deb12u1\nArchitecture: amd64\nPackage: libavahi-common-data\nVersion: 0.8-10+deb12u1\nArchitecture: amd64\nPackage: libavahi-common3\nVersion: 0.8-10+deb12u1\nArchitecture: amd64\nPackage: libbrotli1\nVersion: 1.0.9-2+deb12u1\nArchitecture: amd64\nPackage: libbsd0\nVersion: 0.11.7-2\nArchitecture: amd64\nPackage: libcairo2\nVersion: 1.16.0-7\nArchitecture: amd64\nPackage: libcups2\nVersion: 2.4.2-3+deb12u9\nArchitecture: amd64\nPackage: libdatrie1\nVersion: 0.2.13-2+b1\nArchitecture: amd64\nPackage: libdbus-1-3\nVersion: 1.14.10-1~deb12u1\nArchitecture: amd64\nPackage: libdrm-common\nVersion: 2.4.114-1\nArchitecture: all\nPackage: libdrm2\nVersion: 2.4.114-1+b1\nArchitecture: amd64\nPackage: libexpat1\nVersion: 2.5.0-1+deb12u5\nArchitecture: amd64\nPackage: libfontconfig1\nVersion: 2.14.1-4\nArchitecture: amd64\nPackage: libfreetype6\nVersion: 2.12.1+dfsg-5+deb12u4\nArchitecture: amd64\nPackage: libfribidi0\nVersion: 1.0.8-2.1\nArchitecture: amd64\nPackage: libgbm1\nVersion: 22.3.6-1+deb12u2\nArchitecture: amd64\nPackage: libglib2.0-0\nVersion: 2.74.6-2+deb12u9\nArchitecture: amd64\nPackage: libgraphite2-3\nVersion: 1.3.14-1+deb12u1\nArchitecture: amd64\nPackage: libgssapi-krb5-2\nVersion: 1.20.1-2+deb12u5\nArchitecture: amd64\nPackage: libharfbuzz0b\nVersion: 6.0.0+dfsg-3\nArchitecture: amd64\nPackage: libk5crypto3\nVersion: 1.20.1-2+deb12u5\nArchitecture: amd64\nPackage: libkeyutils1\nVersion: 1.6.3-2\nArchitecture: amd64\nPackage: libkrb5-3\nVersion: 1.20.1-2+deb12u5\nArchitecture: amd64\nPackage: libkrb5support0\nVersion: 1.20.1-2+deb12u5\nArchitecture: amd64\nPackage: libnspr4\nVersion: 2:4.35-1\nArchitecture: amd64\nPackage: libnss3\nVersion: 2:3.87.1-1+deb12u4\nArchitecture: amd64\nPackage: libpango-1.0-0\nVersion: 1.50.12+ds-1\nArchitecture: amd64\nPackage: libpixman-1-0\nVersion: 0.42.2-1\nArchitecture: amd64\nPackage: libpng16-16\nVersion: 1.6.39-2+deb12u6\nArchitecture: amd64\nPackage: libsqlite3-0\nVersion: 3.40.1-2+deb12u2\nArchitecture: amd64\nPackage: libssl3\nVersion: 3.0.22-1~deb12u2\nArchitecture: amd64\nPackage: libsystemd0\nVersion: 252.39-1~deb12u2\nArchitecture: amd64\nPackage: libthai-data\nVersion: 0.1.29-1\nArchitecture: all\nPackage: libthai0\nVersion: 0.1.29-1\nArchitecture: amd64\nPackage: libudev1\nVersion: 252.39-1~deb12u2\nArchitecture: amd64\nPackage: libwayland-server0\nVersion: 1.21.0-1\nArchitecture: amd64\nPackage: libx11-6\nVersion: 2:1.8.4-2+deb12u2\nArchitecture: amd64\nPackage: libx11-data\nVersion: 2:1.8.4-2+deb12u2\nArchitecture: all\nPackage: libx11-xcb1\nVersion: 2:1.8.4-2+deb12u2\nArchitecture: amd64\nPackage: libxau6\nVersion: 1:1.0.9-1\nArchitecture: amd64\nPackage: libxcb-render0\nVersion: 1.15-1\nArchitecture: amd64\nPackage: libxcb-shm0\nVersion: 1.15-1\nArchitecture: amd64\nPackage: libxcb1\nVersion: 1.15-1\nArchitecture: amd64\nPackage: libxcomposite1\nVersion: 1:0.4.5-1\nArchitecture: amd64\nPackage: libxdamage1\nVersion: 1:1.1.6-1\nArchitecture: amd64\nPackage: libxdmcp6\nVersion: 1:1.1.2-3\nArchitecture: amd64\nPackage: libxext6\nVersion: 2:1.3.4-1+b1\nArchitecture: amd64\nPackage: libxfixes3\nVersion: 1:6.0.0-2\nArchitecture: amd64\nPackage: libxi6\nVersion: 2:1.8-1+b1\nArchitecture: amd64\nPackage: libxkbcommon0\nVersion: 1.5.0-1\nArchitecture: amd64\nPackage: libxrandr2\nVersion: 2:1.5.2-2+b1\nArchitecture: amd64\nPackage: libxrender1\nVersion: 1:0.9.10-1.1\nArchitecture: amd64\nPackage: libxshmfence1\nVersion: 1.3-1\nArchitecture: amd64\nPackage: libxss1\nVersion: 1:1.2.3-1\nArchitecture: amd64\nPackage: openssl\nVersion: 3.0.22-1~deb12u2\nArchitecture: amd64\nPackage: unzip\nVersion: 6.0-28+deb12u1\nArchitecture: amd64\nPackage: x11-common\nVersion: 1:7.7+23\nArchitecture: all\nPackage: xkb-data\nVersion: 2.35.1-1\nArchitecture: all\n",
+  "libraryArchives": "441bc1c6cefdc01f519310abf55823deb868898480dee09a05aa44e8c83cabc2  /var/cache/apt/archives/at-spi2-common_2.46.0-5_all.deb\nb9f76b5271a7ac373fd5e7e1b5b826a71ddd702b42a0d104955ecb1acfffc94b  /var/cache/apt/archives/ca-certificates_20250419~deb12u2_all.deb\n281c66e46b95f045a0282a6c7a03b33de0e9a08d016897a759aaf4a04adfddbe  /var/cache/apt/archives/fontconfig-config_2.14.1-4_amd64.deb\n010e57c24a983eecc39aab8a84219a716c10901e03bacd1927331388656f890f  /var/cache/apt/archives/fontconfig_2.14.1-4_amd64.deb\nfe0780d2d3674b2977e0acb0d48b448ad72ba1642564b7dc537f55e839984c2d  /var/cache/apt/archives/libasound2-data_1.2.8-1_all.deb\n44c77b076a7b11ae99712439022d822245b1994c435da564ebd320bb676faf4c  /var/cache/apt/archives/libasound2_1.2.8-1+b1_amd64.deb\nfbb07714fdd3fdee7b63fd8595053f4fa8021d8e350a5de6281c6ce7cd4f158f  /var/cache/apt/archives/libatk-bridge2.0-0_2.46.0-5_amd64.deb\n909dd661e03760a9ba1529bfc772f259cec8431999ee38b7c5521186237cdd98  /var/cache/apt/archives/libatk1.0-0_2.46.0-5_amd64.deb\n1c0332f3b712a8e5ee56800bbcab83a8f92098874094f2b0bdfd6b7fd45e8b83  /var/cache/apt/archives/libatspi2.0-0_2.46.0-5_amd64.deb\na99d635f07a49cfbd24de151155c4f815a5adf867855e7ba13ecc3b25ffa52b9  /var/cache/apt/archives/libavahi-client3_0.8-10+deb12u1_amd64.deb\nb21e33c3797c834e9a9ce0f1085e6d3f721db496d550505ab2f364d52097fe6f  /var/cache/apt/archives/libavahi-common-data_0.8-10+deb12u1_amd64.deb\n0c12791afe1be09d8362161244d7a51e82a67a55f3909f4c29ee3dd424c3a5f1  /var/cache/apt/archives/libavahi-common3_0.8-10+deb12u1_amd64.deb\ne27b3d655fa6fadd7a56f706687e94573c0af68b7d6df394a32a381a3a6c6d8b  /var/cache/apt/archives/libbrotli1_1.0.9-2+deb12u1_amd64.deb\nbb31cc8b40f962a85b2cec970f7f79cc704a1ae4bad24257a822055404b2c60b  /var/cache/apt/archives/libbsd0_0.11.7-2_amd64.deb\n927fa059f8b5791d0cd744d4e3a8c57fa872ef849ce14434dc2222ac8a076a69  /var/cache/apt/archives/libcairo2_1.16.0-7_amd64.deb\n8dbfd3b7cd81166a2d79bb7e3898b0203fec05c7e927f60e207122a1e36b95c8  /var/cache/apt/archives/libcups2_2.4.2-3+deb12u9_amd64.deb\nf021f193384929989b2dfd19f606a8cebe54b5f209fe387fc40683e810e01ebe  /var/cache/apt/archives/libdatrie1_0.2.13-2+b1_amd64.deb\n18ee0ce5fab9f7b671e87da1e9fa18660e36e04a3402f24bdb8635e0ba1d35f6  /var/cache/apt/archives/libdbus-1-3_1.14.10-1~deb12u1_amd64.deb\n32f9664138b38b224383c6986457d5ad2ec8efd559b1a0ce7749405f7a451aad  /var/cache/apt/archives/libdrm-common_2.4.114-1_all.deb\nbe18fb670797ba32da9628cf3e8acd83160d8db8c8dd842501dd8e401c3b5371  /var/cache/apt/archives/libdrm2_2.4.114-1+b1_amd64.deb\ncae5ded666d8573dd33060bc66fbac21eea8b101a6b56e2af8bd590fcfa65d79  /var/cache/apt/archives/libexpat1_2.5.0-1+deb12u5_amd64.deb\n16ee38d374e064f534116dc442b086ef26f9831f1c0af7e5fb4fe4512e700649  /var/cache/apt/archives/libfontconfig1_2.14.1-4_amd64.deb\n8043e479f73f29992d652e3f9dfe8b17f9780c7ea6330afe379ec5f9f188ac44  /var/cache/apt/archives/libfreetype6_2.12.1+dfsg-5+deb12u4_amd64.deb\n87fce56627aab7b2968501d370aa3ed6d1c792119efa765e71a690bdfe570e62  /var/cache/apt/archives/libfribidi0_1.0.8-2.1_amd64.deb\n4323840f2b7b3e108990848529125d99c0956ae5a854c1e0568ed08c8faeaa2e  /var/cache/apt/archives/libgbm1_22.3.6-1+deb12u2_amd64.deb\n7ff85197685d89e150e342b29a59aab1beee400050ba7da73de81cd999ffee5a  /var/cache/apt/archives/libglib2.0-0_2.74.6-2+deb12u9_amd64.deb\nc19a7f6ba9298db7eef041ae27b08985f2c02009e418063f8bccdb5bc5e858dc  /var/cache/apt/archives/libgraphite2-3_1.3.14-1+deb12u1_amd64.deb\nd8b87aea91b956b416c01a28c44ff6228315ae3b73de40acddac3dc5043607d2  /var/cache/apt/archives/libgssapi-krb5-2_1.20.1-2+deb12u5_amd64.deb\nbfce132b7ee67b9c2d2166075b1936a25c8cc6866b6a049f99b8e94baa916e71  /var/cache/apt/archives/libharfbuzz0b_6.0.0+dfsg-3_amd64.deb\n7b6e47d15c5c9cdcd456137533d8308aeba608a54cec73b28bd59bfc4b54cf06  /var/cache/apt/archives/libk5crypto3_1.20.1-2+deb12u5_amd64.deb\ncfac89e6a7a54ff3c6a4f843310e25efeddaa771baeae470bd98bd588c373563  /var/cache/apt/archives/libkeyutils1_1.6.3-2_amd64.deb\nc90801be09701af221b54dd502a59cb378b7284ff31e480738baca317d2f7653  /var/cache/apt/archives/libkrb5-3_1.20.1-2+deb12u5_amd64.deb\n8b9c05f2d8d461a10d657b118f572af5bf8fd6c8f93dcef81e852c5ab0f428ab  /var/cache/apt/archives/libkrb5support0_1.20.1-2+deb12u5_amd64.deb\n6cca09767e94e4b5d2888ef31ad797bd3e7cec27fbbe98b49b10d4884746ce77  /var/cache/apt/archives/libnspr4_2%3a4.35-1_amd64.deb\n666bce4768414a6a79d2dacb1549f922cedb1facd373790a477e12739878284e  /var/cache/apt/archives/libnss3_2%3a3.87.1-1+deb12u4_amd64.deb\n851720de07441ae6bb6a7f51fc0f2edb4db7aa6f25b5bf1bf7b72dcab8947b7f  /var/cache/apt/archives/libpango-1.0-0_1.50.12+ds-1_amd64.deb\n9ed75ef81b6b1eba9e1357f8b0ce01d31112b0e07b2b685bee2cf627a8932892  /var/cache/apt/archives/libpixman-1-0_0.42.2-1_amd64.deb\n940b91d40d51c825de7f7aa133aecff1ffa25a91f12cb6aa6926c9ad55cd640c  /var/cache/apt/archives/libpng16-16_1.6.39-2+deb12u6_amd64.deb\na8d78b40e9b4e422224aeebfe0e4dfc243f6acf3532490b0c05480d4283d41e2  /var/cache/apt/archives/libsqlite3-0_3.40.1-2+deb12u2_amd64.deb\ncb4784740daa9b3b0eaea2b444bbefa686794afbbf3d678d238c1fd9875f2efd  /var/cache/apt/archives/libssl3_3.0.22-1~deb12u2_amd64.deb\n013c07514a9e4933b2d5c098018695a6aa42d085dbc483ce2c094a954c8a1b0a  /var/cache/apt/archives/libsystemd0_252.39-1~deb12u2_amd64.deb\need65a75269411e47d7b393d82bc30471da5c499e9f311abbfd8c54ca1a42d9e  /var/cache/apt/archives/libthai-data_0.1.29-1_all.deb\n37cd66bef851ea0e4af807797ba3ad14d43226f7c4954c1d0a19478e11815bae  /var/cache/apt/archives/libthai0_0.1.29-1_amd64.deb\n6f7e08f11c4809d2e5998c775f7b423ab5ec2ce0309494b4a2615037052245e2  /var/cache/apt/archives/libudev1_252.39-1~deb12u2_amd64.deb\ndf0396221d7b794496a687ec61fae82b6465648bc0ab6501ba0a5ed7f56eb8d6  /var/cache/apt/archives/libwayland-server0_1.21.0-1_amd64.deb\nd88c973e79fd9b65838d77624142952757e47a6eb1a58602acf0911cf35989f4  /var/cache/apt/archives/libx11-6_2%3a1.8.4-2+deb12u2_amd64.deb\n987a848aeb1c358e4186368871b0526f10bb14c6b53214ab3bf8b69abb830191  /var/cache/apt/archives/libx11-data_2%3a1.8.4-2+deb12u2_all.deb\nf5da45e1d881a793250a96613f28c471a248877f1a0f18a5c90e2a620a76c898  /var/cache/apt/archives/libx11-xcb1_2%3a1.8.4-2+deb12u2_amd64.deb\n679db1c4579ec7c61079adeaae8528adeb2e4bf5465baa6c56233b995d714750  /var/cache/apt/archives/libxau6_1%3a1.0.9-1_amd64.deb\n29c32cc76be9393f409378be79a0f534b9f07dea06ae52fa80a7f27e298de239  /var/cache/apt/archives/libxcb-render0_1.15-1_amd64.deb\nc1afcef29dc78b95c475159b181b28b1dedaf1d5aa06efd2fa6d90c73bfbe0e5  /var/cache/apt/archives/libxcb-shm0_1.15-1_amd64.deb\nfdc61332a3892168f3cc9cfa1fe9cf11a91dc3e0acacbc47cbc50ebaa234cc71  /var/cache/apt/archives/libxcb1_1.15-1_amd64.deb\n4c26ebf519d2ebc22fc1416dee45e12c4c4ef68aa9b2ed890356830df42b652a  /var/cache/apt/archives/libxcomposite1_1%3a0.4.5-1_amd64.deb\nfcdf7e4c29b307ba8711c864e1e646d76315a8f55121198143653e56592fa8a7  /var/cache/apt/archives/libxdamage1_1%3a1.1.6-1_amd64.deb\necb8536f5fb34543b55bb9dc5f5b14c9dbb4150a7bddb3f2287b7cab6e9d25ef  /var/cache/apt/archives/libxdmcp6_1%3a1.1.2-3_amd64.deb\n504b7be9d7df4f6f4519e8dd4d6f9d03a9fb911a78530fa23a692fba3058cba6  /var/cache/apt/archives/libxext6_2%3a1.3.4-1+b1_amd64.deb\n1cd616396ff2ecae77e6e8b5b7695d414f0146de2d147837a2a02165f99e1a2c  /var/cache/apt/archives/libxfixes3_1%3a6.0.0-2_amd64.deb\n6c2fb5f241b311788990122c6e693915867cd8ed9d6da2e3524aec7ed3cdb4c0  /var/cache/apt/archives/libxi6_2%3a1.8-1+b1_amd64.deb\ne3fe045b9a33a101de1c5a912a4a10928db055c3f68930f47eccbb44d7c7d54e  /var/cache/apt/archives/libxkbcommon0_1.5.0-1_amd64.deb\ne2e10b672085ddf1d294cd689ed21bde5899325fd13626c2614b7d7b2d49a808  /var/cache/apt/archives/libxrandr2_2%3a1.5.2-2+b1_amd64.deb\nb2a6d160578f359220101947c8d67059b44704a251e688de1d0b744fefedfd1a  /var/cache/apt/archives/libxrender1_1%3a0.9.10-1.1_amd64.deb\n1a38142e40e3d32dc4f9a326bf5617363b7d9b4bb762fdcdd262f2192092024d  /var/cache/apt/archives/libxshmfence1_1.3-1_amd64.deb\n85cce16368f08a878fa892fbc54520fc654d00769cde6d300b8b802734a993c0  /var/cache/apt/archives/libxss1_1%3a1.2.3-1_amd64.deb\n5cdf0b735b1c8a96ae0bf83ed328c83c2170f8320dedb035e98705b60b2d0cfe  /var/cache/apt/archives/openssl_3.0.22-1~deb12u2_amd64.deb\n1c27c879f4f7f056499c5393d422fd6c77ff6fbfa450c3f91f2f205ca788cc36  /var/cache/apt/archives/unzip_6.0-28+deb12u1_amd64.deb\nfc97c2f4495eb33a77501c7960928c0d2001e5c4b2aa438f1713e2082c23bacd  /var/cache/apt/archives/x11-common_1%3a7.7+23_all.deb\n28a79c61b785f403da93af58c39aed13c022032935e3e54362c6707169cfe982  /var/cache/apt/archives/xkb-data_2.35.1-1_all.deb\n"
+}

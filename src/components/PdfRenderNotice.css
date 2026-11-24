@@ -1,0 +1,36 @@
+.pdf-render-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--interactive-accent);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 15%);
+  font: 13px/1.45 var(--font-interface, sans-serif);
+  user-select: none;
+}
+.pdf-render-notice-copy { display: flex; flex: 1 1 180px; min-width: 0; flex-direction: column; gap: 3px; }
+.pdf-render-notice code { color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
+.pdf-render-notice .pdf-pane-action { flex-shrink: 0; }
+/* The paper can be wider than its scroll box (zoom, or the thumbnail strip's
+   resize debounce). Its notice must not push Retry beyond the viewport edge. */
+.pdf-viewer-scroll:has(.pdf-render-notice.is-page) { container-type: inline-size; }
+.pdf-render-notice.is-page {
+  position: absolute;
+  z-index: 5;
+  top: 12px;
+  left: 12px;
+  width: calc(100% - 24px);
+  max-width: calc(100cqw - 24px);
+  box-sizing: border-box;
+}
+/* The merged Find bar otherwise hides the failure heading at the page top. */
+.pdf-viewer:has(.pdf-find-bar) .pdf-render-notice.is-page { top: 96px; }
+.pdf-pane-body:has(.pdf-find-bar) .pdf-render-document-notice { top: 112px; }
+.pdf-render-document-notice { position: absolute; z-index: 15; inset: 12px 12px auto; }
+.pdf-render-failed { height: 100%; display: grid; align-content: start; padding: 16px; }
+.pdf-thumb-failure { display: grid; place-items: center; width: 100%; height: 100%; padding: 8px; color: var(--text-muted); background: var(--background-primary); font-size: 11px; line-height: 1.3; }

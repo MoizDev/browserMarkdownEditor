@@ -10,7 +10,7 @@
 // Imports nothing heavy: both the reader and the annotate chunk load it, and it
 // must not drag pdf.js or tldraw into the other.
 
-import { flushRecord, readRecord, scopedKey } from './storage';
+import { flushRecord, readRecord, scopedKey, writeStoredValue } from './storage';
 
 const POSITIONS_KEY = 'pdfViewPositions';
 const THUMBNAILS_KEY = 'pdfThumbnailsOpen';
@@ -32,7 +32,7 @@ export function readPdfViewPos(path: string): PdfViewPos | undefined {
     return {
         page: Math.max(0, Math.floor(pos.page)),
         offset: Number.isFinite(pos.offset) ? Math.min(1, Math.max(0, pos.offset)) : 0,
-        zoom: Number.isFinite(pos.zoom) ? pos.zoom : undefined,
+        zoom: typeof pos.zoom === 'number' && Number.isFinite(pos.zoom) ? Math.max(0.4, Math.min(4, pos.zoom)) : undefined,
     };
 }
 
@@ -72,9 +72,7 @@ export function readThumbnailsOpen(): boolean {
 }
 
 export function writeThumbnailsOpen(open: boolean): void {
-    try {
-        localStorage.setItem(THUMBNAILS_KEY, String(open));
-    } catch { /* the toggle still works for this session */ }
+    writeStoredValue(THUMBNAILS_KEY, String(open));
 }
 
 /* ── Inverted pages ──────────────────────────────────────────────────────── */
@@ -88,7 +86,7 @@ const INVERT_KEY = 'pdfInverted';
  * a value read at mount: two PDFs can be on screen side by side, and the reader
  * and the annotate canvas hand one document back and forth, so a toggle in one
  * has to show in the others at once. A view preference only; nothing about a
- * file or its exported PDF changes (see the .is-inverted rules in index.css).
+ * file or its exported PDF changes; the renderer applies it per paint.
  */
 let inverted = (() => {
     try {
@@ -106,9 +104,7 @@ export function getPdfInverted(): boolean {
 export function setPdfInverted(next: boolean): void {
     if (next === inverted) return;
     inverted = next;
-    try {
-        localStorage.setItem(INVERT_KEY, String(next));
-    } catch { /* still applies for this session */ }
+    writeStoredValue(INVERT_KEY, String(next));
     for (const listener of invertListeners) listener();
 }
 

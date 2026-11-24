@@ -1,0 +1,14 @@
+diff --git a/src/index.css b/src/index.css
+--- a/src/index.css
++++ b/src/index.css
+@@ -3498,10 +3498,6 @@
+   color: transparent;
+ }
+ 
+-.textLayer br::selection {
+-  background: transparent;
+-}
+-
+ /* pdf.js sizes a text layer from the page's UNROTATED box and records the
+    page's /Rotate on the container, leaving the turn itself to the host's CSS
+    (its own viewer carries these same three rules). Without them a page with

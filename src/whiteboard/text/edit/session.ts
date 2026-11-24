@@ -1,0 +1,542 @@
+import type { CaretIndex, CaretPosition, CaretStop, TextPaint } from '../paint';
+import { sliceRichText, type Block, type RichFragment, type RichText } from '../richText';
+import { mapRichTextChangesCooperative } from '../rangeMap';
+import { yieldToHost } from '../cooperative';
+import { richTextOperations } from '../richOperations';
+import type { FragmentSnapshotOptions } from '../fragmentSnapshot';
+import { moveCaret } from './caret';
+import { TextEditController, type EditTransactions } from './controller';
+import { clientBounds, type TextTransform } from './geometry';
+import { linkUrl, type ToggleMark } from './format';
+import { EditHost, type EditSelection, type TextChange } from './host';
+import { handleEditKey } from './keys';
+import { TextPointerSelection, type TextPointer } from './pointer';
+import { RichWordNavigation } from './richWords';
+import { projectionLength } from '../projection';
+import type { NodeId } from '../../model/ids';
+import type { HistoryController } from '../../change/historyTypes';
+import { TypingHistory } from './typingHistory';
+import type { Rect } from '../../../platform/types';
+
+export interface EditLayout {
+    readonly paint: TextPaint;
+    readonly caret: CaretIndex;
+    readonly localToClient: TextTransform;
+    readonly clientToLocal: TextTransform;
+}
+export interface EditSessionServices extends Omit<EditTransactions, 'typing' | 'completeTyping' | 'markTransformation' | 'rememberTransformation'> {
+    readonly history: HistoryController;
+    /** A single-line name (a frame title): Enter commits the edit instead of adding a paragraph. */
+    readonly singleLine?: boolean;
+    /** Ends this note's edit and opens its directional neighbour; false where no neighbour flow applies. */
+    stickyNeighbour?(direction: 'left' | 'right' | 'up' | 'down'): boolean;
+    prepareCut(transaction: import('../../change/ops').Transaction): { commit(): void; release(): void };
+    plainText(): string;
+    alive(): boolean;
+    layout(): EditLayout;
+    composition(change: TextChange | null): void;
+    compositionFormat(event: Event): void;
+    command(name: string, selection: EditSelection): void;
+    inList(offset: number): boolean;
+    blocks(selection: EditSelection, kind: Block['kind'] | 'indent' | 'outdent'): { readonly transaction: import('../../change/ops').Transaction; readonly selection: EditSelection };
+    changed(selection: EditSelection): void;
+    requestChrome(): void;
+    reducedMotion(): boolean;
+    reportError(error: unknown): void;
+    announce(message: string): void;
+    autoScroll(x: number, y: number): void;
+    stopAutoScroll(): void;
+    touchHandles(show: boolean): void;
+    menu(x: number, y: number): void;
+    openLink(url: string): void;
+    isStandaloneText(): boolean;
+    /** The creation step token for a text node created by this edit session. */
+    readonly creationToken?: number;
+    /** Runs as the editor closes, before its element leaves the page: focus left on a removed element falls to
+     *  <body>, and every board shortcut listens on the board's root, so the keyboard must go back there first. */
+    returnFocus(): void;
+    finish(): void;
+    /** Opens the command palette once the edit has finished (Cmd/Ctrl+K). */
+    commandPalette?(): void;
+}
+
+function point(transform: TextTransform, x: number, y: number): { x: number; y: number } {
+    return { x: transform.a * x + transform.c * y + transform.e, y: transform.b * x + transform.d * y + transform.f };
+}
+
+// One session per editing pane. The host owns the input endpoint, while the
+// session's model/history and TX-3 layout stay shared with the board view.
+export class TextEditSession {
+    readonly host: EditHost;
+    readonly pointer: TextPointerSelection;
+    readonly controller: TextEditController;
+    private readonly typingHistory: TypingHistory;
+    private readonly words = new RichWordNavigation();
+    private selection: EditSelection;
+    private affinity: CaretPosition['affinity'];
+    private goalX: number | undefined;
+    private lastActivity = performance.now();
+    private blinkTimer: ReturnType<typeof setTimeout> | null = null;
+    private blinkReduced = false;
+    private formats: readonly { from: number; to: number; style: string; thickness: string }[] = [];
+    private compositionSelection: EditSelection | null = null;
+    private compositionRange: { from: number; to: number } | null = null;
+    private closed = false;
+    /** The last rich value this session saw: external changes are diffed on these immutable values, never a flattened copy. */
+    private lastRich: RichText;
+    /** Bumped by every user or own-edit action, so a pending external mapping that lost the race is discarded. */
+    private mapping = 0;
+
+    constructor(container: HTMLElement, label: string, private readonly id: NodeId, private readonly key: 'text' | 'label', selection: EditSelection,
+        private readonly services: EditSessionServices, private readonly mac: boolean, forceFallback = false) {
+        this.selection = selection;
+        this.lastRich = services.readText();
+        this.words.prime(this.lastRich);
+        this.typingHistory = new TypingHistory(services.history, next => this.restoreSelection(next));
+        this.controller = new TextEditController(id, key, {
+            apply: transaction => services.apply(transaction), readText: () => services.readText(),
+            setSelection: next => { this.selection = next; services.setSelection(next); }, marksAt: offset => services.marksAt(offset),
+            fragment: (from, text, marks) => services.fragment(from, text, marks),
+            format: (mark, from, to) => services.format(mark, from, to),
+            link: (url, from, to) => services.link(url, from, to), enter: selection => services.enter(selection),
+            typing: (kind, before, after, change) => this.typingHistory.begin(kind, before, after, change),
+            completeTyping: (kind, after) => this.typingHistory.complete(kind, after),
+            markTransformation: () => this.typingHistory.mark(),
+            rememberTransformation: (mark, before) => this.typingHistory.remember(mark, before),
+        });
+        this.pointer = new TextPointerSelection({
+            selection: () => this.selection,
+            setSelection: next => this.select(next),
+            hit: (x, y) => { const layout = services.layout(); const p = point(layout.clientToLocal, x, y); return layout.caret.hitTest(p.x, p.y).offset; },
+            word: offset => this.words.selectWord(services.readText(), offset),
+            block: offset => this.words.selectBlock(services.readText(), offset),
+            autoScroll: (x, y) => services.autoScroll(x, y),
+            stopAutoScroll: () => services.stopAutoScroll(),
+            touchHandles: show => services.touchHandles(show),
+            menu: (x, y) => services.menu(x, y),
+            followLink: (x, y) => {
+                const layout = services.layout();
+                const local = point(layout.clientToLocal, x, y);
+                const cluster = layout.caret.clusterAt(local.x, local.y);
+                if (!cluster) return false;
+                const value = sliceRichText(services.readText(), cluster.src[0], cluster.src[1]).blocks[0]?.runs[0]?.marks.link;
+                const url = value ? linkUrl(value) : null;
+                if (!url) return false;
+                services.openLink(url);
+                return true;
+            },
+        });
+        this.host = new EditHost(container, label, {
+            snapshot: () => ({ text: services.readText(), selection: this.selection }),
+            change: change => this.replace(change, 'typing'),
+            selection: next => this.select(next),
+            composition: change => {
+                if (change) {
+                    this.compositionSelection ??= this.selection;
+                    this.compositionRange = { from: change.from, to: change.from + change.text.length };
+                    this.selection = change.selection;
+                } else {
+                    this.formats = [];
+                    this.compositionRange = null;
+                    if (this.compositionSelection) this.selection = this.compositionSelection;
+                    this.compositionSelection = null;
+                }
+                services.composition(change);
+                services.changed(this.selection);
+            },
+            compositionFormat: event => {
+                const update = event as Event & { getTextFormats?: () => readonly { rangeStart: number; rangeEnd: number; underlineStyle: string; underlineThickness: string }[] };
+                const base = this.host.textOffsetBase;
+                this.formats = (update.getTextFormats?.() ?? []).map(format => ({ from: base + format.rangeStart, to: base + format.rangeEnd, style: format.underlineStyle, thickness: format.underlineThickness }));
+                services.compositionFormat(event);
+                services.changed(this.selection);
+            },
+            commitComposition: change => this.replace(change, 'composition'),
+            keydown: event => this.keydown(event),
+            contextMenu: (x, y) => services.menu(x, y),
+            characterBounds: (start, end) => {
+                const layout = services.layout();
+                return layout.caret.characterBounds(start, end).map(rect => clientBounds(rect, layout.localToClient));
+            },
+        }, forceFallback);
+        this.resetBlink();
+    }
+
+    private resetBlink(): void {
+        this.lastActivity = performance.now();
+        if (this.blinkTimer !== null) clearTimeout(this.blinkTimer);
+        this.blinkTimer = null;
+        this.blinkReduced = this.services.reducedMotion();
+        if (this.blinkReduced) return;
+        const tick = () => {
+            if (this.closed || this.services.reducedMotion()) { this.blinkTimer = null; return; }
+            this.services.requestChrome();
+            this.blinkTimer = setTimeout(tick, 530);
+        };
+        this.blinkTimer = setTimeout(tick, 530);
+    }
+
+    private replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary'): boolean {
+        this.resetBlink();
+        this.mapping++;
+        try { this.selection = this.controller.replace(change, kind, this.selection); this.lastRich = this.services.readText(); }
+        catch (error) { this.services.reportError(error); return false; }
+        this.affinity = undefined;
+        this.goalX = undefined;
+        this.services.changed(this.selection);
+        return true;
+    }
+
+    private select(next: EditSelection, moving = false): void {
+        if (!moving && next.anchor === this.selection.anchor && next.focus === this.selection.focus) return;
+        this.resetBlink();
+        this.mapping++;
+        this.typingHistory.invalidateRule();
+        this.selection = next;
+        if (!moving) { this.affinity = undefined; this.goalX = undefined; }
+        this.controller.setStoredMarks(null);
+        this.services.setSelection(next);
+        this.services.changed(next);
+        this.host.sync();
+    }
+
+    private move(offset: number, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end' | 'word-left' | 'word-right'): number {
+        const layout = this.services.layout();
+        const position = { offset, affinity: this.affinity };
+        let stop: CaretStop;
+        if (direction === 'word-left' || direction === 'word-right') {
+            const text = this.services.readText(), horizontal = direction === 'word-left' ? 'left' : 'right';
+            const current = layout.caret.caret(position);
+            const sameStop = (a: CaretStop, b: CaretStop) => a.offset === b.offset && a.affinity === b.affinity && a.line === b.line && a.x === b.x;
+            let probe = moveCaret(layout.caret, current, horizontal);
+            while (probe.offset === current.offset) {
+                const next = moveCaret(layout.caret, probe, horizontal);
+                if (sameStop(next, probe)) break;
+                probe = next;
+            }
+            const lineDirection = layout.paint.lines[current.line]?.direction ?? 'ltr';
+            const logicalStep = probe.offset < current.offset ? -1 : probe.offset > current.offset ? 1
+                : (horizontal === 'right') === (lineDirection === 'ltr') ? 1 : -1;
+            const boundary = this.words.boundary(text, offset, logicalStep);
+            if (layout.caret.navigateWord) stop = layout.caret.navigateWord(current, horizontal, boundary);
+            else {
+                let visual = current;
+                for (let n = 0, length = projectionLength(text); n <= length; n++) {
+                    const candidate = moveCaret(layout.caret, visual, horizontal);
+                    if (sameStop(candidate, visual)) break;
+                    visual = candidate;
+                    if (visual.offset === boundary || (logicalStep < 0 ? visual.offset < boundary : visual.offset > boundary)) break;
+                }
+                stop = visual;
+            }
+        } else {
+            if (direction === 'up' || direction === 'down') this.goalX ??= layout.caret.caret(position).x;
+            else this.goalX = undefined;
+            stop = moveCaret(layout.caret, position, direction, this.goalX);
+        }
+        this.affinity = stop.affinity;
+        return stop.offset;
+    }
+
+    /** External actions cannot race a composition, including the interval before its first update. */
+    canEdit(): boolean {
+        return !this.closed && this.services.alive() && !this.host.isComposing && !this.compositionSelection && !this.compositionRange;
+    }
+
+    /** The keyboard and Core's text menu use the same controller and transaction path. */
+    command(name: string): boolean {
+        if (!this.canEdit()) return false;
+        if (name === 'enter' && this.services.singleLine) return this.command('finish');
+        if (name === 'select-all') return this.selectAll();
+        if (name === 'palette') return this.command('finish') && (this.services.commandPalette?.(), true);
+        const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', b: 'b', italic: 'i', i: 'i', underline: 'u', u: 'u',
+            strike: 's', s: 's', code: 'code', highlight: 'hl', hl: 'hl' };
+        const mark = Object.hasOwn(marks, name) ? marks[name] : undefined;
+        if (mark) {
+            try {
+                this.controller.toggleMark(mark, this.selection);
+                this.services.changed(this.selection); this.services.announce(`${name} formatting changed`);
+                this.host.sync(); return true;
+            } catch (error) { this.services.reportError(error); return false; }
+        }
+        if (name === 'enter') {
+            try {
+                this.selection = this.controller.enter(this.selection); this.lastRich = this.services.readText();
+                this.affinity = undefined; this.goalX = undefined; this.services.changed(this.selection);
+                this.resetBlink(); this.host.sync(); return true;
+            } catch (error) { this.services.reportError(error); return false; }
+        }
+        if (/^heading-[0-6]$/.test(name) || name === 'ordered-list' || name === 'bullet-list' || name === 'indent' || name === 'outdent') {
+            const kind: Block['kind'] | 'indent' | 'outdent' = name === 'ordered-list' ? 'ol' : name === 'bullet-list' ? 'ul'
+                : name === 'indent' || name === 'outdent' ? name : name === 'heading-0' ? 'p' : `h${name.slice(-1)}` as Block['kind'];
+            this.typingHistory.close();
+            let opened = false;
+            try {
+                this.services.history.open('Format text blocks'); opened = true;
+                const result = this.services.blocks(this.selection, kind);
+                this.services.apply(result.transaction); this.selection = result.selection;
+                this.services.setSelection(result.selection); this.services.changed(result.selection);
+                this.services.announce('Text block formatting changed'); return true;
+            } catch (error) { this.services.reportError(error); return false; }
+            finally {
+                try { if (opened) this.services.history.close(); } catch (error) { this.services.reportError(error); }
+                try { this.host.sync(); } catch (error) { this.services.reportError(error); }
+            }
+        }
+        if (name === 'tab' || name === 'untab') return this.tab(name === 'untab');
+        if (!['undo', 'redo', 'finish', 'link', 'paste-plain', 'paste-inverted', 'paste-plain-inverted'].includes(name)) return false;
+        try {
+            if (name === 'undo' || name === 'redo' || name === 'finish') this.typingHistory.close();
+            this.services.command(name, this.selection); return true;
+        } catch (error) { this.services.reportError(error); return false; }
+    }
+
+    /** Tab types a tab character over the selection; Shift+Tab removes the tab character just before a collapsed caret. */
+    private tab(outdent: boolean): boolean {
+        const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
+        if (outdent) {
+            if (from !== to || this.services.plainText()[from - 1] !== '\t') return true;
+            this.replace({ from: from - 1, to: from, text: '', selection: { anchor: from - 1, focus: from - 1 } }, 'typing');
+        } else {
+            this.replace({ from, to, text: '\t', selection: { anchor: from + 1, focus: from + 1 } }, 'typing');
+        }
+        this.host.sync();
+        return true;
+    }
+
+    private keydown(event: KeyboardEvent): void {
+        if (!event.isComposing && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+            event.preventDefault(); event.stopPropagation();
+            const layout = this.services.layout();
+            const caret = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
+            const at = point(layout.localToClient, caret.x, (caret.top + caret.bottom) / 2);
+            this.services.menu(at.x, at.y);
+            return;
+        }
+        handleEditKey(event, {
+            text: () => this.services.plainText(), selection: () => this.selection,
+            setSelection: selection => this.select(selection, true), replace: change => { this.replace(change, 'typing'); this.host.sync(); },
+            neighbour: direction => this.canEdit() && !!this.services.stickyNeighbour?.(direction),
+            adjacent: (offset, direction) => this.words.adjacent(this.services.readText(), offset, direction),
+            move: (offset, direction) => this.move(offset, direction),
+            collapse: (selection, direction) => {
+                const index = this.services.layout().caret;
+                const a = index.caret({ offset: selection.anchor });
+                const b = index.caret({ offset: selection.focus, affinity: this.affinity });
+                const first = a.line < b.line || (a.line === b.line && a.x <= b.x) ? a : b;
+                const last = first === a ? b : a;
+                const stop = direction === 'left' ? first : last;
+                this.affinity = stop.affinity;
+                this.goalX = undefined;
+                return stop.offset;
+            },
+            command: command => { this.command(command); },
+            inList: () => this.services.inList(this.selection.focus),
+            undoTransformation: () => {
+                const undone = this.typingHistory.undoTransformation();
+                if (undone) this.lastRich = this.services.readText();
+                return undone;
+            },
+        }, this.mac);
+    }
+
+    sync(): void {
+        if (this.closed) return;
+        if (!this.services.alive()) { this.close(false); return; }
+        if (this.blinkReduced !== this.services.reducedMotion()) this.resetBlink();
+        this.host.sync();
+        const layout = this.services.layout();
+        const { a, b, c, d, e, f } = layout.localToClient;
+        const container = this.host.element.parentElement?.getBoundingClientRect();
+        Object.assign(this.host.element.style, { left: '0px', top: '0px', width: `${layout.paint.box.w}px`, height: `${layout.paint.box.h}px`, transformOrigin: '0 0', transform: `matrix(${a},${b},${c},${d},${e - (container?.left ?? 0)},${f - (container?.top ?? 0)})` });
+        const stop = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
+        let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+        layout.caret.forEachSelection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus), rect => {
+            const client = clientBounds(rect, layout.localToClient);
+            left = Math.min(left, client.left); top = Math.min(top, client.top);
+            right = Math.max(right, client.right); bottom = Math.max(bottom, client.bottom);
+        });
+        const bounds = left === Infinity ? clientBounds({ x: stop.x, y: stop.top, width: 0, height: stop.bottom - stop.top }, layout.localToClient)
+            : new DOMRect(left, top, right - left, bottom - top);
+        this.host.updateBounds(clientBounds({ x: 0, y: 0, width: layout.paint.box.w, height: layout.paint.box.h }, layout.localToClient), bounds);
+    }
+
+    chrome(now: number, reducedMotion: boolean, devicePixelRatio: number, options?: { readonly visible?: { readonly top: number; readonly bottom: number }; readonly selection?: boolean }): {
+        selection: readonly Rect[]; caret: Rect | null;
+        composition: readonly { rect: Rect; style: string; thickness: string }[];
+        handles: { anchor: { x: number; y: number }; focus: { x: number; y: number } };
+    } {
+        const layout = this.services.layout();
+        const selection = options?.selection === false ? [] : layout.caret.selection(Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus), options?.visible);
+        const stop = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
+        const active = now - this.lastActivity;
+        const visible = reducedMotion || active < 530 || Math.floor(active / 530) % 2 === 0;
+        const scale = Math.hypot(layout.localToClient.a, layout.localToClient.b) * Math.max(devicePixelRatio, 0.01);
+        const caret = visible && this.selection.anchor === this.selection.focus
+            ? { x: stop.x, y: stop.top, width: 1.5 / Math.max(scale, 0.0001), height: stop.bottom - stop.top } : null;
+        const formats = this.formats.length ? this.formats : this.compositionRange ? [{ ...this.compositionRange, style: 'solid', thickness: 'thin' }] : [];
+        const composition = options?.selection === false ? [] : formats.flatMap(format => layout.caret.selection(format.from, format.to, options?.visible).map(rect => ({ rect, style: format.style, thickness: format.thickness })));
+        const anchor = layout.caret.caret({ offset: this.selection.anchor });
+        const focus = layout.caret.caret({ offset: this.selection.focus, affinity: this.affinity });
+        const handles = { anchor: point(layout.localToClient, anchor.x, anchor.bottom), focus: point(layout.localToClient, focus.x, focus.bottom) };
+        return { selection, caret, composition, handles };
+    }
+
+    externalChange(): void {
+        this.typingHistory.close();
+        this.controller.setStoredMarks(null);
+        const before = this.lastRich, after = this.services.readText();
+        this.lastRich = after;
+        if (before !== after) {
+            // The caret is clamped to both values at once, so it never names an offset past the new text. The bounded,
+            // rich-aware mapping then refines it in host-yielding slices; a result that lost a race with the user is dropped.
+            const serial = ++this.mapping, bound = Math.min(projectionLength(before), projectionLength(after));
+            const clamped = { anchor: Math.min(this.selection.anchor, bound), focus: Math.min(this.selection.focus, bound) };
+            this.setExternalSelection(clamped);
+            mapRichTextChangesCooperative(before, after, clamped, { cooperate: yieldToHost })
+                .then(mapped => {
+                    if (serial !== this.mapping || this.closed) return;
+                    this.setExternalSelection(mapped.selection);
+                    this.sync();
+                }, error => this.services.reportError(error));
+        }
+        this.sync();
+    }
+    private setExternalSelection(next: EditSelection): void {
+        this.selection = next;
+        this.services.setSelection(next);
+        this.services.changed(next);
+    }
+    getSelection(): EditSelection { return this.selection; }
+    /** Local boxes share the same caret index as selection and IME geometry. */
+    rangeRects(from: number, to: number): readonly Rect[] { return this.services.layout().caret.selection(from, to); }
+    rangeBounds(from: number, to: number): Rect | null { return this.services.layout().caret.selectionBounds(from, to); }
+    visitRange(from: number, to: number, visit: (rect: Rect) => void): void { this.services.layout().caret.forEachSelection(from, to, visit); }
+    offsetAtClient(x: number, y: number): number {
+        const layout = this.services.layout(), local = point(layout.clientToLocal, x, y);
+        return layout.caret.hitTest(local.x, local.y).offset;
+    }
+    selectAll(): boolean {
+        if (!this.canEdit()) return false;
+        this.select({ anchor: 0, focus: projectionLength(this.services.readText()) });
+        return true;
+    }
+    restoreSelection(selection: EditSelection): void { this.select(selection); this.sync(); }
+
+    copySelection(): RichFragment {
+        return sliceRichText(this.services.readText(), Math.min(this.selection.anchor, this.selection.focus), Math.max(this.selection.anchor, this.selection.focus));
+    }
+
+    prepareCut(): { commit(): void; release(): void } {
+        if (!this.canEdit()) throw new Error('Text editing is not ready for cut');
+        const before = { ...this.selection }, from = Math.min(before.anchor, before.focus);
+        const proof = this.services.prepareCut(this.controller.cutTransaction(before));
+        let released = false, committed = false;
+        const current = () => this.canEdit() && this.selection.anchor === before.anchor && this.selection.focus === before.focus;
+        try { if (!current()) throw new Error('Text selection changed; cut again'); }
+        catch (error) { proof.release(); throw error; }
+        return {
+            commit: () => {
+                if (released || committed || !current()) throw new Error('Text selection changed; nothing was cut');
+                this.typingHistory.close();
+                this.services.history.open('Cut text');
+                try {
+                    proof.commit(); committed = true;
+                    this.lastRich = this.services.readText();
+                    this.select({ anchor: from, focus: from });
+                } finally { this.services.history.close(); }
+            },
+            release: () => { if (!released) { released = true; proof.release(); } },
+        };
+    }
+
+    replaceSelection(fragment: RichFragment): boolean {
+        if (!this.canEdit()) return false;
+        const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
+        const length = fragment.blocks.reduce((sum, block) => sum + block.runs.reduce((n, run) => n + run.text.length, 0), 0) + Math.max(0, fragment.blocks.length - 1);
+        const next = { anchor: from + length, focus: from + length };
+        this.typingHistory.close();
+        this.services.history.open('Paste text');
+        try {
+            this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'splice', id: this.id, key: this.key, from, to, insert: fragment }] });
+            this.lastRich = this.services.readText();
+            this.select(next);
+            return true;
+        } catch (error) { this.services.reportError(error); return false; }
+        finally { this.services.history.close(); }
+    }
+
+    /** A paste is one canonical C2 `set` of the whole value. The new value and selection are prepared in host-yielding
+     * slices from the captured immutable value; the commit is synchronous and taken only if the value, the selection and
+     * the caller's owner still match. Small replacements (spelling) keep the synchronous splice path. */
+    async pasteCooperative(fragment: RichFragment, options: FragmentSnapshotOptions): Promise<boolean> {
+        if (!this.canEdit()) return false;
+        const text = this.services.readText(), before = { anchor: this.selection.anchor, focus: this.selection.focus };
+        const from = Math.min(before.anchor, before.focus), to = Math.max(before.anchor, before.focus);
+        const unchanged = () => this.canEdit() && this.services.readText() === text && this.selection.anchor === before.anchor
+            && this.selection.focus === before.focus && (options.current?.() ?? true);
+        const prepared = await richTextOperations.transactionCooperative(text, [{ from, to, insert: fragment }], before,
+            { ...options, current: unchanged });
+        if (!unchanged()) throw new DOMException('Text paste source changed', 'AbortError');
+        this.typingHistory.close();
+        this.services.history.open('Paste text');
+        try {
+            this.services.apply({ origin: 'paste', label: 'Paste text', ops: [{ t: 'set', id: this.id, key: this.key, value: prepared.text }] });
+            this.lastRich = this.services.readText();
+            this.select(prepared.selection);
+            return true;
+        } catch (error) { this.services.reportError(error); return false; }
+        finally { this.services.history.close(); }
+    }
+
+    applyLink(url: string | null, selection: EditSelection): boolean {
+        if (!this.canEdit()) return false;
+        let applied: boolean;
+        try { applied = this.controller.applyLink(url, selection); }
+        catch (error) { this.services.reportError(error); return false; }
+        if (applied) { this.selection = selection; this.services.changed(selection); this.services.announce(url === null ? 'Link removed' : 'Link formatting changed'); this.host.focus(); }
+        return applied;
+    }
+
+    pointerDown(pointer: TextPointer, handle?: 'anchor' | 'focus'): void { this.pointer.down(pointer, handle); }
+    pointerMove(pointer: TextPointer): void { this.pointer.move(pointer); }
+    pointerUp(id: number): void { this.pointer.up(id); }
+    focus(): void { this.sync(); this.host.focus(); }
+    /** False once focus has left the editor (a chrome control, the tree): a press on the shape then moves it instead of editing. */
+    hasFocus(): boolean { return this.host.hasFocus(); }
+    insertText(text: string): void {
+        if (this.closed || !text) return;
+        const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
+        const offset = from + text.length;
+        this.replace({ from, to, text, selection: { anchor: offset, focus: offset } }, 'typing');
+        this.host.sync();
+    }
+    close(commitComposition = true): void {
+        if (this.closed) return;
+        this.host.finishComposition(commitComposition);
+        this.closed = true;
+        if (this.blinkTimer !== null) clearTimeout(this.blinkTimer);
+        this.blinkTimer = null;
+        this.typingHistory.dispose();
+        this.words.clear();
+        this.services.returnFocus();
+        this.pointer.dispose(); this.host.dispose();
+        if (this.services.alive() && this.services.isStandaloneText() && this.services.plainText().length === 0) {
+            const history = this.services.history;
+            const tokens = this.typingHistory.stepTokens;
+            try {
+                const last = tokens[tokens.length - 1];
+                if (last === undefined || !history.reopenLast(last)) history.open('Delete empty text');
+                let deleted = false;
+                try { this.services.apply({ origin: 'tool', label: 'Delete empty text', ops: [{ t: 'delete', id: this.id }] }); deleted = true; }
+                finally {
+                    const deletion = history.close();
+                    if (deleted && this.services.creationToken !== undefined && deletion !== null) {
+                        history.forgetCreatedNode(this.id, this.services.creationToken, [...tokens, deletion]);
+                    }
+                }
+            } catch (error) { this.services.reportError(error); }
+        }
+        this.services.finish();
+    }
+}

@@ -1,0 +1,358 @@
+.board-viewer-host {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    /* The minimap sizes itself to the narrowest panes by this container (nativeMinimap.css). */
+    container-type: inline-size;
+}
+
+.board-viewer-surface, .board-viewer-overlay {
+    position: absolute;
+    inset: 0;
+}
+
+.board-viewer-surface { overflow: hidden; }
+.board-viewer-surface canvas { display: block; }
+.board-viewer-overlay { pointer-events: none; }
+.board-viewer-overlay > * { pointer-events: auto; }
+
+.board-viewer-notice {
+    position: absolute;
+    inset: auto 16px 16px;
+    padding: 9px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    /* A notice tells, it does not take input: a click on its text reached no board, so focus fell to the body and the
+       tool keys died (measured on canvas2d, where the GPU notice covers the bottom edge). Its Dismiss button still works. */
+    pointer-events: none;
+}
+
+.board-viewer-notice button { pointer-events: auto; }
+
+/* A notice the person can put away: text and its Dismiss in one row, the button kept to its own width. */
+.board-viewer-notice-dismissible {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    z-index: 3;
+}
+.board-viewer-notice-dismissible > span { flex: 1 1 auto; min-width: 0; }
+.board-viewer-notice-dismissible > button { flex: none; }
+
+/* Every notice the board raised, in one box, newest last, each row with its own Dismiss and a hairline between rows.
+   Kept to half the board's height, scrolling inside, so a long run of them never covers the tool strip above. */
+.board-viewer-notices {
+    display: flex;
+    flex-direction: column;
+    z-index: 3;
+    max-height: 50%;
+    overflow-y: auto;
+    padding-block: 0;
+}
+.board-viewer-notices > .board-viewer-notice-dismissible { padding-block: 9px; }
+.board-viewer-notices > .board-viewer-notice-dismissible + .board-viewer-notice-dismissible {
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Renderer status: display only, so it never takes pointer events from the board or its input. */
+.board-paint-status { position: absolute; z-index: 2; pointer-events: none; }
+.board-paint-status-loading {
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--background-primary);
+    color: var(--text-muted);
+}
+.board-paint-status-pending {
+    /* The app's status pill (index.css .status-bar): raised surface, hairline border, muted 12px text. */
+    right: 12px;
+    bottom: 10px;
+    padding: 4px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background: var(--background-primary-alt);
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: nowrap;
+}
+.board-paint-status-failed {
+    inset: auto 16px 16px;
+    padding: 9px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background: var(--background-primary-alt);
+    color: var(--text-error, var(--text-normal));
+    font-size: 12px;
+}
+/* Lifted clear of the board's bottom row and an open minimap: the same steps as the notice and status pill. */
+.board-viewer-host:has(.board-chrome-overlay) .board-paint-status-pending { right: 16px; bottom: 62px; }
+.board-viewer-host:has(.board-chrome-overlay) .board-paint-status-failed { bottom: 62px; }
+.board-viewer-host:has(.native-minimap) .board-paint-status-pending,
+.board-viewer-host:has(.native-minimap) .board-paint-status-failed { bottom: 212px; }
+
+/* Bottom-right is the chrome's zoom and minimap corner. With chrome mounted the notice
+   stands above the bottom row (54px up, 8px clear), and above a visible minimap (62px up,
+   142px tall, so 212px with 8px clear) when one is open; the minimap rule comes later and wins. The same
+   numbers as EditorPane's lifted status pill. */
+.board-viewer-host:has(.board-chrome-overlay) .board-viewer-notice {
+    bottom: 62px;
+}
+
+.board-viewer-host:has(.native-minimap) .board-viewer-notice {
+    bottom: 212px;
+}
+
+/* The space the chrome's bottom edge takes, which the docked style panel stops above (chrome.css .board-chrome-pen).
+   Each rule sets the same numbers as the notice and minimap offsets around it; the more specific combinations come last. */
+.board-viewer-host:has(.board-chrome-overlay) { --board-chrome-reserve: 62px; }
+.board-viewer-host:has(.board-viewer-notice) { --board-chrome-reserve: 120px; }
+.board-viewer-host:has(.native-minimap) { --board-chrome-reserve: 212px; }
+.board-viewer-host:has(.native-minimap):has(.board-viewer-notice) { --board-chrome-reserve: 270px; }
+
+/* Stacked bottom row (ViewerHost's CHROME_STACK_BELOW_PX): the zoom row tops out at 112px, so 120px, and an open
+   minimap at 120 + 142 + 8. */
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-viewer-notice,
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-paint-status-pending,
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-paint-status-failed { bottom: 120px; }
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-viewer-notice,
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-pending,
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-failed { bottom: 270px; }
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) { --board-chrome-reserve: 120px; }
+.board-viewer-host[data-chrome-stacked]:has(.board-viewer-notice) { --board-chrome-reserve: 178px; }
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap) { --board-chrome-reserve: 270px; }
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap):has(.board-viewer-notice) { --board-chrome-reserve: 328px; }
+
+/* The helper buttons (Exit pen mode, Back to content) stack in one column under the top bar, top left, as tldraw does.
+   Their hidden state must win over the button's own display, or a hidden button still takes its row. */
+.board-helper-stack {
+    position: absolute;
+    left: 8px;
+    top: 47px;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.board-helper-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font: inherit;
+    cursor: pointer;
+    pointer-events: auto;
+    box-shadow: 0 1px 4px color-mix(in srgb, black 12%, transparent);
+}
+
+.board-helper-button[hidden] {
+    display: none;
+}
+
+.board-helper-button:hover {
+    background: var(--background-modifier-hover);
+}
+
+.board-helper-button:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
+}
+
+.board-helper-exit-pen {
+    order: 0;
+}
+
+.board-helper-back {
+    order: 1;
+}
+
+/* The picture's own crop (NativePictureCrop): drawn over the board where the picture is, its whole original faded and the kept
+   window bright. The frame turns with the picture; the bar above it does not, so it is a sibling placed in the surface's pixels. */
+.crop-live {
+    position: absolute;
+    width: 0;
+    height: 0;
+    transform-origin: 0 0;
+    pointer-events: none;
+    z-index: 4;
+}
+
+.crop-live-frame {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 50% 50%;
+    pointer-events: none;
+}
+
+.crop-live-faded,
+.crop-live-kept {
+    position: absolute;
+    display: block;
+    max-width: none;
+    user-select: none;
+    pointer-events: none;
+}
+
+.crop-live-full {
+    position: absolute;
+    background: var(--background-primary);
+    pointer-events: none;
+}
+
+.crop-live-faded {
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    opacity: .35;
+}
+
+.crop-live-window {
+    position: absolute;
+    box-sizing: border-box;
+    outline: 1.5px solid var(--text-accent);
+    outline-offset: -1px;
+    cursor: move;
+    pointer-events: auto;
+    touch-action: none;
+}
+
+.crop-live-window.is-circle {
+    border-radius: 50%;
+}
+
+.crop-live-clip {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+
+.crop-live-window.is-circle .crop-live-clip {
+    border-radius: 50%;
+}
+
+.crop-handle {
+    position: absolute;
+    width: 11px;
+    height: 11px;
+    transform: translate(-50%, -50%);
+    background: var(--text-accent);
+    border: 1.5px solid var(--text-on-accent);
+    border-radius: 2px;
+    pointer-events: auto;
+}
+
+.crop-handle-nw { left: 0; top: 0; cursor: nwse-resize; }
+.crop-handle-n { left: 50%; top: 0; cursor: ns-resize; }
+.crop-handle-ne { left: 100%; top: 0; cursor: nesw-resize; }
+.crop-handle-e { left: 100%; top: 50%; cursor: ew-resize; }
+.crop-handle-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.crop-handle-s { left: 50%; top: 100%; cursor: ns-resize; }
+.crop-handle-sw { left: 0; top: 100%; cursor: nesw-resize; }
+.crop-handle-w { left: 0; top: 50%; cursor: ew-resize; }
+
+/* The crop bar and the picture toolbar float above the picture's top edge, centred on it, in the same chrome as the other bars. */
+.crop-bar,
+.picture-toolbar {
+    position: absolute;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    transform: translate(-50%, calc(-100% - 10px));
+    border: 1px solid var(--board-bar-border, transparent);
+    border-radius: 12px;
+    background: var(--board-bar-bg, var(--background-primary));
+    box-shadow: var(--board-bar-shadow, 0 6px 20px rgb(0 0 0 / 16%), 0 1px 3px rgb(0 0 0 / 10%));
+    color: var(--text-normal);
+    white-space: nowrap;
+    pointer-events: auto;
+}
+
+.crop-bar {
+    padding: 4px 6px;
+}
+
+.crop-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.crop-select {
+    padding: 4px 6px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--text-normal);
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+}
+
+.crop-zoom .crop-range {
+    width: 96px;
+    accent-color: var(--text-accent);
+}
+
+.crop-bar-btn,
+.picture-toolbar-btn {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: color-mix(in srgb, var(--text-normal) 80%, var(--background-primary));
+    cursor: pointer;
+}
+
+.crop-bar-btn:hover,
+.picture-toolbar-btn:hover {
+    background: var(--background-modifier-hover);
+}
+
+.crop-bar-apply {
+    color: var(--text-on-accent);
+    background: var(--text-accent);
+}
+
+.crop-bar-apply:hover {
+    background: var(--text-accent);
+    filter: brightness(1.08);
+}
+
+.picture-toolbar-text {
+    width: auto;
+    padding: 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .04em;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}

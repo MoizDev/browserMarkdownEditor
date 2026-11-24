@@ -1,0 +1,291 @@
+import { parseJson } from '../../format/jsonRead';
+import { carryLegacyMetadata } from '../../format/legacyMetadata';
+import type { Sheet } from '../../model/doc';
+import type { RawJson } from '../../model/json';
+import { sheetId, type NodeId, type SheetId } from '../../model/ids';
+import type { MediaId } from '../../model/media';
+import type { Node } from '../../model/nodes';
+import type { SampleLease } from '../../model/samples';
+import { convertLegacyRichText } from '../../text/rich';
+import { SampleStore } from '../../ink/samples';
+import { ReportBuilder, type ImportReport } from '../report';
+import { scaleImportedNode } from '../scale';
+import { readBasicShape } from './basic';
+import { readBinding, resolveBinding, type LegacyBinding } from './bindings';
+import { backdropRole, readShape, shapeBase, type LegacyShape } from './common';
+import { readLegacyEnvelope, type LegacyEnvelope, type LegacyObject } from './envelope';
+import { unknownShapeFields, unknownShapeProperties } from './fields';
+import { readLabelledShape } from './labelled';
+import { readInlineAsset, relativeLegacyAssetSource, type AdmitLegacyMedia, type ImportedMedia } from './media';
+import { readPictureShape } from './pictures';
+import { readLegacySheet } from './sheets';
+import { readStroke } from './stroke';
+import { checkVersion, upgradeShapeProps } from './versions';
+
+export interface LegacyRecordOptions {
+    readonly kind: 'whiteboard' | 'notebook' | 'pdf-ink';
+    readonly samples: SampleStore;
+    readonly admitMedia: AdmitLegacyMedia;
+    /** Copied bytes bound to this source record, never a filesystem or network port. */
+    readonly resolveAsset?: (asset: LegacyObject, sourceOrdinal: number, signal?: AbortSignal) => Promise<Blob | null>;
+    readonly signal?: AbortSignal;
+    readonly assertCurrent: () => void;
+    // Uses the mapped nodes' world bounds, including descendants, and the saved legacy page layout.
+    readonly preparePages?: (shapes: readonly LegacyShape[], nodes: readonly Node[], sheets: readonly Sheet[],
+        paper: LegacyObject | null) => Promise<(node: Node) => {
+        readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd?: boolean;
+    }>;
+}
+/** What a left-out shape cost the person, as the board notice counts it ("2 embeds, 1 unknown shape"). */
+const ITEM_NAMES: Readonly<Record<string, string>> = {
+    draw: 'stroke', highlight: 'highlighter stroke', geo: 'shape', note: 'sticky note', text: 'text', arrow: 'arrow',
+    line: 'line', frame: 'frame', group: 'group', image: 'picture', video: 'video', bookmark: 'link card', embed: 'embed',
+};
+export function legacyItemName(type: unknown): string {
+    return typeof type === 'string' && Object.hasOwn(ITEM_NAMES, type) ? ITEM_NAMES[type] : 'unknown shape';
+}
+
+export interface LegacyRecordDraft {
+    readonly kind: 'draft';
+    readonly source: string;
+    readonly envelope: LegacyEnvelope;
+    readonly sheets: readonly Sheet[];
+    readonly nodes: readonly Node[];
+    readonly media: readonly ImportedMedia[];
+    readonly preservedRecords: readonly { readonly type: string; readonly id: string; readonly raw: RawJson }[];
+    readonly leases: readonly SampleLease[];
+    readonly report: ImportReport;
+    readonly readOnly: boolean;
+    readonly converted: false;
+}
+
+// IMP-1/5: produces an ordered draft; loading/repair must not first deduplicate it into a Map.
+export async function readLegacyRecords(text: string, options: LegacyRecordOptions): Promise<LegacyRecordDraft | { readonly kind: 'failure'; readonly report: ImportReport }> {
+    const report = new ReportBuilder(), envelope = readLegacyEnvelope(text, report);
+    if (!envelope) return { kind: 'failure', report: report.finish() };
+    const sheets: Sheet[] = [], shapes: LegacyShape[] = [], bindings: LegacyBinding[] = [], assets: LegacyObject[] = [];
+    const media: ImportedMedia[] = [], assetIds = new Map<string, MediaId>(), leases: SampleLease[] = [];
+    const bookmarks = new Map<string, LegacyObject>();
+    const preservedRecords: { type: string; id: string; raw: RawJson }[] = [];
+    const preservedIds = new Set<string>();
+    // A record is kept once however many reasons keep it (extra props, then an unknown kind, wrote it twice).
+    const preservedSources = new WeakSet<LegacyObject>();
+    const preserve = (record: LegacyObject, id: string, family: string) => {
+        if (preservedSources.has(record)) return;
+        preservedSources.add(record);
+        const type = `legacy-${family}`;
+        let preservedId = id, suffix = 0;
+        while (preservedIds.has(`${type}\u0000${preservedId}`)) preservedId = `${id.slice(0, 100)}~duplicate${++suffix}`;
+        preservedIds.add(`${type}\u0000${preservedId}`);
+        const raw = parseJson(JSON.stringify({ type, id: preservedId, record })).raw();
+        preservedRecords.push({ type, id: preservedId, raw: carryLegacyMetadata({ type, id: preservedId, raw }) });
+    };
+    const assetOrdinals = new Map<LegacyObject, number>();
+    let ordinal = 0;
+    try {
+    for (const record of envelope.records) {
+        const sourceOrdinal = ordinal++;
+        options.signal?.throwIfAborted();
+        const id = typeof record.id === 'string' ? record.id : null;
+        try {
+            switch (record.typeName) {
+                case 'page': sheets.push(readLegacySheet(record)); report.count('sheet'); break;
+                case 'shape': {
+                    const shape = readShape(record, report);
+                    const version = checkVersion(envelope.versions, `shape.${shape.type}`);
+                    if (!version.ok) {
+                        preserve(record, shape.id, 'shape');
+                        report.refuse(shape.id, version.reason, legacyItemName(shape.type));
+                        break;
+                    }
+                    const upgraded = upgradeShapeProps(shape);
+                    // The record as written stays beside the node made from its filled-in props.
+                    if (upgraded.upgraded) preserve(record, shape.id, 'shape');
+                    shapes.push(upgraded.upgraded ? { ...shape, props: upgraded.props } : shape);
+                    break;
+                }
+                case 'binding': {
+                    if (id) preserve(record, id, 'binding');
+                    const version = checkVersion(envelope.versions, `binding.${String(record.type)}`);
+                    if (!version.ok) { report.repair(id, `${version.reason}; the arrow end is left unattached`); break; }
+                    bindings.push(readBinding(record));
+                    break;
+                }
+                case 'asset': assets.push(record); assetOrdinals.set(record, sourceOrdinal); break;
+                case 'document': case 'user': {
+                    if (!id) throw new Error('Metadata record has no identifier');
+                    preserve(record, id, String(record.typeName));
+                    break;
+                }
+                default:
+                    // Session-scope records (camera, instance, pointer, presence) and anything newer: kept as written in
+                    // the converted file, and none is a drawn item the person loses.
+                    if (id) preserve(record, id, 'unknown-record');
+                    report.repair(id, `Record type ${String(record.typeName)} preserved`);
+            }
+        } catch (error) {
+            options.signal?.throwIfAborted();
+            options.assertCurrent();
+            if (id) {
+                try { preserve(record, id, 'unreadable-record'); } catch { /* Original source remains available. */ }
+            }
+            report.refuse(id, error instanceof Error ? error.message : 'Invalid record',
+                record.typeName === 'shape' ? legacyItemName(record.type) : record.typeName === 'page' ? 'page' : undefined);
+        }
+    }
+    const backdropAssets = new Set<string>(), ordinaryAssets = new Set<string>();
+    for (const shape of shapes) {
+        if (typeof shape.props.assetId !== 'string') continue;
+        (backdropRole(shape, options.kind) === 'backdrop' ? backdropAssets : ordinaryAssets).add(shape.props.assetId);
+    }
+    for (const record of assets) {
+        options.signal?.throwIfAborted();
+        const id = typeof record.id === 'string' ? record.id : null;
+        try {
+            if (!id) throw new Error('Asset has no identifier');
+            if (backdropAssets.has(id) && !ordinaryAssets.has(id)) continue;
+            if (record.type === 'bookmark') { bookmarks.set(id, record); preserve(record, id, 'bookmark-asset'); continue; }
+            let resolved: Blob | undefined;
+            if (relativeLegacyAssetSource(record) !== null) {
+                const blob = await options.resolveAsset?.(record, assetOrdinals.get(record)!, options.signal);
+                options.signal?.throwIfAborted(); options.assertCurrent();
+                if (!blob) throw new Error('Relative legacy media is unavailable');
+                resolved = blob;
+            }
+            const imported = await readInlineAsset(record, options.admitMedia, options.signal, resolved);
+            options.assertCurrent();
+            assetIds.set(id, imported.entry.id); media.push(imported);
+            if (!ordinaryAssets.has(id)) preserve({ assetId: id, media: imported.entry.id }, id, 'orphan-asset');
+        } catch (error) {
+            options.signal?.throwIfAborted();
+            options.assertCurrent();
+            if (id) {
+                try { preserve(record, id, 'unreadable-asset'); } catch { /* Original source remains available. */ }
+            }
+            // Not an item of its own: each picture using it is counted where its shape is read (missing asset).
+            report.refuse(id, error instanceof Error ? error.message : 'Invalid asset');
+        }
+    }
+    if (!sheets.length) sheets.push({ id: sheetId('page:page'), name: 'Page 1', order: 'a1', ext: null });
+    if (options.kind !== 'whiteboard' && sheets.length !== 1) report.refuse(null, 'Paged document has multiple sheets');
+    const sheetIds = new Set<SheetId>(sheets.map(sheet => sheet.id));
+    const knownShapes = new Set<NodeId>(shapes.map(shape => shape.id as NodeId));
+    const bindingEnds = new Map<NodeId, Map<'start' | 'end', LegacyBinding>>();
+    for (const binding of bindings) {
+        let ends = bindingEnds.get(binding.connector);
+        if (!ends) bindingEnds.set(binding.connector, ends = new Map());
+        if (ends.has(binding.terminal)) report.repair(binding.id, 'Extra binding for one endpoint preserved');
+        else ends.set(binding.terminal, binding);
+    }
+    const nodes: Node[] = [];
+    const roots = new Map<Node, { readonly page: number; readonly x: number; readonly y: number; readonly scale: number }>();
+    for (const shape of shapes) {
+        options.signal?.throwIfAborted();
+        try {
+            const role = backdropRole(shape, options.kind);
+            if (role === 'backdrop') continue;
+            if (role === 'ambiguous') report.repair(shape.id, 'Possible page backdrop retained as a picture');
+            const extras = [...unknownShapeFields(shape), ...unknownShapeProperties(shape).map(key => `props.${key}`)];
+            if (extras.length) {
+                // The node is made from the props it knows; the record as written keeps the rest.
+                preserve(shape.source, shape.id, 'shape');
+                report.repair(shape.id, `Unknown properties preserved: ${extras.join(', ')}`);
+            }
+            const root = sheetIds.has(shape.parentId as SheetId);
+            let base = shapeBase(shape, options.kind !== 'whiteboard' && root ? 0 : -1);
+            if (shape.type === 'note' && shape.props.textLastEditedBy != null) {
+                const fields = new Map(base.ext?.fields ?? []);
+                fields.set('legacyTextLastEditedBy', parseJson(JSON.stringify(shape.props.textLastEditedBy)).raw());
+                base = { ...base, ext: { fields, raw: base.ext?.raw ?? new Map() } };
+            }
+            if ((shape.type === 'image' || shape.type === 'video') && typeof shape.props.assetId === 'string'
+                && !assetIds.has(shape.props.assetId)) {
+                report.refuse(shape.id, `Missing or unsupported asset ${shape.props.assetId}`, `${legacyItemName(shape.type)} without its file`);
+                const fields = new Map(base.ext?.fields ?? []);
+                fields.set('legacyMissingAsset', parseJson(JSON.stringify(shape.props.assetId)).raw());
+                base = { ...base, ext: { fields, raw: base.ext?.raw ?? new Map() } };
+            }
+            let node: Node | null = null;
+            if (shape.type === 'draw' || shape.type === 'highlight') {
+                const stroke = readStroke(shape, base, options.samples, report);
+                if (!stroke) {
+                    // Nothing to draw (tldraw writes `path: ''` for a stroke of no points): a counted repair, kept as written.
+                    preserve(shape.source, shape.id, 'shape');
+                    report.repair(shape.id, 'Empty stroke removed');
+                    continue;
+                }
+                leases.push(stroke.lease); node = stroke.node;
+                if (stroke.dropped) report.repair(shape.id, `Dropped ${stroke.dropped} non-finite stroke point${stroke.dropped === 1 ? '' : 's'}`, 'damaged end removed', 'stroke');
+            } else {
+                const ends = bindingEnds.get(base.id);
+                const start = shape.props.start, end = shape.props.end;
+                let endpoints: Parameters<typeof readLabelledShape>[3];
+                if (shape.type === 'arrow' && start && end && typeof start === 'object' && typeof end === 'object') {
+                    const a = start as { x: number; y: number }, b = end as { x: number; y: number };
+                    const resolvedStart = resolveBinding(ends?.get('start'), knownShapes, a);
+                    const resolvedEnd = resolveBinding(ends?.get('end'), knownShapes, b);
+                    if (resolvedStart.repair) report.repair(resolvedStart.repair.id, resolvedStart.repair.reason);
+                    if (resolvedEnd.repair) report.repair(resolvedEnd.repair.id, resolvedEnd.repair.reason);
+                    endpoints = { start: resolvedStart.end, end: resolvedEnd.end };
+                }
+                node = readBasicShape(shape, base) ?? readPictureShape(shape, base, assetIds, bookmarks)
+                    ?? readLabelledShape(shape, base, (value, owner) => {
+                        const rich = convertLegacyRichText(value);
+                        for (const reason of rich.repairs) report.repair(owner, reason);
+                        if (rich.repairs.length || rich.unrepresentable.length) preserve(shape.source, owner, 'rich-text');
+                        // The text is kept; only formatting it cannot hold is simplified (the record keeps the original).
+                        for (const reason of rich.unrepresentable) report.repair(owner, reason, 'formatting simplified', 'text');
+                        return rich.text;
+                    }, endpoints);
+            }
+            if (!node) {
+                preserve(shape.source, shape.id, 'shape');
+                report.refuse(shape.id, `Unsupported shape ${shape.type}`, legacyItemName(shape.type));
+            } else { nodes.push(node); report.count(node.kind); }
+        } catch (error) {
+            try { preserve(shape.source, shape.id, 'shape'); } catch { /* Original source remains available. */ }
+            report.refuse(shape.id, error instanceof Error ? error.message : 'Invalid shape', legacyItemName(shape.type));
+        }
+    }
+    const byId = new Map<NodeId, Node>();
+    for (const node of nodes) if (!byId.has(node.id)) byId.set(node.id, node);
+    if (options.kind !== 'whiteboard' && nodes.length) {
+        if (!options.preparePages) throw new Error('Paged import requires page geometry');
+        const pageForRoot = await options.preparePages(shapes, nodes, sheets, envelope.paper);
+        options.signal?.throwIfAborted();
+        options.assertCurrent();
+        for (const node of nodes) {
+            const parent = byId.get(node.parent as NodeId);
+            if (!sheetIds.has(node.parent as SheetId) && parent && (parent.kind === 'group' || parent.kind === 'frame')) continue;
+            try {
+                const position = pageForRoot(node);
+                if (position.pastEnd) report.repair(node.id, 'Content past the last page retained on the last page');
+                roots.set(node, position);
+            } catch (error) { report.refuse(node.id, error instanceof Error ? error.message : 'Cannot map page', 'item off the pages'); }
+        }
+    }
+    const mappedNodes = nodes.map(node => {
+        let ancestor = node;
+        for (let depth = 0; depth <= 64; depth++) {
+            const mapped = roots.get(ancestor);
+            if (mapped) {
+                try {
+                    const scaled = scaleImportedNode(node, mapped.scale);
+                    return node === ancestor ? { ...scaled, x: mapped.x, y: mapped.y, page: mapped.page } : scaled;
+                } catch (error) { report.refuse(node.id, error instanceof Error ? error.message : 'Invalid page scale'); return node; }
+            }
+            const parent = byId.get(ancestor.parent as NodeId);
+            if (!parent) break;
+            ancestor = parent;
+        }
+        return node;
+    });
+    options.assertCurrent();
+    const result = report.finish();
+    return { kind: 'draft', source: text, envelope, sheets, nodes: mappedNodes, media, preservedRecords, leases, report: result,
+        readOnly: false, converted: false };
+    } catch (error) {
+        for (const lease of leases) lease.release();
+        throw error;
+    }
+}

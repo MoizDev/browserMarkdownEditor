@@ -1,0 +1,9 @@
+diff --git a/src/components/GraphView.tsx b/src/components/GraphView.tsx
+--- a/src/components/GraphView.tsx
++++ b/src/components/GraphView.tsx
+@@ -130,4 +130,4 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, theme
+     useEffect(() => {
+-        if (__BME_BENCH__) {
++        if (true) {
+             try {
+                 const data: GraphMeasurement = { ids: [], ring: [], nodes: null, links: [], publications: 0, steps: 0,

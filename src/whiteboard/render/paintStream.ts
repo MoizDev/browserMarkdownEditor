@@ -1,0 +1,199 @@
+import type { RegionChanges } from '../scene/boundsVersions';
+import type { Affine, PathCommand, Rect } from '../../platform/types';
+import type { RenderToken } from '../../platform/render/types';
+import type { InkCoverage } from '../ink/outline';
+import type { Blend } from './colour';
+import type { InkMaterial, PaintBand, PathMaterial, TextMaterial } from './material';
+import type { TextPaint, FaceTable } from '../text/paint';
+import type { BoardDoc } from '../model/doc';
+import type { SessionDenseRasters } from './sessionDenseRasters';
+import type { ScenePaintNodeStream } from './scenePaintStream';
+import type { ResolvedNodeCache } from './resolvedNodeCache';
+import type { PictureTileCrop, PictureTileSource } from '../media/tilePlan';
+
+export type FillRule = 'nonzero' | 'evenodd';
+export interface PaintClip {
+    readonly key: string;
+    readonly d: readonly PathCommand[];
+    readonly fillRule: FillRule;
+    readonly localToWorld: Affine;
+}
+export interface PaintBase {
+    readonly key: string;
+    readonly nodeId: string;
+    readonly geometryKey: string;
+    // Absolute Float64 affine: includes page/ancestor placement ONCE. Ink point-factor resize
+    // has already happened in coverage; this transform must not rescale its circular radii.
+    // A backend's rebased path composes Translate(path.origin) AFTER this affine, exactly once.
+    readonly localToWorld: Affine;
+    readonly clips: readonly PaintClip[]; // Root-to-leaf intersection, each in its OWN transform.
+    /** Conservative world allocation envelope from realised canonical geometry, never stored file b. */
+    readonly allocationBounds?: Readonly<Rect>;
+}
+export interface PaintPathItem extends PaintBase {
+    readonly kind: 'path';
+    readonly d: readonly PathCommand[];
+    readonly fillRule: FillRule;
+    readonly material: PathMaterial;
+}
+export type PaintInkCoverage = InkCoverage | readonly InkCoverage[];
+export function inkCoverageChunks(coverage: PaintInkCoverage): readonly InkCoverage[] {
+    return Array.isArray(coverage) ? coverage : [coverage as InkCoverage];
+}
+export interface PaintInkItem extends PaintBase {
+    readonly kind: 'ink';
+    readonly coverage: PaintInkCoverage;
+    readonly material: InkMaterial;
+}
+/** A whole picture's media facts, as planPictureTiles takes them: the source, the node's box, its crop and the mip level shown. */
+export interface PaintPictureFacts {
+    readonly media: PictureTileSource;
+    readonly box: Readonly<{ w: number; h: number }>;
+    readonly crop: PictureTileCrop | null;
+    /** The mip level of the item's own picture (its image key's level). */
+    readonly level: number;
+}
+export interface PaintImageItem extends PaintBase {
+    readonly kind: 'image';
+    readonly imageKey: string; // Hash/frame revision key; preparation acquires its decoded lease.
+    /** A borrowed 516×516 dense-tile bitmap, with a two-texel world-aligned apron. */
+    readonly retainedTile?: true;
+    /** A picture tile over the picture's coarse stand-in: if it cannot be shown now it is left out, never a placeholder. */
+    readonly underlaid?: true;
+    /** The picture this item shows whole at one mip, for a route that plans its finer tiles itself (the GPU composer, per tile it
+     * composes, at that tile's scale); exports and captures ignore it. */
+    readonly picture?: PaintPictureFacts;
+    readonly rect: Readonly<Rect>;
+    readonly sourceRect?: Readonly<Rect>; // Crop in SOURCE IMAGE PIXELS, not normalised UV.
+    readonly opacity: number; // Final inherited alpha, once; source pixels retain their alpha.
+    readonly blend: Blend;
+    readonly inverted: boolean; // Content invert+hue-rotate180; page inversion is OUTSIDE stream.
+}
+export interface PaintTextItem extends PaintBase {
+    readonly kind: 'text';
+    readonly paint: TextPaint;
+    readonly faces: FaceTable;
+    readonly material: TextMaterial;
+}
+export type PaintItem = PaintPathItem | PaintInkItem | PaintImageItem | PaintTextItem;
+
+// Already-resolved geometry/materials, reusable by screen and export. Ordinary groups flatten
+// into inherited transforms/clips/colour alpha, never an isolated group-opacity operation.
+// Effect-only rasters occupy their actual position in content, not a separate topmost pass.
+export interface PaintNode {
+    readonly allocationBounds?: Readonly<Rect>;
+    readonly underlay?: readonly PaintItem[];
+    readonly content: readonly PaintItem[];
+}
+export interface PaintNodeSource {
+    /** The actual immutable source document, never the session's newer live model. */
+    readonly sourceDoc?: BoardDoc;
+    readonly theme?: 'light' | 'dark';
+    readonly sessionRasters?: SessionDenseRasters;
+    readonly rasterVariant?: string;
+    /** All contributors inside this region are present; absent means the whole sheet. */
+    readonly sourceWorld?: Readonly<Rect>;
+    readonly token: RenderToken;
+    readonly sceneRevision: number;
+    readonly sensitiveNodes?: ReadonlySet<string>;
+    readonly nodeCount: number;
+    readNode(index: number): PaintNode;
+    isCurrent(): boolean;
+}
+import type { PaintWindow } from './paintWindows';
+
+/** Identity, revision and metadata that every paint source carries, whatever its item representation. */
+export interface PaintFrameRoot {
+    /** The theme a view's frame was painted for: a frame of the other theme is a different picture at the same
+     * revision. Absent for frames no view request produced (export, paper, wet ink), which no view presents. */
+    readonly theme?: 'light' | 'dark';
+    readonly sourceDoc?: BoardDoc;
+    readonly sessionRasters?: SessionDenseRasters;
+    readonly rasterVariant?: string;
+    readonly sourceWorld?: Readonly<Rect>;
+    /** Changed regions since an older raster revision; absent means the cache must invalidate fully. */
+    readonly regionChangesSince?: (from: number) => RegionChanges;
+    /** The node ids changed since an older revision of this frame's scene; absent or null means unknown. */
+    readonly changedNodesSince?: (from: number) => ReadonlySet<string> | null;
+    /** False only when provably no node of `nodes` paints inside `world`; unknown is true. */
+    readonly sensitiveMayMeet?: (world: Readonly<Rect>, nodes: ReadonlySet<string>) => boolean;
+    readonly mayPaint?: (world: Readonly<Rect>) => boolean;
+    readonly occupiedRoot?: Readonly<Rect>;
+    /** Reopens this frame's pinned scene as a bounded stream over a tile apron; absent when not reopenable. */
+    readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal, resolved?: ResolvedNodeCache) => Promise<ScenePaintNodeStream>;
+    readonly token: RenderToken;
+    readonly sceneRevision: number;
+    readonly inkNodeIds: ReadonlySet<string>;
+    readonly sensitiveNodes?: ReadonlySet<string>;
+    /** View-only suppression; never evidence that dry ink was presented. */
+    readonly occludedInkNodeIds?: ReadonlySet<string>;
+}
+/** A full frame: every item of both bands, in canonical order, as band arrays. */
+export interface PaintFrame extends PaintFrameRoot {
+    readonly liveOnly?: undefined;
+    readonly underlay: readonly PaintItem[];
+    readonly content: readonly PaintItem[];
+}
+/** A live-only (dense) frame: it holds only the live nodes, and `sensitiveNodes` is their whole set. Its items
+ * are ordered bounded windows, underlay windows before content windows; no whole band array is ever built. */
+export interface LivePaintFrame extends PaintFrameRoot {
+    readonly liveOnly: true;
+    readonly windows: readonly PaintWindow[];
+}
+/** Any paint source: the frame kind decides how its items are reached, never the caller's guess. */
+export type PaintSource = PaintFrame | LivePaintFrame;
+export type PaintEmit = (item: PaintItem, band: PaintBand) => void;
+export type PaintStreamStatus = 'pending' | 'complete' | 'stale' | 'cancelled';
+
+// Source owns/pins immutable arrays and image/geometry leases until its completed frame retires.
+// readNode is O(1), synchronous and side-effect free; it does NOT walk the model or create layout.
+// No global command-count cap and no forced document-sized result array. Callers can stream
+// ordered bounded chunks. A partial stream is never a publishable replacement/capture.
+export class PaintStreamJob {
+    private source: PaintNodeSource | undefined;
+    private emit: PaintEmit | undefined;
+    private state: PaintStreamStatus | 'failed' = 'pending';
+    private failure: unknown;
+    private band: PaintBand = 'underlay';
+    private node = 0;
+    private item = 0;
+    private items: readonly PaintItem[] | undefined;
+    private stepping = false;
+    constructor(source: PaintNodeSource, emit: PaintEmit) {
+        if (!Number.isSafeInteger(source.nodeCount) || source.nodeCount < 0) throw new RangeError('Invalid paint node count');
+        this.source = source; this.emit = emit;
+    }
+    cancel(): void { if (this.state === 'pending') this.finish('cancelled'); }
+    private get cancelled(): boolean { return this.state === 'cancelled'; }
+    private finish(state: PaintStreamStatus): PaintStreamStatus {
+        this.state = state; this.source = undefined; this.emit = undefined; this.items = undefined;
+        return state;
+    }
+    step(maxWork: number): PaintStreamStatus {
+        if (this.state === 'failed') throw this.failure;
+        if (this.state !== 'pending') return this.state;
+        if (!Number.isSafeInteger(maxWork) || maxWork <= 0) throw new RangeError('Invalid paint stream work slice');
+        if (this.stepping) throw new Error('Paint stream step is not reentrant');
+        this.stepping = true;
+        try {
+            for (let work = 0; work < maxWork; work++) {
+                if (!this.source!.isCurrent()) return this.finish('stale');
+                if (this.items && this.item < this.items.length) {
+                    this.emit!(this.items[this.item++], this.band);
+                    if (this.cancelled) return 'cancelled';
+                    if (!this.source!.isCurrent()) return this.finish('stale');
+                } else if (this.node < this.source!.nodeCount) {
+                    const node = this.source!.readNode(this.node++);
+                    this.items = this.band === 'underlay' ? node.underlay : node.content;
+                    this.item = 0;
+                } else if (this.band === 'underlay') {
+                    this.band = 'content'; this.node = 0; this.items = undefined;
+                } else return this.finish('complete');
+            }
+            return 'pending';
+        } catch (error) {
+            this.failure = error; this.finish('cancelled'); this.state = 'failed';
+            throw error;
+        } finally { this.stepping = false; }
+    }
+}

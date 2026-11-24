@@ -14,7 +14,7 @@
 // apart two vaults whose folders share a name. Forgetting a vault mints a new
 // id if it is ever opened again, which is why `pruneSessions` exists.
 
-import { readJSON, readRecord, flushRecord } from './storage';
+import { readJSON, readRecord, flushRecord, removeStoredValue } from './storage';
 import { MAX_STORED_VAULTS } from './recentVaults';
 
 /** The one localStorage key this module owns. */
@@ -181,7 +181,7 @@ function migrateLegacy(askingVaultId: string): void {
             }
         }
 
-        for (const key of LEGACY_KEYS) localStorage.removeItem(key);
+        for (const key of LEGACY_KEYS) removeStoredValue(key);
     } catch (err) {
         console.warn('Could not migrate the stored tab session:', err);
     }

@@ -1,0 +1,9 @@
+.board-page-controls {
+    position: absolute;
+    z-index: 5;
+    inset-block-start: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: calc(100% - 32px);
+    pointer-events: auto;
+}

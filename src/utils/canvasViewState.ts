@@ -23,6 +23,11 @@ export type CanvasViewPos =
      *  top edge sits (0..1); `zoom` is on top of fit-width (1 = fit width). */
     | { kind: 'notebook'; page: number; offset: number; zoom?: number };
 
+/** Native drawing camera, in the new engine's world-coordinate convention. */
+export interface NativeDrawingViewPos {
+    kind: 'drawing'; v: 2; pageId: string; x: number; y: number; z: number;
+}
+
 /** tldraw's own zoom range is narrower; this only keeps a hand-edited value
  *  from reaching `setCamera` as 0, a negative or 1e300. */
 const MIN_Z = 0.01;
@@ -43,6 +48,9 @@ export function readCanvasViewPos(path: string): CanvasViewPos | undefined {
     if (!pos || typeof pos !== 'object') return undefined;
     const p = pos as Record<string, unknown>;
     if (p.kind === 'drawing') {
+        // A native camera has the opposite sign and its sheet ids are not
+        // library page ids. Never feed it back into the legacy editor.
+        if (p.v !== undefined) return undefined;
         if (typeof p.pageId !== 'string' || !p.pageId.startsWith('page:')) return undefined;
         if (!finite(p.x) || !finite(p.y) || !finite(p.z)) return undefined;
         if (Math.abs(p.x) > MAX_COORD || Math.abs(p.y) > MAX_COORD) return undefined;
@@ -58,6 +66,30 @@ export function readCanvasViewPos(path: string): CanvasViewPos | undefined {
         };
     }
     return undefined;
+}
+
+/** Read or migrate a legacy drawing position only when the importer can map
+ * its page ID to this document's native sheet. An unknown ID is not page one. */
+export function readNativeDrawingViewPos(path: string, mapLegacyPage: (id: string) => string | undefined): NativeDrawingViewPos | undefined {
+    const key = scopedKey(path);
+    const records = readRecord<unknown>(POSITIONS_KEY);
+    const raw = records[key];
+    if (!raw || typeof raw !== 'object') return undefined;
+    const p = raw as Record<string, unknown>;
+    if (p.kind !== 'drawing' || typeof p.pageId !== 'string' || !finite(p.x) || !finite(p.y) || !finite(p.z)
+        || Math.abs(p.x) > MAX_COORD || Math.abs(p.y) > MAX_COORD) return undefined;
+    let result: NativeDrawingViewPos;
+    if (p.v === 2) {
+        if (!p.pageId) return undefined;
+        result = { kind: 'drawing', v: 2, pageId: p.pageId, x: p.x, y: p.y, z: Math.min(MAX_Z, Math.max(MIN_Z, p.z)) };
+    } else if (p.v === undefined && p.pageId.startsWith('page:')) {
+        const pageId = mapLegacyPage(p.pageId);
+        if (!pageId) return undefined;
+        result = { kind: 'drawing', v: 2, pageId, x: -p.x, y: -p.y, z: Math.min(MAX_Z, Math.max(MIN_Z, p.z)) };
+        records[key] = result;
+        flushRecord(POSITIONS_KEY);
+    } else return undefined;
+    return result;
 }
 
 const round = (value: number, places: number) => {
@@ -87,6 +119,13 @@ export function writeCanvasViewPos(path: string, pos: CanvasViewPos, flush = tru
 }
 
 /** Write whatever `writeCanvasViewPos(…, false)` has accumulated. */
+export function writeNativeDrawingViewPos(path: string, pos: NativeDrawingViewPos, flush = true): void {
+    readRecord<NativeDrawingViewPos>(POSITIONS_KEY)[scopedKey(path)] = {
+        kind: 'drawing', v: 2, pageId: pos.pageId, x: round(pos.x, 2), y: round(pos.y, 2), z: round(pos.z, 4),
+    };
+    if (flush) flushRecord(POSITIONS_KEY);
+}
+
 export function flushCanvasViewPositions(): void {
     flushRecord(POSITIONS_KEY);
 }

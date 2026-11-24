@@ -1,0 +1,123 @@
+import type { Camera, Rect, ViewState } from '../types';
+import type { DamageRecord } from './damage';
+import type { CaptureExportOptions } from './captureExport';
+import type { CameraController, Point } from './camera';
+import type { CompositorAppearance, CompositorBackend, CompositorCaptureOptions, CompositorIsolation, CompositorMirrorQuad, LayerCoverage, LayerHost } from './compositor.types';
+import type { BorrowedMirror, MirrorSet, MirrorView } from './mirrorSet';
+import type { PageStack } from './pageStack';
+import type { ScheduledFrame, TouchPanSample } from './scheduler';
+import type { GpuUnavailableCause } from './surfaceBroker.types';
+import type { FrameToken, Layer, RenderToken } from './types';
+
+/** Retain a definition object to retain its layer across setLayers; removing it ends the layer once. */
+export interface PlatformLayerDefinition {
+    readonly id: string;
+    readonly group: 'document' | 'chrome';
+    readonly isolation?: CompositorIsolation;
+    create(host: LayerHost): Layer;
+    revision(layer: Layer): number;
+    /** Changes whenever the layer draws differently at an unchanged revision (a draw-time offset). Folded into the
+     * revision the pane schedules by, so the compositor repaints it; a layer without one keeps its revision alone. */
+    drawVersion?(layer: Layer): number;
+    /** Prospective CPU bytes for the physical viewport, separate from currently leased memory. */
+    cpuWorkingSet?(layer: Layer, viewport: Readonly<{ width: number; height: number }>): Readonly<{
+        mandatoryBytes: number;
+        prefetchBytes: number;
+    }>;
+    /** GPU bytes the layer must hold for the physical viewport at its current scale: its visible positions, pinned against
+     * trimming while the pane is visible. Granted before the surface share and any other scale or off-view ring. */
+    gpuWorkingSet?(layer: Layer, viewport: Readonly<{ width: number; height: number }>): Readonly<{ mandatoryBytes: number }>;
+    /** Gives back up to `bytes` of the layer's own redundant CPU residency when the pane grant refuses a reservation. */
+    cpuEvict?(layer: Layer, bytes: number): void;
+    /** A live gesture's layer (wet ink): its GPU cache is bounded by the pool, not by the pane's cache grant, because it
+     * retires only once the pane's committed layers have presented, with memory from that same grant. */
+    readonly liveInput?: boolean;
+    /** A layer whose CPU reservations are what its frame shows (the board's direct build): admitted while the pool fits, whatever
+     * the pane's CPU share. Background work keeps its grant. */
+    readonly foregroundCpu?: boolean;
+    critical(layer: Layer, view: ViewState): boolean;
+    /** Optional raster document denominator; compiled out with its benchmark-only provider. */
+    benchmarkDomain?(layer: Layer, frame: ScheduledFrame): readonly Readonly<Rect>[];
+    coverage(layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage;
+}
+
+export interface PlatformPresentation extends LayerCoverage {
+    readonly frameId: number;
+    readonly token: FrameToken;
+    readonly backend: CompositorBackend;
+    readonly viewEpoch: number;
+    readonly revision: string;
+    /** The frame whose draw is on screen: this frame for a real present; for a frame skipped as unchanged (presentUnchanged), the last
+     * real present, whose picture it shows at the same drawn camera. A consumer pairing a layer's draw with its presentation pairs on this. */
+    readonly drawnFrameId?: number;
+}
+
+/** All callbacks are current snapshots, not closures over the view that first mounted the pane. */
+export interface PlatformPaneOptions<T extends object> {
+    readonly paneId: string;
+    /** Fixed for this attachment; defaults to auto. */
+    readonly backendPreference?: 'auto' | 'canvas2d';
+    readonly viewLease: number;
+    readonly documentToken: RenderToken;
+    readonly session: {
+        readonly mirrors: MirrorSet<T> | null;
+        checkpoint(): void;
+        captureRegion?(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
+        captureBlob?(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<Blob>;
+        captureExportBlob?(worldRect: Rect, maxSidePx: number, options: CaptureExportOptions): Promise<Blob>;
+    };
+    readonly layers: readonly PlatformLayerDefinition[];
+    readonly initialVisible: boolean;
+    readonly initialFocused: boolean;
+    readonly layout: Readonly<PageStack> | null;
+    /** Optional immutable layout snapshot for page/sheet changes after attachment. */
+    readLayout?(): Readonly<PageStack> | null;
+    readAppearance(): CompositorAppearance;
+    currentToken(): RenderToken | null;
+    readonly camera?: CameraController;
+    readCamera(): Camera;
+    readMirrorView?(view: ViewState): MirrorView;
+    revision(): string;
+    consumeInput(timestamp: number): void;
+    isInteracting(): boolean;
+    setInputEnabled(enabled: boolean): void;
+    cancelViewWork(reason: string): void;
+    writeOverlays(frame: ScheduledFrame): void;
+    onPresentation(presentation: PlatformPresentation | null): void;
+    onError(error: unknown): void;
+    /** 'memory-pressure': THIS pane's grant has drawn it below full quality for memoryNoticeDelayMs (never a cache trim, never
+     * another pane's quality). 'cpu-floor-denied': its visible CPU working set has been refused for as long. Both are withdrawn
+     * through onNoticeCleared when the state ends; consumers must not make either fatal.
+     */
+    onNotice(message: 'memory-pressure' | 'cpu-floor-denied' | 'gpu-unavailable' | 'cpu-pinned', cause?: GpuUnavailableCause): void;
+    /** A notice that described a passing state is over: the pane that showed 'too-many-panes' now draws on the GPU (with its
+     * cause), or a memory notice's state ended (no cause). */
+    onNoticeCleared?(message: 'gpu-unavailable' | 'memory-pressure' | 'cpu-floor-denied', cause?: GpuUnavailableCause): void;
+    /** Report presented quality changes, including recovery; never report an unpresented allocation (§6.4:653). */
+    onQualityChange?(report: { readonly qualityScale: number }): void;
+    mirrorQuad?(entry: BorrowedMirror<T>, view: MirrorView): CompositorMirrorQuad | null;
+    mirrorCoverage?(view: MirrorView, drawn: readonly BorrowedMirror<T>[]): LayerCoverage;
+}
+
+export type AttachPlatformPane = <T extends object>(host: HTMLElement, options: PlatformPaneOptions<T>) => PlatformPane;
+
+export interface PlatformPane {
+    /** Actual live source/view/device fence; not evidence that any pixels were presented. */
+    currentFrameToken(): FrameToken | null;
+    setVisible(visible: boolean): void;
+    setFocused(focused: boolean): void;
+    observeSize(): void;
+    setLayers(layers: readonly PlatformLayerDefinition[]): void;
+    /** A view attached: its layers keep the picture on screen until each first draws complete and sharp. Layers added later do not hold. */
+    beginFreshView(): void;
+    invalidate(reason: string, damage?: DamageRecord): void;
+    startFling(samples: readonly TouchPanSample[]): void;
+    animateZoom(targetZ: number, anchor?: Point): void;
+    animatePan(delta: Point, durationMs: number): void;
+    glideTo(target: Camera, durationMs: number): void;
+    cancelMotion(): void;
+    captureRegion(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
+    captureBlob(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<Blob>;
+    captureExportBlob(worldRect: Rect, maxSidePx: number, options: CaptureExportOptions): Promise<Blob>;
+    dispose(): void;
+}

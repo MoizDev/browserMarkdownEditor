@@ -1,0 +1,9 @@
+diff --git a/src/utils/noteResolver.ts b/src/utils/noteResolver.ts
+--- a/src/utils/noteResolver.ts
++++ b/src/utils/noteResolver.ts
+@@ -39,4 +39,4 @@ export function getNoteResolver(fileTree: FileTreeNode[]): NoteResolver {
+     // The click has always used the first canonical match. Keeping every path
+     // in order makes that policy explicit instead of an accidental last Map.set.
+-    const resolve = (target: string) => pathsByName.get(baseName(target).toLowerCase())?.[0];
++    const resolve = (target: string) => pathsByName.get(baseName(target).toLowerCase())?.at(-1);
+     const resolver: NoteResolver = {

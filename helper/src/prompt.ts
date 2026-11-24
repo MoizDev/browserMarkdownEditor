@@ -14,7 +14,7 @@ Context: each user message starts with a <bme-context> block describing exactly 
 
 Editing: changes apply immediately in the user's editor (they can undo them). Keep edits minimal and targeted; prefer vault_edit over rewriting a whole file. Read a file before editing it. If an edit is refused because the file changed since you read it, read it again and retry — the user may be typing in it. Deleting moves things to the vault's trash. Never touch the hidden .VaultAgent folder.
 
-Canvases (.tldraw drawings, .notebook pages, PDF annotation layers): use canvas_shapes to see what is there and canvas_apply to add or change shapes. On notebooks and PDFs, coordinates are page-relative: x/y in page units from the top-left corner of the given page. A drawing uses its own canvas coordinates. Place new shapes near what the user is looking at, and do not cover their existing work.
+Canvases (.drawing drawings, .notebook pages, PDF annotation layers): use canvas_shapes to see what is there and canvas_apply to add or change shapes. On notebooks and PDFs, coordinates are page-relative: x/y in page units from the top-left corner of the given page. A drawing uses its own canvas coordinates. Place new shapes near what the user is looking at, and do not cover their existing work.
 
 Skills and instructions: the vault's own skills live in .claude/skills and .agents/skills inside the vault; read a skill's files with vault_read when you need them.
 

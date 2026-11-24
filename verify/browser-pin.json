@@ -1,0 +1,32 @@
+{
+  "_why": "Every functional and timing run uses this one browser, launched by path: installed Chrome updates itself mid-run, and Playwright's bundled Chromium crashes reading a stored folder handle (verify-in-browser). This build survived that read on reload 3 of 3. `node verify/install-browser.mjs` downloads this machine's entry and checks its bytes and sha256; every hash below was computed from the downloaded archive.",
+  "product": "Chrome for Testing",
+  "version": "157.0.8103.39",
+  "driver": "playwright@1.63.0",
+  "platforms": {
+    "mac-arm64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.39/mac-arm64/chrome-mac-arm64.zip",
+      "sha256": "2a2a41957ca5417d1caf800f3bf946ef79101ca8220f0845bbd359eeda7a6d32",
+      "bytes": 196563761,
+      "executable": "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+    },
+    "mac-x64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.39/mac-x64/chrome-mac-x64.zip",
+      "sha256": "0e13544197625cadb954dedcd3703b897f1cbcba93406fd0f45b5da439bd1505",
+      "bytes": 207117288,
+      "executable": "chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+    },
+    "linux64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.39/linux64/chrome-linux64.zip",
+      "sha256": "e4cffe4c057c8dd96832e0ac3060e79eecc3b1c7fb5cd18cdf2e23702a13ac55",
+      "bytes": 203505426,
+      "executable": "chrome-linux64/chrome"
+    },
+    "win64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.39/win64/chrome-win64.zip",
+      "sha256": "4e98720b851417d23650e1e022837969add26300d56dc4b2b60ebde8a699b36c",
+      "bytes": 210598806,
+      "executable": "chrome-win64/chrome.exe"
+    }
+  }
+}

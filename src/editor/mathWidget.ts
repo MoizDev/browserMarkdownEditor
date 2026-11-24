@@ -1,4 +1,5 @@
 import { WidgetType } from '@codemirror/view';
+import { countEditorWidget } from './editorPerf';
 
 /* ── KaTeX, fetched when a formula first needs it ───────────────────────────
  * KaTeX is ~250KB of the main bundle — the largest single library in it, bigger
@@ -49,10 +50,10 @@ function normalizeForKatex(latex: string): string {
  *
  * Exported because the table cell renderer needs the SAME call, and a second
  * copy of these options is the "exists twice" hazard (AGENTS.md) in miniature.
- * It is a DOM builder, not a second innerHTML sink: katex.render builds its
- * tree with createElement/createTextNode, so no note text is ever parsed as
- * markup here (see tableWidget.ts's allowlist note, which is the app's only
- * innerHTML write site for note text).
+ * It is a DOM builder, not an innerHTML sink: katex.render builds its tree
+ * with createElement/createTextNode. The app's two note-text HTML sinks are
+ * tableWidget's attribute-free allowlist and mermaidWidget's strict sanitized
+ * renderer; KaTeX introduces neither a third sink nor a string write.
  *
  * `output: 'html'` is load-bearing for a table cell as much as for a widget:
  * it suppresses KaTeX's parallel MathML layer, so `el.textContent` stays the
@@ -122,6 +123,7 @@ export class MathWidget extends WidgetType {
 
     constructor(latex: string, displayMode: boolean = false) {
         super();
+        if (__BME_BENCH__) { countEditorWidget(); }
         this.latex = latex;
         this.displayMode = displayMode;
     }

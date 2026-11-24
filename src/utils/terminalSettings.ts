@@ -1,4 +1,4 @@
-// The two terminal settings, as an import-free external store: SettingsPanel
+// The two terminal settings, as a lightweight external store: SettingsPanel
 // (main chunk) writes them and the lazy terminal chunk reads them, so neither
 // may import the other. localStorage only — nothing about a terminal belongs in
 // the vault's `.appearance.json`.
@@ -6,6 +6,8 @@
 // Both are clamped/cleaned on READ: localStorage is user-editable, and a NaN
 // font size reaches xterm's cell measurement while a stray `;` or `{` in the
 // family would end up inside a CSS font shorthand.
+
+import { removeStoredValue, writeStoredValue } from './storage';
 
 const FAMILY_KEY = 'terminalFontFamily';
 const SIZE_KEY = 'terminalFontSize';
@@ -74,10 +76,8 @@ export function subscribeTerminalSettings(listener: () => void): () => void {
 }
 
 function write(key: string, value: string | null): void {
-    try {
-        if (value === null || value === '') localStorage.removeItem(key);
-        else localStorage.setItem(key, value);
-    } catch { /* storage blocked — the setting simply does not persist */ }
+    if (value === null || value === '') removeStoredValue(key);
+    else writeStoredValue(key, value);
     emit();
 }
 
@@ -91,10 +91,8 @@ export function setTerminalFontSize(size: number | null): void {
 
 /** Settings → Reset to Defaults. */
 export function resetTerminalSettings(): void {
-    try {
-        localStorage.removeItem(FAMILY_KEY);
-        localStorage.removeItem(SIZE_KEY);
-    } catch { /* see write() */ }
+    removeStoredValue(FAMILY_KEY);
+    removeStoredValue(SIZE_KEY);
     emit();
 }
 

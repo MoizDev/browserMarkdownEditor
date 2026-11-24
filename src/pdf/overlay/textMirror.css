@@ -1,0 +1,22 @@
+.pdf-mirror-skip,
+.pdf-mirror-live {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.pdf-mirror-skip:focus {
+    z-index: 1;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+}
+
+.pdf-mirror-line::selection {
+    background: transparent;
+    color: transparent;
+}

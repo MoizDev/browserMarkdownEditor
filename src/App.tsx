@@ -1,111 +1,65 @@
-import { runReaderHostCommand } from './utils/documentReading';
-import { canFlushTab,canReadTabText,canUpdateTabContent,canChangeTabMode,opensInApp,representationFor,classifyRequestedKind,getReadingSurface } from './utils/documentReading';
-import type { ReaderIdentity,ReaderIntegration,ReaderToken } from './types/reading';
-import { flushReaderViewState,flushPdfTextViewState,writeReaderViewState,writePdfTextViewState,moveReaderViewState } from './utils/readerViewState';
-import { flushSync } from 'react-dom';
-import React, { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, lazy, Suspense } from 'react';
-import type { EditorState } from '@codemirror/state';
+import { Suspense, lazy, useCallback, useLayoutEffect, useRef } from 'react';
 import { useFileSystem } from './context/FileSystemContext';
-import { loadHelpDoc } from './utils/helpDocLoader';
-import { buildGraph, collectMarkdownFiles, baseName, clearLinkCache, primeLinks } from './utils/graph';
-import { setRecordScope } from './utils/storage';
-import { pruneSessions, readSession, writeSession } from './utils/tabSessions';
-import { joinVaultPath, parentVaultPath } from './utils/paths';
-import { ASSETS_DIR, assetEmbeds, referencesAsset } from './utils/assets';
-import { setTerminalStartSource } from './utils/terminalStart';
-import { ensureVaultId } from './utils/vaultAgentStore';
-import { collectFiles } from './utils/tree';
-import { nameTaken } from './utils/entryNames';
-import { dropPending, retargetPending, type PendingRestore, type PendingRestoreEntry } from './utils/pendingRestore';
-import { bumpSaveEpoch } from './utils/saveEpoch';
-import { beginPdfRotation, endPdfRotation } from './utils/pdfRotating';
-import { getFileTimes, recordFileWritten, resetFileTimes, stampFileTimes } from './utils/fileTimes';
-import { clearBaselines, dropBaseline, getBaseline, setBaseline } from './utils/docBaselines';
-import { sameStat, type DiskVersion } from './utils/diskVersion';
-import { pairMoveCandidates, type VaultChangeBatch } from './utils/vaultChanges';
-import { reloadSpec } from './editor/externalReload';
-import { isTextFile } from './utils/vaultSearch';
-import { ensureNotebookExt, isEpubFile, isMarkdownFile, isCanvasFile, isCodeFile, isNotebookFile, isPdfFile, notebookPdfName, stripPdfExt } from './utils/fileTypes';
-import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from './utils/recentVaults';
-import {
-  EMPTY_LAYOUT,
-  closePane as closePaneIn,
-  closePath,
-  focusTab,
-  focusedPath as focusedPathOf,
-  goBack,
-  goForward,
-  mergeLayouts,
-  moveTabToPane,
-  openInSidePane,
-  openTab as openTabIn,
-  paneById,
-  relabelPaths,
-  renamePath,
-  restoreLayout,
-  selectTab as selectTabIn,
-  setPaneSizes,
-  splitToPane,
-  visiblePaths,
-} from './utils/tabPanes';
-import { clampTabSize } from './editor/lists';
-import type { WikiLinkTarget } from './editor/wikiLinkComplete';
-import { retryMissingAssets } from './editor/imageWidget';
-import { getNotebookExporter, clearNotebookRenderData, moveNotebookRenderData } from './utils/notebookRenderCache';
-import { findLinkedVault, readLocation, vaultLinkName, writeLocation } from './utils/appUrl';
-import { setActiveFilePath } from './utils/activeFile';
-import { placeholderFor } from './utils/createRequest';
-import {
-  ENTRY_STYLE_FILE, LEGACY_STYLE_FILE, emptyEntryStyles, forgetEntry, mergeShard,
-  needsFanOut, parseEntryStyles, renameEntry, serializeEntryStyles, shardEntryStyles,
-  withEntryOrder, withEntryStyle, type IconNode,
-} from './utils/entryStyle';
-import { getEntryStyles, setEntryStyles } from './utils/entryStyleStore';
-import { findDirNode } from './utils/treeShare';
-import { onIdle } from './utils/pool';
-import {
-  collapsePaths as collapsePathsInStore, expandPaths as expandPathsInStore,
-  retargetExpandedPaths as retargetExpandedPathsInStore, toggleExpanded,
-} from './utils/expandedPaths';
-import { setTableNotify } from './editor/tableEdit';
-import { closeContextMenu, getContextMenu, subscribeContextMenu } from './utils/contextMenu';
-// Cache only — importing utils/pdfAnnotation here would pull pdf-lib + pdf.js
-// (~1.3MB) into the main bundle, which a markdown-only session never needs.
-// The builder itself is import()ed at the two points that actually write a PDF.
-import { getPdfRenderData, clearPdfRenderData, movePdfRenderData } from './utils/pdfRenderCache';
-import { clearViews, getView, moveView } from './utils/viewRegistry';
-import type { AgentHostDeps } from './utils/agentHost';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
 import SidebarFooter from './components/SidebarFooter';
-import { prefetchPanes } from './components/prefetchPanes';
 import { SidebarRailExpand } from './components/SidebarRailExpand';
-import { scheduleAgentUpdateCheck } from './components/agentUpdateHint';
 import ConfirmDialog from './components/ConfirmDialog';
 import ContextMenu from './components/ContextMenu';
 import EditorPane from './components/EditorPane';
 import TerminalDock from './components/TerminalDock';
-import { connectHelperForTerminal } from './components/terminalLaunch';
-import type {
-  ActiveFile,
-  ContentChangeOptions,
-  DiskAction,
-  FileTreeNode,
-  FileTreeFileNode,
-  OpenTab,
-  GraphData,
-  GraphNode,
-  SettingsDefaults,
-  TabLayout,
-  Theme,
-  MainView,
-  CaretStyle,
-  EditorMode,
-  EditorRevealRequest,
-  TextRange,
-  TrashItem,
-  TrashRestoreResult,
-} from './types';
+import RecoverySurface from './components/RecoverySurface';
+import { LoadingScreen, WelcomeScreen } from './components/WelcomeScreen';
+import { closeContextMenu } from './utils/contextMenu';
+import { useRefuseUnclaimedDrop } from './app/useRefuseUnclaimedDrop';
+import { useLiveVault } from './app/useLiveVault';
+import { useStatusLine } from './app/useStatusLine';
+import { useOpenDocuments } from './app/useOpenDocuments';
+import { useAppSettings } from './app/useAppSettings';
+import { useAppDialogs } from './app/useAppDialogs';
+import { useMainView } from './app/useMainView';
+import { useOverlayPanels } from './app/useOverlayPanels';
+import { useExplorerState } from './app/useExplorerState';
+import { useVaultMoves } from './app/useVaultMoves';
+import { useVaultIndex } from './app/useVaultIndex';
+import { useRecoveryJournal } from './app/useRecoveryJournal';
+import { useSessionPersistence } from './app/useSessionPersistence';
+import { useSidebar } from './app/useSidebar';
+import { useSidePanels } from './app/useSidePanels';
+import { useAssetLifecycle } from './app/useAssetLifecycle';
+import { usePdfSeeds } from './app/usePdfSeeds';
+import { useDocumentOpener } from './app/useDocumentOpener';
+import { useEntryStyles } from './app/useEntryStyles';
+import { useDiskState } from './app/useDiskState';
+import { useNativeCanvasHost } from './app/useNativeCanvasHost';
+import { useConversionRestore } from './app/useConversionRestore';
+import { useNotebookExport } from './app/useNotebookExport';
+import { useExternalUrlsPerVault } from './app/externalOpen';
+import { useSaveFunnel } from './app/useSaveFunnel';
+import { usePdfActions } from './app/usePdfActions';
+import { useVaultOpeners } from './app/useVaultOpeners';
+import { useTabLifecycle } from './app/useTabLifecycle';
+import { usePaneActions } from './app/usePaneActions';
+import { useVaultSwitch } from './app/useVaultSwitch';
+import { useAppLink, useUrlWriter } from './app/appLink';
+import { useSessionRestore } from './app/useSessionRestore';
+import { usePanePrefetch } from './app/usePanePrefetch';
+import { useCreateEntries } from './app/useCreateEntries';
+import { useTrashActions } from './app/useTrashActions';
+import { useRenameMove } from './app/useRenameMove';
+import { useOutsideChanges } from './app/useOutsideChanges';
+import { useUpdateNotice } from './app/useUpdateNotice';
+import { useDiskBarActions } from './app/useDiskBarActions';
+import { useAgentCanvasAccess } from './app/useAgentCanvasAccess';
+import { useVaultIdentity } from './app/useVaultIdentity';
+import { useAgentHostDeps } from './app/useAgentHostDeps';
+import { useReaderIntegration } from './app/useReaderIntegration';
+import { useGlobalShortcuts } from './app/useGlobalShortcuts';
+import { useRecoveryActions } from './app/useRecoveryActions';
+import { requestDocumentKeyboard } from './utils/documentKeyboard';
+import SaveNotices from './components/SaveNotices';
+import { opensInApp } from './utils/documentReading';
+import type { FileTreeNode } from './types';
 
 // The AI agent panel and everything under it (its CSS, the WebSocket bridge,
 // the reply renderer, the aicss components) load on first open — a reader who
@@ -120,253 +74,34 @@ const TrashPanel = lazy(() => import('./components/TrashPanel'));
 const GraphView = lazy(() => import('./components/GraphView'));
 
 /**
- * Object URLs handed to `window.open` for files this app doesn't edit (images,
- * video, archives), one per file VERSION.
- *
- * These were previously minted fresh on every open and never revoked, so a
- * session of browsing media left a permanent registry entry — and a pinned file
- * reference — behind for each click. Reusing the URL bounds that to the number
- * of distinct files opened.
- *
- * Deliberately NOT a timed revoke: the tab we opened may re-request the URL
- * later (a <video> seeking, a reload), and any timeout is a guess about the
- * user's session. Replacing an entry only when the file itself changed is
- * unambiguously safe.
+ * The composition root. Every piece of the app's state lives in a module of its
+ * own under `src/app/`, each one hook with explicit inputs; App calls them in
+ * the order their effects must run, hands each what it needs, and draws the
+ * workspace. Orders that matter: the session's persist effect runs before the
+ * vault switch, the switch before the restore pass, and the restore before the
+ * URL writer — each reads what the one before it just set on the same commit.
  */
-const externalUrls = new Map<string, { url: string; mtime: number; size: number }>();
-
-function externalOpenUrl(path: string, file: File): string {
-  const cached = externalUrls.get(path);
-  if (cached && cached.mtime === file.lastModified && cached.size === file.size) return cached.url;
-  if (cached) URL.revokeObjectURL(cached.url);
-  const url = URL.createObjectURL(file);
-  externalUrls.set(path, { url, mtime: file.lastModified, size: file.size });
-  return url;
-}
-
-/** Session-unique document ids (see OpenTab.id). Never persisted — the stored
- *  session records paths, so these are re-minted on restore. They must never
- *  REPEAT within a page load, not merely differ among the documents open at one
- *  moment: the editor-state cache can still hold a closed document's state
- *  until EditorPane next prunes it (after a stay in the graph view, which
- *  unmounts it), and a recycled id would hand that state — text and undo
- *  history — to a different document. The monotonic counter guarantees it;
- *  keep it that way. */
-let docSeq = 0;
-function newTabId(): string {
-  return `d${(++docSeq).toString(36)}`;
-}
-
-/**
- * Whether a document's text can embed a picture — i.e. whether its `.Assets`
- * folder has to be kept in step with it. A drawing and a PDF are text on disk
- * but a canvas on screen, and the Help guide has no folder of its own.
- */
-function tracksAssets(file: ActiveFile): boolean {
-  return !file.isHelp && !!file.parentHandle && isTextFile(file.name) && !isCanvasFile(file.name);
-}
-
-/** A read that failed because the file is no longer there — the one failure
- *  that means a saved tab should be dropped rather than kept (see
- *  OpenTab.readError). Same test FileSystemContext uses for a missing vault. */
-function isNotFound(err: unknown): boolean {
-  return (err as DOMException)?.name === 'NotFoundError';
-}
-
-/** A short, human line for why a read failed — shown in the unreadable pane. */
-function describeReadError(err: unknown): string {
-  const message = (err as DOMException)?.message;
-  return typeof message === 'string' && message ? message : String(err);
-}
-
-/**
- * Structural equality for two link graphs.
- *
- * buildGraph is deterministic for a given vault — nodes follow the file list and
- * links follow document order — so an element-wise walk is exact, and it lets a
- * rebuild that found nothing new keep the previous object identity instead of
- * cascading a re-render (and a graph re-simulation) through the app.
- */
-const EMPTY_GRAPH: GraphData = { nodes: [], links: [], backlinks: {}, outlinks: {} };
-
-/**
- * The file at a vault-relative path, and the directory holding it.
- *
- * Walked down from the root rather than looked up in the file tree, so it
- * answers for a path the tree has not caught up with yet — which is exactly the
- * moment a rename or a move needs it. Throws if anything on the way is missing,
- * which the caller reports rather than guesses past.
- */
-async function resolveVaultFile(root: FileSystemDirectoryHandle, path: string) {
-  const segs = path.split('/');
-  const name = segs.pop()!;
-  let parent = root;
-  for (const seg of segs) parent = await parent.getDirectoryHandle(seg);
-  return { handle: await parent.getFileHandle(name), parentHandle: parent };
-}
-
-/** The folder at a vault-relative path; throws if anything on the way is
- *  missing. resolveVaultFile's sibling, for following a folder renamed on disk. */
-async function resolveVaultDir(root: FileSystemDirectoryHandle, path: string) {
-  let dir = root;
-  for (const seg of path.split('/')) dir = await dir.getDirectoryHandle(seg);
-  return dir;
-}
-
-async function vaultDirExists(root: FileSystemDirectoryHandle, path: string): Promise<boolean> {
-  try { await resolveVaultDir(root, path); return true; } catch { return false; }
-}
-
-/** A question (or a notice) waiting on screen — see App's `ask`/`tell`. */
-interface DialogRequest {
-  title: string;
-  body: React.ReactNode;
-  confirmLabel: string;
-  danger?: boolean;
-  /**
-   * Turns the dialog into a question with an answer to TYPE (see
-   * ConfirmDialog's `input`, which this mirrors).
-   *
-   * ON `DialogRequest`, unlike `altLabel` below: a field is meaningful to every
-   * raiser — a notice raised by `tell` could legitimately want one read back,
-   * and nothing about `ask`'s yes/no forbids one either — so declaring it here
-   * costs nothing and would only have to be widened later. What it does NOT do
-   * is deliver the value: only `askForName` resolves the typed answer, because
-   * only its promise has a `string` to resolve with.
-   */
-  input?: {
-    label: string;
-    initialValue: string;
-    placeholder?: string;
-    /** Why this value cannot be accepted, or null. Runs per keystroke, so it
-     *  must be synchronous — which is why `handleNewNote` leaves "that name is
-     *  taken" to `handleCreateFile`'s async guard rather than checking here. */
-    validate?: (value: string) => string | null;
-  };
-}
-interface AppDialog extends DialogRequest {
-  /** The typed answer, for a request carrying an `input`. Every other call site
-   *  ignores it — a function of fewer parameters is assignable — so the zero-arg
-   *  `onConfirm`s that `ask`, `askChoice` and `tell` build still type-check. */
-  onConfirm: (value: string) => void;
-  /** Absent on a notice, which has nothing to decline. */
-  onCancel?: () => void;
-  /** The third answer, and its label, on the one question that has one — see
-   *  `askChoice`. Deliberately NOT on `DialogRequest`: ConfirmDialog draws the
-   *  third button only when it has both, so an `altLabel` handed to `ask` or
-   *  `tell` would type-check and then silently render nothing. */
-  altLabel?: string;
-  onAlt?: () => void;
-  /** Stamped by `raise`, never by a caller — see `dialogSeq`. */
-  id?: number;
-}
-
-/**
- * Is this graph the same one we already handed out?
- *
- * `rebuildGraph` keeps the PREVIOUS GraphData object when the answer is yes, and
- * that identity is load-bearing: a fresh object propagates into GraphView's
- * effects, which re-seed the simulation (alpha = 1) and tear down and rebuild
- * the RAF loop and the ResizeObserver. Without this, an unrelated tab
- * autosaving visibly re-heated the graph the user was looking at — and the
- * graph is rebuilt after EVERY save, not just on tree changes.
- */
-function sameGraph(a: GraphData, b: GraphData): boolean {
-  if (a.nodes.length !== b.nodes.length || a.links.length !== b.links.length) return false;
-  for (let i = 0; i < a.nodes.length; i++) {
-    const x = a.nodes[i], y = b.nodes[i];
-    // `node` too: a tree refresh hands out fresh handles, and the graph's nodes
-    // are what the graph view and backlinks open files through.
-    if (x.id !== y.id || x.degree !== y.degree || x.unresolved !== y.unresolved || x.node !== y.node) return false;
-  }
-  for (let i = 0; i < a.links.length; i++) {
-    if (a.links[i].source !== b.links[i].source || a.links[i].target !== b.links[i].target) return false;
-  }
-  return true;
-}
-
-/**
- * Is this keystroke ⌘/Ctrl + `letter`, whatever case the OS reported?
- *
- * `e.key` carries the CHARACTER the layout produced, so with Caps Lock on it is
- * `'E'` and a bare `e.key === 'e'` silently stops matching — ⌘E just did
- * nothing, with no feedback of any kind, for as long as the light was on.
- * Lower-casing is the fix; the `shiftKey` test is what keeps it honest.
- *
- * Caps Lock and Shift are indistinguishable in `e.key` — both give `'E'` — and
- * `e.shiftKey` is the only thing that tells them apart. It is tested rather
- * than ignored because ⌘⇧S / ⌘⇧N / ⌘⇧E are conventionally DIFFERENT commands
- * (Save As, New Window, …): firing the unshifted action on them would both
- * surprise the user and spend three chords this app may want later. So Caps
- * Lock is accepted and Shift is declined, which is exactly the distinction a
- * user would draw.
- */
-function isCmdLetter(e: KeyboardEvent, letter: string): boolean {
-  return (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === letter;
-}
-
-/** Which open documents trashing `node` takes. A folder's own path is never a
- *  document's — except that the Help guide's pseudo-path is a bare name, so a
- *  vault folder called "help-guide" closed the Help tab. Only a FILE is matched
- *  by equality; a folder is matched by the `path/` prefix and nothing else. */
-function trashedBy(node: FileTreeNode): (path: string) => boolean {
-  return node.kind === 'directory'
-    ? (path: string) => path.startsWith(`${node.path}/`)
-    : (path: string) => path === node.path;
-}
-
-/** The agent panel's width: at least 300px (its composer and header need it),
- *  at most half the window (the editor keeps the other half), 400 by default. */
-const AGENT_PANEL_MIN = 300;
-function clampAgentWidth(width: number): number {
-  const max = Math.max(AGENT_PANEL_MIN, Math.floor(window.innerWidth / 2));
-  return Number.isFinite(width) ? Math.min(max, Math.max(AGENT_PANEL_MIN, Math.round(width))) : 400;
-}
-
-/** localStorage is the user's to edit, and a NaN here would reach a CSS
- *  variable and then CodeMirror's own measuring. 10–24px, 14 by default. */
-function clampCodeFontSize(value: number): number {
-    return Number.isFinite(value) ? Math.min(24, Math.max(10, Math.round(value))) : 14;
-}
-
-/** The tab title whenever it is not the vault's name — before a vault opens,
- *  and always once Settings → Vault turns that off. Must match index.html's
- *  <title>, which is what the tab shows before React mounts. */
-const APP_TITLE = 'Markdown Editor';
-
-/** How many closed documents ⌥⇧T can reach back through. Session-only and
- *  bounded: a long session closes hundreds of tabs and nobody reaches past a
- *  handful, while an unbounded list would pin a path per close for the day. */
-const CLOSED_TAB_MEMORY = 20;
-
-/** Every folder in the tree that holds an `.appearance.json`, with the handle
- *  the walk kept for it — depth first, so a parent's looks are read before the
- *  looks of anything inside it. No I/O: the tree already knows. */
-function foldersWithStyleFile(
-    nodes: readonly FileTreeNode[],
-): { path: string; styleFile: FileSystemFileHandle }[] {
-    const out: { path: string; styleFile: FileSystemFileHandle }[] = [];
-    const walk = (list: readonly FileTreeNode[]) => {
-        for (const node of list) {
-            if (node.kind !== 'directory') continue;
-            if (node.styleFile) out.push({ path: node.path, styleFile: node.styleFile });
-            walk(node.children);
-        }
-    };
-    walk(nodes);
-    return out;
-}
-
 export default function App() {
+  useRefuseUnclaimedDrop();
+
   const {
     rootHandle,
+    handleIO,
+    ensureVaultId,
+    registerBeforeRootChange,
     fileTree,
     isLoading,
     previousVault,
     linkedVault,
     recentVaults,
     currentVaultId,
-    pickDirectory,
+    getVaultActivation,
+    resolveVaultDir,
+    resolveVaultFile,
+    verifyVaultFileIdentity,
+    vaultDirExists,
+    nameTaken,
+    pickDirectory: pickDirectoryFromFileSystem,
     openRecentVault,
     openFolderAsVault,
     openLinkedVault,
@@ -382,4234 +117,401 @@ export default function App() {
     retireAsset,
     restoreAsset,
     restoreVault,
+    requestIndexPermission,
     moveToTrash,
+    keepCopyInGarbage,
+    keepConversionBackup,
     listTrash,
     restoreFromTrash,
+    restoreConversionCopy,
+    copyTrashFile,
     deleteFromTrash,
     emptyTrash,
     moveFile,
     renameFile,
     readFileVersioned,
     readFileSnapshot,
+    readBoardAsset,
+    readLegacyBoardAsset,
+    putBoardAsset,
     readBytesVersioned,
+    inspectExportTarget,
+    writeNotebookExport,
     statFile,
     writeFileVersioned,
     writeConflictCopy,
+    writeDistinctCopy,
     recreateFile,
     resolveFileHandle,
     subscribeVaultChanges,
     liveDetection,
   } = useFileSystem();
 
-  // Every open document, flat — one entry per file, whatever tab it is drawn
-  // in. Autosave, the asset diff, search and rename all index this by path.
-  const [tabs, setTabs] = useState<OpenTab[]>([]);
-  // How those documents are arranged on screen: a row of panes — columns, all
-  // drawn at once — each holding its own ordered tabs and showing one of them
-  // (utils/tabPanes.ts). One pane with a few tabs is the ordinary workspace; up
-  // to five columns is the ceiling. The panes, the focused one's id and the
-  // columns' widths are ONE piece of state so no update can leave the active id
-  // naming a pane it just removed, or a width row indexed against a pane list
-  // that moved underneath it; the focused document — the old `activeTabPath` —
-  // is derived from it, which is what keeps those from drifting.
-  const [layout, setLayout] = useState<TabLayout>(EMPTY_LAYOUT);
-  const [saveStatus, setSaveStatus] = useState<string>('');
+  const { currentVaultIdRef, rootHandleRef, fileTreeRef, readerEpochRef } = useLiveVault(rootHandle, currentVaultId, fileTree);
+  const { saveStatus, setSaveStatus, showStatus, holdStatus, announce } = useStatusLine();
+  const {
+    tabs, setTabs, setClosingDocumentIds, closingRef, reopenedClosingRef, layout, setLayout,
+    activeTabPath, activeFile, tabsRef, sessionReportRef, nativeTransitionRef,
+    bytesGenerationsRef, bufferPathIdsRef, documentBuffers, seedDocumentBuffer, documentSessions,
+    markdownSessions, bumpBytesGeneration, invalidReaderTokens, layoutRef, activeTabPathRef,
+    visiblePathsRef, saveTimersRef, ensureCanvasBridge, attachNativeCanvasSession, nativePoliciesRef,
+    onNativeCanvasReady, contentOf, flushingRef, readerIdentityCache
+  } = useOpenDocuments({
+    getVaultActivation
+  });
 
-  const activeTabPath = focusedPathOf(layout);
+  const {
+    theme, toggleTheme, editorFontSize, setEditorFontSize, codeFontSize, setCodeFontSize,
+    rainbowBrackets, setRainbowBrackets, treeFontSize, setTreeFontSize, editorPadding, setEditorPadding,
+    tabSize, setTabSize, recentVaultLimit, setRecentVaultLimit, showVaultInTitle, setShowVaultInTitle,
+    caretStyle, setCaretStyle, caretThickness, setCaretThickness, smoothCaret, setSmoothCaret,
+    caretSpeed, setCaretSpeed, fontFamily, setFontFamily, accentColor, setAccentColor, codeBlockColor,
+    setCodeBlockColor, handleResetDefaults
+  } = useAppSettings({
+    rootHandle
+  });
 
-  const activeTab = useMemo(
-    () => tabs.find(t => t.file.path === activeTabPath) ?? null,
-    [tabs, activeTabPath]
+  const { dialog, dialogRef, ask, askChoice, tell, askForName, notify, notifyRef, tellRef } = useAppDialogs();
+  const {
+    mainView, setMainView, toggleGraph, contextMenu
+  } = useMainView({
+    rootHandle, rootHandleRef, currentVaultIdRef, readerEpochRef, tabsRef
+  });
+
+  const { showSettings, setShowSettings, openSettings, showTrash, setShowTrash, openTrash } = useOverlayPanels(rootHandle);
+  const { searchOpen, setSearchOpen, openSearch, closeSearch, handleToggleExpand, expandPaths, collapsePaths } = useExplorerState(rootHandle);
+  const { restorePendingRef, vaultMovesRef, trackVaultMove, pendingFor, trashInFlightRef } = useVaultMoves();
+
+  // The index asks for the asset backlog when a folder's media listing turns
+  // fresh; the asset lifecycle that owns the backlog is declared after it and
+  // reads the index, so the call is bound late through this ref.
+  const requeueBackloggedAssetsRef = useRef<() => void>(() => {});
+  const indexMediaChanged = useCallback(() => requeueBackloggedAssetsRef.current(), []);
+  const {
+    searchActivation, searchToken, graph, graphFreshness, indexProblem, indexGraphRef, indexMediaAssets,
+    retryIndex, rebuildIndex, indexRestoreSettled, getWikiLinkTargets, searchController, searchAgent
+  } = useVaultIndex({
+    rootHandle, currentVaultId, fileTree, getVaultActivation, resolveFileHandle, statFile, handleIO,
+    requestIndexPermission, indexMediaChanged, tabsRef, documentBuffers, contentOf
+  });
+
+  const { recoveryJournal, recoveryEvent } = useRecoveryJournal(announce);
+  const {
+    sessionRootRef, sessionVaultIdRef, restoringRef
+  } = useSessionPersistence({
+    rootHandle, currentVaultId, layout, indexRestoreSettled
+  });
+
+  const {
+    sidebarWidth, sidebarCollapsed, setSidebarCollapsed, isDraggingSidebar, collapseSidebar, startResize
+  } = useSidebar({
+    setSearchOpen
+  });
+
+  const {
+    agentPanelOpen, agentPanelWidth, agentOpenedByReader, toggleAgentPanel,
+    closeAgentPanel, startAgentResize, terminalOpen, terminalOpenedByUser, toggleTerminal, hideTerminal
+  } = useSidePanels({
+    rootHandleRef
+  });
+
+  const {
+    assetRefsRef, boardBaselinesRef, rememberAssetRefs, moveAssetRefs, assetActivationsRef,
+    assetReferenceRevisionRef, reconcileQueueRef, queueReconcile, requeueAssetsAffected,
+    requeueAllAssets, assetReadableWakeRef, requeueBackloggedAssets
+  } = useAssetLifecycle({
+    rootHandle, fileTree, getVaultActivation, handleIO, readFile, retireAsset, restoreAsset, tabs,
+    tabsRef, documentBuffers, documentSessions, indexGraphRef
+  });
+
+  useLayoutEffect(() => { requeueBackloggedAssetsRef.current = requeueBackloggedAssets; }, [requeueBackloggedAssets]);
+
+  const {
+    seedPdfBaseline, pdfSeedForRef, pdfSeedsRef, pdfSeedSourcesRef
+  } = usePdfSeeds({
+    readBytesVersioned
+  });
+
+  const {
+    retryUnreadTabRef, handleFileClick, openNoteByName, handleOpenNode, pendingReveal, setPendingReveal,
+    handleOpenSearchResult, handleRevealHandled, handleHelpClick
+  } = useDocumentOpener({
+    handleIO, readFileVersioned, fileTree, rootHandleRef, tabsRef, closingRef, reopenedClosingRef,
+    setLayout, setTabs, setSaveStatus, setMainView, rememberAssetRefs, seedPdfBaseline,
+    seedDocumentBuffer
+  });
+  // A click (or Enter) on a file in the tree opens it AND gives it the keyboard, as a tab-bar click does: the
+  // keyboard otherwise stays on the tree row, so a drawing's first tool shortcut went nowhere.
+  const openFromTree = useCallback(async (node: FileTreeNode) => {
+    if (await handleFileClick(node) && opensInApp(node.name)) requestDocumentKeyboard(node.path);
+  }, [handleFileClick]);
+
+  const {
+    writeEntryStyles, handleStyleEntry, handleSetTreeOrder
+  } = useEntryStyles({
+    rootHandle, handleIO, fileTree, fileTreeRef, writeFile, notify
+  });
+
+  const {
+    pdfRebuildRef, setPdfRebuildNotice, diskStateRef, setDiskState, currentPdfOwner,
+    onAnnotationPreflight, keepPdfBaseline
+  } = useDiskState({
+    readBytesVersioned, keepCopyInGarbage, setTabs, tabsRef, rootHandleRef, currentVaultIdRef,
+    readerEpochRef, invalidReaderTokens, reconcileQueueRef, trashInFlightRef
+  });
+
+  const {
+    nativeCanvasHost
+  } = useNativeCanvasHost({
+    getVaultActivation, tabsRef, documentSessions, documentBuffers, nativePoliciesRef, diskStateRef,
+    rootHandleRef, currentVaultIdRef, flushingRef, saveTimersRef, nativeTransitionRef, sessionReportRef,
+    dialogRef, ask, recoveryEvent, recoveryJournal, readFileSnapshot, readBoardAsset,
+    readLegacyBoardAsset, putBoardAsset, keepConversionBackup
+  });
+
+  useConversionRestore({
+    announce, notify, documentSessions, getVaultActivation, handleIO, listTrash, readFileVersioned,
+    restoreConversionCopy, rootHandle, tabsRef, nativePoliciesRef, trashInFlightRef, reconcileQueueRef
+  });
+
+  const {
+    handleOpenNotebookSource, handleExportNotebook
+  } = useNotebookExport({
+    fileTree, handleFileClick, tell, ask, notify, getVaultActivation, tabsRef, setTabs, rootHandleRef,
+    currentVaultIdRef, readerEpochRef, trashInFlightRef, reconcileQueueRef, inspectExportTarget,
+    writeNotebookExport
+  });
+
+  useExternalUrlsPerVault(rootHandle);
+
+  const {
+    writeFileRef, writeFileVersionedRef, clearSaveTimer, flushChainsRef, syncExitGuard,
+    flushTab, scheduleSave, updateTabContent
+  } = useSaveFunnel({
+    writeFile, writeFileBytes, writeFileVersioned, writeConflictCopy, getVaultActivation,
+    currentVaultIdRef, rootHandleRef, indexGraphRef, recoveryEvent, trashInFlightRef, notifyRef, tellRef,
+    setSaveStatus, showStatus, tabsRef, setTabs, documentBuffers, documentSessions, sessionReportRef,
+    nativeTransitionRef, nativePoliciesRef, bytesGenerationsRef, bumpBytesGeneration, visiblePathsRef,
+    saveTimersRef, flushingRef, nativeCanvasHost, pdfRebuildRef, diskStateRef, setDiskState,
+    setPdfRebuildNotice, currentPdfOwner, keepPdfBaseline, pdfSeedForRef, pdfSeedsRef, assetRefsRef,
+    boardBaselinesRef, assetActivationsRef, assetReferenceRevisionRef, reconcileQueueRef, queueReconcile,
+    requeueAssetsAffected
+  });
+
+  const {
+    handleUnsignedPdfCopy, preparePdfPrint, rotatePdf, preparePdfDeparture, canLeavePdfVault
+  } = usePdfActions({
+    getVaultActivation, readFileSnapshot, readBytesVersioned, writeDistinctCopy, ask,
+    tell, notifyRef, rootHandleRef, currentVaultIdRef, readerEpochRef, tabsRef, activeTabPathRef,
+    documentBuffers, documentSessions, setTabs, nativePoliciesRef, bytesGenerationsRef,
+    bumpBytesGeneration, flushingRef, flushTab, flushChainsRef, writeFileVersionedRef, diskStateRef,
+    setDiskState, currentPdfOwner, pdfSeedForRef
+  });
+
+  const {
+    pickDirectorySafely, openRecentVaultSafely, handleOpenAsVault
+  } = useVaultOpeners({
+    pickDirectoryFromFileSystem, openRecentVault, openFolderAsVault, canLeavePdfVault, notify, tell
+  });
+
+  const {
+    releaseOverwritten, removeTab, closeDocuments, closeTab, reopenClosedTab, retryUnreadTab,
+    changeTabMode, toggleTabMode
+  } = useTabLifecycle({
+    clearSaveTimer, tabsRef, documentSessions, bufferPathIdsRef, documentBuffers, syncExitGuard,
+    recoveryEvent, bytesGenerationsRef, invalidReaderTokens, readerIdentityCache, pdfSeedsRef,
+    pdfSeedSourcesRef, diskStateRef, pdfRebuildRef, indexGraphRef, assetRefsRef, boardBaselinesRef,
+    assetReadableWakeRef, flushTab, setLayout, setTabs, currentVaultId, currentVaultIdRef, closingRef,
+    reopenedClosingRef, rootHandleRef, readerEpochRef, setClosingDocumentIds, notifyRef, tell,
+    preparePdfDeparture, fileTreeRef, handleFileClick, retryUnreadTabRef, rememberAssetRefs,
+    readFileVersioned, readBytesVersioned, resolveFileHandle, bumpBytesGeneration, seedDocumentBuffer,
+    setDiskState
+  });
+
+  const {
+    closePaneAndTabs, selectTabInPane, focusPane, splitTabToPane, moveTab, resizePanes, paneBack,
+    paneForward
+  } = usePaneActions({
+    layoutRef, setLayout, tabsRef, rootHandleRef, currentVaultIdRef, readerEpochRef, closeDocuments
+  });
+
+  useVaultSwitch({
+    rootHandle, registerBeforeRootChange, getVaultActivation, flushTab, documentSessions,
+    documentBuffers, recoveryEvent, tabsRef, bytesGenerationsRef, bufferPathIdsRef, pdfSeedsRef,
+    pdfSeedSourcesRef, diskStateRef, pdfRebuildRef, assetRefsRef, boardBaselinesRef, setTabs, setLayout,
+    setSaveStatus, setPendingReveal, sessionRootRef, sessionVaultIdRef, currentVaultIdRef
+  });
+
+  const { initialLocation, linkPendingRef, pendingLinkFile, setPendingLinkFile } = useAppLink();
+  useSessionRestore({
+    fileTree, rootHandle, currentVaultId, isLoading, recentVaults, readFileVersioned, resolveVaultFile,
+    rememberAssetRefs, seedPdfBaseline, seedDocumentBuffer, documentBuffers, indexRestoreSettled,
+    initialLocation, linkPendingRef, setPendingLinkFile, sessionRootRef, sessionVaultIdRef, restoringRef,
+    restorePendingRef, vaultMovesRef, rootHandleRef, currentVaultIdRef, layoutRef, assetRefsRef,
+    boardBaselinesRef, setTabs, setLayout
+  });
+
+  usePanePrefetch(fileTree);
+  useUrlWriter({ rootHandle, currentVaultId, recentVaults, activeFile, pendingLinkFile, initialLocation, linkPendingRef });
+
+  const {
+    handleCreateFile, handleNewNote, handleCreateFolder
+  } = useCreateEntries({
+    rootHandleRef, setTabs, tell, askForName, getVaultActivation, createFile, createFolder, importFiles,
+    resolveVaultFile, nameTaken, handleFileClick
+  });
+
+  const {
+    handleTrash, trashForAgent, handleTrashRestore, handleTrashCopy, handleTrashDelete,
+    handleTrashEmpty, handleTrashReadText, handleTrashReadFile
+  } = useTrashActions({
+    rootHandle, rootHandleRef, tabsRef, trashInFlightRef, reconcileQueueRef, setSaveStatus, holdStatus,
+    showStatus, announce, notify, ask, tell, askChoice, getVaultActivation, moveToTrash,
+    restoreFromTrash, copyTrashFile, deleteFromTrash, emptyTrash, readFile, handleIO, removeTab,
+    flushTab, preparePdfDeparture, documentSessions, requeueAssetsAffected, writeEntryStyles, pendingFor,
+    trackVaultMove
+  });
+
+  const {
+    retargetPaths, retargetExpandedPaths, handleRenameFile, handleMoveFile
+  } = useRenameMove({
+    rootHandle, rootHandleRef, currentVaultIdRef, readerEpochRef, tabsRef, setTabs, setLayout,
+    documentBuffers, documentSessions, invalidReaderTokens, saveTimersRef, assetRefsRef,
+    boardBaselinesRef, diskStateRef, bufferPathIdsRef, flushChainsRef, notifyRef, announce, pendingFor,
+    trackVaultMove, indexGraphRef, recoveryEvent, contentOf, seedDocumentBuffer, flushTab, syncExitGuard,
+    clearSaveTimer, scheduleSave, preparePdfDeparture, releaseOverwritten, writeEntryStyles,
+    writeConflictCopy, readFileVersioned, resolveVaultFile, renameFile, moveFile, requeueAssetsAffected,
+    moveAssetRefs, rememberAssetRefs
+  });
+
+  const {
+    hasUnsaved, reloadFromDisk, checkOpenDocs
+  } = useOutsideChanges({
+    rootHandleRef, tabsRef, setTabs, setDiskState, documentBuffers, documentSessions, markdownSessions,
+    invalidReaderTokens, saveTimersRef, flushingRef, diskStateRef, pdfRebuildRef, bytesGenerationsRef,
+    indexGraphRef, fileTreeRef, assetReferenceRevisionRef, vaultMovesRef, trashInFlightRef, restoringRef,
+    bumpBytesGeneration, clearSaveTimer, scheduleSave, seedDocumentBuffer, rememberAssetRefs,
+    syncExitGuard, updateTabContent, retargetPaths, retargetExpandedPaths, trackVaultMove,
+    requeueAllAssets, requeueAssetsAffected, indexMediaAssets, getVaultActivation, liveDetection,
+    subscribeVaultChanges, resolveFileHandle, resolveVaultDir, vaultDirExists, statFile,
+    readFileSnapshot, readBytesVersioned, readFileVersioned
+  });
+
+  const {
+    updateAvailable, reloadUpdatedApp, dismissUpdate
+  } = useUpdateNotice({
+    flushingRef, tabsRef, hasUnsaved, notifyRef
+  });
+
+  const {
+    handleDiskAction
+  } = useDiskBarActions({
+    tabsRef, rootHandleRef, pdfRebuildRef, diskStateRef, nativePoliciesRef, bytesGenerationsRef,
+    sessionReportRef, retryUnreadTabRef, indexGraphRef, setTabs, setDiskState, setPdfRebuildNotice,
+    currentPdfOwner, keepPdfBaseline, flushTab, documentBuffers, documentSessions, removeTab, hasUnsaved,
+    reloadFromDisk, bumpBytesGeneration, clearSaveTimer, syncExitGuard, recoveryEvent, announce, ask,
+    tell, getVaultActivation, recreateFile, resolveFileHandle, resolveVaultFile, readBytesVersioned,
+    readFileVersioned, writeConflictCopy
+  });
+
+  const {
+    closedPdfAccess, ensureNativeAgentRuntime, acquireClosedAgentCanvas, readClosedAgentCanvasMedia
+  } = useAgentCanvasAccess({
+    rootHandle, rootHandleRef, currentVaultIdRef, readerEpochRef, bufferPathIdsRef, tabs, tabsRef,
+    documentBuffers, documentSessions, nativePoliciesRef, nativeCanvasHost, attachNativeCanvasSession,
+    onNativeCanvasReady, ensureCanvasBridge, announce, getVaultActivation, handleIO, readFileSnapshot,
+    statFile, verifyVaultFileIdentity, readBoardAsset, resolveVaultFile
+  });
+
+  const {
+    settingsVaultId
+  } = useVaultIdentity({
+    rootHandle, showSettings, ensureVaultId, writeFileRef, rootHandleRef, activeTabPathRef, tabsRef
+  });
+
+  const {
+    getAgentHostDeps, agentVault
+  } = useAgentHostDeps({
+    rootHandle, rootHandleRef, tabs, tabsRef, layout, mainView, setMainView, setTabs, setLayout,
+    fileTreeRef, assetActivationsRef, indexGraphRef, searchToken, searchAgent, markdownSessions,
+    documentBuffers, contentOf, closedPdfAccess, acquireClosedAgentCanvas, readClosedAgentCanvasMedia,
+    ensureNativeAgentRuntime, seedPdfBaseline, seedDocumentBuffer, rememberAssetRefs, queueReconcile,
+    requeueAssetsAffected, handleRenameFile, handleMoveFile, handleFileClick, trashForAgent,
+    changeTabMode, ask, notify, currentVaultId, handleIO, ensureVaultId, fileTree, readFile,
+    readFileBytes, readFileVersioned, writeFile, writeFileVersioned, statFile, createFile, createFolder,
+    nameTaken, getVaultActivation
+  });
+
+  const {
+    readerIntegration
+  } = useReaderIntegration({
+    readFileSnapshot, currentVaultIdRef, readerEpochRef, notify, announce, tabsRef, setTabs, layoutRef,
+    setLayout, activeTabPathRef, invalidReaderTokens, readerIdentityCache, diskStateRef, pdfRebuildRef,
+    setDiskState, closeTab, reopenClosedTab, checkOpenDocs
+  });
+
+  useGlobalShortcuts({
+    flushTab, handleNewNote, toggleTabMode, activeTabPathRef, setSidebarCollapsed
+  });
+
+  const {
+    inspectRecovery, recoverEntry, saveRecoveryCopy
+  } = useRecoveryActions({
+    getVaultActivation, rootHandle, currentVaultId, recentVaults, handleIO, resolveFileHandle,
+    resolveVaultFile, readFileSnapshot, readBoardAsset, putBoardAsset, writeConflictCopy,
+    writeFileVersioned, rootHandleRef, currentVaultIdRef, announce, tabsRef, documentBuffers,
+    markdownSessions, contentOf, hasUnsaved
+  });
+
+  // The welcome screen can report a refused open too; returning before the
+  // workspace's host used to hide the app notice on exactly that path.
+  const dialogHost = dialog && (
+    <ConfirmDialog
+      questionId={dialog.id ?? 0}
+      title={dialog.title}
+      confirmLabel={dialog.confirmLabel}
+      danger={dialog.danger}
+      input={dialog.input}
+      altLabel={dialog.altLabel}
+      onAlt={dialog.onAlt}
+      onConfirm={dialog.onConfirm}
+      onCancel={dialog.onCancel}
+    >
+      {dialog.body}
+    </ConfirmDialog>
   );
-  // Keeping `t.file` identity stable across keystrokes (see updateTabContent)
-  // means `activeFile` only changes when the focus does, not on every edit.
-  // It is what the file tree highlights and what the graph view centres on;
-  // the editor derives its own from the layout, pane by pane.
-  const activeFile = activeTab?.file ?? null;
-  /* Published to a store as well as held in state: the file tree reads "am I
-     the active row" from it per row, so switching tabs re-renders the two rows
-     that changed instead of every row in the vault. See utils/activeFile.ts. */
-  useEffect(() => { setActiveFilePath(activeFile?.path ?? null); }, [activeFile]);
 
-  // Main pane view ('editor' or 'graph' — the Neural Brain view)
-  const [mainView, setMainView] = useState<MainView>('editor');
 
-  // The link graph powering the Neural Brain view and backlinks panel
-  const [graph, setGraph] = useState<GraphData>(EMPTY_GRAPH);
+  // Whether the workspace on screen is this vault's restored session — the
+  // graph keeps its layout per vault only then. Read in render because the
+  // claim is made by the restore effect, and the graph must key on its result.
+  // eslint-disable-next-line react-hooks/refs -- the claim lives in refs by design (useSessionPersistence)
+  const sessionRestored = sessionRootRef.current === rootHandle && sessionVaultIdRef.current === currentVaultId;
 
-  // ── Per-document editor state ────────────────────────────────────────────
-  // Each document's full EditorState (doc + undo history + selection + an open
-  // search panel) is cached by DOCUMENT — `${OpenTab.id}|${path}`, EditorPane's
-  // paneKey — and adopted by whichever pane shows it next, so undo survives tab
-  // switches and being dragged into a column of its own, and can never reach
-  // across documents. By id rather than by path because a rename that
-  // overwrites an open file leaves two documents answering to one path for a
-  // commit, and keyed by path the survivor adopted the loser's text and history —
-  // then saved it over the file that had just replaced it (see OpenTab.id).
-  //
-  // Held HERE rather than in EditorPane because the graph view REPLACES
-  // EditorPane, and a cache it owned went with it — measured: ⌘Z did nothing
-  // after a trip to the Neural Brain view and back (issue #34). EditorPane
-  // still prunes it to the open documents, so an entry for a document closed
-  // while the graph is up waits for its next mount; it cannot be adopted
-  // meanwhile, since ids never repeat (see newTabId).
-  const [editorStates] = useState(() => new Map<string, EditorState>());
-
-  // The [[ autocomplete's targets, deduped by link name since wikilinks
-  // resolve by name, not path. It is baked into each document's EditorState
-  // (outside any compartment), and that state is cached above and outlives
-  // EditorPane, so the getter must be stable for the APP's life: one created in
-  // EditorPane would go on reading that EditorPane's graph once a graph-view
-  // trip unmounted it, and a note created afterwards would never be offered.
-  // Same rule as openNoteByName, and the same ref-mirror to keep it current.
-  const graphRef = useRef<GraphData>(graph);
-  useEffect(() => { graphRef.current = graph; }, [graph]);
-  const [getWikiLinkTargets] = useState(() => (): WikiLinkTarget[] => {
-    const seen = new Set<string>();
-    const targets: WikiLinkTarget[] = [];
-    for (const node of graphRef.current.nodes) {
-      const key = node.name.toLowerCase();
-      if (!node.name || seen.has(key)) continue;
-      seen.add(key);
-      targets.push({ name: node.name, unresolved: node.unresolved });
-    }
-    return targets;
-  });
-
-  // The global light/dark theme state
-  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'dark');
-
-  // Font size and padding settings (persisted via localStorage)
-  const [editorFontSize, setEditorFontSize] = useState<number>(() => parseInt(localStorage.getItem('editorFontSize') || '16', 10));
-  // Code panes only (editor/codeHighlight.ts reads the variable). Separate from
-  // the note size because Fira Code at a note's 16px reads larger than the prose
-  // does, and because the two are chosen for different jobs.
-  const [codeFontSize, setCodeFontSize] = useState<number>(() => clampCodeFontSize(parseInt(localStorage.getItem('codeFontSize') || '', 10)));
-  // Depth-coloured brackets in code panes. On by default: in a Lisp they are
-  // how the code is read (editor/rainbowBrackets.ts).
-  const [rainbowBrackets, setRainbowBrackets] = useState<boolean>(() => localStorage.getItem('rainbowBrackets') !== 'false');
-  const [treeFontSize, setTreeFontSize] = useState<number>(() => parseInt(localStorage.getItem('treeFontSize') || '13', 10));
-  // Clamped to the slider's range on the way in: localStorage is user-editable,
-  // and a `NaN%` voids index.css's `max(var(--editor-padding), …)` outright —
-  // the editor's left padding drops to 0 and the collapse arrow is clipped.
-  const [editorPadding, setEditorPadding] = useState<number>(() => {
-    const stored = parseInt(localStorage.getItem('editorPadding') || '6', 10);
-    return Number.isFinite(stored) ? Math.min(20, Math.max(0, stored)) : 6;
-  });
-  const [showSettings, setShowSettings] = useState<boolean>(false);
-  /** Whether the Trash bin is on screen. Its rows hold handles crawled out of
-   *  ONE vault, so the panel closes when the vault does (see the effect beside
-   *  the context menu's) — a put-back clicked after a switch would otherwise
-   *  write into the vault the reader has left. */
-  const [showTrash, setShowTrash] = useState<boolean>(false);
-
-  // Spaces a Tab inserts — and how far Tab indents a list item. Clamped on the
-  // way in: localStorage is user-editable and a NaN would reach CodeMirror.
-  const [tabSize, setTabSize] = useState<number>(() => clampTabSize(parseInt(localStorage.getItem('tabSize') || '4', 10)));
-
-  // How many recently opened vaults the vault switcher's menu lists. Clamped for
-  // the same reason as tabSize — this one ends up in Array.slice.
-  const [recentVaultLimit, setRecentVaultLimit] = useState<number>(
-    () => clampRecentVaultLimit(parseInt(localStorage.getItem('recentVaultLimit') || String(DEFAULT_RECENT_VAULT_LIMIT), 10))
+  const updateNotice = updateAvailable && (
+    <div className="app-update-notice" role="status">
+      <span>A new version is available.</span>
+      <button type="button" onClick={reloadUpdatedApp}>Reload</button>
+      <button type="button" aria-label="Dismiss update notice" onClick={dismissUpdate}>×</button>
+    </div>
   );
 
-  // Whether the browser tab is titled with the open vault's name (default on).
-  const [showVaultInTitle, setShowVaultInTitle] = useState<boolean>(() => (localStorage.getItem('showVaultInTitle') ?? 'true') === 'true');
-
-  // Caret (text cursor) appearance settings — persisted via localStorage.
-  // caretStyle: 'line' (thin bar) or 'block' (thick terminal-style block).
-  // smoothCaret: glide the caret between positions like MS Word.
-  // caretSpeed: duration (ms) of that glide.
-  const [caretStyle, setCaretStyle] = useState<CaretStyle>(() => (localStorage.getItem('caretStyle') as CaretStyle) || 'line');
-  const [caretThickness, setCaretThickness] = useState<number>(() => parseInt(localStorage.getItem('caretThickness') || '10', 10));
-  const [smoothCaret, setSmoothCaret] = useState<boolean>(() => (localStorage.getItem('smoothCaret') ?? 'true') === 'true');
-  const [caretSpeed, setCaretSpeed] = useState<number>(() => parseInt(localStorage.getItem('caretSpeed') || '80', 10));
-
-  // Custom font loaded from Google Fonts (empty string = use the default)
-  const [fontFamily, setFontFamily] = useState<string>(() => localStorage.getItem('fontFamily') || '');
-
-  // Custom accent color (empty string = each theme's default purple)
-  const [accentColor, setAccentColor] = useState<string>(() => localStorage.getItem('accentColor') || '');
-
-  // Base ink for language-less ``` blocks (empty string = follow the accent)
-  const [codeBlockColor, setCodeBlockColor] = useState<string>(() => localStorage.getItem('codeBlockColor') || '');
-
-  // Keep HTML root data attribute in sync with state for global CSS variables
-  useEffect(() => {
-    if (theme === 'light') {
-      document.documentElement.setAttribute('data-theme', 'light');
-    } else {
-      document.documentElement.removeAttribute('data-theme');
-    }
-    localStorage.setItem('theme', theme);
-  }, [theme]);
-
-  // Sync font sizes to CSS variables and localStorage
-  useEffect(() => {
-    document.documentElement.style.setProperty('--font-size-normal', editorFontSize + 'px');
-    localStorage.setItem('editorFontSize', String(editorFontSize));
-  }, [editorFontSize]);
-
-  useEffect(() => {
-    document.documentElement.style.setProperty('--code-font-size', codeFontSize + 'px');
-    localStorage.setItem('codeFontSize', String(codeFontSize));
-  }, [codeFontSize]);
-
-  // Not a CSS variable: the plugin is an editor extension, so each code pane
-  // reconfigures its own compartment (DocumentPane).
-  useEffect(() => {
-    localStorage.setItem('rainbowBrackets', String(rainbowBrackets));
-  }, [rainbowBrackets]);
-
-  useEffect(() => {
-    document.documentElement.style.setProperty('--nav-item-size', treeFontSize + 'px');
-    localStorage.setItem('treeFontSize', String(treeFontSize));
-  }, [treeFontSize]);
-
-  useEffect(() => {
-    document.documentElement.style.setProperty('--editor-padding', editorPadding + '%');
-    localStorage.setItem('editorPadding', String(editorPadding));
-  }, [editorPadding]);
-
-  useEffect(() => {
-    localStorage.setItem('tabSize', String(tabSize));
-  }, [tabSize]);
-
-  useEffect(() => {
-    localStorage.setItem('recentVaultLimit', String(recentVaultLimit));
-  }, [recentVaultLimit]);
-
-  useEffect(() => {
-    localStorage.setItem('showVaultInTitle', String(showVaultInTitle));
-  }, [showVaultInTitle]);
-
-  // The tab reads as the vault it holds, so tabs open on different vaults can
-  // be told apart. `rootHandle.name` is the folder name the file tree's header
-  // shows; an OPFS root's is '' and falls back rather than blanking the tab.
-  useEffect(() => {
-    document.title = showVaultInTitle && rootHandle?.name ? rootHandle.name : APP_TITLE;
-  }, [rootHandle, showVaultInTitle]);
-
-  // Translate the caret settings into CSS variables the CodeMirror theme reads.
-  useEffect(() => {
-    const root = document.documentElement.style;
-    const isBlock = caretStyle === 'block';
-
-    // A block caret fills ~0.6 character widths with a semi-transparent overlay
-    // so the glyph beneath stays readable; a line caret uses the thickness slider.
-    // Both caret styles use a translucent accent (the line caret's equivalent
-    // lives in cmTheme), so they follow a custom accent in either app theme.
-    root.setProperty('--caret-line-width', isBlock ? '0px' : caretThickness + 'px');
-    root.setProperty('--caret-block-width', isBlock ? '0.6em' : '0px');
-    root.setProperty('--caret-block-bg', isBlock
-      ? 'color-mix(in srgb, var(--interactive-accent) 40%, transparent)'
-      : 'transparent');
-    root.setProperty('--caret-radius', isBlock ? '1px' : '0');
-
-    // The smooth glide that gives it the MS Word feel — animate position & height.
-    root.setProperty('--caret-transition', smoothCaret
-      ? `left ${caretSpeed}ms ease-out, top ${caretSpeed}ms ease-out, height ${caretSpeed}ms ease-out`
-      : 'none');
-
-    localStorage.setItem('caretStyle', caretStyle);
-    localStorage.setItem('caretThickness', String(caretThickness));
-    localStorage.setItem('smoothCaret', String(smoothCaret));
-    localStorage.setItem('caretSpeed', String(caretSpeed));
-  }, [caretStyle, caretThickness, smoothCaret, caretSpeed]);
-
-  // Load a Google Font by name and apply it app-wide via --font-text.
-  useEffect(() => {
-    localStorage.setItem('fontFamily', fontFamily);
-    const linkId = 'google-font-link';
-    let link = document.getElementById(linkId) as HTMLLinkElement | null;
-    const family = fontFamily.trim();
-    const fallback = '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "Roboto", sans-serif';
-
-    if (family) {
-      const href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(family).replace(/%20/g, '+')}:wght@400;500;600;700&display=swap`;
-      if (!link) {
-        link = document.createElement('link');
-        link.id = linkId;
-        link.rel = 'stylesheet';
-        document.head.appendChild(link);
-      }
-      link.href = href;
-      document.documentElement.style.setProperty('--font-text', `"${family}", ${fallback}`);
-    } else {
-      if (link) link.remove();
-      document.documentElement.style.removeProperty('--font-text');
-    }
-  }, [fontFamily]);
-
-  // One custom accent recolors links, code, buttons and highlights everywhere:
-  // an inline override on <html> outranks both theme blocks, so it holds across
-  // dark/light switches. The hover shade is derived rather than picked —
-  // color-mix is fine here, the app is Chromium-only anyway (File System API).
-  useEffect(() => {
-    const root = document.documentElement.style;
-    if (accentColor) {
-      root.setProperty('--text-accent', accentColor);
-      root.setProperty('--interactive-accent', accentColor);
-      root.setProperty('--interactive-accent-hover', `color-mix(in srgb, ${accentColor} 85%, black)`);
-    } else {
-      root.removeProperty('--text-accent');
-      root.removeProperty('--interactive-accent');
-      root.removeProperty('--interactive-accent-hover');
-    }
-    localStorage.setItem('accentColor', accentColor);
-  }, [accentColor]);
-
-  // Same override trick for the plain-code-block ink; its stylesheet default
-  // is var(--text-accent), so with no custom pick it tracks the accent.
-  useEffect(() => {
-    const root = document.documentElement.style;
-    if (codeBlockColor) {
-      root.setProperty('--code-block-color', codeBlockColor);
-    } else {
-      root.removeProperty('--code-block-color');
-    }
-    localStorage.setItem('codeBlockColor', codeBlockColor);
-  }, [codeBlockColor]);
-
-  const handleResetDefaults = useCallback((defaults: SettingsDefaults) => {
-    setEditorFontSize(defaults.editorFontSize);
-    setCodeFontSize(defaults.codeFontSize);
-    setRainbowBrackets(defaults.rainbowBrackets);
-    setTreeFontSize(defaults.treeFontSize);
-    setEditorPadding(defaults.editorPadding);
-    setTabSize(defaults.tabSize);
-    setCaretStyle(defaults.caretStyle);
-    setCaretThickness(defaults.caretThickness);
-    setSmoothCaret(defaults.smoothCaret);
-    setCaretSpeed(defaults.caretSpeed);
-    setFontFamily('');
-    setAccentColor(defaults.accentColor);
-    setCodeBlockColor(defaults.codeBlockColor);
-    setRecentVaultLimit(defaults.recentVaultLimit);
-    setShowVaultInTitle(defaults.showVaultInTitle);
-  }, []);
-
-  // ── The app's own modal question ────────────────────────────────────────
-  // What `window.confirm` used to do, in the app's own dialog (see
-  // components/ConfirmDialog). Beyond looking like the rest of the app, a real
-  // dialog can say what will actually HAPPEN — a native one gets a single line
-  // of unformatted text, so the question could never be more than "are you
-  // sure?", while the thing worth knowing is where the file ends up.
-  //
-  // A promise per question keeps the callers linear, exactly as they read with
-  // `confirm()`. The handlers close the dialog before resolving, so a caller
-  // that opens another one is never fighting the first for the screen.
-  const [dialog, setDialog] = useState<AppDialog | null>(null);
-
-  // The one on screen, for `raise` below. A ref and not the state, because all
-  // three helpers must stay STABLE (`notify` reaches every memoized
-  // DocumentPane) and reading `dialog` would put it in their deps.
-  const dialogRef = useRef<AppDialog | null>(null);
-  /** Tells one question from the next. ConfirmDialog is not remounted between
-   *  two of them, so it needs this to know its field is now someone else's. */
-  const dialogSeq = useRef(0);
-
-  /**
-   * Put a question on screen, settling whatever was already there.
-   *
-   * One slot holds one dialog, and each of these hands back a promise the caller
-   * is awaiting — so a second question arriving while one is up used to replace
-   * it and leave the first promise pending FOR THE SESSION. Whoever was awaiting
-   * it never reached its `finally`, so the in-flight ref it holds (`trashInFlight`
-   * covers the question as well as the copy) stayed true and every later Move to
-   * Trash and every Trash-bin operation silently did nothing. Reachable: any
-   * background job that reports through `tell` — a notebook's PDF export runs for
-   * seconds with no overlay — landing while the bin's confirmation is open.
-   *
-   * Dismissing the displaced one is the honest reading: its question was taken
-   * off the screen before it could be answered, so its caller hears "no".
-   */
-  const raise = useCallback((next: AppDialog) => {
-    // Settled FIRST, so that its own `setDialog(null)` cannot land on top of the
-    // dialog installed below — both writes batch, and the last one must win.
-    const prev = dialogRef.current;
-    // A notice, which has no `onCancel`, is acknowledged instead — with the
-    // empty string, because a displaced dialog's field is gone with it and
-    // nothing was typed into the ones that have none. `askForName` is the only
-    // caller that reads the value, and for it this arm is unreachable: it always
-    // hands `raise` an `onCancel`, which resolves its promise null.
-    if (prev) (prev.onCancel ?? (() => prev.onConfirm('')))();
-    const staged = { ...next, id: ++dialogSeq.current };
-    dialogRef.current = staged;
-    setDialog(staged);
-  }, []);
-
-  const settle = useCallback(() => { dialogRef.current = null; setDialog(null); }, []);
-
-  const ask = useCallback((question: DialogRequest) => new Promise<boolean>(resolve => {
-    raise({
-      ...question,
-      onConfirm: () => { settle(); resolve(true); },
-      onCancel: () => { settle(); resolve(false); },
-    });
-  }), [raise, settle]);
-
-  /**
-   * A question with THREE answers, for the one place a yes/no cannot say what
-   * the reader means: putting something back out of the Trash onto a name that
-   * is taken is "replace it", "keep both", or "leave it where it is", and
-   * folding either of the first two into the other would decide for them.
-   * Escape and a click outside still cancel — the alternative is never a
-   * dismissal.
-   */
-  const askChoice = useCallback((question: DialogRequest & { altLabel: string }) =>
-    new Promise<'confirm' | 'alt' | 'cancel'>(resolve => {
-      raise({
-        ...question,
-        onConfirm: () => { settle(); resolve('confirm'); },
-        onAlt: () => { settle(); resolve('alt'); },
-        onCancel: () => { settle(); resolve('cancel'); },
-      });
-    }), [raise, settle]);
-
-  /** Report something and wait for it to be read. One button, so Escape and a
-   *  click outside mean the same as pressing it. */
-  const tell = useCallback((notice: DialogRequest) => new Promise<void>(resolve => {
-    raise({ ...notice, onConfirm: () => { settle(); resolve(); } });
-  }), [raise, settle]);
-
-  /**
-   * Ask for a NAME — what `prompt()` used to be, and the reason none is left in
-   * the app (AGENTS.md: the app draws its own dialogs and prefers them to
-   * native ones). Resolves the typed answer, or null when the reader backs out.
-   *
-   * On the same `raise`/`settle` pair as the three above rather than a bespoke
-   * overlay, so it inherits the displaced-dialog rule: a question that is taken
-   * off the screen before it can be answered resolves — as null here — instead
-   * of leaving its caller awaiting for the session.
-   *
-   * Trimmed on the way out, because every caller would: a name is a file name
-   * and the surrounding spaces are a typo, not part of it. `input.validate` is
-   * what refuses an empty one, live, while the reader is still typing.
-   */
-  const askForName = useCallback((question: DialogRequest & { input: NonNullable<AppDialog['input']> }) =>
-    new Promise<string | null>(resolve => {
-      raise({
-        ...question,
-        onConfirm: (value: string) => { settle(); resolve(value.trim()); },
-        onCancel: () => { settle(); resolve(null); },
-      });
-    }), [raise, settle]);
-
-  // ── The app's own right-click menu ──────────────────────────────────────
-  // One menu is on screen at a time, and every raiser — the editor, a table
-  // cell, a file tree row — asks for it through the module store rather than
-  // through a prop. See utils/contextMenu.ts: a CodeMirror widget's handlers
-  // know nothing about React and outlive the pane that built them, and the
-  // file tree is memoized specifically so it stops re-rendering while the user
-  // types. Reading the store here is the whole of App's involvement.
-  const contextMenu = useSyncExternalStore(subscribeContextMenu, getContextMenu);
-
-  // A menu's rows close over a view — a CodeMirror view, a tree row — and both
-  // of those go away when the workspace switches out from under them. Leaving
-  // the menu on screen would leave rows that act on something unmounted.
-  useEffect(() => { closeContextMenu(); }, [mainView, rootHandle]);
-
-  // Same hazard, one surface further out: every row in the Trash panel closes
-  // over a handle from the vault it was crawled in, and nothing in those
-  // handles goes stale when the vault does — a put-back clicked afterwards
-  // would copy a file into a folder of the vault the reader just left.
-  useEffect(() => { setShowTrash(false); }, [rootHandle]);
-  // Another vault reuses paths freely; its files' times are its own. A LAYOUT
-  // effect, because every passive one runs after it: pickDirectory and
-  // openRecentVault set the handle and the tree in one commit, and React runs
-  // a child's passive effects before its parent's — so as a plain useEffect
-  // this bumped the generation AFTER FileExplorer had started that vault's stat
-  // walk, which then threw its own result away, and a Modified-time sort sat
-  // in name order until something next rebuilt the tree.
-  useLayoutEffect(() => { resetFileTimes(); }, [rootHandle]);
-
-  /** Say something went wrong, in the app's own dialog. One button, because
-   *  there is nothing to decide. STABLE — it is handed to EditorPane and on to
-   *  every memoized DocumentPane, which must not re-render per keystroke. */
-  const notify = useCallback((message: string) => {
-    void tell({ title: 'Could not continue', confirmLabel: 'OK', body: message });
-  }, [tell]);
-
-  // The same voice, given to the editor subsystem: a refused clipboard read
-  // inside a table cell is the only thing that uses it today. ONE call, at the
-  // top level, into a module-level setter — src/editor/ must not learn about
-  // React, and what it holds has to stay valid for the app's life, because the
-  // handler that eventually calls it was baked into a widget several panes ago.
-  useEffect(() => { setTableNotify(notify); }, [notify]);
-
-  /** Whether the sidebar shows vault search in place of the file tree — the
-   *  explorer's Search tab, and its Files tab back. FileExplorer is memoized,
-   *  so both callbacks have to be stable or the tree starts re-rendering while
-   *  the user types. */
-  const [searchOpen, setSearchOpen] = useState(false);
-  const closeSearch = useCallback(() => setSearchOpen(false), []);
-  const openSearch = useCallback(() => setSearchOpen(true), []);
-
-  /* The sidebar footer's buttons. Stable for the app's life for the reason
-     `collapseSidebar` below spells out: SidebarFooter is memoized too, and one
-     inline arrow here re-rendered it on every App render. */
-  const toggleGraph = useCallback(() => {
-    const root = rootHandleRef.current;
-    const captures = tabsRef.current.map(tab => getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.());
-    void Promise.allSettled(captures).then(() => { if(rootHandleRef.current===root)setMainView(v=>v==='graph'?'editor':'graph'); });
-  }, []);
-  const openTrash = useCallback(() => setShowTrash(true), []);
-  const openSettings = useCallback(() => setShowSettings(true), []);
-  const toggleTheme = useCallback(() => setTheme(t => (t === 'dark' ? 'light' : 'dark')), []);
-
-  /** Stable for the app's life. As an inline arrow this handed `FileExplorer` a
-   *  fresh prop on EVERY App render, which defeated its `React.memo` outright —
-   *  the one thing that memo exists to prevent. */
-  const collapseSidebar = useCallback(() => setSidebarCollapsed(true), []);
-
-  // Expanded folder paths live in a store, not in state (utils/expandedPaths.ts):
-  // as a `Set` prop they re-rendered every mounted row of the tree to turn one
-  // chevron. These wrappers keep the callbacks App already hands out.
-  const handleToggleExpand = useCallback((path: string) => { toggleExpanded(path); }, []);
-  const expandPaths = useCallback((paths: string[]) => { expandPathsInStore(paths); }, []);
-  const collapsePaths = useCallback((paths: string[]) => { collapsePathsInStore(paths); }, []);
-
-  // Refs mirroring tab state for use inside stable callbacks / timers.
-  const tabsRef = useRef<OpenTab[]>(tabs);
-  const invalidReaderTokens = useRef(new Set<string>());
-  const layoutRef = useRef<TabLayout>(layout);
-  const activeTabPathRef = useRef<string | null>(activeTabPath);
-  // The documents currently on screen — one per column, since a pane shows one
-  // of its tabs, and every column not just the focused one, so a save in a
-  // neighbouring pane still reports itself. A document merely OPEN behind
-  // another tab of the same pane is not here: nothing on screen would show it.
-  const visiblePathsRef = useRef<string[]>([]);
-  // Per-PATH debounced save timers, so switching or closing one tab never
-  // cancels another tab's pending write (fixes the old single-timer data loss).
-  const saveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  const saveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Say something that went RIGHT, in the status line — no dialog to dismiss.
-   *  `notify` is the app's "Could not continue" modal: a resolved conflict
-   *  reported through it blocked the window and read as a failure. */
-  const announce = useCallback((message: string) => {
-    if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
-    setSaveStatus(message);
-    saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 5000);
-  }, []);
-  // A binary host acquires in its passive effect. Publish the new tab first;
-  // lazy dev imports hid this parent/child effect ordering race in production.
-  useLayoutEffect(() => { tabsRef.current = tabs; }, [tabs]);
-  useEffect(() => {
-    layoutRef.current = layout;
-    visiblePathsRef.current = visiblePaths(layout);
-  }, [layout]);
-  useEffect(() => { activeTabPathRef.current = activeTabPath; }, [activeTabPath]);
-
-  /**
-   * WHICH VAULT the workspace on screen is the session of — the handle and the
-   * id together, because neither alone is enough.
-   *
-   * `openVaultHandle` commits rootHandle + fileTree in one batch and only then
-   * awaits recordVault, so there is a commit where the tree is the NEW vault's
-   * and `currentVaultId` is still the OLD one; restoring there would open the
-   * old vault's paths out of the new vault's tree. And the persist effect is
-   * declared before the switch effect, so on the switch commit it runs FIRST,
-   * with the outgoing layout — and would file it under the incoming id.
-   *
-   * So both effects check both refs, and the restore pass writes them together
-   * — and only once it has a real id to write, never against the `null` a vault
-   * carries between its tree landing and recordVault answering (see there).
-   * `undefined` is "nothing restored yet", which no vault id can collide with.
-   */
-  const sessionRootRef = useRef<FileSystemDirectoryHandle | null>(null);
-  const sessionVaultIdRef = useRef<string | null | undefined>(undefined);
-  /**
-   * The restore pass still READING the claimed vault's files, if one is — and
-   * while it is, nothing is persisted. Claiming the two refs above is what
-   * un-gates persistence, and the claim comes before the reads, so a note opened
-   * in that window was written out as the vault's whole session until the merge
-   * wrote it back (measured: a tree click 100ms into a restore reading 600ms per
-   * file held the stored session at that one tab for 2.4s, and a reload inside
-   * the window came back with only it — all four saved documents, columns and
-   * all, gone for good). A token rather than a flag, so a pass that outlives a
-   * switch cannot release the gate a later pass holds.
-   */
-  const restoringRef = useRef<object | null>(null);
-  /**
-   * The documents that restore pass is bringing back, while it is (see
-   * utils/pendingRestore). They are not in `tabsRef` until the merge, so
-   * without this a rename, move or trash in the window never reached them:
-   * the note came back under its old path with a dead handle, or came back out
-   * of the Trash (issue #9). `retargetTabs`, `handleTrash` and the bin's
-   * Replace update it synchronously beside their own tab fix-ups.
-   */
-  const restorePendingRef = useRef<PendingRestore | null>(null);
-  /**
-   * Every rename, move, trash and bin Replace still RUNNING, from its first
-   * filesystem call to the end of its tab fix-up. Each is copy → removeEntry →
-   * a full refreshTree walk → only then the fix-up, so for that whole span the
-   * old entry is gone and nothing has re-pointed anything yet. The restore pass
-   * waits for this to empty before its last re-validation and its merge.
-   */
-  const vaultMovesRef = useRef<Set<Promise<unknown>>>(new Set());
-  const trackVaultMove = useCallback(<T,>(work: () => Promise<T>): Promise<T> => {
-    const p = work();
-    vaultMovesRef.current.add(p);
-    // Removed on rejection too: a span left registered would hold the restore
-    // (and its persistence gate) open for the rest of the session.
-    const done = () => { vaultMovesRef.current.delete(p); };
-    p.then(done, done);
-    return p;
-  }, []);
-  /** The in-flight restore's registry — only when it is restoring THIS vault,
-   *  so a pass outliving a switch is never edited by the next vault's moves. */
-  const pendingFor = useCallback((root: FileSystemDirectoryHandle | null): PendingRestore | null => {
-    const pending = restorePendingRef.current;
-    return pending && root && pending.root === root ? pending : null;
-  }, []);
-
-  // The open vault, for the async restore pass to re-check after its awaits —
-  // BOTH halves of it, because `currentVaultId` lags `rootHandle` — by
-  // recordVault's IndexedDB write and labelling round trips — on every path
-  // that commits the tree before awaiting `recordVault`. The id alone
-  // cannot tell that pass a switch happened underneath it (see there).
-  const currentVaultIdRef = useRef<string | null>(currentVaultId);
-  useLayoutEffect(() => { currentVaultIdRef.current = currentVaultId; }, [currentVaultId]);
-  const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(rootHandle);
-  useEffect(() => { rootHandleRef.current = rootHandle; }, [rootHandle]);
-
-  // Which vault the path-keyed records (fileScrollAnchors, pdfViewPositions,
-  // collapsedHeadings) file their entries under. Declared BEFORE the restore
-  // pass so no pane it opens can read a record under the outgoing vault's
-  // scope — `Notes/index.md` names a different file in every vault, and with
-  // per-vault sessions both of them are routinely open.
-  //
-  // That covers the panes THIS app opens, and not the one window it cannot:
-  // `currentVaultId` lands recordVault's round trips after `rootHandle`+`fileTree`
-  // on the switch paths, so the new vault's tree is clickable while the scope still
-  // names the old one, and a file opened by hand right then reads the other
-  // vault's offset for the same path. Deliberately not "fixed" by clearing the
-  // scope on switch: pane unmounts run one commit AFTER the switch effect, so
-  // their flush would then write the OUTGOING vault's offsets to bare paths —
-  // trading a rare wrong offset for a routine one.
-  useEffect(() => { setRecordScope(currentVaultId); }, [currentVaultId]);
-
-  // Persist the open documents, how they are divided into columns, which tab
-  // each column was left showing and how wide the columns were, UNDER THIS
-  // VAULT'S ID — so a reload, and a switch away and back, both come back to the
-  // same workspace. Keyed on `layout` (not `tabs`) so it does NOT run on every
-  // keystroke — the layout's identity only moves when the arrangement does.
-  //
-  // GATED on the two session refs, which is the old `hasRestoredTabs` rule
-  // generalized per vault. It has to cover two things:
-  //   • mount, with zero tabs — writing that out would clobber the stored list
-  //     moments before restore reads it, which is what once reduced every
-  //     reload to "only the last-active file comes back";
-  //   • the vault-switch commit, where this effect runs first (declaration
-  //     order) with the OUTGOING layout, and a commit later with the empty one
-  //     the switch installs — either of which would land under the INCOMING
-  //     vault's id.
-  // The HANDLE test is what actually closes that, under either ordering:
-  // `sessionRootRef` holds the outgoing handle before the switch effect runs
-  // and `null` after, and the switch effect only fires when the handle really
-  // changed — so it can never equal the incoming `rootHandle`. Declaration
-  // order is therefore not the guard; the `sessionRootRef.current = null`
-  // there is (see it for what depends on it).
-  // An empty layout is written happily once the refs match: "I closed
-  // everything in this vault" is a session, and must survive a switch.
-  useEffect(() => {
-    if (!currentVaultId) return;                              // no id → nowhere to file it
-    if (sessionRootRef.current !== rootHandle) return;        // the workspace is still the old vault's
-    if (sessionVaultIdRef.current !== currentVaultId) return; // …or this vault's restore has not run yet
-    if (restoringRef.current) return;                         // …or is still reading (see restoringRef)
-    writeSession(currentVaultId, {
-      // Stamped, because a record written before panes and tabs swapped axes
-      // means the opposite by the same `groups` row — readSession migrates it
-      // (see its v1 reader), and cannot tell the two apart without this.
-      v: 2,
-      paths: layout.panes.flatMap(p => p.paths),
-      groups: layout.panes.map(p => p.paths),
-      // Which tab each column was left showing: without it a column came back
-      // on its leftmost tab, since `active` speaks for one column only.
-      focus: layout.panes.map(p => p.activePath),
-      // `null` while nobody has dragged a divider, which is most workspaces —
-      // absence is how "equal columns" is encoded all the way down (see
-      // tabPanes.ts). ONE row for the whole editor now, not one per tab.
-      sizes: layout.sizes ?? null,
-      active: focusedPathOf(layout),
-    });
-  }, [layout, currentVaultId, rootHandle]);
-
-  // Sidebar resizing
-  const [sidebarWidth, setSidebarWidth] = useState<number>(260);
-
-  // Sidebar collapse (Cmd+\, the explorer-header button, or the rail) —
-  // persisted, and collapsing leaves a thin rail so it can be re-expanded.
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => localStorage.getItem('sidebarCollapsed') === 'true');
-  useEffect(() => {
-    localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
-  }, [sidebarCollapsed]);
-  // Suppresses the collapse animation while drag-resizing, so the width
-  // tracks the pointer instead of easing 150ms behind it.
-  const [isDraggingSidebar, setIsDraggingSidebar] = useState<boolean>(false);
-  const isResizing = useRef<boolean>(false);
-
-  // The AI agent panel, docked on the right (⌘⇧X, or the sidebar footer's
-  // sparkles). Width and open state persist like the sidebar's; the width is
-  // clamped on read and on every drag, since localStorage is user-editable and
-  // a window can shrink under a stored width.
-  const [agentPanelOpen, setAgentPanelOpen] = useState<boolean>(() => localStorage.getItem('agentPanelOpen') === 'true');
-  useEffect(() => {
-    localStorage.setItem('agentPanelOpen', String(agentPanelOpen));
-  }, [agentPanelOpen]);
-  const [agentPanelWidth, setAgentPanelWidth] = useState<number>(() => clampAgentWidth(parseInt(localStorage.getItem('agentPanelWidth') || '', 10)));
-  // Whether the reader has opened the panel this session (⌘⇧X, the footer
-  // button), as against it being restored open with the page: only an open
-  // they asked for takes the keyboard (AgentPanel's focus hand-off). What was
-  // focused cannot tell them apart — a note in Reading mode leaves <body>
-  // focused either way.
-  const [agentOpenedByReader, setAgentOpenedByReader] = useState(false);
-  const toggleAgentPanel = useCallback(() => {
-    setAgentOpenedByReader(true);
-    setAgentPanelOpen(o => !o);
-  }, []);
-  const closeAgentPanel = useCallback(() => setAgentPanelOpen(false), []);
-
-  // The terminal (⌃`, or the footer button beside the agent's), docked under
-  // the editor. Open state persists like the agent panel's; its height is the
-  // dock's own (TerminalDock). Only an open the reader asked for takes the
-  // keyboard, as with the agent panel.
-  const [terminalOpen, setTerminalOpen] = useState<boolean>(() => localStorage.getItem('terminalOpen') === 'true');
-  useEffect(() => {
-    localStorage.setItem('terminalOpen', String(terminalOpen));
-  }, [terminalOpen]);
-  const [terminalOpenedByUser, setTerminalOpenedByUser] = useState(false);
-  const terminalOpenRef = useRef(terminalOpen);
-  useEffect(() => { terminalOpenRef.current = terminalOpen; }, [terminalOpen]);
-  /** Stable: SidebarFooter is memoized. Opening dials the helper from INSIDE
-   *  the gesture — the one moment Chrome's Local Network Access prompt may
-   *  appear — never on page load (connectHelperForTerminal keeps that rule). */
-  const toggleTerminal = useCallback(() => {
-    setTerminalOpenedByUser(true);
-    if (!terminalOpenRef.current) connectHelperForTerminal();
-    setTerminalOpen(o => !o);
-  }, []);
-  const hideTerminal = useCallback(() => setTerminalOpen(false), []);
-  // Each load asks the helper (if one was ever connected) whether VaultAgent has
-  // a newer release, so the sidebar can say so before the panel is opened.
-  useEffect(() => { scheduleAgentUpdateCheck(); }, []);
-
-  // ── Asset lifecycle ─────────────────────────────────────────────────────
-  // An asset belongs to the notes that embed it: paste a picture and it is
-  // written into the `.Assets` beside the note, and when the last reference to
-  // it goes away it is retired into that same folder's `.Garbage`.
-  //
-  // What each open document referred to as of its last write, so a save can
-  // tell an embed that has just been DELETED from one that was never there.
-  // Seeded when a tab opens (below), because otherwise the first edit after
-  // opening a note — the likeliest one to remove a picture — would have
-  // nothing to compare against.
-  const assetRefsRef = useRef<Map<string, Set<string>>>(new Map());
-  const fileTreeRef = useRef<FileTreeNode[]>(fileTree);
-  useEffect(() => { fileTreeRef.current = fileTree; }, [fileTree]);
-
-  const rememberAssetRefs = useCallback((file: ActiveFile, content: string) => {
-    if (tracksAssets(file)) assetRefsRef.current.set(file.path, assetEmbeds(content));
-  }, []);
-
-  /**
-   * A PDF's disk baseline (utils/docBaselines.ts), hashed in the background.
-   *
-   * PdfPane reads a PDF's bytes itself and the tab buffer never holds them, so
-   * opening one cannot wait on a second full read just to hash it (a large PDF
-   * is tens of MB). The read is issued at open, while the OS cache is warm, and
-   * the first save awaits it if it is still running (flushTab), so a write is
-   * never made without one. Keyed by document id; a close drops the pending
-   * seed (releaseTab), and a seed that lands after that writes nothing.
-   */
-  // Each seed resolves to the version it read (null if it failed), so a save
-  // whose document closed meanwhile still checks against it (flushTab).
-  const pdfSeedsRef = useRef(new Map<string, Promise<DiskVersion | null>>());
-  /** Open PDFs whose fingerprint has not been needed yet — see seedPdfBaseline. */
-  const pdfSeedSourcesRef = useRef(new Map<string, FileSystemFileHandle>());
-  /**
-   * Remember HOW to fingerprint an open PDF, without doing it.
-   *
-   * This used to read the whole file and SHA-256 it the moment a PDF was
-   * opened, so that a later write would have a baseline to check the disk
-   * against. The pane then read the very same bytes to display them and
-   * reported the very same version (`onReaderVersion`), which is what actually
-   * set the baseline — the fingerprint was a second full read of a file the
-   * reader was already waiting on. Measured on a 10MB document: 19MB read and
-   * 19MB hashed before the first page appeared, and it scales straight up with
-   * the file. A 100MB scan paid 200MB of it.
-   *
-   * So nothing is read here. `pdfSeedFor` below starts the read at the one
-   * moment the answer is needed — a write, where it is awaited anyway — and
-   * skips it entirely when the pane has already supplied the version, which
-   * for any PDF that was actually opened is always.
-   */
-  const seedPdfBaseline = useCallback((id: string, handle: FileSystemFileHandle) => {
-    pdfSeedSourcesRef.current.set(id, handle);
-  }, []);
-
-  /** The fingerprint a write needs, read now if nobody has supplied one. */
-  const pdfSeedFor = useCallback((id: string): Promise<DiskVersion | null> | undefined => {
-    if (getBaseline(id)) return undefined;
-    const started = pdfSeedsRef.current.get(id);
-    if (started) return started;
-    const handle = pdfSeedSourcesRef.current.get(id);
-    if (!handle) return undefined;
-    const seed: Promise<DiskVersion | null> = readBytesVersioned(handle)
-      .then(({ version }) => {
-        if (pdfSeedsRef.current.get(id) === seed && !getBaseline(id)) setBaseline(id, version);
-        return version;
-      })
-      .catch(err => { console.warn('Could not fingerprint a PDF for outside-change checks:', handle.name, err); return null; })
-      .finally(() => { if (pdfSeedsRef.current.get(id) === seed) pdfSeedsRef.current.delete(id); });
-    pdfSeedsRef.current.set(id, seed);
-    return seed;
-  }, [readBytesVersioned]);
-  /** Read through a ref for the same reason writeFile and rebuildGraph are: the
-   *  save helpers keep a stable identity, and a dependency here would re-arm
-   *  every timer and listener they own. */
-  const pdfSeedForRef = useRef(pdfSeedFor);
-  useEffect(() => { pdfSeedForRef.current = pdfSeedFor; }, [pdfSeedFor]);
-
-  /** Follow a note to its new path (rename/move), so the next save there still
-   *  has something to diff against. */
-  const moveAssetRefs = useCallback((from: string, to: string) => {
-    const refs = assetRefsRef.current.get(from);
-    if (!refs) return;
-    assetRefsRef.current.delete(from);
-    assetRefsRef.current.set(to, refs);
-  }, []);
-
-  /**
-   * Bring a folder's `.Assets` back in step with the note that was just saved.
-   *
-   * Driven by the SAVED text rather than by keystrokes: until a removal has
-   * reached the disk it isn't one, the save debounce doubles as an undo grace
-   * period, and one regex pass per second beats one per character typed.
-   *
-   * Both sets are handed in rather than derived here, because the baseline can
-   * only be read (and handed over) SYNCHRONOUSLY at the point of the save — see
-   * flushTab.
-   */
-  const reconcileAssets = useCallback(async (file: ActiveFile, before: Set<string>, after: Set<string>) => {
-    const dir = file.parentHandle;
-    if (!dir) return;
-
-    try {
-      // A reference that came BACK — undo, or the same embed pasted into a
-      // sibling note — reclaims its asset from the folder's `.Garbage`. Almost
-      // always a no-op (the asset is right where it should be), and cheap.
-      //
-      // The editor showed the reclaimed embed the instant it was typed, i.e.
-      // a second before the file it wants came back, so it is holding an
-      // "Image not found" it has no reason to re-check on its own.
-      let reclaimed = false;
-      for (const name of after) {
-        if (before.has(name)) continue;
-        if (await restoreAsset(name, dir)) reclaimed = true;
-      }
-      if (reclaimed) retryMissingAssets();
-
-      const orphaned = new Set([...before].filter(name => !after.has(name)));
-      if (orphaned.size === 0) return;
-
-      // Who has to be consulted before a picture is taken away — a picture
-      // shared with another note must survive being removed from this one.
-      //
-      // NOT just this folder's own notes: getAssetUrl walks UP from a note when
-      // its own `.Assets` doesn't have the file, so a note in any DESCENDANT
-      // folder may be showing this very asset. That is exactly how a vault
-      // carried forward from the era of one root-level `.Assets` still renders,
-      // and going by the folder alone would retire the picture out from under
-      // every one of those notes. The subtree is only walked when an embed was
-      // actually dropped, which is rare; same-folder notes come first because
-      // they are the overwhelmingly likely hit, and the walk stops as soon as
-      // every dropped name has been spoken for.
-      const folder = parentVaultPath(file.path);
-      const under = folder ? `${folder}/` : '';
-      const candidates = collectFiles(fileTreeRef.current).filter(f =>
-        f.path !== file.path && isTextFile(f.name) && f.path.startsWith(under));
-      const neighbours = [
-        ...candidates.filter(f => parentVaultPath(f.path) === folder),
-        ...candidates.filter(f => parentVaultPath(f.path) !== folder),
-      ];
-
-      // Every dropped name is answered in ONE pass, holding one note's text at
-      // a time. These are the same files buildGraph deliberately stopped
-      // holding all at once, and for a note at the vault root this subtree is
-      // the whole vault.
-      for (const note of neighbours) {
-        if (orphaned.size === 0) break;
-        // An open tab is read from its BUFFER, so an unsaved reference counts
-        // just as much as a saved one — unless it could not be read at all
-        // (OpenTab.readError): that buffer is no text, so it answers "keep".
-        const open = tabsRef.current.find(t => t.file.path === note.path);
-        const text = open
-          ? (open.readError ? null : open.content)
-          : await readFile(note.handle).catch(() => null);
-        // A note that can't be read might say anything, so it is taken to say
-        // "keep": a stale file costs nothing next to deleting a picture that is
-        // still on screen somewhere.
-        if (text === null) return;
-        for (const name of orphaned) {
-          if (referencesAsset(text, name)) orphaned.delete(name);
-        }
-      }
-
-      for (const name of orphaned) await retireAsset(name, dir);
-    } catch (err) {
-      console.error('Could not reconcile assets for', file.path, err);
-    }
-  }, [readFile, retireAsset, restoreAsset]);
-
-  // Read through a ref for the same reason writeFile and rebuildGraph are: it
-  // keeps flushTab — and every timer and listener downstream of it — stable.
-  const reconcileAssetsRef = useRef(reconcileAssets);
-  useEffect(() => { reconcileAssetsRef.current = reconcileAssets; }, [reconcileAssets]);
-
-  /**
-   * Reconciles run ONE AT A TIME, in the order their saves happened.
-   *
-   * A single pass can take a while — it may read a whole subtree — and the
-   * saves that start them are only a second apart, so they overlap easily. Left
-   * to race, the classic sequence loses a picture: remove an embed (save A
-   * begins a long scan), undo (save B restores the asset at once), then A's
-   * retire lands on top and the note is pointing at a file in `.Garbage`.
-   * Ordering them makes B's restore the last word, which is what it is.
-   *
-   * Same promise-queue shape as utils/recentVaults.ts. reconcileAssets catches
-   * its own errors, so this chain never rejects.
-   */
-  const reconcileQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const queueReconcile = useCallback((file: ActiveFile, before: Set<string>, after: Set<string>) => {
-    reconcileQueueRef.current = reconcileQueueRef.current
-      .then(() => reconcileAssetsRef.current(file, before, after));
-  }, []);
-
-  const retryUnreadTabRef = useRef<(path: string) => Promise<boolean>>(async () => false);
-
-  // Returns whether the file was actually opened (as a tab or externally).
-  const handleFileClick = useCallback(async (node: FileTreeNode): Promise<boolean> => {
-    const rootAtOpen = rootHandleRef.current;
-    try {
-      // PDFs open in a pane like any other file. Everything else non-textual
-      // (images, video, …) still hands off to the browser.
-      if (!opensInApp(node.name)) {
-        const file = await (node.handle as FileSystemFileHandle).getFile();
-        window.open(externalOpenUrl(node.path, file), '_blank');
-        return true;
-      }
-
-      // Already open? Just focus it — don't re-read (preserves the tab's
-      // unsaved edits and its own undo history). Its column takes focus and
-      // fronts its tab, wherever in the row that column happens to be.
-      const open = tabsRef.current.find(t => t.file.path === node.path);
-      if (open) {
-        setLayout(l => focusTab(l, node.path));
-        // Clicking a note whose tab could not be read is asking for it again.
-        // Awaited, so a caller that acts on the opened document next (a search
-        // result's reveal) lands on the remounted, readable pane rather than
-        // being consumed by the unreadable one.
-        if (open.readError) await retryUnreadTabRef.current(node.path);
-        return true;
-      }
-
-      // A PDF's bytes are read by PdfPane itself; its tab buffer holds the
-      // tldraw snapshot instead (empty until the canvas loads and reports one).
-      // readFile() must not touch it — decoding a PDF as UTF-8 corrupts it.
-      // Read WITH the version of exactly those bytes — the baseline every later
-      // save of this document is checked against (writeFileVersioned) and every
-      // outside change is compared with (checkOpenDocs).
-      const handle = node.handle as FileSystemFileHandle;
-      let readError: string | undefined;
-      const read = (isPdfFile(node.name) || isEpubFile(node.name)) ? null : await readFileVersioned(handle).catch(error => { readError=describeReadError(error); return null; });
-      if (rootHandleRef.current !== rootAtOpen) return false;
-      const content = read?.text ?? '';
-      // What this note referred to when it was opened — the baseline every
-      // later save's asset diff is taken against.
-      rememberAssetRefs(node, content);
-      const id = newTabId();
-      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name)) seedPdfBaseline(id, handle);
-      // Re-check inside the updater: a second click can land while the first
-      // read is still in flight, and tabsRef only updates post-commit.
-      // A source file opens ready to type in: there is no "reading mode" worth
-      // having for code — the syntax colours are the same either way, and the
-      // only difference is whether the caret works (⌘E still toggles it).
-      const mode: EditorMode = isCodeFile(node.name) ? 'edit' : 'read';
-      setTabs(prev => prev.some(t => t.file.path === node.path)
-        ? prev
-        : [...prev, { id, file: node, content, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, readError, representation: representationFor(node.name,false,0,!!readError) }]);
-      // openTab re-checks too, and focuses an existing tab rather than minting a
-      // second one — the same race, answered the same way.
-      setLayout(l => openTabIn(l, node.path));
-      setSaveStatus('');
-      return true;
-    } catch (err) {
-      console.error('Failed to read file:', err);
-      return false;
-    }
-  }, [readFileVersioned, rememberAssetRefs, seedPdfBaseline]);
-
-  /**
-   * Hand a notebook's exported PDF back to its notebook.
-   *
-   * The PDF pane reads the pointer (see pdfFormat.ts) and calls this instead of
-   * drawing anything: annotating an export would fork a third document whose
-   * marks the notebook could neither see nor replace. The stored path first,
-   * then a notebook beside the PDF answering to its name — the pointer is
-   * written once and the vault goes on moving, so between them they survive a
-   * rename of either file.
-   */
-  const handleOpenNotebookSource = useCallback(async (pdfPath: string, notebookPath: string) => {
-    const pdfName = pdfPath.slice(pdfPath.lastIndexOf('/') + 1);
-    const beside = joinVaultPath(parentVaultPath(pdfPath), ensureNotebookExt(stripPdfExt(pdfName)));
-    for (const candidate of [notebookPath, beside]) {
-      const node = collectFiles(fileTree).find(f => f.path === candidate && isNotebookFile(f.name));
-      if (!node) continue;
-      // Back to reading, so coming back to this tab shows the PDF rather than
-      // the hand-off message that sent you away from it.
-      setTabs(prev => prev.map(t => (t.file.path === pdfPath ? { ...t, mode: 'read' as const } : t)));
-      await handleFileClick(node);
-      return;
-    }
-    await tell({
-      title: 'That notebook has moved',
-      confirmLabel: 'OK',
-      body: (
-        <>
-          This PDF was exported from <strong>{notebookPath}</strong>, which is no longer there.
-          Open the notebook and export again — annotating this PDF instead would put marks in it
-          that the notebook could not see.
-        </>
-      ),
-    });
-  }, [fileTree, handleFileClick, tell]);
-
-  /**
-   * The looks on disk, as last read or written: folder path → the exact text of
-   * its `.appearance.json` ('' = the vault root). It is what the writer diffs
-   * against, so a change in one folder writes one small file and leaves every
-   * other one untouched — and it is what tells the writer which files to remove
-   * when the last icon in a folder is cleared.
-   */
-  const shardTextRef = useRef<Map<string, string>>(new Map());
-  /** Folders whose file has been read into the store, or written from it. A
-   *  folder in here is never read again: the store is the newer truth, and this
-   *  app is the only writer. */
-  const loadedShardsRef = useRef<Set<string>>(new Set());
-  /** A pre-shard vault was read (one file at the root, keyed all the way down)
-   *  and has still to be fanned out into one file per folder. */
-  const fanOutRef = useRef(false);
-
-  // Emptied the moment the vault changes, before the browser paints it — not
-  // when the read below lands, and not in a passive effect: switching from the
-  // vault menu drew the new vault's tree with the LAST vault's icons and custom
-  // order (measured, 6 of 6 switches, even with a passive reset), and a drop or
-  // icon pick in that window would have written them into this vault's file.
-  // Same reason and shape as resetFileTimes above.
-  useLayoutEffect(() => {
-    setEntryStyles(emptyEntryStyles());
-    shardTextRef.current = new Map();
-    loadedShardsRef.current = new Set();
-    fanOutRef.current = false;
-  }, [rootHandle]);
-
-  /**
-   * Read the vault's looks when it opens: `<vault>/.appearance.json` and one
-   * more for every folder below it that has one.
-   *
-   * ONCE PER FOLDER PER VAULT OPEN, not once per tree walk — the walk runs after
-   * every save, and a read on that path would be a read per keystroke-triggered
-   * autosave (the rule AGENTS.md states for anything that touches the whole
-   * vault). The files are held in the store from then on, and this app is the
-   * only writer.
-   *
-   * It waits for the tree because the tree is what KNOWS: `listDir` noticed each
-   * `.appearance.json` as it passed and kept the handle, so this opens the few
-   * that exist and never gropes for the thousands that do not. Nothing is on
-   * screen before the tree is either, so waiting costs no paint. It then re-runs
-   * as the tree changes — a folder restored from the trash brings its looks back
-   * with it — and does nothing at all when every folder is already loaded.
-   */
-  useEffect(() => {
-    if (!rootHandle) return;
-    let cancelled = false;
-    (async () => {
-      const readText = async (handle: FileSystemFileHandle) => (await handle.getFile()).text();
-      const loaded = loadedShardsRef.current;
-
-      // The root's own file first — and the name it had while only folders could
-      // be styled, read forward once so a rename we chose costs nobody their
-      // icons. The old file is left alone: this app does not delete from a vault
-      // to tidy up.
-      if (!loaded.has('')) {
-        loaded.add('');
-        let text: string | null = null;
-        let legacy = false;
-        try {
-          text = await readText(await rootHandle.getFileHandle(ENTRY_STYLE_FILE));
-        } catch {
-          try {
-            text = await readText(await rootHandle.getFileHandle(LEGACY_STYLE_FILE));
-            legacy = true;
-          } catch {
-            // No file at all is the ordinary case — a vault has none until
-            // something is given a look.
-          }
-        }
-        if (cancelled) return;
-        if (text !== null) {
-          const parsed = parseEntryStyles(text);
-          // Not recorded as what is on disk when it came from the legacy name:
-          // the writer must then write the file under the name we use now.
-          if (!legacy) shardTextRef.current.set('', text);
-          if (legacy || needsFanOut(parsed)) fanOutRef.current = true;
-          setEntryStyles(mergeShard(getEntryStyles(), '', parsed));
-        }
-      }
-
-      for (const folder of foldersWithStyleFile(fileTree)) {
-        if (loaded.has(folder.path)) continue;
-        // Marked before the await, not after: an icon picked in that folder
-        // while this read is in flight is the newer truth, and `mergeShard`
-        // keeps what the store already holds either way.
-        loaded.add(folder.path);
-        try {
-          const text = await readText(folder.styleFile);
-          if (cancelled) return;
-          shardTextRef.current.set(folder.path, text);
-          setEntryStyles(mergeShard(getEntryStyles(), folder.path, parseEntryStyles(text)));
-        } catch {
-          // One unreadable file costs that folder its icons, nothing more.
-        }
-      }
-
-      // Everything the old layout held is now in the store, and the tree can
-      // name a handle for every folder: write it back out, one file per folder.
-      // NOT before the tree has landed — the writer can only reach a folder the
-      // tree names, and fanning out against an empty one would write the root's
-      // file and drop every deeper entry on the floor.
-      if (fanOutRef.current && fileTree.length && !cancelled) {
-        fanOutRef.current = false;
-        void writeEntryStylesRef.current?.(getEntryStyles());
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [rootHandle, fileTree]);
-
-  /** The migration above runs before `writeEntryStyles` is declared, and a
-   *  hoisted reference is the only way to reach it from there. */
-  const writeEntryStylesRef = useRef<((next: ReturnType<typeof getEntryStyles>) => Promise<void>) | null>(null);
-
-  /**
-   * Persist the styles, and put them on screen at once.
-   *
-   * The store is updated first and the write follows, so a picked icon appears
-   * in the sidebar immediately rather than after a round trip to disk — the
-   * picker is a live preview, and it is being judged against the real tree.
-   *
-   * ONLY WHAT CHANGED IS WRITTEN. The merged styles are cut into one file per
-   * folder and compared, byte for byte, with what that folder's file last said:
-   * an icon picked in one folder writes one small file. A folder left with
-   * nothing to say has its file REMOVED — it is ours, we just emptied it, and
-   * the alternative is an `.appearance.json` holding `{}` littered through every
-   * folder the reader ever tried an icon in.
-   *
-   * A FOLDER THE TREE CANNOT NAME IS SKIPPED, never an error: that is a folder
-   * that has just been renamed, moved or trashed, and its file went with it
-   * inside the folder — which is the whole point of storing a look beside the
-   * thing it describes.
-   *
-   * WRITES ARE SERIALIZED, in call order. A drop into another folder under the
-   * Custom sort writes twice back to back (the new order, then the move's
-   * re-key), and two overlapping `createWritable`s on one file land in
-   * COMPLETION order — the older snapshot could win on disk while the screen
-   * shows the newer. Each write also captures the vault it was asked for, so one
-   * still queued at a vault switch cannot land in the next vault.
-   */
-  const entryStyleWritesRef = useRef<Promise<void>>(Promise.resolve());
-  const writeEntryStyles = useCallback((next: ReturnType<typeof getEntryStyles>): Promise<void> => {
-    setEntryStyles(next);
-    const root = rootHandle;
-    if (!root) return Promise.resolve();
-    const tree = fileTreeRef.current;
-
-    const wanted = new Map<string, string>();
-    for (const [folder, shard] of shardEntryStyles(next)) wanted.set(folder, serializeEntryStyles(shard));
-    const todo: { folder: string; text: string | null }[] = [];
-    for (const [folder, text] of wanted) {
-      if (shardTextRef.current.get(folder) !== text) todo.push({ folder, text });
-    }
-    for (const folder of shardTextRef.current.keys()) {
-      if (!wanted.has(folder)) todo.push({ folder, text: null });
-    }
-    if (!todo.length) return Promise.resolve();
-
-    // Recorded before the write, so the next pick diffs against what this one is
-    // about to put there rather than asking for it all over again.
-    for (const { folder, text } of todo) {
-      if (text === null) shardTextRef.current.delete(folder);
-      else shardTextRef.current.set(folder, text);
-      loadedShardsRef.current.add(folder);
-    }
-
-    const write = entryStyleWritesRef.current.then(async () => {
-      for (const { folder, text } of todo) {
-        const dir = folder ? findDirNode(tree, folder)?.handle : root;
-        if (!dir) continue;
-        try {
-          if (text === null) {
-            await dir.removeEntry(ENTRY_STYLE_FILE);
-          } else {
-            // NOT createFile: that truncates to '' in a writable of its own (a
-            // tab closed in between would lose every icon and the custom order)
-            // and then walks the entire vault to refresh a tree this hidden file
-            // never appears in. Measured under Custom: that walk, landing
-            // mid-moveFile, rendered a dropped file in BOTH folders plus its
-            // `.crswap`, and a write queued past a vault switch repainted the
-            // OLD vault's tree. One writable replaces the file whole, atomically
-            // on close.
-            const handle = await dir.getFileHandle(ENTRY_STYLE_FILE, { create: true });
-            await writeFile(handle, text);
-          }
-        } catch (err) {
-          // A file that is already gone is the ordinary end of a removal.
-          if (text === null && err instanceof DOMException && err.name === 'NotFoundError') continue;
-          console.error(`Could not save ${ENTRY_STYLE_FILE}:`, err);
-          notify('Could not save the file tree’s icons, colours or order.');
-        }
-      }
-    });
-    entryStyleWritesRef.current = write;
-    return write;
-  }, [notify, rootHandle, writeFile]);
-  useEffect(() => { writeEntryStylesRef.current = writeEntryStyles; }, [writeEntryStyles]);
-
-  /** Stable for the app's life: FileExplorer and TreeNode are both memoized. */
-  const handleStyleEntry = useCallback((
-    path: string,
-    icon: string | undefined,
-    color: string | undefined,
-    nodes?: IconNode[],
-  ) => {
-    void writeEntryStyles(withEntryStyle(getEntryStyles(), path, { icon, color }, nodes));
-  }, [writeEntryStyles]);
-
-  /** One folder's custom order (the tree's Custom sort), from a drop in the
-   *  explorer. Stable per vault, for the same memo as handleStyleEntry; an
-   *  unchanged list comes back as the same file and costs no write. */
-  const handleSetTreeOrder = useCallback((folderPath: string, names: readonly string[] | null) => {
-    const current = getEntryStyles();
-    const next = withEntryOrder(current, folderPath, names);
-    if (next !== current) void writeEntryStyles(next);
-  }, [writeEntryStyles]);
-
-  /** PDF names this session has exported. Re-exporting must not ask about a
-   *  file that is this notebook's own previous export. */
-  const exportedNotebooksRef = useRef<Set<string>>(new Set());
-
-  /**
-   * Write the open notebook out as a PDF beside it.
-   *
-   * The notebook stays the editable original and the PDF is an OUTPUT, so
-   * re-exporting overwrites the same name rather than piling up "(1)" copies —
-   * that name is derived from the notebook's, so it can only ever land on this
-   * notebook's own export. It is the one deliberate exception to the app's
-   * never-overwrite rule, and it is why the confirm below exists: a PDF of that
-   * name that ISN'T ours is a file we would be destroying.
-   */
-  const handleExportNotebook = useCallback(async (file: ActiveFile) => {
-    if (!file.parentHandle) return;
-    const targetName = notebookPdfName(file.name);
-
-    const exporter = getNotebookExporter(file.path);
-    if (!exporter) {
-      notify(`Open "${file.name}" before exporting it.`);
-      return;
-    }
-
-    try {
-      const exported = await exporter();
-      if (!exported) { notify(`Open "${file.name}" before exporting it.`); return; }
-
-      // Only ask when there is something to lose, and only once: after the
-      // first export the file at that name is one of ours.
-      if (!exportedNotebooksRef.current.has(targetName)
-          && await nameTaken(file.parentHandle, targetName)) {
-        const replace = await ask({
-          title: `Replace "${targetName}"?`,
-          body: `A PDF of that name is already in this folder. Exporting will overwrite it.`,
-          confirmLabel: 'Replace',
-          danger: true,
-        });
-        if (!replace) return;
-      }
-
-      const { buildNotebookPdfAsync } = await import('./utils/pdfBuildClient');
-      const bytes = await buildNotebookPdfAsync(exported.paper, exported.overlays, {
-        path: file.path,
-        exportedAt: Date.now(),
-      });
-      // createFile refreshes the tree, so the PDF shows up in the sidebar.
-      const handle = await createFile(file.parentHandle, targetName);
-      await writeFileBytes(handle, bytes);
-      exportedNotebooksRef.current.add(targetName);
-      void tell({
-        title: 'Exported to PDF',
-        confirmLabel: 'OK',
-        body: `"${targetName}" is in the same folder — ${exported.paper.pageCount} `
-          + `${exported.paper.pageCount === 1 ? 'page' : 'pages'}.`,
-      });
-    } catch (err) {
-      console.error('Could not export the notebook:', err);
-      notify(`Could not export "${file.name}".`);
-    }
-  }, [ask, createFile, notify, tell, writeFileBytes]);
-
-  // Flat index of markdown files for resolving wikilinks by note name. Read
-  // through a ref by openNoteByName below, which MUST stay stable: the editor
-  // bakes its wikilink handler into a document's EditorState, and that state
-  // outlives the pane that built it (see DocumentPane).
-  const mdFiles = useMemo(() => collectMarkdownFiles(fileTree), [fileTree]);
-  const mdFilesRef = useRef(mdFiles);
-  useEffect(() => { mdFilesRef.current = mdFiles; }, [mdFiles]);
-
-  // A different vault may reuse paths — never resolve links from the old one's
-  // cached extractions (mirrors FileExplorer clearing the search cache).
-  useEffect(() => { clearLinkCache(); }, [rootHandle]);
-
-  // Same reasoning for the window.open blob URLs: a different vault can hold the
-  // same path, and (mtime, size) alone could match, so drop them with the vault
-  // rather than risk serving the old file's bytes (and pinning them all session).
-  useEffect(() => () => {
-    for (const { url } of externalUrls.values()) URL.revokeObjectURL(url);
-    externalUrls.clear();
-  }, [rootHandle]);
-
-  /**
-   * Rebuild the link graph.
-   *
-   * `revalidate` is whether the vault may have moved under us. TRUE for a tree
-   * change, a watcher rescan or a vault open — anything that could have been
-   * somebody else's edit. FALSE after one of our own saves, which has just
-   * primed the one note it touched (`primeLinks`): the rebuild is then pure
-   * arithmetic over what is already in memory.
-   *
-   * That distinction is the difference between 0 and N file handles per save.
-   * Measured on a 1,000-note vault: typing twelve characters cost 1,004
-   * `getFile()` round trips, one per note, every time the autosave landed —
-   * because a cache HIT still had to open the file to find out it was a hit.
-   */
-  const rebuildGraph = useCallback(async (revalidate = true) => {
-    if (!fileTree || fileTree.length === 0) {
-      // Through the same identity guard as the built graph below: a fresh empty
-      // object here would re-seed GraphView on every tree change just as surely.
-      setGraph(prev => sameGraph(prev, EMPTY_GRAPH) ? prev : EMPTY_GRAPH);
-      return;
-    }
-    try {
-      const g = await buildGraph(fileTree, revalidate);
-      // Keep the OLD object when nothing about the graph changed. A fresh
-      // identity on every save propagates all the way into GraphView's effects,
-      // which re-seed the simulation (alpha = 1) and tear down and rebuild the
-      // RAF loop and ResizeObserver — so an unrelated tab autosaving used to
-      // visibly re-heat the Neural Brain view while the user was looking at it.
-      setGraph(prev => sameGraph(prev, g) ? prev : g);
-    } catch (err) {
-      console.error('Failed to build link graph:', err);
-    }
-  }, [fileTree]);
-
-  // AT IDLE, not the moment a tree lands. The first build reads every note in
-  // the vault (nothing is cached yet) — measured at 1,000 reads and 2.6MB on a
-  // 1,000-note vault — and it was racing the session restore for the same file
-  // thread, so the notes the reader actually asked for arrived behind an index
-  // nobody had looked at yet. Nothing on screen waits for the graph: the Neural
-  // Brain view and the backlinks count fill in when it lands.
-  useEffect(() => onIdle(() => { void rebuildGraph(); }), [rebuildGraph]);
-
-  // ── Per-tab autosave ────────────────────────────────────────────────────
-  // rebuildGraph/writeFile are read through refs so the save helpers keep a
-  // stable identity (no re-armed timers / re-subscribed listeners on every
-  // graph rebuild) while never going stale.
-  const rebuildGraphRef = useRef(rebuildGraph);
-  const writeFileRef = useRef(writeFile);
-  const writeFileBytesRef = useRef(writeFileBytes);
-  useEffect(() => { rebuildGraphRef.current = rebuildGraph; }, [rebuildGraph]);
-  useEffect(() => { writeFileRef.current = writeFile; }, [writeFile]);
-  useEffect(() => { writeFileBytesRef.current = writeFileBytes; }, [writeFileBytes]);
-
-  const clearSaveTimer = useCallback((path: string) => {
-    const pending = saveTimersRef.current.get(path);
-    if (pending) { clearTimeout(pending); saveTimersRef.current.delete(path); }
-  }, []);
-
-  // The versioned write and the conflict copy, through refs for the reason
-  // writeFile is: flushTab — and every timer downstream of it — keeps its identity.
-  const writeFileVersionedRef = useRef(writeFileVersioned);
-  const writeConflictCopyRef = useRef(writeConflictCopy);
-  useEffect(() => { writeFileVersionedRef.current = writeFileVersioned; }, [writeFileVersioned]);
-  useEffect(() => { writeConflictCopyRef.current = writeConflictCopy; }, [writeConflictCopy]);
-  const notifyRef = useRef(notify);
-  useEffect(() => { notifyRef.current = notify; }, [notify]);
-  const tellRef = useRef(tell);
-  useEffect(() => { tellRef.current = tell; }, [tell]);
-
-  /**
-   * Each document's standoff with its file, by document id, SYNCHRONOUSLY —
-   * the mirror of OpenTab.disk, which reaches tabsRef only a commit later. The
-   * save funnel must stop writing the moment a conflict or a deletion is
-   * raised, and the resolutions must be able to lift it and save in one step.
-   */
-  const diskStateRef = useRef(new Map<string, 'conflict' | 'deleted'>());
-  const setDiskState = useCallback((id: string, state: 'conflict' | 'deleted' | null) => {
-    if (state) diskStateRef.current.set(id, state); else diskStateRef.current.delete(id);
-    const next = state ?? undefined;
-    setTabs(prev => prev.some(t => t.id === id && t.disk !== next)
-      ? prev.map(t => (t.id === id ? { ...t, disk: next } : t))
-      : prev);
-  }, []);
-
-  /**
-   * The newest buffered text per path, ahead of tabsRef (which catches up only
-   * after a commit). What a conflict's resolution keeps as "mine" must include
-   * the edit a canvas pushed into the funnel a moment ago (flushPending).
-   * Entries leave once the committed tab holds the same text (effect below).
-   */
-  const latestContentRef = useRef(new Map<string, string>());
-  useEffect(() => {
-    for (const [path, content] of latestContentRef.current) {
-      const tab = tabs.find(t => t.file.path === path);
-      if (!tab || tab.content === content) latestContentRef.current.delete(path);
-    }
-  }, [tabs]);
-  const contentOf = useCallback((path: string): string | undefined =>
-    latestContentRef.current.get(path) ?? tabsRef.current.find(t => t.file.path === path)?.content, []);
-
-  /**
-   * Writes are SERIALIZED per document (by id, so a rename mid-write cannot
-   * split one document's chain in two). Two overlapping writes to one file —
-   * a timer and ⌘S, or a long PDF build and the next stroke — used to land in
-   * completion order; now each also moves the disk baseline, and the second
-   * must check against the version the first wrote, not race it.
-   */
-  const flushChainsRef = useRef(new Map<string, Promise<unknown>>());
-  /** Documents with a write queued or running — App.hasUnsaved. */
-  const flushingRef = useRef(new Map<string, number>());
-
-  /**
-   * Keep a closing document's unsaved text when its file can no longer take it
-   * — it changed on disk, or is gone — as a `(conflict)` copy beside it. The
-   * tab is going away, so there is nobody left to ask, and dropping the edits
-   * would be the silent loss this whole mechanism exists to prevent.
-   */
-  const keepClosingEdits = useCallback(async (
-    root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array,
-  ) => {
-    try {
-      const copy = await writeConflictCopyRef.current(path, data, root);
-      // A dialog, not the status line: the tab is gone, and the edits are now in
-      // a file the reader did not ask for — they must hear where.
-      void tellRef.current({
-        title: 'Your unsaved edits were kept',
-        confirmLabel: 'OK',
-        body: `“${name}” changed or was deleted on disk, so your unsaved edits were kept beside it as “${copy.slice(copy.lastIndexOf('/') + 1)}”.`,
-      });
-    } catch (err) {
-      console.error('Could not keep the unsaved edits of a closing document:', path, err);
-      notifyRef.current(`Could not keep the unsaved edits to “${name}”: ${describeReadError(err)}`);
-    }
-  }, []);
-
-  // Write one tab's buffered content to its OWN handle. The tab is captured
-  // synchronously (before the await), so this is safe to fire right before the
-  // tab is removed from state (e.g. on close). Skips Help / handle-less tabs.
-  //
-  // Every write is VERSIONED: it lands only if the file is still what this
-  // document last read or wrote (FileSystemContext.writeFileVersioned). A file
-  // changed on disk puts the tab into 'conflict', a deleted one into 'deleted'
-  // — the DiskBar asks the reader — and nothing autosaves it until they choose.
-  // `closing`: the tab is going away (close, trash, vault switch), so a write
-  // that cannot land keeps the text as a `(conflict)` copy instead.
-  // `vaultRoot`: the vault the document belongs to, for a closing copy — the
-  // vault switch passes the one being left, since by then the context already
-  // names the next one.
-  const flushTab = useCallback(async (
-    path: string | null, force = false, contentOverride?: string, closing = false,
-    vaultRoot?: FileSystemDirectoryHandle | null,
-  ): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
-    if (!path) return 'skipped';
-    clearSaveTimer(path);
-
-    const tab = tabsRef.current.find(t => t.file.path === path);
-    if (!tab || tab.file.isHelp || !tab.file.handle) return 'skipped';
-    // A tab restored without its text (OpenTab.readError) has an empty buffer
-    // that is NOT the file: ⌘S forces a flush of the focused tab, and writing
-    // that '' would erase a note the app merely failed to read.
-    if (!canFlushTab(tab) && !(contentOverride !== undefined && tab.representation?.loadedKind === 'pdf' && tab.representation.status === 'ready' && getPdfRenderData(path))) return 'skipped';
-    const held = diskStateRef.current.get(tab.id);
-    if (!tab.dirty && !force) return 'skipped';
-    // contentOverride exists for callers who have fresher content than the tab
-    // does: setTabs is async, so a caller that just produced new content would
-    // otherwise race with React and write the previous buffer.
-    const snapshot = contentOverride ?? tab.content;
-    const { id, file } = tab;
-    const handle = tab.file.handle as FileSystemFileHandle;
-    const isPdf = isPdfFile(file.name);
-    // An annotated PDF tab's buffer is a tldraw snapshot; the file on disk is a
-    // real PDF, rebuilt from the pristine original + the overlays the canvas
-    // parked for us. No render data yet means the canvas has not reported a
-    // change — which is also every PDF only ever read. Read synchronously: a
-    // close drops it right after calling this.
-    const pdfData = isPdf ? getPdfRenderData(path) : undefined;
-    if (isPdf && !pdfData) return 'skipped';
-    // Captured now too: a vault switch clears every baseline right after its
-    // flushes, and this write still has to be checked against this one.
-    const baselineAtCall = getBaseline(id);
-    // And a PDF's fingerprint — started here if this is the first thing to
-    // need one, since a close drops it right after this call and the write must
-    // still wait for it.
-    const seedAtCall = pdfSeedForRef.current(id);
-    const rootAtCall = vaultRoot ?? rootHandleRef.current;
-
-    // Held: the DiskBar is asking. Nothing is written over the file — but a tab
-    // going away keeps its text beside it rather than taking it along.
-    if (held) {
-      if (!closing) return 'skipped';
-      const data = isPdf
-        ? await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
-        : snapshot;
-      await keepClosingEdits(rootAtCall, path, file.name, data);
-      return held === 'conflict' ? 'changed' : 'deleted';
-    }
-
-    // Read AND handed over in one synchronous step, which is what makes the
-    // asset diff exact. Two things would otherwise race it: removeTab drops
-    // this entry the moment after it calls flushTab (so a closing tab's last
-    // save must capture first), and a second save landing while the first is
-    // still reconciling would read a baseline the first had yet to replace,
-    // and could retire a picture that save had just put back.
-    const embedsBefore = !isPdf && tracksAssets(file) ? assetRefsRef.current.get(path) : undefined;
-    const embedsAfter = embedsBefore && assetEmbeds(snapshot);
-    if (embedsAfter) assetRefsRef.current.set(path, embedsAfter);
-
-    const write = async (): Promise<'written' | 'changed' | 'deleted' | 'failed'> => {
-      try {
-        // Off the main thread: stamping overlays costs ~150ms per annotated
-        // page (~4.2s at 30 pages), which would land as stutter under the pen.
-        const data: string | Uint8Array = isPdf
-          ? await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
-          : snapshot;
-        // A PDF's baseline is hashed in the background at open; never write
-        // without it (seedPdfBaseline).
-        const seed = pdfSeedsRef.current.get(id) ?? seedAtCall;
-        const seeded = seed ? await seed : null;
-        const expected = getBaseline(id) ?? baselineAtCall ?? seeded ?? null;
-        const result = await writeFileVersionedRef.current(handle, data, expected);
-        if (result.status !== 'written') {
-          // Nothing reached the disk, so the asset diff's baseline is still
-          // what was there before this save.
-          if (embedsBefore && assetRefsRef.current.get(path) === embedsAfter) assetRefsRef.current.set(path, embedsBefore);
-          if (closing) await keepClosingEdits(rootAtCall, path, file.name, data);
-          else setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
-          return result.status;
-        }
-        // Only while the document is still open: a close drops its entry, and
-        // this must not put one back (getBaseline is set from open to close).
-        if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) setBaseline(id, result.version);
-        // Stamped here, the one save funnel, rather than re-statted: the
-        // explorer's Modified-time sort then moves the note to the top without
-        // a getFile() per save (utils/fileTimes.ts). The write's own stat now.
-        recordFileWritten(path, result.version.lastModified);
-        // Queued rather than awaited: reconciling reads the note's neighbours,
-        // and a save's "Saved" status (and the graph rebuild below) should not
-        // wait on that — but two of them must not interleave either.
-        if (embedsBefore && embedsAfter) queueReconcile(file, embedsBefore, embedsAfter);
-        // Only clear `dirty` if the content hasn't changed since we snapshotted.
-        // By id: a rename mid-write moved the document, not the write.
-        setTabs(prev => prev.map(t =>
-          t.id === id && t.content === snapshot ? { ...t, dirty: false } : t));
-        // Any column on screen, not only the focused one: with the editor split
-        // the status line speaks for everything the reader can see.
-        if (visiblePathsRef.current.includes(path)) {
-          setSaveStatus('Saved');
-          // Re-armed, not stacked: rapid saves used to leave a handful of live
-          // timers all racing to clear the same message.
-          if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
-          saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 2000);
-        }
-        // The graph's reading of this note, from the text we just wrote — the
-        // one file a rebuild would have had to open. `primeLinks` answers
-        // whether the note's links actually MOVED; for the ordinary keystroke
-        // they did not, and then the graph on screen is already the right one
-        // and no rebuild runs at all. When they did, the rebuild is told not to
-        // revalidate: nothing else on disk has changed, so it needs no handles.
-        const linksMoved = isMarkdownFile(file.name)
-          && primeLinks(path, result.version.lastModified, result.version.size, snapshot);
-        if (linksMoved) rebuildGraphRef.current(false);
-        // Notifies the vault-search index (see utils/saveEpoch.ts) so a file that
-        // was edited, saved and then closed is re-read from disk. Deliberately not
-        // React state: as a prop it re-rendered the whole file tree every save.
-        bumpSaveEpoch();
-        return 'written';
-      } catch (err) {
-        console.error('Auto-save failed:', err);
-        return 'failed';
-      }
-    };
-
-    const chains = flushChainsRef.current;
-    const flushing = flushingRef.current;
-    flushing.set(id, (flushing.get(id) ?? 0) + 1);
-    const run = (chains.get(id) ?? Promise.resolve()).then(write);
-    chains.set(id, run);
-    try {
-      return await run;
-    } finally {
-      const left = (flushing.get(id) ?? 1) - 1;
-      if (left > 0) flushing.set(id, left); else flushing.delete(id);
-      if (chains.get(id) === run) chains.delete(id);
-    }
-    // queueReconcile is stable (a useCallback over refs), so flushTab — and
-    // every timer and listener downstream of it — keeps its identity.
-  }, [clearSaveTimer, queueReconcile, setDiskState, keepClosingEdits]);
-
-  const scheduleSave = useCallback((path: string) => {
-    clearSaveTimer(path);
-    // flushTab clears the (now-fired) timer itself, so no delete needed here.
-    saveTimersRef.current.set(path, setTimeout(() => flushTab(path), 1000));
-  }, [clearSaveTimer, flushTab]);
-
-  // Buffer an edit against ONE named document and schedule its save.
-  // Path-explicit on purpose, and the only content funnel there is: several
-  // documents are editable at once — one per column — and the drawing canvas
-  // serializes on a debounce that can fire after its pane has gone away. Either
-  // way the text must land in the document it came from — never in whichever
-  // pane happens to have focus by then.
-  //
-  // `fromDisk`: the text was just reloaded from the file (a reload in place —
-  // editor/externalReload.ts). It is buffered like any edit, but it IS the file,
-  // so the tab stays clean and nothing is scheduled to write it back.
-  const updateTabContent = useCallback((path: string, content: string, options?: ContentChangeOptions) => {
-    const target = tabsRef.current.find(t => t.file.path === path);
-    if (!target || !canUpdateTabContent(target, target.representation.loadedKind === 'pdf' ? 'annotation' : options?.fromDisk ? 'disk' : 'user')) return;
-    latestContentRef.current.set(path, content);
-    // Never into an unreadable tab's buffer: nothing edits one (its pane builds
-    // no editor), but the funnel guards itself — see OpenTab.readError.
-    if (options?.fromDisk) {
-      setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content } : t));
-      return;
-    }
-    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
-    scheduleSave(path);
-  }, [scheduleSave]);
-
-  /**
-   * Buffer an edit and write it NOW, skipping the save debounce.
-   *
-   * For the moment a PDF leaves annotate mode: the viewer is about to re-read
-   * the file, so waiting out the 1s debounce would show the pre-annotation PDF
-   * and only correct itself a second later.
-   *
-   * The content is passed explicitly rather than read back from the tab — the
-   * setTabs above hasn't committed yet when flushTab runs.
-   */
-  const flushTabNow = useCallback(async (path: string, content: string) => {
-    const target = tabsRef.current.find(t => t.file.path === path);
-    if (!target || !canUpdateTabContent(target, 'annotation')) return;
-    setTabs(prev => prev.map(t => t.file.path === path && !t.readError ? { ...t, content, dirty: true, representation: t.representation.loadedKind === 'pdf' ? { ...t.representation, bufferKind: 'annotationSnapshot' as const, contentWritable: true } : t.representation } : t));
-    await flushTab(path, true, content);
-  }, [flushTab]);
-
-  /**
-   * Turn a PDF's pages a quarter at a time, and write it.
-   *
-   * A REAL EDIT, not a view setting (utils/pdfRotate.ts says why): the angle
-   * goes into each page's `/Rotate`, so a sideways scan is fixed for the
-   * reader, the annotate canvas, the thumbnails and every other app at once,
-   * through the one attribute all of them already honour.
-   *
-   * It writes through `writeFileVersioned` against the tab's disk baseline and
-   * queues on the same per-tab chain `flushTab` uses — a rotation is a save
-   * like any other, and must not overtake or interleave with one.
-   *
-   * REFUSED on a PDF this app has annotated. Its strokes are authored against
-   * the pages as they were, and `/Rotate` would turn the paper out from under
-   * every mark; the honest answer is to say so rather than move the ink. The
-   * role read that decides it happens HERE, at the moment of the gesture, so
-   * that merely opening a PDF to read still costs no attachment read.
-   */
-  const rotatePdf = useCallback(async (path: string, delta: number, pageIndex?: number) => {
-    const tab = tabsRef.current.find(t => t.file.path === path);
-    const handle = tab?.file.handle as FileSystemFileHandle | undefined;
-    if (!tab || !handle) return;
-    if (diskStateRef.current.get(tab.id)) {
-      notifyRef.current('This PDF has changed on disk. Deal with that first, then rotate it.');
-      return;
-    }
-    if (tab.dirty || flushingRef.current.has(tab.id)) {
-      notifyRef.current('This PDF has annotations still being saved. Try again in a moment.');
-      return;
-    }
-
-    const { id } = tab;
-    const run = async (): Promise<void> => {
-      try {
-        const bytes = await readFileBytes(handle);
-        const { readPdfRole } = await import('./utils/pdfAnnotation');
-        const role = await readPdfRole(bytes);
-        if (role.alreadyAnnotated) {
-          notifyRef.current('This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.');
-          return;
-        }
-        // In the build worker, not here: pdf-lib pauses on a zero-delay timer
-        // every 50-100 objects, and a hidden window runs those once a second —
-        // a 1,105-page book took 1.3s focused and never finished minimized.
-        // `bytes` is transferred (detached) — readPdfRole is done with it.
-        const { rotatePdfAsync } = await import('./utils/pdfBuildClient');
-        const rotated = await rotatePdfAsync(bytes, delta, pageIndex);
-
-        // Same baseline resolution as flushTab's write: a PDF's is hashed in
-        // the background at open, so wait the seed out rather than write blind.
-        const seed = pdfSeedForRef.current(id);
-        const seeded = seed ? await seed : null;
-        const expected = getBaseline(id) ?? seeded ?? null;
-        const result = await writeFileVersionedRef.current(handle, rotated, expected);
-        if (result.status !== 'written') {
-          setDiskState(id, result.status === 'changed' ? 'conflict' : 'deleted');
-          return;
-        }
-        if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) setBaseline(id, result.version);
-        recordFileWritten(path, result.version.lastModified);
-        // The parked original predates the rotation, and the next annotation
-        // save would rebuild the old orientation over this one.
-        clearPdfRenderData(path);
-        // `diskRev` is how a PDF pane is told its bytes are not the bytes any
-        // more: it remounts on the new file, exactly as a reload from disk
-        // does, and comes back on the page that was being read.
-        setTabs(prev => prev.map(t => (t.id === id
-          ? { ...t, dirty: false, disk: undefined, diskRev: (t.diskRev ?? 0) + 1 }
-          : t)));
-        bumpSaveEpoch();
-      } catch (err) {
-        console.error('Could not rotate the PDF:', err);
-        notifyRef.current(`Could not rotate this PDF: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    };
-
-    // The buttons say a turn is pending from here until it settles, every way
-    // it can (a refusal and a conflict included) — utils/pdfRotating.ts.
-    beginPdfRotation(path);
-    const chains = flushChainsRef.current;
-    const chained = (chains.get(id) ?? Promise.resolve()).then(run);
-    chains.set(id, chained);
-    try {
-      await chained;
-    } finally {
-      if (chains.get(id) === chained) chains.delete(id);
-      endPdfRotation(path);
-    }
-  }, [readFileBytes, setDiskState]);
-
-  /** Everything that has to happen for ONE document to stop being open, short
-   *  of the two state updates (which differ per caller). */
-  const releaseTab = useCallback((path: string, flush: boolean) => {
-    // flushTab captures the tab synchronously, clears the timer, and no-ops for
-    // non-dirty / Help / handle-less tabs, so calling it whenever we flush is safe.
-    // `closing`: a last write its file can no longer take keeps the text beside it.
-    if (flush) flushTab(path, false, undefined, true); else clearSaveTimer(path);
-    // The document's disk state goes with it — after the flush above, which
-    // captured its baseline synchronously.
-    const doc = tabsRef.current.find(t => t.file.path === path);
-    if (doc) {
-      invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
-      flushReaderViewState(); flushPdfTextViewState();
-      readerIdentityCache.current.forEach((value,key)=>{if(value.documentId===doc.id)readerIdentityCache.current.delete(key)});
-      dropBaseline(doc.id);
-      pdfSeedsRef.current.delete(doc.id);
-      pdfSeedSourcesRef.current.delete(doc.id);
-      diskStateRef.current.delete(doc.id);
-    }
-    latestContentRef.current.delete(path);
-    // Safe to drop now: flushTab reads the render data synchronously, before its
-    // first await, so a flush already in flight has what it needs.
-    clearPdfRenderData(path);
-    // A notebook's exporter closes over its editor; dropping it is what stops a
-    // closed notebook pinning that editor for the rest of the session.
-    clearNotebookRenderData(path);
-    // Same: the flush above captured its own diff before this ran. A closed
-    // note has no unsaved edits left to attribute an asset change to.
-    assetRefsRef.current.delete(path);
-  }, [clearSaveTimer, flushTab]);
-
-  /**
-   * A rename or move that lands on a name another tab is holding. renameFile /
-   * moveFile deliberately overwrite (an explicit move onto a name is the user
-   * saying so), so that tab's file no longer exists — its buffer must NOT be
-   * flushed, or it would write itself straight back over the file that just
-   * replaced it. Dropping it here is what keeps one path from ending up in two
-   * tabs, drawing one document under two names.
-   *
-   * Called on EVERY overwrite, whether or not the file being renamed is itself
-   * open: the hazard belongs to the tab holding the destination name, which
-   * still holds a handle resolving to that very directory entry. Skipping it
-   * when the source happened to be closed left that tab's autosave to put the
-   * old bytes back over the file that had just replaced them.
-   *
-   * BEFORE the moved document's own per-path state is re-keyed onto this path,
-   * never after: `releaseTab` clears exactly the two slots (the parked PDF
-   * render data, the asset-diff baseline) that movePdfRenderData/moveAssetRefs
-   * write, so running it second wiped the survivor's rather than the loser's —
-   * silently dropping pending annotations and killing that note's asset diff
-   * for the rest of the session.
-   */
-  // `keep`: the overwrite was NOT the reader's doing (a `mv` noticed on disk), so
-  // the buffer's unsaved edits are flushed as a closing document's — its file
-  // now holds other bytes, so they land beside it as a `(conflict)` copy.
-  const releaseOverwritten = useCallback((path: string, movedFrom: string, keep = false) => {
-    if (path === movedFrom) return;
-    if (!tabsRef.current.some(t => t.file.path === path)) return;
-    releaseTab(path, keep);                        // in-app: no flush, the bytes are gone
-    // Its tab goes too. renamePath would drop it as it re-points the moved
-    // document, but only when the moved one is open — and closing it here is
-    // also what fronts a NEIGHBOUR of the tab that vanished rather than
-    // whichever tab happens to be leftmost in the column.
-    setLayout(l => closePath(l, path));
-    setTabs(prev => prev.filter(t => t.file.path !== path));
-  }, [releaseTab]);
-
-  /** Close one document. Its tab goes; the column goes with it only if that was
-   *  the column's last tab (see utils/tabPanes.ts closePath). */
-  const removeTab = useCallback((path: string, flush: boolean) => {
-    releaseTab(path, flush);
-    setLayout(l => closePath(l, path));
-    setTabs(prev => prev.filter(t => t.file.path !== path));
-  }, [releaseTab]);
-
-  /**
-   * The documents the user closed, oldest first — the stack ⌥⇧T pops.
-   *
-   * PATHS, not the tabs themselves: a reopen reads the file again, so a note
-   * edited elsewhere between the close and the reopen comes back as it now is
-   * (its buffer was flushed on the way out, so nothing is lost either way), and
-   * a closed PDF or notebook costs nothing to hold on to. Only a close the USER
-   * asked for is recorded: a rename, an overwrite or a vault switch takes a tab
-   * away for a reason that reopening would undo (see releaseOverwritten).
-   */
-  const closedPathsRef = useRef<string[]>([]);
-  // Two vaults share paths freely, so the stack is emptied on a switch rather
-  // than left to resolve "notes/todo.md" against whichever vault is open now.
-  useEffect(() => { closedPathsRef.current = []; }, [currentVaultId]);
-  const rememberClosed = useCallback((paths: readonly string[]) => {
-    // Closing, reopening and closing a note again puts it back on top rather
-    // than leaving two entries for one document.
-    const stack = closedPathsRef.current.filter(p => !paths.includes(p));
-    stack.push(...paths);
-    closedPathsRef.current = stack.slice(-CLOSED_TAB_MEMORY);
-  }, []);
-
-  const closeTab = useCallback((path: string) => {
-    const tab=tabsRef.current.find(t=>t.file.path===path),root=rootHandleRef.current;
-    const close=()=>{if(rootHandleRef.current!==root||!tabsRef.current.some(t=>t.id===tab?.id&&t.representation.generation===tab.representation.generation))return;rememberClosed([path]);removeTab(path,true)};
-    const checkpoint=tab&&getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.();
-    if(checkpoint)return checkpoint.catch(()=>{}).then(close);else close();
-  }, [removeTab, rememberClosed]);
-
-  /**
-   * Put the last closed document back (⌥⇧T), through the same opener a click in
-   * the file tree uses.
-   *
-   * Reaches further back rather than failing: an entry already open again, or
-   * whose file has since been trashed, renamed or moved, is dropped and the one
-   * before it tried. So the chord either lands on a document or does nothing —
-   * it never reopens a ghost tab of a file that is gone.
-   */
-  const reopenClosedTab = useCallback(async () => {
-    for (;;) {
-      const path = closedPathsRef.current.pop();
-      if (path === undefined) return;
-      if (tabsRef.current.some(t => t.file.path === path)) continue;
-      const node = collectFiles(fileTreeRef.current).find(f => f.path === path);
-      if (!node) continue;
-      if (await handleFileClick(node)) return path;
-    }
-  }, [handleFileClick]);
-
-  /**
-   * Read an unreadable tab's file again (see OpenTab.readError). Resolves true
-   * when the tab now holds the file's text.
-   *
-   * Serialized per document — a double click, or the pane's button and a tree
-   * click together, would otherwise race two reads into one tab. The updaters
-   * match on the tab's id, not its path: a close, rename or vault switch can
-   * land mid-read, and must turn the result into a no-op rather than hand the
-   * text to whatever answers to that path by then. A success remounts the pane
-   * (EditorPane keys it on readError), so its view is built from the real text
-   * exactly as on a fresh open.
-   */
-  const retryingReadsRef = useRef(new Set<string>());
-  const retryUnreadTab = useCallback(async (path: string): Promise<boolean> => {
-    const tab = tabsRef.current.find(t => t.file.path === path);
-    if (tab?.representation.loadedKind === 'epub') {
-      if (retryingReadsRef.current.has(tab.id)) return false;
-      retryingReadsRef.current.add(tab.id);
-      try {
-        const handle = await resolveFileHandle(path);
-        if (!tabsRef.current.some(t => t.id === tab.id && t.file.path === path && t.representation.generation === tab.representation.generation)) return false;
-        if (!handle) { setDiskState(tab.id, 'deleted'); return false; }
-        invalidReaderTokens.current.add(`${tab.id}|${tab.representation.generation}`);
-        dropBaseline(tab.id); diskStateRef.current.delete(tab.id);
-        setTabs(prev => prev.map(t => t.id === tab.id ? { ...t, file: {...t.file,handle}, readError: undefined, disk: undefined, readerCapabilities: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) } : t));
-        return true;
-      } finally { retryingReadsRef.current.delete(tab.id); }
-    }
-    if (!tab?.readError || !tab.file.handle) return !!tab && !tab.readError;
-    if (retryingReadsRef.current.has(tab.id)) return false;
-    retryingReadsRef.current.add(tab.id);
-    try {
-      const { text: content, version } = await readFileVersioned(tab.file.handle as FileSystemFileHandle);
-      const current = tabsRef.current.find(t => t.id === tab.id);
-      if (!current) return false;
-      setBaseline(tab.id, version);
-      // The asset-diff baseline the restore held back, taken under the path the
-      // document answers to NOW.
-      if (tracksAssets(current.file) && !assetRefsRef.current.has(current.file.path)) {
-        rememberAssetRefs(current.file, content);
-      }
-      setTabs(prev => prev.map(t =>
-        t.id === tab.id && t.readError ? { ...t, content, readError: undefined, representation: representationFor(t.file.name, false, t.representation.generation + 1) } : t));
-      return true;
-    } catch (err) {
-      const current = tabsRef.current.find(t => t.id === tab.id);
-      // Closed, or its vault switched away, while the read was out: nothing
-      // left to update or to tell anyone about.
-      if (!current) return false;
-      // NotFoundError on the handle this read started with only means "gone" if
-      // the tab still holds that handle: a rename or move mid-read retargets
-      // the tab and removes the old entry, and must not close a note that
-      // merely moved.
-      if (isNotFound(err) && current.file.handle === tab.file.handle) {
-        removeTab(current.file.path, false);
-        void tell({
-          title: 'That note is gone',
-          confirmLabel: 'OK',
-          body: <><strong>{current.file.name}</strong> is no longer in this vault, so its tab has been closed.</>,
-        });
-      } else {
-        console.warn('Could not read the file again:', path, err);
-        setTabs(prev => prev.map(t =>
-          t.id === tab.id && t.readError ? { ...t, readError: describeReadError(err) } : t));
-      }
-      return false;
-    } finally {
-      retryingReadsRef.current.delete(tab.id);
-    }
-  }, [readFileVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState]);
-  // handleFileClick is declared long before this, and reads it through a ref
-  // (the rebuildGraphRef pattern) rather than growing a dependency.
-  useEffect(() => { retryUnreadTabRef.current = retryUnreadTab; }, [retryUnreadTab]);
-
-  /**
-   * Close a whole column — every document in it. What the pane header's
-   * ⋯ menu means by *Close this pane*; a tab's own × closes just that one.
-   *
-   * Every tab is FLUSHED on the way out (`releaseTab(path, true)`), so closing
-   * a five-tab column cannot lose the four the reader was not looking at.
-   * Read through `layoutRef` rather than `layout` so this keeps its identity
-   * for the app's life: it is baked into a pane's chrome, which outlives the
-   * render that raised the menu.
-   */
-  const closePaneAndTabs = useCallback((paneId: string) => {
-    const pane = paneById(layoutRef.current, paneId);
-    if (!pane) return;
-    for (const path of pane.paths) releaseTab(path, true);
-    // ⌥⇧T brings the column back one tab at a time, rightmost first.
-    rememberClosed(pane.paths);
-    const closed = new Set(pane.paths);
-    setLayout(l => closePaneIn(l, paneId));
-    setTabs(prev => prev.filter(t => !closed.has(t.file.path)));
-  }, [releaseTab, rememberClosed]);
-
-  /** A click on a tab: its column takes focus and fronts it. Path-explicit AND
-   *  pane-explicit — two columns may hold tabs with the same name, and the id
-   *  is what says which strip was clicked. */
-  const selectTabInPane = useCallback(
-    (paneId: string, path: string) => {
-      const outgoing=paneById(layoutRef.current,paneId)?.activePath,tab=tabsRef.current.find(t=>t.file.path===outgoing),root=rootHandleRef.current;
-      const select=()=>{if(rootHandleRef.current===root&&paneById(layoutRef.current,paneId)?.activePath===outgoing)setLayout(l=>selectTabIn(l,paneId,path))};
-      const checkpoint=tab&&outgoing!==path&&getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.();
-      if(checkpoint)return checkpoint.catch(()=>{}).then(select);else select();
-    }, []);
-  const focusPane = useCallback((path: string) => setLayout(l => focusTab(l, path)), []);
-  /** A tab dropped on the editor body: it leaves its column and becomes one of
-   *  its own at `at`. Refused past MAX_PANES by splitToPane itself. */
-  const splitTabToPane = useCallback((path: string, at: number) => {
-    const tab=tabsRef.current.find(t=>t.file.path===path),root=rootHandleRef.current;
-    const split=()=>{if(rootHandleRef.current===root&&tabsRef.current.some(t=>t.id===tab?.id))setLayout(l=>splitToPane(l,path,at))};
-    const checkpoint=tab&&getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.();
-    if(checkpoint)void checkpoint.catch(()=>{}).then(split);else split();
-  }, []);
-  /** A tab dragged within its own strip (a reorder) or into another one.
-   *  `toIndex` indexes the destination's tabs as they were DRAWN, which is
-   *  where the drop indicator sat. */
-  const moveTab = useCallback((path: string, toPaneId: string, toIndex: number) => {
-    const tab=tabsRef.current.find(t=>t.file.path===path),root=rootHandleRef.current;
-    const move=()=>{if(rootHandleRef.current===root&&tabsRef.current.some(t=>t.id===tab?.id))setLayout(l=>moveTabToPane(l,path,toPaneId,toIndex))};
-    const checkpoint=tab&&getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.();
-    if(checkpoint)void checkpoint.catch(()=>{}).then(move);else move();
-  }, []);
-  /** How the editor divides its width between its columns; null evens them up.
-   *  One update at the END of a divider drag, never per frame: the persist
-   *  effect is keyed on `layout`, so a live commit would write the whole
-   *  session to localStorage sixty times a second. EditorPane holds the widths
-   *  in flight and hands the settled row over here. */
-  const resizePanes = useCallback(
-    (sizes: number[] | null) => setLayout(l => setPaneSizes(l, sizes)), []);
-  /** The pane header's ← and →. Per COLUMN: each remembers the tabs it has
-   *  shown, so stepping back in one leaves its neighbours alone. Session-only
-   *  (the stored session records no history), so both read as disabled right
-   *  after a reload. */
-  const paneBack = useCallback((paneId: string) => setLayout(l => goBack(l, paneId)), []);
-  const paneForward = useCallback((paneId: string) => setLayout(l => goForward(l, paneId)), []);
-
-  const pendingPdfMode = useRef(new Set<string>());
-  const changeTabMode = useCallback((path: string | null, requestedMode?: EditorMode) => {
-    if (!path) return;
-    const tab = tabsRef.current.find(t => t.file.path === path);
-    if (!tab || !canChangeTabMode(tab)) return;
-    const mode = requestedMode ?? (tab.mode === 'edit' ? 'read' : 'edit');
-    if (mode === tab.mode) return;
-    const view = getView(path);
-    if (tab.representation.loadedKind === 'pdf' && tab.mode === 'edit' && view?.hasPendingEdits?.() && view.flushPending) {
-      if (pendingPdfMode.current.has(tab.id)) return;
-      pendingPdfMode.current.add(tab.id);
-      void Promise.resolve(view.flushPending()).then(() => {
-        setTabs(prev => prev.map(t => t.id === tab.id && t.file.path === path && t.representation.generation === tab.representation.generation && t.mode === tab.mode ? {...t,mode} : t));
-      }).catch(error => notifyRef.current(`Could not finish saving PDF annotations: ${String(error)}`)).finally(() => pendingPdfMode.current.delete(tab.id));
-      return;
-    }
-    const surface = getReadingSurface({vaultId:currentVaultIdRef.current ?? '',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation});
-    if (mode === 'edit' && surface?.capabilities().surface === 'pdf-text' && surface.showPdfOriginal) {
-      if (pendingPdfMode.current.has(tab.id)) return;
-      pendingPdfMode.current.add(tab.id);
-      void surface.showPdfOriginal().then(() => {
-        setTabs(prev => prev.map(t => t.id === tab.id && t.file.path === path && t.representation.generation === tab.representation.generation && t.mode === tab.mode ? {...t,mode} : t));
-      }).finally(() => pendingPdfMode.current.delete(tab.id));
-      return;
-    }
-    setTabs(prev => prev.map(t =>
-      t.file.path === path && canChangeTabMode(t)
-        ? { ...t, mode }
-        : t));
-  }, []);
-  const toggleTabMode = useCallback((path: string | null) => changeTabMode(path), [changeTabMode]);
-
-  // Open a note by its name (used by [[wikilinks]], graph nodes, backlinks).
-  //
-  // STABLE FOR THE APP'S LIFE, deliberately — the note index is read from a ref
-  // rather than closed over. The editor bakes this into each document's
-  // EditorState (DocumentPane's `mousedown` handler), outside any compartment,
-  // and that state is cached and re-adopted by whichever pane shows the
-  // document next. Depending on `mdFiles` here froze the handler at whatever
-  // the index held when the document's FIRST pane unmounted, so a wikilink to
-  // any note created, renamed or moved after that silently did nothing.
-  const openNoteByName = useCallback((name: string | null) => {
-    if (!name) return;
-    const key = baseName(name).toLowerCase();
-    const match = mdFilesRef.current.find(f => baseName(f.name).toLowerCase() === key);
-    if (match) {
-      handleFileClick(match);
-      setMainView('editor');
-    }
-  }, [handleFileClick]);
-
-  // Open a note given a graph node (skips unresolved placeholder nodes).
-  const handleOpenNode = useCallback((graphNode: GraphNode) => {
-    if (!graphNode || graphNode.unresolved || !graphNode.node) return;
-    handleFileClick(graphNode.node);
-    setMainView('editor');
-  }, [handleFileClick]);
-
-  // ── Vault search → editor navigation ───────────────────────────────────
-  // A clicked search result opens the file and, for content matches, asks
-  // EditorPane to select + scroll to the matched range. Each click builds a
-  // fresh request object, so re-clicking the same match re-triggers.
-  const [pendingReveal, setPendingReveal] = useState<EditorRevealRequest | null>(null);
-
-  const handleOpenSearchResult = useCallback(async (node: FileTreeFileNode, range: TextRange | null) => {
-    const opened = await handleFileClick(node);
-    // Non-text files opened externally (pdf/image): no view switch, no reveal.
-    if (!opened) return;
-    if (isEpubFile(node.name) || isPdfFile(node.name)) { setMainView('editor'); return; }
-    if (!isTextFile(node.name)) return;
-    setMainView('editor');
-    // Drawings match by NAME only (their JSON isn't indexed), so there's no text
-    // range to reveal — and a char offset would be meaningless on a canvas.
-    if (range && !isCanvasFile(node.name)) {
-      setPendingReveal({ path: node.path, from: range.from, to: range.to });
-    }
-  }, [handleFileClick]);
-
-  const handleRevealHandled = useCallback(() => setPendingReveal(null), []);
-
-  // ── Vault switch ────────────────────────────────────────────────────────
-  // A tab is only meaningful inside the vault it was opened from: its path
-  // indexes that vault's tree, its handle writes into that vault's folder, and
-  // EditorPane's cached editor states are keyed by path alone. Carrying the set
-  // across a switch leaves the previous vault's notes on screen — and still
-  // autosaving into it — behind the new vault's file tree, and a path the two
-  // vaults happen to share would serve the old vault's buffer for the new
-  // vault's file. So flush what's pending (those handles are still good) and
-  // hand the new vault an empty workspace.
-  //
-  // Emptying the workspace does NOT lose the outgoing vault's session: the
-  // persist effect above has already written it under that vault's id on every
-  // layout change, and the two session refs stop this `EMPTY_LAYOUT` being
-  // filed under either vault — the outgoing one because its restore marker no
-  // longer matches `rootHandle`, the incoming one because its restore has not
-  // run yet. That is what makes switching back restore the workspace.
-  //
-  // Only fires on a REAL switch: the null → vault assignment at startup must not
-  // clear the tabs the restore pass below is about to bring back.
-  const prevRootRef = useRef<FileSystemDirectoryHandle | null>(null);
-  useEffect(() => {
-    const previous = prevRootRef.current;
-    prevRootRef.current = rootHandle;
-    if (!previous || previous === rootHandle) return;
-
-    for (const tab of tabsRef.current) {
-      flushTab(tab.file.path, false, undefined, true, previous); // no-ops unless dirty; captures synchronously
-      clearPdfRenderData(tab.file.path);
-      clearNotebookRenderData(tab.file.path);
-    }
-    // Every registered pane belongs to the vault being left.
-    flushReaderViewState(); flushPdfTextViewState();
-    clearViews();
-    // So does every open document's disk baseline and standoff (the flushes
-    // above captured theirs synchronously).
-    clearBaselines();
-    pdfSeedsRef.current.clear();
-    pdfSeedSourcesRef.current.clear();
-    diskStateRef.current.clear();
-    latestContentRef.current.clear();
-    // Those flushes captured what they needed synchronously (see flushTab); the
-    // paths themselves index the vault being left.
-    assetRefsRef.current.clear();
-    setTabs([]);
-    setLayout(EMPTY_LAYOUT);
-    setSaveStatus('');
-    setPendingReveal(null);
-    // The workspace on screen is no longer ANY vault's session — least of all
-    // this empty one's. Only the handle ref is released: clearing the id ref too
-    // would let the restore pass claim on this very commit, where
-    // `currentVaultId` is still the OUTGOING vault's, and open the old vault's
-    // paths out of the new vault's tree. Without this, persistence is gated only
-    // by `rootHandle` never being the same OBJECT twice — and it can be, since
-    // the vault menu re-mints its handles from `publishVaults`, which a
-    // `recordVault` that failed after `setCurrentVaultId` never reaches. Coming
-    // back to that vault by the same menu row then matched both refs and filed
-    // this EMPTY layout under its id, destroying the session it was about to
-    // restore. Gated instead, it merely does not restore that once.
-    sessionRootRef.current = null;
-    // The id ref is not cleared but RE-POINTED at the vault being left, which is
-    // the only thing the restore pass's `=== currentVaultId` test can safely
-    // mean. Leaving it holding whatever was last CLAIMED is not the same thing,
-    // because a vault can set `currentVaultId` and never claim: the pass returns
-    // above on an empty `fileTree`, and an empty FOLDER is indistinguishable
-    // from a tree that has not landed yet. Measured — vault R with three tabs,
-    // switch to an empty folder, switch back — the pass then claimed R's handle
-    // against the EMPTY vault's id on the mid-switch commit, so the commit
-    // carrying R's own id failed the handle test: R's tabs never came back and
-    // nothing R did afterwards was persisted for the rest of the page load.
-    sessionVaultIdRef.current = currentVaultIdRef.current;
-  }, [rootHandle, flushTab]);
-
-  // Search reads open-tab buffers through this accessor (via tabsRef) so its
-  // results reflect unsaved edits without re-rendering the sidebar on typing.
-  // An unreadable tab (OpenTab.readError) answers null, like a closed note, so
-  // search reads the file from disk rather than matching an empty buffer.
-  const getOpenTabContent = useCallback((path: string) => {
-    const tab = tabsRef.current.find(t => t.file.path === path);
-    return tab && canReadTabText(tab) ? tab.content : null;
-  }, []);
-
-  /**
-   * The address bar AS THE PAGE LOADED, captured once.
-   *
-   * Not re-read later: the URL writer further down rewrites the hash as the
-   * app settles, and one render where a vault is open but the labelled list has
-   * not caught up used to clear it — wiping the link before its note had been
-   * opened. Reading a link that is being kept up to date is the mistake; the
-   * instruction is what arrived, once. Declared here because its readers are
-   * the restore pass below and the URL writer after it.
-   */
-  const [initialLocation] = useState(readLocation);
-  /** Spent by the first restore of a vault the link names, or by the first
-   *  restore of any vault when it names no vault or no note — a vault the app
-   *  fell back to leaves it waiting (see the restore pass). Until it is spent
-   *  the URL writer never blanks the hash. */
-  const linkPendingRef = useRef(true);
-  /**
-   * The link's note until the restore pass has dealt with it, so the URL
-   * writer keeps naming it. Without this the writer wrote the vault ALONE from
-   * the moment recordVault listed it — before the tree walk, let alone the
-   * reads — until the merge made the note active; a reload or a copied address
-   * in that window lost a note only the link had named, since the session never
-   * held it either (restoringRef holds its write back until the merge). State,
-   * not a ref: when the link opens nothing in its own vault (a missing or
-   * non-document file, every read failing) no tab changes, and the writer
-   * still has to re-run to drop `file`.
-   */
-  const [pendingLinkFile, setPendingLinkFile] = useState<string | null>(initialLocation.file ?? null);
-
-  // Auto-restore THIS VAULT'S tabs once its file tree has loaded — on a cold
-  // start and on every switch back to it. The ONLY thing that opens documents
-  // when a vault loads: the note a link names is folded in rather than opened
-  // beside it, which raced this pass and cost the vault its tabs (see below).
-  useEffect(() => {
-    // Nothing to restore against yet — and NOTE that this return is above the
-    // claim below, so a vault can set `currentVaultId` and never claim (an
-    // empty folder walks to an empty tree, which is indistinguishable from one
-    // that has not landed). That is why the switch effect re-points the id ref
-    // at the vault being LEFT rather than leaving it on the last claim; see
-    // there for what went wrong when it did not.
-    if (!fileTree || fileTree.length === 0) return;
-    // Both halves must have moved on: see sessionRootRef's note above. Equal on
-    // either one means this commit is mid-switch (openVaultHandle commits the
-    // tree before recordVault sets the id) or this vault has already been
-    // restored — and restoring against the wrong pairing opens whichever of the
-    // other vault's files happen to sit at these paths. That is the same hazard
-    // the vault-switch effect exists to prevent, arriving by another road.
-    if (sessionRootRef.current === rootHandle) return;
-    if (sessionVaultIdRef.current === currentVaultId) return;
-    // WAIT for the id rather than claim against its absence. Two paths —
-    // openVaultHandle (and openRecentVault, only a wrapper over it) and
-    // pickDirectory — commit the tree and only THEN await recordVault, while
-    // the mount path and restoreVault record FIRST and walk after (which is why
-    // an ordinary reload always looked fine). So the first vault of a page load
-    // opened through the picker or the vault menu arrives
-    // with `currentVaultId` still at its initial null; claiming here would mark
-    // the workspace as that vault's and make the very next commit, the one
-    // carrying the real id, fail the `sessionRootRef.current === rootHandle`
-    // test above — the vault's session silently never restored. A vault whose
-    // recordVault genuinely FAILED gets no session either way, which is the
-    // intent: on the first vault of a load it keeps the null id and stops here;
-    // on a later switch `currentVaultId` is left naming the OUTGOING vault, and
-    // the id test above stops it instead. Persistence is not left un-gated by
-    // the wait, because its own first line is the same check.
-    if (!currentVaultId) return;
-    // Claimed before every remaining early return — and before any await, since
-    // StrictMode runs this effect twice — because persistence stays gated until
-    // this pass has run, and a vault with nothing stored must still un-gate it.
-    // The old `hasRestoredTabs` rule, per vault. (The `fileTree` return at the
-    // top is the one that precedes it, deliberately: see there.)
-    sessionRootRef.current = rootHandle;
-    sessionVaultIdRef.current = currentVaultId;
-    // Every claim starts with persistence open: a pass still reading an earlier
-    // vault's files must not hold this one's gate — a vault with nothing to
-    // read would otherwise persist nothing until that pass finished.
-    restoringRef.current = null;
-    const vaultFiles = collectFiles(fileTree);
-
-    // The note the address bar names, when it belongs HERE. Resolved through
-    // the same findLinkedVault FileSystemContext picked the vault with, so the
-    // two agree: an unknown name that fell back to the last-used vault, another
-    // vault chosen from the "Open 'X'" screen, or a hash naming no vault at all
-    // opens that vault as it was left — the old opener instead opened the
-    // link's path out of whichever vault loaded, if a file happened to sit
-    // there. (The one blur: two known vaults sharing the link's name, with no
-    // id suffix to part them — the link names both, and which it resolves to
-    // here follows the list's order at this claim.) Text and PDF only,
-    // handleFileClick's own test for "opens as a tab": anything else would be
-    // a window.open on page load.
-    //
-    // Spent at the first claim of a vault it NAMES, so it never applies again
-    // on a later switch back — even when that vault turned out not to hold
-    // the note. Until then it waits: a vault the app fell back to (or one the
-    // user picked instead) does not spend it, so opening the named folder
-    // later in this page load — typically the first time this browser sees it
-    // — still brings the note up. Spending it at the first claim of ANY vault
-    // lost it to the fallback (issue #6). A link naming no vault or no note can
-    // never apply, so it is spent at once. The list it is resolved against
-    // always holds the vault being claimed: recordVault sets the id and the
-    // list in one batch. With the id first, a folder opened for the first time
-    // was missing from the list at this render and the note was dropped.
-    const link = linkPendingRef.current ? initialLocation : null;
-    const linkHere = !!link?.file && findLinkedVault(link.vault, recentVaults)?.id === currentVaultId;
-    if (!link?.file || !link.vault || linkHere) linkPendingRef.current = false;
-    const linkedNode = link?.file && linkHere
-      ? vaultFiles.find(f => f.path === link.file && opensInApp(f.name))
-      : undefined;
-    // Spent with nothing to open for it, so nothing must keep it in the address
-    // bar. A link still waiting for the vault it names keeps it: the writer only
-    // shows it in that vault, and opening the named folder later must not leave
-    // the bar without the note while its reads run.
-    if (link && !linkPendingRef.current && !linkedNode) setPendingLinkFile(null);
-
-    // Read the session WHOLE and synchronously, before the file reads below
-    // yield: the refs just claimed are what the persist effect checks, so a
-    // value read after the awaits could already have been rewritten — and the
-    // columns would come back silently flattened. restoringRef now also shuts
-    // persistence for the reads, but deciding the whole restore from one
-    // snapshot is what makes that unreachable rather than merely unreached.
-    const stored = readSession(currentVaultId);
-    // A linked note the session does not hold joins it at the end, like any
-    // newly opened note — restoreLayout makes a path no stored column accounts
-    // for a tab of the last one. An empty `paths` is a real session ("I closed
-    // everything here"); there is simply nothing of its own to open for it. A
-    // Set, because a path listed twice (a hand-edited record) would mint two
-    // tabs for one document — restoreLayout dedupes the layout, not the tabs.
-    const paths = stored ? [...new Set(stored.paths)] : [];
-    if (linkedNode && !paths.includes(linkedNode.path)) paths.push(linkedNode.path);
-    if (paths.length === 0) return;
-
-    // Persistence stays shut from here until the merge is dispatched — see
-    // restoringRef. Released in `finally` too, so no exit leaves it shut.
-    const token = {};
-    restoringRef.current = token;
-    const release = () => { if (restoringRef.current === token) restoringRef.current = null; };
-    // Published BEFORE the first await, so a rename, move or trash landing
-    // anywhere in the reads below reaches these documents (see
-    // restorePendingRef). A path the tree no longer holds is dropped here —
-    // deleted or moved outside the app since the session was written.
-    const root = rootHandle!;
-    const pending: PendingRestore = {
-      root,
-      epoch: 0,
-      entries: paths.map(p => {
-        const help = p === 'help-guide';
-        return {
-          origin: p,
-          path: p,
-          help,
-          // The guide's own text is fetched where it is used, below: it is a
-          // chunk of its own now, and `entry.help` short-circuits every reader
-          // of this field anyway.
-          content: undefined,
-          dropped: !help && !vaultFiles.some(f => f.path === p),
-        };
-      }),
-    };
-    restorePendingRef.current = pending;
-    (async () => {
-      try {
-        // Read concurrently, not one after another: the workspace (the link's
-        // note included) stayed empty for the SUM of the reads (measured, issue
-        // #7: 600ms per read, four saved notes and the link's, ~3.05s from tree
-        // to tabs) and now waits on the slowest one (same setup: ~0.62s). Each
-        // entry is read and retried on its own, and everything after walks
-        // `pending.entries` in stored order however the reads finish, so the
-        // single merge and restoreLayout see exactly what they did.
-        const readVersions = new Map<PendingRestoreEntry, DiskVersion>();
-        await Promise.all(pending.entries.map(async entry => {
-          if (entry.help || entry.dropped) return;
-          for (;;) {
-            // Resolved by the entry's CURRENT path from the vault root, not
-            // through the claim-time tree's handle: a rename that already ran
-            // re-pointed the entry, and the old node's handle names an entry
-            // that no longer exists.
-            const path = entry.path;
-            // Mirror handleFileClick: a PDF's buffer holds its tldraw snapshot
-            // (PdfPane reads the bytes itself) — decoding a PDF as UTF-8 would
-            // fill the buffer with garbage.
-            if (isPdfFile(path) || isEpubFile(path)) {
-              entry.content = '';
-              break;
-            }
-            try {
-              const { handle } = await resolveVaultFile(root, path);
-              const { text, version } = await readFileVersioned(handle);
-              // Read at the old path and renamed since is still right: a rename
-              // or move is a byte-for-byte copy.
-              if (!entry.dropped) {
-                entry.content = text;
-                entry.readError = undefined;
-                // The disk baseline of exactly these bytes, handed to the tab
-                // at the merge (a copy's mtime differs; the hash will not).
-                readVersions.set(entry, version);
-              }
-            } catch (err) {
-              // A read racing a rename fails on the entry the copy just removed.
-              // Once the move's fix-up has run the entry names where the note
-              // went — read it there, rather than leave out a note the reader
-              // only renamed. The path is compared even with no move left in
-              // flight: one can have finished while the failed read settled.
-              if (vaultMovesRef.current.size) await Promise.allSettled([...vaultMovesRef.current]);
-              if (!entry.dropped && entry.path !== path) continue;
-              if (entry.dropped) break;
-              // GONE and UNREADABLE are different answers, and only the first
-              // may drop the path. This used to drop both alike, and whatever
-              // is dropped here leaves the vault's saved tabs for good: the
-              // layout is rebuilt from what came back, and the persist effect
-              // then files that as the whole session — so one momentary failure
-              // (a sync client or another editor mid-write, a cloud file not
-              // downloaded, a lock) lost the tab and its place in the
-              // arrangement on every later reload (issue #8). Anything but
-              // NotFoundError gets one immediate second read — a fresh
-              // getFile() is exactly what cures Chromium's "file changed after
-              // getFile" NotReadableError — and then comes back as a tab that
-              // says it could not be read, holding no text (OpenTab.readError).
-              if (isNotFound(err)) {
-                entry.dropped = true;
-              } else if (entry.readError === undefined) {
-                entry.readError = describeReadError(err);
-                continue;
-              } else {
-                console.warn('Could not read a restored tab; keeping it:', path, err);
-                entry.readError = describeReadError(err);
-              }
-            }
-            break;
-          }
-        }));
-
-        // SETTLE, then re-validate every survivor against the vault as it is
-        // NOW, and repeat until nothing moved underneath. The reads above held
-        // the session for as long as they took, and the tree stayed usable
-        // throughout (issue #9: a note renamed after its read came back at the
-        // old path — tree showing `a2.md`, tab saying `a.md`, "Auto-save
-        // failed" on every keystroke). Waiting for no move in flight covers the
-        // span where the old entry is gone and the registry not yet re-pointed;
-        // re-resolving from the root hands each document a handle that exists
-        // (and drops one deleted outside the app); the epoch catches a move
-        // that started and finished inside these awaits.
-        const live = new Map<PendingRestoreEntry, FileTreeFileNode>();
-        for (;;) {
-          while (vaultMovesRef.current.size) await Promise.allSettled([...vaultMovesRef.current]);
-          const seen = pending.epoch;
-          live.clear();
-          for (const entry of pending.entries) {
-            if (entry.help || entry.dropped || (entry.content === undefined && entry.readError === undefined)) continue;
-            try {
-              const { handle, parentHandle } = await resolveVaultFile(root, entry.path);
-              if (classifyRequestedKind(entry.origin) !== classifyRequestedKind(handle.name)) {
-                if (isEpubFile(handle.name) || isPdfFile(handle.name)) { entry.content=''; entry.readError=undefined; readVersions.delete(entry); }
-                else try { const read=await readFileVersioned(handle); entry.content=read.text; entry.readError=undefined; readVersions.set(entry,read.version); }
-                catch(error){entry.content='';entry.readError=describeReadError(error);}
-              }
-              live.set(entry, { name: handle.name, kind: 'file', path: entry.path, handle, parentHandle });
-            } catch {
-              // Gone (or a folder now) — left out, like a note deleted since the
-              // session was written.
-            }
-          }
-          if (pending.epoch === seen && vaultMovesRef.current.size === 0) break;
-        }
-        // ── NO AWAIT from here to the merge's dispatch. ──
-        // The loop above just proved the vault quiet; JS being single-threaded
-        // is what keeps it so until the merge is queued. An await anywhere
-        // below reopens issue #9. (One window stays, accepted: a move that
-        // STARTS after this dispatch but runs its fix-up before React commits
-        // the merge and tabsRef catches up. Every such move is several FS
-        // round-trips plus a full refreshTree walk, against a commit already
-        // queued — not reachable in practice.)
-
-        const restored: OpenTab[] = [];
-        const origins: string[] = [];
-        const relabel = new Map<string, string>();
-        // One document per path, whatever the registry missed: a move's
-        // overwritten set comes from the tree as last walked, and a stale one
-        // could leave two entries at one path — two tabs for one document, and
-        // a relabel that is no longer injective.
-        const claimed = new Set<string>();
-        for (const entry of pending.entries) {
-          if (claimed.has(entry.path)) continue;
-          if (entry.help) {
-            restored.push({ id: newTabId(), file: { name: 'Help Guide', isHelp: true, path: entry.path }, content: await loadHelpDoc(), mode: 'read', dirty: false, representation: representationFor('Help Guide', true) });
-          } else {
-            const node = live.get(entry);
-            if (!node) continue;
-            const id = newTabId();
-            if (entry.readError === undefined) {
-              const version = readVersions.get(entry);
-              if (version) setBaseline(id, version);
-              else if (isPdfFile(node.name)) seedPdfBaseline(id, node.handle);
-            }
-            restored.push(entry.readError !== undefined
-              ? { id, file: node, content: '', mode: 'read', dirty: false, readError: entry.readError, representation: representationFor(node.name, false, 0, true) }
-              : { id, file: node, content: entry.content!, mode: 'read', dirty: false, representation: representationFor(node.name) });
-            if (entry.path !== entry.origin) relabel.set(entry.origin, entry.path);
-          }
-          claimed.add(entry.path);
-          origins.push(entry.origin);
-        }
-        // Nothing of the session came back (every note in it gone since — an
-        // unreadable one still comes back, as a tab saying so) and nothing was
-        // opened meanwhile: the stored session is left as it was. Something
-        // that WAS opened still goes through the merge, with nothing to lay it
-        // over — the gate held its write back, and the merge's new layout is
-        // the only thing that will write it now.
-        if (restored.length === 0 && layoutRef.current.panes.length === 0) return;
-        // The awaits above yield to the event loop: the vault may have been
-        // switched in the meantime, and the switch effect empties the tab set,
-        // so the merge below would drop the OLD vault's notes (handles and all)
-        // into the new vault's workspace. The HANDLE is checked as well as the
-        // id, and it is the half that catches it: `currentVaultId` lags
-        // `rootHandle` by a commit, so a switch whose reads land in that window
-        // passes an id test comparing the outgoing id with itself (measured:
-        // with a 600ms-per-file read, switching away mid-restore put vault A's
-        // three tabs on screen over vault B's tree, autosaving through A's
-        // handles). After the LAST await, which is now the re-validation.
-        if (rootHandleRef.current !== rootHandle) return;
-        if (currentVaultIdRef.current !== currentVaultId) return;
-        // A later pass took the registry over (a switch away and back while
-        // this one read): it restores the same session with a registry the
-        // mutations still update, while this one's has gone deaf to them.
-        if (restorePendingRef.current !== pending) return;
-        // From here these are about to be ordinary tabs; the mutations go back
-        // to finding them through tabsRef.
-        restorePendingRef.current = null;
-        // Asset baselines (see handleFileClick) only now that the workspace is
-        // known to still be this vault's: seeded during the reads, a switch
-        // mid-restore left the old vault's in the map the switch had just
-        // cleared. A document already open keeps the baseline its own open took
-        // — asked of the map itself, which every open of an asset-tracking
-        // document seeds before its setTabs and every close clears, not of
-        // tabsRef, which only catches up once a commit's effects have run.
-        // (tracksAssets keeps help, PDFs, drawings and notebooks out of the map
-        // entirely, so for those this is a no-op whichever way the test goes.)
-        // An unreadable tab takes none: '' as a baseline would have its first
-        // save after a retry diff every embed as removed. The retry seeds it.
-        for (const tab of restored) {
-          if (tab.readError) continue;
-          if (!assetRefsRef.current.has(tab.file.path)) rememberAssetRefs(tab.file, tab.content);
-        }
-        // Which of these shared a column, and which tab each column showed. A
-        // session written before the editor had columns has no record of it,
-        // and restoreLayout puts everything no stored row accounts for in the
-        // last column as ordinary tabs — never dropping one, since the persist
-        // effect files whatever comes out of here as the vault's WHOLE session
-        // (issue #8). The link is an instruction and the session only a
-        // default, so the link's note is what comes to the front — when it
-        // actually came back. Built out here, not in an updater, because
-        // StrictMode runs updaters twice.
-        // Built in the STORED paths' space, which is the only one the stored
-        // columns, focus and widths speak, then relabelled all at once to where
-        // each document is now — so an arrangement whose note was renamed
-        // mid-restore keeps its columns, its per-column focus and its widths
-        // (see relabelPaths for why not renamePath one at a time).
-        const restoredLayout = relabelPaths(restoreLayout(
-          origins,
-          stored?.groups,
-          stored?.focus,
-          stored?.sizes,
-          linkedNode && origins.includes(linkedNode.path) ? linkedNode.path : stored?.active ?? null,
-        ), relabel);
-        // Anything opened while the reads were in flight — a click in the file
-        // tree — is MERGED, never deferred to. Deferring is what turned
-        // 5de752e's separate link opener into data loss: it opened the linked
-        // note a moment before these reads finished, this pass saw a tab and
-        // gave up, and since the refs were already claimed the persist effect
-        // filed that one tab as the vault's whole session (measured under the
-        // pre-transposition model, and the arithmetic is unchanged by it: four
-        // documents in three tabs, one a 65/35 split, came back from a reload as
-        // the one tab the address bar named, with the stored `paths` rewritten
-        // from four to that one — so every reload after it restored nothing more
-        // either). The saved arrangement comes back as it was left; what was
-        // opened meanwhile follows as TABS of its focused column (mergeLayouts —
-        // one or two clicked notes are not an arrangement the reader asked for,
-        // and appending columns could breach MAX_PANES), keeping the focus; and
-        // a document open on both sides keeps its in-memory tab, which may hold
-        // edits. The gate opens BEFORE the merge is dispatched, so the commit
-        // carrying it writes the session. One ordering still writes a lone tab
-        // first: a click that committed just before this line, its effects not
-        // yet run, has them flushed ahead of the merge's render — one tab
-        // stored for the task or two until the merge's own write. flushSync is
-        // not used to close it: only a reload landing in that gap could cost
-        // anything.
-        release();
-        setTabs(prev => {
-          const open = new Set(prev.map(t => t.file.path));
-          return [...restored.filter(t => !open.has(t.file.path)), ...prev];
-        });
-        setLayout(prev => mergeLayouts(restoredLayout, prev));
-      } finally {
-        release();
-        if (restorePendingRef.current === pending) restorePendingRef.current = null;
-        // The link has been dealt with, whichever way this ended. On success
-        // this lands in the merge's batch, so the writer sees the note active
-        // and nothing pending in one commit — no flash of the bare vault.
-        if (linkedNode) setPendingLinkFile(null);
-      }
-    })();
-  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation]);
-
-  // A vault taken off the recent list (the minus in the vault menu) mints a new
-  // id if it is ever opened again, so its stored session would be unreachable
-  // weight. Nothing prunes by staleness — a vault returned to a year later
-  // still opens where it was left, the same call fileScrollAnchors makes.
-  // "Has the list ever loaded" rather than "is it empty now", because those are
-  // not the same question and an emptiness test answers the wrong one: forgetting
-  // the LAST row is a real transition to zero, and skipping it left that vault's
-  // session behind forever — the one case where the help doc's "taking a vault
-  // off that list forgets its tabs" was false. (Reachable because the open
-  // vault's row has no minus, so a single removable row means the open vault is
-  // absent from the list, which is what a failed `recordVault` leaves behind.)
-  const sawVaultList = useRef<boolean>(false);
-  useEffect(() => {
-    if (recentVaults.length > 0) sawVaultList.current = true;
-    if (!sawVaultList.current) return;   // the list has not loaded yet
-    pruneSessions(recentVaults.map(v => v.id));
-  }, [recentVaults]);
-
-  /**
-   * Warm the heavy panes for the kinds of file this vault actually holds.
-   *
-   * Walks `fileTree`, which is already in memory — no disk reads — and only
-   * when the tree changes shape enough to matter. `prefetchPanes` itself is
-   * idle-scheduled and fetches each chunk once, so calling it after every
-   * refresh costs nothing.
-   */
-  useEffect(() => {
-    if (!fileTree.length) return;
-    const kinds = { epub: false, pdf: false, drawing: false, notebook: false };
-    for (const file of collectFiles(fileTree)) {
-      if (isEpubFile(file.name)) kinds.epub = true;
-      else if (isPdfFile(file.name)) kinds.pdf = true;
-      else if (isNotebookFile(file.name)) kinds.notebook = true;
-      else if (isCanvasFile(file.name)) kinds.drawing = true;
-      if (kinds.epub && kinds.pdf && kinds.drawing && kinds.notebook) break;
-    }
-    prefetchPanes(kinds);
-  }, [fileTree]);
-
-  /**
-   * Keep the address bar describing what is open, so it can be copied at any
-   * moment as a link back here.
-   *
-   * The vault is named rather than identified wherever it can be — a link is
-   * something a person reads and types — and only carries an id suffix when two
-   * known vaults share a folder name. See utils/appUrl.ts for why a link cannot
-   * carry a path on disk, which is the thing it would obviously want to.
-   *
-   * With no vault document active yet (the help guide has no link, so it does
-   * not count), the link's note stays named until the restore pass has
-   * consumed it (see pendingLinkFile) — but only in the vault the link resolves
-   * to, the restore pass's own test, so a link that fell back to another vault
-   * never pins its `file` there. An open document outranks it: the bar
-   * describes what is open.
-   */
-  useEffect(() => {
-    const vault = recentVaults.find(v => v.id === currentVaultId);
-    if (!vault) {
-      // Three reasons there may be no vault to name, and none is a reason to
-      // clear the hash. Before a vault is open, the link is what the "Open 'X'"
-      // button is about to act on. And "an id but no entry in the list" is not
-      // a vault without a name: recordVault now sets the two in one batch, but
-      // it once set the id first, and clearing in that transient render wiped
-      // the link mid-open — the file it named never got opened. Kept for any
-      // list write that could still land apart from the id (a forget racing an
-      // open), where the right move is again to wait for the next commit. And
-      // the mount path commits `rootHandle` a render BEFORE recordVault's id:
-      // "a handle but no id" while the link is still unclaimed blanked the
-      // whole hash for that await (measured: ~30ms into 5 of 6 slowed reloads,
-      // so a reload there lost the link outright).
-      if (!rootHandle || currentVaultId || linkPendingRef.current) return;
-      writeLocation({});
-      return;
-    }
-    writeLocation({
-      vault: vaultLinkName(vault, recentVaults),
-      // The help guide is not a file in the vault, so it has no link.
-      file: activeFile && !activeFile.isHelp
-        ? activeFile.path
-        : pendingLinkFile && findLinkedVault(initialLocation.vault, recentVaults)?.id === vault.id
-          ? pendingLinkFile
-          : undefined,
-    });
-  }, [rootHandle, currentVaultId, recentVaults, activeFile, pendingLinkFile, initialLocation]);
-
-  const handleHelpClick = useCallback(async () => {
-    const path = 'help-guide';
-    if (tabsRef.current.some(t => t.file.path === path)) {
-      setLayout(l => focusTab(l, path));
-      return;
-    }
-    // The guide is its own chunk (utils/helpDocLoader.ts). One network round
-    // trip on the first open of a session, nothing on every other start.
-    const content = await loadHelpDoc();
-    setTabs(prev => prev.some(t => t.file.path === path) ? prev : [...prev, {
-      id: newTabId(),
-      file: { name: 'Help Guide', isHelp: true, path },
-      content,
-      representation: representationFor('Help Guide', true),
-      mode: 'read',
-      dirty: false,
-    }]);
-    setLayout(l => openTabIn(l, path));
-    setSaveStatus('');
-  }, []);
-
-  const handleCreateFile = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath = '') => {
-    if (isEpubFile(name) || isPdfFile(name)) { void tell({title:'Import an existing document',body:'EPUB and PDF documents must be imported as original binary files.',confirmLabel:'OK'}); return; }
-    const where = parentPath || parentHandle?.name || 'this folder';
-    try {
-      // Nothing here overwrites a file by accident — the rule the rest of the
-      // app keeps with freeEntryName, kept here with a refusal instead,
-      // because the user named this file and silently getting "note (1).md"
-      // is not what they asked for either.
-      if (parentHandle && await nameTaken(parentHandle, name)) {
-        await tell({
-          title: 'That name is taken',
-          confirmLabel: 'OK',
-          body: <><strong>{name}</strong> already exists in <code>{where}</code>. Nothing was created — pick another name, or open the one that is there.</>,
-        });
-        return;
-      }
-      const newFileHandle = await createFile(parentHandle!, name);
-      // Auto-open the newly created file straight into edit mode. Build the path
-      // to match buildFileTree's convention (vault-root-relative, no vault-name
-      // prefix) so the tab dedups / highlights / restores correctly.
-      if (newFileHandle) {
-        const newPath = joinVaultPath(parentPath, name);
-        const newNode: FileTreeFileNode = {
-          name,
-          handle: newFileHandle,
-          parentHandle: parentHandle!,
-          kind: 'file',
-          path: newPath,
-        };
-        await handleFileClick(newNode);
-        setTabs(prev => prev.map(t => t.file.path === newPath ? { ...t, mode: 'edit' } : t));
-      }
-    } catch (err) {
-      // Said out loud, not only logged: from the sidebar a create that failed
-      // is indistinguishable from one that worked and left the tree alone.
-      console.error('Failed to create file:', err);
-      await tell({
-        title: 'Could not create the note',
-        confirmLabel: 'OK',
-        body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
-      });
-    }
-  }, [createFile, handleFileClick, tell]);
-
-  /**
-   * New note in the vault's top folder — ⌘N, and the `+` on every pane's tab
-   * strip. ONE function for both: two entry points to the same action that
-   * behaved differently is exactly what the `+` would have reintroduced.
-   *
-   * ⌘N used to raise a `window.prompt`, the last native dialog in the app.
-   * It is gone: AGENTS.md's rule is that the app draws its own `confirm()` and
-   * prefers it to a native one, and `prompt()` could not say where the note
-   * would land, could not refuse an empty name while it was being typed, and
-   * sat outside the theme.
-   *
-   * THE NAME-TAKEN CASE IS DELIBERATELY NOT CHECKED HERE. `input.validate` runs
-   * on every keystroke and must be synchronous; `nameTaken` is a directory walk.
-   * `handleCreateFile` already refuses a taken name with a dialog of its own —
-   * the one guard standing in front of `createFile`, which opens-or-TRUNCATES —
-   * so asking here would only add a second half to keep in step with it.
-   *
-   * Opens wherever `openTab` opens: the focused pane, as a new tab. A `+` in an
-   * unfocused strip focuses its pane first (TabBar), so the note lands in the
-   * column whose `+` was pressed.
-   */
-  const handleNewNote = useCallback(async () => {
-    const root = rootHandleRef.current;
-    if (!root) return;
-    const name = await askForName({
-      title: 'New note',
-      body: <>It will be created in the vault’s top folder.</>,
-      confirmLabel: 'Create',
-      input: {
-        label: 'Name',
-        initialValue: '',
-        // `placeholderFor(null)` — the same hint the file tree's own create row
-        // shows, from the module that owns "what extension does this kind get".
-        // The name is taken AS TYPED here, exactly as a tree-row `file` is, so a
-        // reader who wants a note has to write the `.md` themselves; the
-        // `prompt()` this replaced said so in its own message ('e.g. "note.md"')
-        // and losing that hint would be the one thing the new dialog did worse.
-        placeholder: placeholderFor(null),
-        validate: v => (v.trim() ? null : 'Give the note a name'),
-      },
-    });
-    if (!name) return;
-    // The dialog is an await, and the reader can switch vaults behind it (the
-    // vault menu is not covered by it). Re-checked rather than trusted: writing
-    // through the captured handle would drop the note into a vault that is no
-    // longer on screen, and `parentPath: ''` would then name it in the tree the
-    // new vault built. Same re-validation the restore pass does after its reads.
-    if (rootHandleRef.current !== root) return;
-    await handleCreateFile(root, name, '');
-  }, [askForName, handleCreateFile]);
-
-  const handleCreateFolder = useCallback(async (parentHandle: FileSystemDirectoryHandle | null, name: string) => {
-    const where = parentHandle?.name || 'this folder';
-    try {
-      // createFolder is create-or-open like createFile, so an existing folder
-      // would silently be "created" and the reader would be looking at
-      // somebody else's notes inside it.
-      if (parentHandle && await nameTaken(parentHandle, name)) {
-        await tell({
-          title: 'That name is taken',
-          confirmLabel: 'OK',
-          body: <><strong>{name}</strong> already exists in <code>{where}</code>. Nothing was created.</>,
-        });
-        return;
-      }
-      await createFolder(parentHandle!, name);
-    } catch (err) {
-      console.error('Failed to create folder:', err);
-      await tell({
-        title: 'Could not create the folder',
-        confirmLabel: 'OK',
-        body: <><strong>{name}</strong> could not be created in <code>{where}</code>.</>,
-      });
-    }
-  }, [createFolder, tell]);
-
-  /**
-   * Open a folder in the tree as the vault — the file tree's "Open as Vault"
-   * row, and the same switch as picking that folder in the OS picker.
-   *
-   * Nothing is flushed or closed here: setting `rootHandle` is what makes this a
-   * vault switch, and the switch effect above already flushes every open tab
-   * (its handles are still good) before emptying the workspace. Every failure is
-   * said out loud, because from the sidebar a switch that did not happen is
-   * indistinguishable from one that did and found an empty folder — the rule
-   * VaultMenu.messageFor states for the vault list.
-   *
-   * ONE AT A TIME. Two switches in flight are two vault walks racing, and the
-   * one that FINISHES last wins the tree — which can be the one that started
-   * FIRST, leaving the sidebar on vault A while `rootHandle`, IndexedDB and
-   * `currentVaultId` all say vault B. The tree is where that is easiest to
-   * start: setRootHandle lands early, but the OLD vault's rows stay on screen
-   * until the new walk finishes — seconds on a big vault — so the folder just
-   * right-clicked is still sitting there, still offering the row.
-   *
-   * Racing a DIFFERENT raiser is the provider's `switchInFlightRef`, which is
-   * why 'busy' is not an error here. This ref covers the two things that gate
-   * cannot: a second click on the tree, and the dialog below — which, like
-   * handleTrash's, must not have a second question stacked behind it.
-   */
-  const openAsVaultInFlightRef = useRef<boolean>(false);
-
-  const handleOpenAsVault = useCallback(async (node: FileTreeNode) => {
-    if (node.kind !== 'directory') return;
-    if (openAsVaultInFlightRef.current) return;
-    openAsVaultInFlightRef.current = true;
-    try {
-      const result = await openFolderAsVault(node.handle);
-      // 'busy' is another raiser's switch still walking, not a failure — the
-      // ref above only covers a second click on the TREE. The vault menu says
-      // so inline; a tree row has nowhere to put a note, and a modal for "not
-      // yet" would be louder than the thing it reports, so here it stays silent.
-      if (result === 'ok' || result === 'busy') return;
-      await tell({
-        title: 'Could not open that folder as a vault',
-        confirmLabel: 'OK',
-        body: result === 'denied'
-          ? <>Permission to read and write <strong>{node.name}</strong> was refused.</>
-          : result === 'missing'
-            ? <><strong>{node.name}</strong> is no longer on disk.</>
-            : <><strong>{node.name}</strong> could not be opened.</>,
-      });
-    } finally {
-      openAsVaultInFlightRef.current = false;
-    }
-  }, [openFolderAsVault, tell]);
-
-  /**
-   * Move a file — or a whole folder, contents and all — to the Trash.
-   *
-   * A folder takes every document open from anywhere INSIDE it with it, which
-   * is the whole difference from deleting one file. Left open, those tabs go on
-   * drawing notes that no longer exist, holding handles that resolve to nothing,
-   * and are written back into the stored session on the next layout change.
-   *
-   * ONE AT A TIME, and everything pending is written out FIRST. Both follow from
-   * the same fact: unlike every other deletion in this app, trashing a folder is
-   * a copy of arbitrary size, and it runs for as long as that takes. See below.
-   */
-  const trashInFlightRef = useRef<boolean>(false);
-
-  /**
-   * The move itself, with no question in front of it — shared by the reader's
-   * delete (after its confirm) and the AI agent's `vault_trash`, which the chat
-   * shows instead of asking. The caller holds `trashInFlightRef`.
-   */
-  const performTrash = useCallback(async (node: FileTreeNode): Promise<boolean> => {
-    const doomed = trashedBy(node);
-    // Tracked from here — NOT around a question, nor a notice after: a restore
-    // pass must never sit waiting on a dialog (see vaultMovesRef).
-    return trackVaultMove(async () => {
-      // Write out what is still in the save debounce BEFORE the copy starts.
-      // The tabs inside a folder stay live and editable for the whole copy, and
-      // their save timers stay armed — so a debounced write would land on an
-      // original that `removeEntry` then destroys, AFTER the walk had already
-      // copied the older bytes. Whether the edit survived came down to where the
-      // note happened to fall in an arbitrary `entries()` order. Flushed rather
-      // than merely cancelled: the copy then carries the reader's last words,
-      // which is what a trash folder is for.
-      await Promise.all(tabsRef.current
-        .filter(t => doomed(t.file.path))
-        .map(t => flushTab(t.file.path, false, undefined, true)));
-      // …and let the asset reconciles those saves queued run to completion, so
-      // nothing moves a picture between `.Assets` and `.Garbage/.Assets` while
-      // copyDirRecursive is walking one of them.
-      await reconcileQueueRef.current;
-
-      // The copy has no other outward sign, and an app that looks frozen is one
-      // people click again. Re-armed over any "Saved" the flush above left, whose
-      // own timer would otherwise clear this line mid-copy.
-      if (saveStatusTimerRef.current) {
-        clearTimeout(saveStatusTimerRef.current);
-        saveStatusTimerRef.current = null;
-      }
-      setSaveStatus(`Moving "${node.name}" to Trash…`);
-
-      const trashed = await moveToTrash(node);
-      setSaveStatus('');
-      if (!trashed) return false;
-
-      // A trashed row's icon and colour go with it, and a folder's takes
-      // everything inside it — otherwise the entry sits in the file forever, and
-      // something later given the same name inherits a look nobody chose. Its
-      // place in a custom order goes too, for the same reason.
-      const remaining = forgetEntry(getEntryStyles(), node.path);
-      if (remaining !== getEntryStyles()) void writeEntryStyles(remaining);
-
-      // A note a restore pass is still bringing back must not come back out of
-      // the Trash as an open tab (issue #9) — it is not in tabsRef yet, so the
-      // loop below cannot reach it. Only on success: a failed move moved nothing.
-      const pending = pendingFor(rootHandleRef.current);
-      if (pending) dropPending(pending, doomed);
-
-      // What the deletion took with it. Read AFTER the move, not before: the
-      // predicate is a path test and does not move, but a document opened while
-      // the copy was running has to be closed too.
-      // Closed WITHOUT flushing — that already happened above, and their handles
-      // are gone now.
-      for (const tab of tabsRef.current) {
-        if (doomed(tab.file.path)) removeTab(tab.file.path, false);
-      }
-      return true;
-    });
-  }, [moveToTrash, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor]);
-
-  const handleTrash = useCallback(async (node: FileTreeNode) => {
-    // A folder copy runs for seconds, and its row stays on screen throughout —
-    // so "I clicked delete and nothing happened, click it again" is the natural
-    // thing to do, and unguarded it ran two copies at once: one completed, the
-    // other was abandoned half-written when the source vanished under it, and
-    // the loser's `alert` then told the user a deletion that had SUCCEEDED had
-    // failed. Same shape, same reason, as pickDirectory's pickerOpenRef.
-    //
-    // It covers the QUESTION as well as the copy, which `confirm()` used to get
-    // for free by freezing the page: the app's own dialog does not block, so
-    // without this a second click would stack a second question behind the
-    // first. (The overlay stops the pointer reaching the tree either way; this
-    // is what stops anything else from.)
-    if (trashInFlightRef.current) return;
-    trashInFlightRef.current = true;
-    try {
-      const isFolder = node.kind === 'directory';
-
-      // Say what is actually going. "…and everything inside it" reads the same
-      // for two notes as for two thousand, and is plainly wrong for an empty one.
-      const files = node.kind === 'directory' ? collectFiles(node.children).length : 0;
-      const beside = <>the <code>.Garbage</code> folder beside it</>;
-      const confirmed = await ask({
-        title: isFolder ? 'Move folder to Trash?' : 'Move to Trash?',
-        confirmLabel: 'Move to Trash',
-        danger: true,
-        body: files > 0 ? (
-          <>
-            <strong>{node.name}</strong> and the {files} file{files === 1 ? '' : 's'} inside it move
-            into {beside} — sub-folders, pictures and its own trash included. Notes you have open
-            from it are saved first, then closed. Nothing leaves your disk: you can take it all
-            back out whenever you like.
-          </>
-        ) : (
-          <>
-            <strong>{node.name}</strong> moves into {beside}. Nothing leaves your disk: you can
-            take it back out whenever you like.
-          </>
-        ),
-      });
-      if (!confirmed) return;
-
-      const moved = await performTrash(node);
-      if (!moved) {
-        // Never silence: from the outside a click that does nothing is
-        // indistinguishable from a broken button. And the reassurance is worth
-        // as much as the failure — the move is all-or-nothing, so there is no
-        // half-deleted state to go looking for.
-        await tell({
-          title: 'Nothing was moved',
-          confirmLabel: 'OK',
-          body: (
-            <>
-              <strong>{node.name}</strong> is still where it was, and nothing was left half-done.
-              Something inside it may be in use; the details are in the browser console. Try again
-              in a moment.
-            </>
-          ),
-        });
-      }
-    } finally {
-      trashInFlightRef.current = false;
-    }
-  }, [performTrash, ask, tell]);
-
-  /** The agent's delete: no question (the chat shows it), same serialization. */
-  const trashForAgent = useCallback(async (node: FileTreeNode): Promise<'ok' | 'busy' | 'failed'> => {
-    if (trashInFlightRef.current) return 'busy';
-    trashInFlightRef.current = true;
-    try {
-      return (await performTrash(node)) ? 'ok' : 'failed';
-    } finally {
-      trashInFlightRef.current = false;
-    }
-  }, [performTrash]);
-
-  /* ── The Trash bin ──────────────────────────────────────────────────────
-   * The panel draws the list and owns nothing else: every one of these asks
-   * the question, takes the SAME in-flight ref `handleTrash` does, and drains
-   * the asset-reconcile queue first.
-   *
-   * The shared ref is deliberate. All four are copy-then-delete over the same
-   * vault, so two at once is the abandoned-half-written-copy hazard
-   * handleTrash documents — and the guard has to cover the QUESTION as well as
-   * the copy, because only one dialog fits on screen: a second `ask` raised
-   * while one is up leaves the first promise unresolved for the session.
-   * Draining `reconcileQueueRef` matters for the same reason it does there —
-   * a retire may be moving a picture between `.Assets` and `.Garbage/.Assets`
-   * at that moment, which is exactly what the bin is reading and writing.
-   * ─────────────────────────────────────────────────────────────────────── */
-
-  /** Put one trashed item back beside the `.Garbage` it was found in. */
-  const handleTrashRestore = useCallback(async (item: TrashItem): Promise<TrashRestoreResult> => {
-    if (trashInFlightRef.current) return { status: 'error' };
-    trashInFlightRef.current = true;
-    try {
-      await reconcileQueueRef.current;
-      // Where the clash actually is — a retired picture goes back INSIDE that
-      // folder's `.Assets`, so naming the folder itself would send the reader
-      // looking at the wrong one.
-      const where = item.origin === 'retired'
-        ? joinVaultPath(item.restorePath, ASSETS_DIR)
-        : (item.restorePath || 'the vault root');
-      // Which open documents a 'replace' would take with it: the entry standing
-      // at the destination name, and — when that entry is a FOLDER — every
-      // document open from inside it. Both, by one prefix test, because App
-      // cannot know which kind is in the way until the copy resolves it, and a
-      // file has no children for the `/` branch to match anyway. A retired
-      // picture's destination is `.Assets`, which nothing opens as a tab. The
-      // Help guide is excluded: its pseudo-path is a bare name (`help-guide`),
-      // so a vault folder of that name would otherwise close it.
-      const taken = item.origin === 'retired' ? null : joinVaultPath(item.restorePath, item.name);
-      const doomed = (tab: typeof tabsRef.current[number]) =>
-        !!taken && !tab.file.isHelp &&
-        (tab.file.path === taken || tab.file.path.startsWith(`${taken}/`));
-      // Asked for without permission to overwrite: a taken name comes back as
-      // a collision with nothing touched, and the reader decides.
-      let result = await restoreFromTrash(item, 'auto');
-
-      if (result.status === 'collision') {
-        const choice = await askChoice({
-          title: 'That name is taken',
-          confirmLabel: 'Replace',
-          altLabel: 'Keep both',
-          danger: true,
-          body: (
-            <>
-              {/* `where` is a real path everywhere except one case — a file
-                  trashed from the vault root — where it is prose, and prose set
-                  in monospace reads as a folder nobody has. */}
-              {item.restorePath || item.origin === 'retired' ? <code>{where}</code> : 'The vault root'}
-              {' '}already holds something called <strong>{item.name}</strong>.
-              Replacing it moves what is there now into that folder’s own <code>.Garbage</code> —
-              it will be waiting here in the Trash, not erased. Keeping both puts this one back
-              under a numbered name.
-            </>
-          ),
-        });
-        if (choice === 'cancel') return { status: 'collision' };
-
-        if (choice === 'confirm') {
-          // Tracked (see vaultMovesRef): a Replace displaces documents exactly
-          // as a trash does, and the path it frees is filled again at once — so
-          // a restore pass's re-check at the merge would find it standing and
-          // could not tell it holds different bytes. Only the registry drop
-          // below catches that.
-          result = await trackVaultMove(async () => {
-            // Write out what is still in the save debounce, so the copy that
-            // gets displaced into `.Garbage` carries the reader's last words
-            // rather than the disk's — handleTrash's reason, and its ordering.
-            await Promise.all(tabsRef.current.filter(doomed).map(t => flushTab(t.file.path, false, undefined, true)));
-            // …and re-drain the reconcile queue: the question above took real
-            // time, and a retire can have queued a picture move into the very
-            // `.Garbage/.Assets` a retired put-back is about to read.
-            await reconcileQueueRef.current;
-            const replaced = await restoreFromTrash(item, 'replace');
-            // The displaced entry's bytes have just moved into `.Garbage`, and
-            // every tab that was open from it still holds a handle resolving to
-            // that DIRECTORY ENTRY — which the restored copy now occupies. Left
-            // open, the next keystroke in one of them writes the displaced bytes
-            // straight over the note that was just put back (measured: putting a
-            // trashed `homework` back over a live one restored its `hw1.md`, and
-            // one keystroke in the still-open tab turned it back into the live
-            // file's text). releaseOverwritten's hazard exactly. Closed WITHOUT
-            // flushing — that already happened above, before the copy.
-            if (replaced.status === 'ok') {
-              for (const tab of tabsRef.current) if (doomed(tab)) removeTab(tab.file.path, false);
-              // A document a restore pass is still bringing back from there has
-              // been displaced just the same (issue #9); tabsRef cannot reach it.
-              const pending = pendingFor(rootHandleRef.current);
-              if (pending && taken) {
-                dropPending(pending, path => path === taken || path.startsWith(`${taken}/`));
-              }
-              // The displaced entry's icon and colour go into the Trash with it,
-              // or the item that just took its path inherits a look nobody
-              // chose — handleTrash's reason for forgetting them at trash time.
-              if (taken) {
-                const remaining = forgetEntry(getEntryStyles(), taken);
-                if (remaining !== getEntryStyles()) void writeEntryStyles(remaining);
-              }
-            }
-            return replaced;
-          });
-        } else {
-          result = await restoreFromTrash(item, 'keep-both');
-        }
-      }
-
-      if (result.status === 'error') {
-        await tell({
-          title: 'Nothing was put back',
-          confirmLabel: 'OK',
-          body: (
-            <>
-              <strong>{item.name}</strong> is still in the Trash, and nothing was left half-done.
-              The details are in the browser console. Try again in a moment.
-            </>
-          ),
-        });
-        return result;
-      }
-
-      if (result.status === 'ok') {
-        // A numbered rename must never be silent — "Keep both" says there will
-        // be a number, not what it is. Re-armed over any pending "Saved", the
-        // way handleTrash re-arms it.
-        if (result.name !== item.name) {
-          if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
-          setSaveStatus(`Put back as “${result.name}”`);
-          saveStatusTimerRef.current = setTimeout(() => setSaveStatus(''), 4000);
-        }
-      }
-      return result;
-    } finally {
-      trashInFlightRef.current = false;
-    }
-  }, [restoreFromTrash, askChoice, tell, removeTab, flushTab, writeEntryStyles, trackVaultMove, pendingFor]);
-
-  /** Erase one trashed item. One of the app's two points of no return. */
-  const handleTrashDelete = useCallback(async (item: TrashItem) => {
-    if (trashInFlightRef.current) return false;
-    trashInFlightRef.current = true;
-    try {
-      const confirmed = await ask({
-        title: 'Delete for good?',
-        confirmLabel: 'Delete permanently',
-        danger: true,
-        body: (
-          <>
-            <strong>{item.name}</strong>{item.kind === 'directory' ? ' and everything inside it' : ''} is
-            erased from your disk. This is one of the only two things in this app that cannot be
-            undone — there is no second copy anywhere.
-          </>
-        ),
-      });
-      if (!confirmed) return false;
-
-      await reconcileQueueRef.current;
-      const done = await deleteFromTrash(item);
-      if (!done) {
-        await tell({
-          title: 'Nothing was deleted',
-          confirmLabel: 'OK',
-          body: (
-            <>
-              <strong>{item.name}</strong> is still in the Trash. Something inside it may be in use;
-              the details are in the browser console.
-            </>
-          ),
-        });
-      }
-      return done;
-    } finally {
-      trashInFlightRef.current = false;
-    }
-  }, [ask, tell, deleteFromTrash]);
-
-  /** Erase every `.Garbage` in the vault. The other point of no return. */
-  const handleTrashEmpty = useCallback(async (count: number) => {
-    if (trashInFlightRef.current) return false;
-    trashInFlightRef.current = true;
-    try {
-      const confirmed = await ask({
-        title: 'Empty the Trash?',
-        confirmLabel: 'Empty bin',
-        danger: true,
-        body: (
-          <>
-            All {count} item{count === 1 ? '' : 's'} here are erased from your disk, and so is
-            every <code>.Garbage</code> folder in this vault — deleted notes, deleted folders, and
-            pictures your notes stopped using. There is no second copy of any of it, and nothing
-            brings it back.
-          </>
-        ),
-      });
-      if (!confirmed) return false;
-
-      await reconcileQueueRef.current;
-      const { removed, failed } = await emptyTrash();
-      if (!removed && count > 0) {
-        await tell({
-          title: 'Nothing was deleted',
-          confirmLabel: 'OK',
-          body: <>The Trash is still where it was. The details are in the browser console.</>,
-        });
-        return false;
-      }
-      // Partly done is not done, and the panel would otherwise clear its list
-      // and say the bin was empty while those folders still held their files.
-      if (failed) {
-        await tell({
-          title: 'Some of it is still there',
-          confirmLabel: 'OK',
-          body: (
-            <>
-              {failed} folder{failed === 1 ? '' : 's'} would not empty — something inside may be in
-              use. The rest is gone. Open the Trash again to see what is left; the details are in
-              the browser console.
-            </>
-          ),
-        });
-        return false;
-      }
-      return true;
-    } finally {
-      trashInFlightRef.current = false;
-    }
-  }, [ask, tell, emptyTrash]);
-
-  /** The bin's read-only preview of a trashed text file. */
-  const handleTrashReadText = useCallback(
-    (item: TrashItem) => readFile(item.handle as FileSystemFileHandle), [readFile]);
-
-  /** The bytes behind the bin's picture preview. Here rather than in the panel
-   *  so no component calls the File System Access API itself (AGENTS.md). The
-   *  cast is sound for the same reason `handleTrashReadText`'s is: the crawl only
-   *  ever hands a file handle to an item whose `kind` is 'file', and the preview
-   *  asks for nothing else. */
-  const handleTrashReadFile = useCallback(
-    (item: TrashItem) => (item.handle as FileSystemFileHandle).getFile(), []);
-
-  /**
-   * Follow every open document through a rename or a move.
-   *
-   * For a file that is the file itself. For a FOLDER it is every document open
-   * from anywhere INSIDE it, which is the case that used to be missing entirely:
-   * the old code looked for a tab at the folder's own path, never found one, and
-   * returned. So renaming a folder left its notes open on paths that no longer
-   * existed, holding handles into a directory that had just been removed —
-   * every later keystroke logged "Auto-save failed" and went nowhere, the tree
-   * highlighted nothing, and the stored session named a file that was gone. The
-   * documents are the same documents; they are re-pointed, not closed.
-   *
-   * Handles come from walking down from the VAULT ROOT rather than out of the
-   * file tree, because the tree is React state and this runs after an await —
-   * the refresh the rename triggered may not have been committed yet, and this
-   * has to be exact rather than probably-current.
-   */
-  //
-  // The core takes PATHS, so a move noticed on disk (checkOpenDocs — a `mv` in
-  // the terminal, a sync client) is followed by the very code an in-app rename
-  // uses. `sources` is every file the move carries, for the overwrite rule.
-  //
-  // `fromDisk`: the move was noticed, not made — an open document it lands on
-  // keeps its unsaved edits (releaseOverwritten's `keep`). Resolves to the open
-  // documents it moved, old path → new.
-  const retargetPaths = useCallback(async (
-    fromPath: string, isFolder: boolean, newPath: string, sources: readonly string[], fromDisk = false,
-  ): Promise<Array<{ from: string; to: string }>> => {
-    if (!rootHandle || rootHandleRef.current !== rootHandle || newPath === fromPath) return [];
-    const vaultIdAtMove = currentVaultIdRef.current ?? '';
-    const prefix = `${fromPath}/`;
-    /** Where a path under `fromPath` ends up. */
-    const to = (path: string) => (isFolder ? newPath + path.slice(fromPath.length) : newPath);
-
-    // The documents a restore pass is still bringing back are not in tabsRef
-    // yet, so nothing below reaches them — they came back at the old path with
-    // a dead handle (issue #9). The pass waits out this whole move (see
-    // vaultMovesRef), so re-pointing them here, with no await before it, is in
-    // time.
-    const pending = pendingFor(rootHandle);
-    if (pending) retargetPending(pending, fromPath, isFolder, newPath, sources.map(to));
-
-    // Every open document this move carries…
-    const moving = tabsRef.current
-      .filter(t => (isFolder ? t.file.path.startsWith(prefix) : t.file.path === fromPath))
-      .map(t => ({ from: t.file.path, to: to(t.file.path), dirty: t.dirty, doc: t }));
-
-    // …and every open document it OVERWRITES. renameFile/moveFile deliberately
-    // land on a taken name, and for a folder that is a MERGE: each file inside
-    // it overwrites whatever sat at its destination. The tab holding that
-    // destination has to be released whether or not the file replacing it is
-    // itself open — its handle still resolves to that very directory entry, so
-    // its autosave would put the old bytes straight back over the new ones.
-    // Read from the node's own children, the last description of the folder
-    // before it moved, and done for ALL of them BEFORE the re-keys below (see
-    // releaseOverwritten for why that order is load-bearing).
-    // Icons and colours are keyed by vault path — a file's as much as a
-    // folder's, and a folder's carries everything inside it — so a rename
-    // strands every one of them on a path nothing has any more. Done for the
-    // node itself, not per open tab: a file nobody has open still has a look.
-    // The custom order follows here too: a folder's lists are re-keyed, and the
-    // node keeps its slot on a rename or leaves its old folder's list on a move.
-    const restyled = renameEntry(getEntryStyles(), fromPath, newPath);
-    if (restyled !== getEntryStyles()) void writeEntryStyles(restyled);
-
-    const open = new Set(tabsRef.current.map(t => t.file.path));
-    for (const source of sources) {
-      const dest = to(source);
-      if (open.has(dest)) releaseOverwritten(dest, source, fromDisk);
-    }
-
-    for (const { from, to: dest, doc } of moving) {
-      try {
-        await getReadingSurface({vaultId:vaultIdAtMove,vaultEpoch:readerEpochRef.current.epoch,documentId:doc.id,byteGeneration:doc.representation.generation})?.captureReading?.().catch(()=>{});
-        if(rootHandleRef.current!==rootHandle)return [];
-        invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
-        const { handle, parentHandle } = await resolveVaultFile(rootHandle, dest);
-        if (rootHandleRef.current !== rootHandle) return [];
-        const changedKind = classifyRequestedKind(handle.name) !== doc.representation.loadedKind;
-        let replacement: { content: string; readError?: string } | undefined;
-        if (changedKind) {
-          if (isEpubFile(handle.name) || isPdfFile(handle.name)) replacement = { content: '' };
-          else try { const read = await readFileVersioned(handle); replacement = { content: read.text }; setBaseline(doc.id, read.version); }
-          catch (error) { replacement = { content: '', readError: describeReadError(error) }; }
-        }
-        // Awaiting lookup, destination decoding or a conflict-copy write leaves the
-        // old editor live. Preserve its CURRENT revision, then repeat if a later
-        // edit arrived during that await. No await separates the final check from
-        // the synchronous tab/layout commit below.
-        let needsSave = false;
-        for (;;) {
-          if (rootHandleRef.current !== rootHandle) return [];
-          const live = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
-          if (!live) break;
-          needsSave = live.dirty || !!getView(from)?.hasPendingEdits?.() || saveTimersRef.current.has(from) || (contentOf(from) ?? live.content) !== doc.content;
-          if (!changedKind || !needsSave) break;
-          await getView(from)?.flushPending?.();
-          if (rootHandleRef.current !== rootHandle) return [];
-          if (!tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) break;
-          const text = contentOf(from) ?? live.content;
-          let data: string | Uint8Array = text;
-          if (live.representation.loadedKind === 'pdf') {
-            const pdf = getPdfRenderData(from);
-            if (!pdf) throw Error('Pending PDF edits cannot be preserved yet. Keep this tab open and retry.');
-            data = await (await import('./utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdf.original, text, pdf.overlays);
-          } else if (!canReadTabText(live)) throw Error('Pending source edits cannot be preserved. Keep this tab open.');
-          const kept = await writeConflictCopy(from, data, rootHandle);
-          announce(`Your edits were kept as “${kept.slice(kept.lastIndexOf('/') + 1)}” before changing document kind.`);
-          if (rootHandleRef.current !== rootHandle) return [];
-          const latest = tabsRef.current.find(t => t.id === doc.id && t.file.path === from);
-          if (!latest) break;
-          if ((contentOf(from) ?? latest.content) === text && !getView(from)?.hasPendingEdits?.()) break;
-        }
-        if (rootHandleRef.current !== rootHandle || !tabsRef.current.some(t => t.id === doc.id && t.file.path === from)) continue;
-        // A destination opened during retargeting must not share this path or
-        // lose its new edits. Closing preservation uses its own loaded kind.
-        if (tabsRef.current.some(t => t.file.path === dest)) releaseOverwritten(dest, from, true);
-        moveReaderViewState({vaultId:vaultIdAtMove,vaultEpoch:0,documentId:doc.id,byteGeneration:doc.representation.generation,path:from,diskRev:doc.diskRev??0},from,dest);
-        clearSaveTimer(from);          // cancel any save pending against the OLD handle
-        // An annotated PDF's parked original + overlays are keyed by path; re-key
-        // them or the next save finds nothing and silently writes nothing.
-        if (changedKind) { clearPdfRenderData(from); assetRefsRef.current.delete(from); }
-        movePdfRenderData(from, dest);
-        // Same trap, same fix: an exporter left under the old path means Export
-        // to PDF on the renamed notebook silently finds nothing.
-        moveNotebookRenderData(from, dest);
-        // The agent's view of a mounted pane is keyed by path too: move it with
-        // the render data, so nothing asks the old path between the rename and
-        // the pane's remount under the new one (paneKey includes the path).
-        moveView(from, dest);
-        moveAssetRefs(from, dest);
-        flushSync(() => {
-        setTabs(prev => prev
-          .filter(t => t.file.path !== dest)
-          .map(t => t.id === doc.id && t.file.path === from
-            // `handle.name` covers both: a renamed file takes its new name, and
-            // a file carried along by its folder keeps the one it had.
-            ? { ...t, file: { ...t.file, name: handle.name, path: dest, handle, parentHandle }, readerCapabilities: undefined,
-                representation: changedKind ? representationFor(handle.name,false,t.representation.generation+1,!!replacement?.readError) : {...t.representation,generation:t.representation.generation+1},
-                ...(replacement ? {...replacement,dirty:false,disk:undefined,mode:'read' as const} : {}), diskRev:(t.diskRev??0)+1 }
-            : t));
-        // The layout indexes documents by path too — a tab left pointing at
-        // the old one would have no document to draw.
-        setLayout(l => renamePath(l, from, dest));
-        });
-        latestContentRef.current.delete(from);
-        if (changedKind) {
-          editorStates.delete(`${doc.id}|${from}`);
-          clearPdfRenderData(from);
-          assetRefsRef.current.delete(from);
-          diskStateRef.current.delete(doc.id);
-        }
-        // Buffered edits go to the NEW handle, never the old one. They are not
-        // in the copy the rename made: that read the file from disk.
-        if (needsSave && !changedKind) scheduleSave(dest);
-      } catch (err) {
-        console.error('Could not follow a document to its new path:', from, '→', dest, err);
-        notifyRef.current(`Could not finish following “${from}”. Your editor is still open: ${describeReadError(err)}`);
-      }
-    }
-    return moving.map(({ from, to: dest }) => ({ from, to: dest }));
-  }, [rootHandle, pendingFor, clearSaveTimer, scheduleSave, moveAssetRefs, releaseOverwritten, writeEntryStyles, writeConflictCopy, contentOf, readFileVersioned, editorStates, announce]);
-  const retargetTabs = useCallback(async (node: FileTreeNode, newPath: string) => { await retargetPaths(
-    node.path, node.kind === 'directory', newPath,
-    node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path],
-  ); }, [retargetPaths]);
-
-  /**
-   * Keep the tree's disclosure state with the folder it describes.
-   *
-   * `expandedPaths` is keyed by path, so a renamed folder — and everything the
-   * reader had opened up inside it — silently collapsed, which after a rename
-   * looks like the contents went somewhere. It is the same folder; it answers
-   * to a new name.
-   */
-  const retargetExpandedPaths = retargetExpandedPathsInStore;
-
-  const retargetExpanded = useCallback((node: FileTreeNode, newPath: string) => {
-    if (node.kind === 'directory') retargetExpandedPaths(node.path, newPath);
-  }, [retargetExpandedPaths]);
-
-  // Both tracked from the first FS call to the end of retargetTabs — see
-  // vaultMovesRef for what the restore pass waits on and why.
-  const handleRenameFile = useCallback((node: FileTreeNode, newName: string) => trackVaultMove(async () => {
-    if (node.kind === 'file' && classifyRequestedKind(node.name) !== classifyRequestedKind(newName)) {
-      const tab = tabsRef.current.find(t => t.file.path === node.path);
-      if (tab) {
-        await getView(node.path)?.flushPending?.();
-        const result = await flushTab(node.path);
-        await flushChainsRef.current.get(tab.id);
-        if (['failed','changed','deleted'].includes(result) || diskStateRef.current.has(tab.id)) return false;
-      }
-    }
-    const success = await renameFile(node, newName);
-    if (!success) return false;
-    const newPath = joinVaultPath(parentVaultPath(node.path), newName);
-    retargetExpanded(node, newPath);
-    await retargetTabs(node, newPath);
-    return true;
-  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove, flushTab]);
-
-  // Wrap moveFile so a moved document's tab tracks its new path and handle —
-  // including every document inside a moved FOLDER.
-  const handleMoveFile = useCallback((sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath = '') => trackVaultMove(async () => {
-    const success = await moveFile(sourceNode, targetDirHandle);
-    if (success) {
-      const newPath = joinVaultPath(targetPath, sourceNode.name);
-      retargetExpanded(sourceNode, newPath);
-      await retargetTabs(sourceNode, newPath);
-    }
-    return success;
-  }), [moveFile, retargetTabs, retargetExpanded, trackVaultMove]);
-
-  // ── Changes made OUTSIDE the app ────────────────────────────────────────
-  // A `git pull` in the terminal, a formatter, a sync client, another editor.
-  // FileSystemObserver records (FileSystemContext) are HINTS that say where to
-  // look; a stat — and a hash of the bytes when the stat moved — is the truth,
-  // compared with each open document's baseline (utils/docBaselines.ts). A
-  // document with nothing unsaved reloads in place; one with unsaved edits gets
-  // the DiskBar, and neither version is ever dropped. The save-time check in
-  // flushTab stands on its own: with no observer at all, nothing is overwritten.
-
-  /** Whether a document holds anything that is not on disk yet. `dirty` alone
-   *  is not enough: an edit's save timer is armed before its render commits,
-   *  a write may be in flight, and a canvas keeps strokes in its own debounce
-   *  App cannot see (the reporter's hasPendingEdits). */
-  const hasUnsaved = useCallback((tab: OpenTab): boolean => (
-    tab.dirty
-    || saveTimersRef.current.has(tab.file.path)
-    || flushingRef.current.has(tab.id)
-    || !!getView(tab.file.path)?.hasPendingEdits?.()
-  ), []);
-
-  /**
-   * Put the file's new contents into an open document that had nothing unsaved.
-   *
-   * Text: one minimal transaction annotated `externalReload` — through the live
-   * view when there is one, else into the cached EditorState and the buffer
-   * (a hidden tab, the graph view, a typeset .tex) — so the caret, the scroll
-   * place and the undo history outside the change survive, ⌘Z steps back over
-   * the reload, and nothing marks the tab dirty or writes it back. Canvases:
-   * the buffer is replaced and `diskRev` remounts the pane on it; its camera
-   * and view position are per path and come back.
-   */
-  const reloadFromDisk = useCallback((tab: OpenTab, text: string, version: DiskVersion) => {
-    const { id, file } = tab;
-    const path = file.path;
-    if (isEpubFile(file.name) || isPdfFile(file.name)) invalidReaderTokens.current.add(`${id}|${tab.representation.generation}`);
-    clearSaveTimer(path);
-    setBaseline(id, version);
-    diskStateRef.current.delete(id);
-    if (isCanvasFile(file.name) || isPdfFile(file.name) || isEpubFile(file.name)) {
-      // The parked original would otherwise be rebuilt over the new file by
-      // the next annotation save.
-      if (isPdfFile(file.name)) clearPdfRenderData(path);
-      latestContentRef.current.set(path, text);
-      setTabs(prev => prev.map(t => (t.id === id
-        ? { ...t, content: text, dirty: false, disk: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) }
-        : t)));
-      return;
-    }
-    if (!getView(path)?.replaceFromDisk?.(text)) {
-      const key = `${id}|${path}`;
-      const cached = editorStates.get(key);
-      if (cached) {
-        const spec = reloadSpec(cached, text);
-        if (spec) editorStates.set(key, cached.update(spec).state);
-      }
-      updateTabContent(path, text, { fromDisk: true });
-    }
-    // The asset diff's baseline is the file as it now is.
-    rememberAssetRefs(file, text);
-    setTabs(prev => prev.map(t => (t.id === id && (t.dirty || t.disk) ? { ...t, dirty: false, disk: undefined } : t)));
-  }, [clearSaveTimer, editorStates, updateTabContent, rememberAssetRefs]);
-
-  /**
-   * Follow a rename/move made on disk: open documents, expanded folders, icons,
-   * colours and custom order all move with it — through the code an in-app
-   * rename uses, minus the copy. Only when it is CERTAIN: the old path is gone
-   * and the new one is there (a move is never followed on a guess).
-   */
-  // Resolves to the open documents it moved (old path → new): their tabs only
-  // reach tabsRef a commit later, so the caller must not take them for missing.
-  const followDiskMove = useCallback(async (root: FileSystemDirectoryHandle, from: string, to: string): Promise<Array<{ from: string; to: string }>> => {
-    if (from === to || to.startsWith(`${from}/`)) return [];
-    let isFolder = false;
-    try {
-      if (!await resolveFileHandle(to)) {
-        await resolveVaultDir(root, to);
-        isFolder = true;
-      }
-      if (isFolder ? await vaultDirExists(root, from) : await resolveFileHandle(from)) return [];
-    } catch {
-      return [];
-    }
-    if (rootHandleRef.current !== root) return [];
-    const sources = tabsRef.current
-      .filter(t => (isFolder ? t.file.path.startsWith(`${from}/`) : t.file.path === from))
-      .map(t => t.file.path);
-    let moved: Array<{ from: string; to: string }> = [];
-    await trackVaultMove(async () => {
-      if (isFolder) retargetExpandedPaths(from, to);
-      moved = await retargetPaths(from, isFolder, to, sources, true);
-    });
-    return moved;
-  }, [resolveFileHandle, trackVaultMove, retargetExpandedPaths, retargetPaths]);
-
-  /**
-   * Re-verify open documents against the disk — those `scope` names (or that
-   * sit under a folder it names), or all of them.
-   *
-   * Serialized (one pass at a time, in order), and it waits out the app's own
-   * moves, trashes and the session restore: each is copy → delete → fix-up, and
-   * mid-span the old file is simply gone — read then, it would be a false
-   * "deleted". A document with a write in flight is checked again once it lands.
-   */
-  const checkQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const fullCheckQueuedRef = useRef(false);
-  const runCheckRef = useRef<(scope: ReadonlySet<string> | 'all', batch?: VaultChangeBatch) => Promise<void>>(async () => {});
-  const checkOpenDocs = useCallback((scope: ReadonlySet<string> | 'all', batch?: VaultChangeBatch): Promise<void> => {
-    // Focus and visibilitychange arrive together, and a poll can land beside
-    // them: one queued full pass answers all of them.
-    if (scope === 'all' && !batch) {
-      if (fullCheckQueuedRef.current) return checkQueueRef.current;
-      fullCheckQueuedRef.current = true;
-    }
-    const run = checkQueueRef.current.then(() => {
-      if (scope === 'all' && !batch) fullCheckQueuedRef.current = false;
-      return runCheckRef.current(scope, batch);
-    }).catch(err => { console.error('Could not check open documents against the disk:', err); });
-    checkQueueRef.current = run;
-    return run;
-  }, []);
-
-  useLayoutEffect(() => {
-    runCheckRef.current = async (scope, batch) => {
-      const root = rootHandleRef.current;
-      if (!root) return;
-      for (;;) {
-        if (vaultMovesRef.current.size) { await Promise.allSettled([...vaultMovesRef.current]); continue; }
-        if (trashInFlightRef.current || restoringRef.current) { await new Promise(r => setTimeout(r, 100)); continue; }
-        break;
-      }
-      const stillHere = () => rootHandleRef.current === root;
-      if (!stillHere()) return;
-
-      const retry = new Set<string>();
-      // Documents a move below re-pointed. tabsRef still shows them at the OLD
-      // path until React commits, which read as missing — a false "deleted"
-      // (measured: a root-level `mv a.md a2.md` raised it). They are verified at
-      // their new path by the retry pass, which runs after that commit.
-      const followed = new Set<string>();
-      const follow = async (from: string, to: string) => {
-        for (const m of await followDiskMove(root, from, to)) {
-          followed.add(m.from);
-          retry.add(m.to);
-        }
-      };
-      // Disk and document agree again (it came back, or was put back as it
-      // was): the bar goes, and whatever was typed while it was up gets saved.
-      const lift = (id: string, path: string) => {
-        setDiskState(id, null);
-        scheduleSave(path);
-      };
-      // Search and the graph re-read a document whose file really changed —
-      // once per pass (the subscriber leaves open documents to this pass, so
-      // the echo of the app's own autosave costs no second rebuild).
-      let contentChanged = false;
-
-      // Renames the platform reported outright (not on Windows, nor in polling).
-      if (batch?.moved.length) {
-        for (const { from, to } of batch.moved.slice(0, 64)) {
-          await follow(from, to);
-          if (!stillHere()) return;
-        }
-      }
-
-      const prefixes = scope === 'all' ? [] : [...scope].map(p => `${p}/`);
-      const inScope = (path: string) => scope === 'all' || scope.has(path) || prefixes.some(p => path.startsWith(p));
-      const missing: OpenTab[] = [];
-      for (const tab of [...tabsRef.current]) {
-        const { id, file } = tab;
-        const path = file.path;
-        if (file.isHelp || !file.handle || tab.readError) continue;
-        if (followed.has(path)) continue;
-        // A deleted document is re-examined whenever anything appeared — the
-        // delete and the create of a move can land in separate batches.
-        if (!inScope(path) && !(diskStateRef.current.get(id) === 'deleted' && batch?.appeared.size)) continue;
-        if (flushingRef.current.has(id)) { retry.add(path); continue; }
-        const baseline = getBaseline(id);
-        if (!baseline) continue;
-        let handle: FileSystemFileHandle | null;
-        let stat: Awaited<ReturnType<typeof statFile>>;
-        try {
-          handle = await resolveFileHandle(path);
-          stat = handle ? await statFile(handle) : null;
-        } catch (err) {
-          // Locked, or mid-write by someone else: not an answer. Ask again.
-          console.warn('Could not stat an open document; will retry:', path, err);
-          retry.add(path);
-          continue;
-        }
-        if (!stillHere()) return;
-        const now = tabsRef.current.find(t => t.id === id);
-        if (!now || now.file.path !== path) continue;
-        if (!handle || !stat) { missing.push(now); continue; }
-        const held = diskStateRef.current.has(id);
-        // The echo of the app's own save, or nothing happened at all.
-        if (sameStat(stat, baseline)) { if (held) lift(id, path); continue; }
-        let read: { text: string; version: DiskVersion };
-        try {
-          read = (isPdfFile(file.name) || isEpubFile(file.name))
-            ? { text: '', version: isEpubFile(file.name) ? await (async () => { const snap = await readFileSnapshot(handle); try { return await snap.fingerprint(); } finally { snap.dispose(); } })() : (await readBytesVersioned(handle)).version }
-            : await readFileVersioned(handle);
-        } catch (err) {
-          if (!hasUnsaved(now) && err instanceof Error && /binary data|valid UTF-8/.test(err.message)) { setTabs(prev => prev.map(t=>t.id===id?{...t,readError:err.message,representation:{...t.representation,status:'unavailable' as const,contentWritable:false}}:t)); continue; }
-          console.warn('Could not read an open document that changed on disk; will retry:', path, err);
-          retry.add(path);
-          continue;
-        }
-        if (!stillHere()) return;
-        const latest = tabsRef.current.find(t => t.id === id);
-        if (!latest || latest.file.path !== path) continue;
-        // Only the timestamps moved (`touch`, a checkout writing equal bytes).
-        if (read.version.hash === baseline.hash) {
-          setBaseline(id, read.version);
-          if (held) lift(id, path);
-          continue;
-        }
-        if (diskStateRef.current.get(id) === 'conflict') continue;
-        if (flushingRef.current.has(id)) { retry.add(path); continue; }
-        contentChanged = true;
-        if (hasUnsaved(latest)) setDiskState(id, 'conflict');
-        else reloadFromDisk(latest, read.text, read.version);
-      }
-
-      // Missing: a rename the platform did not name (Windows, polling, a copy
-      // then delete) is followed only when a file that appeared in the same
-      // batch is the ONLY one of that size and has the very same hash.
-      // Anything less certain is shown as deleted, never moved on a guess.
-      if (missing.length) {
-        const pairs = new Map<string, string>();
-        const appearedPaths = batch ? [...batch.appeared]
-          .filter(p => !tabsRef.current.some(t => t.file.path === p))
-          .slice(0, 64) : [];
-        if (appearedPaths.length) {
-          const appeared: Array<{ path: string; size: number }> = [];
-          for (const p of appearedPaths) {
-            try {
-              const h = await resolveFileHandle(p);
-              const st = h ? await statFile(h) : null;
-              if (st) appeared.push({ path: p, size: st.size });
-            } catch { /* not a file we can read: not a candidate */ }
-          }
-          const candidates = pairMoveCandidates(
-            missing.map(t => ({ path: t.file.path, size: getBaseline(t.id)?.size ?? -1 })),
-            appeared,
-          );
-          for (const tab of missing) {
-            const dest = candidates.get(tab.file.path);
-            if (!dest) continue;
-            try {
-              const h = await resolveFileHandle(dest);
-              const v = h ? await (async()=>{const snapshot=await readFileSnapshot(h);try{return await snapshot.fingerprint()}finally{snapshot.dispose()}})() : null;
-              if (v && v.hash === getBaseline(tab.id)?.hash) pairs.set(tab.file.path, dest);
-            } catch { /* unreadable: no proof, no move */ }
-          }
-        }
-        if (!stillHere()) return;
-        for (const tab of missing) {
-          const dest = pairs.get(tab.file.path);
-          if (dest) await follow(tab.file.path, dest);
-          else if (diskStateRef.current.get(tab.id) !== 'deleted') setDiskState(tab.id, 'deleted');
-          if (!stillHere()) return;
-        }
-      }
-
-      if (contentChanged) {
-        rebuildGraphRef.current();
-        bumpSaveEpoch();
-      }
-      if (retry.size) setTimeout(() => { void checkOpenDocs(retry); }, 750);
-    };
-  });
-
-  // Every batch of outside changes, after the context has patched the tree.
-  useEffect(() => subscribeVaultChanges(batch => {
-    void checkOpenDocs(batch.rescan ? 'all' : new Set([
-      ...batch.modified, ...batch.appeared, ...batch.disappeared,
-      ...batch.moved.flatMap(m => [m.from, m.to]),
-    ]), batch);
-    // Search and the graph re-validate by (lastModified, size), so one nudge
-    // per batch is all a file edited elsewhere needs. Structural changes move
-    // the tree, which re-runs both on its own. OPEN documents are left to
-    // checkOpenDocs, which nudges only when one really changed: every autosave
-    // comes back here as `modified`, and nudging on that echo doubled the
-    // graph's vault-wide stat pass per save.
-    const open = new Set(tabsRef.current.map(t => t.file.path));
-    if (batch.rescan || [...batch.modified].some(p => !open.has(p))) {
-      rebuildGraphRef.current();
-      bumpSaveEpoch();
-    }
-    // The Modified-time sort, without re-statting the vault: only the files the
-    // batch names, and only while a time sort has loaded any times at all.
-    if (batch.modified.size && getFileTimes().size) {
-      void (async () => {
-        const stamps: Array<[string, number]> = [];
-        for (const path of [...batch.modified].slice(0, 512)) {
-          try {
-            const h = await resolveFileHandle(path);
-            const st = h ? await statFile(h) : null;
-            if (st) stamps.push([path, st.lastModified]);
-          } catch { /* gone again, or unreadable: the next walk sorts it */ }
-        }
-        stampFileTimes(stamps);
-      })();
-    }
-  }), [subscribeVaultChanges, checkOpenDocs, resolveFileHandle, statFile]);
-
-  // The belt to the observer's braces: coming back to the window re-checks
-  // every open document (one stat each). Without an observer at all — an older
-  // Chrome, or one whose observe() failed — open documents are also polled
-  // every 2 s while the page is visible; the context polls the tree itself.
-  useEffect(() => {
-    if (liveDetection === 'off') return;
-    const recheck = () => { if (document.visibilityState === 'visible') void checkOpenDocs('all'); };
-    window.addEventListener('focus', recheck);
-    document.addEventListener('visibilitychange', recheck);
-    const poll = liveDetection === 'polling' ? setInterval(recheck, 2000) : null;
-    return () => {
-      window.removeEventListener('focus', recheck);
-      document.removeEventListener('visibilitychange', recheck);
-      if (poll) clearInterval(poll);
-    };
-  }, [liveDetection, checkOpenDocs]);
-
-  /**
-   * The DiskBar's buttons. Serialized per document (the bar disables itself
-   * too). Whichever version the reader does not pick is kept beside the file
-   * as `name (conflict).ext` — never dropped.
-   */
-  const resolvingRef = useRef(new Set<string>());
-  const handleDiskAction = useCallback(async (path: string, action: DiskAction) => {
-    const tab = tabsRef.current.find(t => t.file.path === path);
-    if (!tab || resolvingRef.current.has(tab.id)) return;
-    const { id, file } = tab;
-    if (tab.representation.loadedKind === 'epub' || !canFlushTab(tab) && tab.representation.loadedKind !== 'pdf') {
-      if (action === 'close') removeTab(path, false);
-      else if (action === 'retry' || action === 'reload') await retryUnreadTabRef.current(path);
-      return;
-    }
-    const isPdf = isPdfFile(file.name);
-    resolvingRef.current.add(id);
-    const shortName = (p: string) => p.slice(p.lastIndexOf('/') + 1);
-    /** The reader's version, pending canvas strokes included. Null for a PDF
-     *  with no annotations to rebuild it from. */
-    const mine = async (): Promise<string | Uint8Array | null> => {
-      await getView(path)?.flushPending?.();
-      const content = contentOf(path) ?? '';
-      if (!isPdf) return content;
-      const data = getPdfRenderData(path);
-      if (!data) return null;
-      const { buildAnnotatedPdfAsync } = await import('./utils/pdfBuildClient');
-      return buildAnnotatedPdfAsync(data.original, content, data.overlays);
-    };
-    try {
-      if (action === 'close') {
-        if (hasUnsaved(tab) && !await ask({
-          title: `Close “${file.name}”?`,
-          body: 'Its file was deleted on disk, so your unsaved edits exist only in this tab. Closing discards them.',
-          confirmLabel: 'Close',
-          danger: true,
-        })) return;
-        removeTab(path, false);
-        return;
-      }
-
-      if (action === 'save') {
-        const data = await mine();
-        if (data === null) {
-          void tell({ title: 'Nothing to save', confirmLabel: 'OK', body: <>This PDF has no annotations of yours to write back. Close the tab, or put <strong>{file.name}</strong> back from wherever it went.</> });
-          return;
-        }
-        const result = await recreateFile(path, data);
-        if (result.status === 'exists') {
-          // Something new took the name meanwhile: that is a conflict to choose
-          // through, not a file to write over.
-          setDiskState(id, 'conflict');
-          announce(`Something new is at “${file.name}” now — choose which version to keep.`);
-          return;
-        }
-        const root = rootHandleRef.current;
-        let parentHandle = file.parentHandle;
-        try { if (root) ({ parentHandle } = await resolveVaultFile(root, path)); } catch { /* keep the old one */ }
-        setBaseline(id, result.version);
-        diskStateRef.current.delete(id);
-        clearSaveTimer(path);
-        recordFileWritten(path, result.version.lastModified);
-        setTabs(prev => prev.map(t => (t.id === id ? {
-          ...t,
-          file: { ...t.file, handle: result.handle, parentHandle },
-          dirty: typeof data === 'string' && t.content !== data ? t.dirty : false,
-          disk: undefined,
-        } : t)));
-        rebuildGraphRef.current();
-        bumpSaveEpoch();
-        return;
-      }
-
-      // A conflict: re-read the disk NOW — it may have moved again since.
-      const handle = await resolveFileHandle(path);
-      if (!handle) { setDiskState(id, 'deleted'); return; }
-
-      if (action === 'reload') {
-        const keep = await mine();
-        const read = isPdf
-          ? { text: '', version: (await readBytesVersioned(handle)).version }
-          : await readFileVersioned(handle);
-        const copy = keep !== null && keep !== read.text ? await writeConflictCopy(path, keep) : null;
-        const now = tabsRef.current.find(t => t.id === id);
-        if (!now) return;
-        reloadFromDisk(now, read.text, read.version);
-        if (copy) announce(`Your version was kept as “${shortName(copy)}”.`);
-        return;
-      }
-
-      // 'keep': theirs goes beside the file, then mine is saved through the
-      // one save funnel — against the version just read, so a disk that moved
-      // AGAIN in between raises the conflict again rather than being overwritten.
-      await getView(path)?.flushPending?.();
-      const disk = await readBytesVersioned(handle);
-      const copy = await writeConflictCopy(path, disk.bytes);
-      setBaseline(id, disk.version);
-      setDiskState(id, null);
-      const outcome = await flushTab(path, true, contentOf(path));
-      if (outcome === 'changed') announce(`“${file.name}” changed on disk again. The earlier version was kept as “${shortName(copy)}”.`);
-      else announce(`The version on disk was kept as “${shortName(copy)}”.`);
-    } catch (err) {
-      console.error('Could not resolve a document’s disk state:', path, action, err);
-      void tell({ title: 'That did not work', confirmLabel: 'OK', body: <>Could not finish for <strong>{file.name}</strong>: {describeReadError(err)}</> });
-    } finally {
-      resolvingRef.current.delete(id);
-    }
-  }, [ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer, resolveFileHandle,
-    readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab, contentOf]);
-
-  // ── The AI agent's hands ────────────────────────────────────────────────
-  // Everything the agent panel and its tool executor can do to the vault goes
-  // through these two hosts (utils/agentHost.ts), built ONCE — in the panel's
-  // lazy chunk, so the main bundle does not carry them (measured: +26 kB when
-  // App built them) — so the panel's WebSocket and in-flight runs never
-  // restart on an App re-render. They read
-  // this ref, refreshed after every commit, so each call sees the current vault,
-  // tabs and layout — and goes through the very handlers the reader's own
-  // gestures use.
-  const addTabQuietly = useCallback(async (node: FileTreeNode, mode: EditorMode): Promise<boolean> => {
-    if (node.kind !== 'file') return false;
-    if (tabsRef.current.some(t => t.file.path === node.path)) return true;
-    const rootAtOpen = rootHandleRef.current;
-    try {
-      // As handleFileClick: a PDF's bytes are read by its pane, and decoding one
-      // as UTF-8 would corrupt it.
-      const read = (isPdfFile(node.name) || isEpubFile(node.name)) ? null : await readFileVersioned(node.handle);
-      if (rootHandleRef.current !== rootAtOpen) return false;
-      const content = read?.text ?? '';
-      rememberAssetRefs(node, content);
-      // The disk baseline, as handleFileClick takes it.
-      const id = newTabId();
-      if (read) setBaseline(id, read.version); else if (isPdfFile(node.name)) seedPdfBaseline(id, node.handle);
-      setTabs(prev => prev.some(t => t.file.path === node.path)
-        ? prev
-        : [...prev, { id, file: node, content, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]);
-      return true;
-    } catch (err) {
-      console.error('Agent could not open a file:', err);
-      return false;
-    }
-  }, [readFileVersioned, rememberAssetRefs, seedPdfBaseline]);
-
-  // ── Where a new terminal starts ────────────────────────────────────────
-  // The folder of the file in front of the user, as the helper can resolve it:
-  // a vault-relative directory plus the vault's id, since the browser can never
-  // know this vault as `/Users/…` (utils/terminalStart.ts). Registered once,
-  // reading refs, because it is asked at the moment a shell is spawned — which
-  // is long after this ran.
-  const vaultIdRef = useRef<{ root: FileSystemDirectoryHandle; id: string | null } | null>(null);
-  /** The same id, for Settings — resolved when that panel opens, so a reader who
-   *  never opens Settings or a terminal never gets a .VaultAgent folder. */
-  const [settingsVaultId, setSettingsVaultId] = useState<string | null>(null);
-  useEffect(() => {
-    if (!showSettings || !rootHandle) return;
-    let alive = true;
-    void ensureVaultId(rootHandle, writeFileRef.current).then(id => { if (alive) setSettingsVaultId(id); });
-    return () => { alive = false; };
-  }, [showSettings, rootHandle]);
-  useEffect(() => {
-    setTerminalStartSource(async () => {
-      const root = rootHandleRef.current;
-      if (!root) return { vaultId: null, dir: '' };
-      // Minted on the first terminal in a vault, not on every vault open: a
-      // reader who never opens one never gets a .VaultAgent folder from this.
-      if (vaultIdRef.current?.root !== root) {
-        vaultIdRef.current = { root, id: await ensureVaultId(root, writeFileRef.current) };
-      }
-      const path = activeTabPathRef.current;
-      const file = path ? tabsRef.current.find(t => t.file.path === path)?.file : null;
-      // The Help guide and an unsaved pseudo-file have no folder in the vault.
-      const dir = file && !file.isHelp ? parentVaultPath(file.path) : '';
-      return { vaultId: vaultIdRef.current.id, dir };
-    });
-  }, []);
-
-  const agentDepsRef = useRef<AgentHostDeps | null>(null);
-  useLayoutEffect(() => {
-    agentDepsRef.current = {
-      vaultId: currentVaultId,
-      root: rootHandle,
-      fileTree,
-      tabs,
-      layout,
-      mainView,
-      stateCache: editorStates,
-      readFile,
-      readFileBytes,
-      readFileVersioned,
-      writeFileVersioned,
-      writeFile,
-      createFile,
-      createFolder,
-      updateTabContent,
-      afterWrite: (file, before, after) => {
-        // The tail of flushTab, for a file written with no tab to flush.
-        recordFileWritten(file.path);
-        if (tracksAssets(file)) queueReconcile(file, assetEmbeds(before), assetEmbeds(after));
-        rebuildGraphRef.current();
-        bumpSaveEpoch();
-      },
-      renameEntry: handleRenameFile,
-      moveEntry: handleMoveFile,
-      trashEntry: trashForAgent,
-      addTabQuietly,
-      setTabMode: changeTabMode,
-      showBeside: path => {
-        // A canvas only exists while the editor is on screen; the graph view
-        // unmounts every pane.
-        setMainView('editor');
-        setLayout(l => openInSidePane(l, path));
-      },
-      openFile: path => {
-        const node = collectFiles(fileTreeRef.current).find(f => f.path === path);
-        if (!node) return;
-        void handleFileClick(node);
-        setMainView('editor');
-      },
-      ask,
-      notify,
-    };
-  });
-  // The hosts themselves are built in the panel's lazy chunk from this getter.
-  const getAgentHostDeps = useCallback(() => agentDepsRef.current!, []);
-  const agentVault = useMemo(
-    () => (rootHandle ? { key: currentVaultId ?? rootHandle.name, name: rootHandle.name } : null),
-    [rootHandle, currentVaultId]);
-
-  useEffect(() => {
-    const report = () => announce('Reading works, but this browser could not save reading preferences or position.');
-    window.addEventListener('reading-persistence-unavailable', report);
-    return () => window.removeEventListener('reading-persistence-unavailable', report);
-  }, [announce]);
-
-  const readerEpochRef = useRef({ root: rootHandle, epoch: 0 });
-  if (readerEpochRef.current.root !== rootHandle) readerEpochRef.current = { root: rootHandle, epoch: readerEpochRef.current.epoch + 1 };
-  const readerIdentityCache = useRef(new Map<string, ReaderIdentity>());
-  const readerDeps = useRef({ readFileSnapshot, notify, announce, closeTab, reopenClosedTab });
-  useLayoutEffect(() => { readerDeps.current = { readFileSnapshot, notify, announce, closeTab, reopenClosedTab }; });
-  const readerIntegration = useMemo<ReaderIntegration>(() => {
-    const current = (token: ReaderToken) => {
-      if (invalidReaderTokens.current.has(`${token.documentId}|${token.byteGeneration}`)) return undefined;
-      if (token.vaultId !== currentVaultIdRef.current || token.vaultEpoch !== readerEpochRef.current.epoch) return undefined;
-      return tabsRef.current.find(t => t.id === token.documentId && t.representation.generation === token.byteGeneration);
-    };
-    const identityForTab = (tab: OpenTab): ReaderIdentity => {
-      const key = `${currentVaultIdRef.current}|${readerEpochRef.current.epoch}|${tab.id}|${tab.file.path}|${tab.representation.generation}`;
-      let identity = readerIdentityCache.current.get(key);
-      if (!identity) { identity = { vaultId: currentVaultIdRef.current ?? '', vaultEpoch: readerEpochRef.current.epoch, documentId: tab.id, byteGeneration: tab.representation.generation, path: tab.file.path, diskRev: tab.diskRev ?? 0, rawVersion: getBaseline(tab.id) }; readerIdentityCache.current.set(key, identity); }
-      return identity;
-    };
-    return { identityForTab,
-      async acquireSnapshot(identity, signal) { const tab = current(identity); if (!tab?.file.handle || tab.file.path !== identity.path) throw new DOMException('Reader changed', 'AbortError'); return readerDeps.current.readFileSnapshot(tab.file.handle as FileSystemFileHandle, signal); },
-      onReaderVersion(token, version) { const tab = current(token); if (tab) setBaseline(tab.id, version); },
-      onReaderStatus(token, status) { if(!current(token))return; setTabs(prev=>{
-        if(!current(token))return prev;
-        const tab=prev.find(t=>t.id===token.documentId&&t.representation.generation===token.byteGeneration);
-        return !tab||JSON.stringify(tab.readerStatus)===JSON.stringify(status)?prev:prev.map(t=>t===tab?{...t,readerStatus:status}:t);
-      }); },
-      onReaderCapabilities(token, caps) { if(!current(token))return; setTabs(prev=>{
-        if(!current(token))return prev;
-        const tab=prev.find(t=>t.id===token.documentId&&t.representation.generation===token.byteGeneration);
-        return !tab||JSON.stringify(tab.readerCapabilities)===JSON.stringify(caps)?prev:prev.map(t=>t===tab?{...t,readerCapabilities:caps}:t);
-      }); },
-      onReaderLocation(token, location) { const tab = current(token); if (!tab) return; const identity = identityForTab(tab); if (location.kind === 'epub') writeReaderViewState(identity, location.value); else writePdfTextViewState(identity, location.value); },
-      onReaderCommand(token, command) { const tab = current(token); if (!tab || tab.file.path !== activeTabPathRef.current) return;
-        if (['close-document','reopen-document','next-document','previous-document'].includes(command) && runReaderHostCommand(command)) return;
-        if (command === 'close-document') readerDeps.current.closeTab(tab.file.path);
-        else if (command === 'read-only-mode') readerDeps.current.announce('EPUB books are read-only. Reading appearance changes only this browser.');
-        else if (command === 'find') getReadingSurface(token)?.findReading?.();
-        else if (command === 'dismiss') closeContextMenu();
-        else if (command === 'reopen-document') void readerDeps.current.reopenClosedTab();
-        else if (command === 'next-document' || command === 'previous-document') { const paths=layoutRef.current.panes.flatMap(p=>p.paths);if(!paths.length)return;const index=paths.indexOf(tab.file.path);setLayout(l=>focusTab(l,paths[(index+(command==='next-document'?1:paths.length-1))%paths.length])); }
-      },
-      onNotify(message) { readerDeps.current.notify(message); },
-    };
-  }, []);
-
-  // Global keyboard shortcuts
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      // ⌘E from inside the agent panel is not about the note behind it — the
-      // reader is typing a message, and flipping the focused document's mode
-      // from there would be a change they cannot see happen. ⌘S and ⌘N stay
-      // app-wide (saving, a new note), and so does ⌘\; ⌘⇧X is below.
-      // The terminal likewise: there ⌘E is the shell's (and on Windows/Linux,
-      // Ctrl+E is readline's end-of-line).
-      const inSidePanel = e.target instanceof Element && !!e.target.closest('[data-agent-panel], [data-terminal]');
-      if (isCmdLetter(e, 's')) {
-        e.preventDefault();
-        flushTab(activeTabPathRef.current, true);
-      }
-      // Cmd+N — create new note in vault root. Through the same handler the
-      // tab strip's + uses, so the two cannot drift; it draws the app's own
-      // dialog and checks the vault itself, so there is nothing to gate here.
-      if (isCmdLetter(e, 'n')) {
-        e.preventDefault();
-        void handleNewNote();
-      }
-      // Cmd+E — toggle read/edit mode of the active tab
-      if (!inSidePanel && isCmdLetter(e, 'e')) {
-        e.preventDefault();
-        toggleTabMode(activeTabPathRef.current);
-      }
-      // Cmd+\ — collapse/expand the sidebar (Cmd+B is taken by bold)
-      if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
-        e.preventDefault();
-        setSidebarCollapsed(c => !c);
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [handleNewNote, flushTab, toggleTabMode]);
-
-  // ⌘⇧X — the AI agent panel. Chosen because nothing else claims it: ⌘⇧K is
-  // CodeMirror's deleteLine (and tldraw's link), ⌘⇧L/⌘⇧U/⌘⇧\ are CodeMirror's,
-  // ⌘⇧A/B/C/D/H/I/J/M/N/O/R/T/W are Chrome's, ⌘⇧E/P/S/Y/. are Edge's, ⌘⇧S/H/7/8
-  // tldraw's. In the CAPTURE phase so a focused editor or canvas never sees it.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey || e.key.toLowerCase() !== 'x') return;
-      if (!rootHandleRef.current) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.repeat) return;
-      setAgentOpenedByReader(true);
-      setAgentPanelOpen(o => !o);
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, []);
-
-  // ⌃` — the terminal, on every OS: VS Code's chord, and the one its users'
-  // fingers already know. ⌃ rather than ⌘ even on a Mac (⌘` is the OS's own
-  // window cycling). Capture phase like ⌘⇧X, so it also closes the dock from
-  // inside the shell, as in VS Code — xterm would otherwise send it as NUL.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.code !== 'Backquote') return;
-      if (!rootHandleRef.current) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.repeat) return;
-      toggleTerminal();
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, [toggleTerminal]);
-
-  // Auto-save is handled per-tab by scheduleSave/flushTab (see above), so edits
-  // to a background tab still persist even while another tab is active.
-
-  // Drag-to-resize sidebar
-  const startResize = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    isResizing.current = true;
-    setIsDraggingSidebar(true);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isResizing.current) return;
-      const newWidth = Math.max(180, Math.min(600, e.clientX));
-      setSidebarWidth(newWidth);
-    };
-
-    const onMouseUp = () => {
-      isResizing.current = false;
-      setIsDraggingSidebar(false);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  }, []);
-
-  // Drag-to-resize the agent panel: the handle sits on its LEFT edge, so the
-  // width is the distance from the pointer to the window's right edge.
-  const startAgentResize = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    let width = clampAgentWidth(window.innerWidth - e.clientX);
-
-    const onMouseMove = (ev: MouseEvent) => {
-      width = clampAgentWidth(window.innerWidth - ev.clientX);
-      setAgentPanelWidth(width);
-    };
-    const onMouseUp = () => {
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      // Once, at the end of the drag — not sixty writes a second.
-      localStorage.setItem('agentPanelWidth', String(width));
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  }, []);
-
-  // Welcome screen
   if (!rootHandle && !isLoading) {
     return (
-      <div className="welcome-screen">
-        <div className="welcome-inner">
-          <div className="welcome-icon">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-              <line x1="16" y1="13" x2="8" y2="13" />
-              <line x1="16" y1="17" x2="8" y2="17" />
-            </svg>
-          </div>
-          <h1 className="welcome-title">{APP_TITLE}</h1>
-          {/* A link named a vault this browser knows, but the grant has lapsed.
-              Browsers only let requestPermission ask from a user gesture, so
-              the link cannot open itself — this button is that gesture. */}
-          <p className="welcome-subtitle">
-            {linkedVault
-              ? <>This link opens <strong>{linkedVault.label}</strong>. Allow access to it to continue.</>
-              : 'Open a vault to start editing your notes.'}
-          </p>
-          <div style={{ display: 'flex', gap: '12px', marginTop: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
-            {linkedVault && (
-              <button className="welcome-btn" style={{ margin: 0 }} onClick={openLinkedVault}>
-                Open '{linkedVault.label}'
-              </button>
-            )}
-            <button
-              className="welcome-btn"
-              style={linkedVault
-                ? { margin: 0, background: 'var(--background-modifier-border)', color: 'var(--text-normal)' }
-                : { margin: 0 }}
-              onClick={pickDirectory}
-            >
-              Open Vault
-            </button>
-            {previousVault && (
-              <button
-                className="welcome-btn"
-                style={{ margin: 0, background: 'var(--background-modifier-border)', color: 'var(--text-normal)' }}
-                onClick={restoreVault}
-              >
-                Restore '{previousVault.name}'
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
+      <WelcomeScreen
+        linkedVault={linkedVault}
+        previousVault={previousVault}
+        onOpenLinkedVault={openLinkedVault}
+        onPickDirectory={pickDirectorySafely}
+        onRestoreVault={() => { void restoreVault().then(requeueAllAssets); }}
+      >
+        {dialogHost}
+        {updateNotice}
+      </WelcomeScreen>
     );
   }
 
-  if (isLoading) {
-    return (
-      <div className="welcome-screen">
-        <div className="welcome-inner">
-          <p className="welcome-subtitle">Loading vault...</p>
-        </div>
-      </div>
-    );
-  }
+  if (isLoading) return <LoadingScreen>{updateNotice}</LoadingScreen>;
 
   return (
     <div className="workspace">
@@ -4623,9 +525,11 @@ export default function App() {
         style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
       >
         <FileExplorer
+          readSnapshot={handleIO.file}
           rootHandle={rootHandle}
+          search={searchController}
           fileTree={fileTree}
-          onFileClick={handleFileClick}
+          onFileClick={openFromTree}
           onCreateFile={handleCreateFile}
           onCreateFolder={handleCreateFolder}
           onCollapse={collapseSidebar}
@@ -4643,7 +547,6 @@ export default function App() {
           onRenameFile={handleRenameFile}
           onImportFiles={importFiles}
           onOpenSearchResult={handleOpenSearchResult}
-          getOpenTabContent={getOpenTabContent}
         />
         <SidebarFooter
           vaultName={rootHandle?.name ?? ''}
@@ -4651,10 +554,11 @@ export default function App() {
           recentVaults={recentVaults}
           currentVaultId={currentVaultId}
           recentVaultLimit={recentVaultLimit}
-          onOpenRecentVault={openRecentVault}
+          onOpenRecentVault={openRecentVaultSafely}
           onForgetRecentVault={forgetRecentVault}
           onPinRecentVault={pinRecentVault}
-          onChangeVault={pickDirectory}
+          onChangeVault={pickDirectorySafely}
+          onRebuildIndex={rebuildIndex}
           graphOpen={mainView === 'graph'}
           onToggleGraph={toggleGraph}
           agentOpen={agentPanelOpen}
@@ -4670,9 +574,21 @@ export default function App() {
       </div>
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">
+        {currentVaultId && rootHandle && <RecoverySurface key={currentVaultId} vaultId={currentVaultId} activePath={activeTabPath} inspect={inspectRecovery} recover={recoverEntry} saveCopy={saveRecoveryCopy} status={announce} journal={recoveryJournal} />}
+        {indexProblem?.activation === searchActivation && (
+          <div className="disk-bar" role="alert">
+            <span className="disk-bar-message">{indexProblem.kind === 'permission' ? 'Vault access is needed to update the search index.' : 'Search index unavailable.'}</span>
+            <div className="disk-bar-actions"><button className="disk-bar-btn is-primary" onClick={() => { void retryIndex(); }}>Retry</button></div>
+          </div>
+        )}
         {mainView === 'graph' ? (
           <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
           <GraphView
+            key={`${searchActivation}:${sessionRestored ? currentVaultId : ''}`}
+            vaultKey={sessionRestored && currentVaultId
+              ? `vault:${currentVaultId}` : `activation:${searchActivation}`}
+            indexing={graphFreshness?.activation !== searchActivation}
+            updating={graphFreshness?.activation === searchActivation && graphFreshness.stale}
             nodes={graph.nodes}
             links={graph.links}
             activeFilePath={activeFile?.path || null}
@@ -4682,6 +598,8 @@ export default function App() {
           </Suspense>
         ) : (
           <EditorPane
+            contentOf={contentOf}
+            documentBuffers={documentBuffers}
             reading={readerIntegration}
             tabs={tabs}
             layout={layout}
@@ -4702,14 +620,19 @@ export default function App() {
             onPaneForward={paneForward}
             onToggleMode={toggleTabMode}
             onContentChange={updateTabContent}
+            onNativeCanvasReady={onNativeCanvasReady}
+            nativeCanvasHost={nativeCanvasHost}
+            attachCanvasSession={attachNativeCanvasSession}
             onDiskAction={handleDiskAction}
-            onFlushNow={flushTabNow}
+            onAnnotationPreflight={onAnnotationPreflight}
+            onPreparePdfPrint={preparePdfPrint}
             onRotatePdf={rotatePdf}
             onRetryRead={retryUnreadTab}
             onOpenNotebookSource={handleOpenNotebookSource}
             onExportNotebook={handleExportNotebook}
+            onUnsignedPdfCopy={handleUnsignedPdfCopy}
             onOpenNote={openNoteByName}
-            stateCache={editorStates}
+            markdownSessions={markdownSessions}
             getWikiLinkTargets={getWikiLinkTargets}
             onNotify={notify}
             onConfirm={ask}
@@ -4784,6 +707,7 @@ export default function App() {
         <TrashPanel
           onClose={() => setShowTrash(false)}
           onCrawl={listTrash}
+          onCopy={handleTrashCopy}
           onRestore={handleTrashRestore}
           onDelete={handleTrashDelete}
           onEmpty={handleTrashEmpty}
@@ -4798,21 +722,8 @@ export default function App() {
       {/* Last, so it sits over the settings panel as well as the workspace —
           and outside the editor, because the questions it asks are the file
           tree's (which is visible in the graph view too). */}
-      {dialog && (
-        <ConfirmDialog
-          questionId={dialog.id ?? 0}
-          title={dialog.title}
-          confirmLabel={dialog.confirmLabel}
-          danger={dialog.danger}
-          input={dialog.input}
-          altLabel={dialog.altLabel}
-          onAlt={dialog.onAlt}
-          onConfirm={dialog.onConfirm}
-          onCancel={dialog.onCancel}
-        >
-          {dialog.body}
-        </ConfirmDialog>
-      )}
+      {dialogHost}
+      <SaveNotices>{updateNotice}</SaveNotices>
     </div>
   );
 }

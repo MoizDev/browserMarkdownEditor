@@ -1,0 +1,13 @@
+diff --git a/src/App.tsx b/src/App.tsx
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1926,9 +1926,6 @@
+         const seed = pdfSeedsRef.current.get(id) ?? seedAtCall;
+         const seeded = seed ? await seed : null;
+         const expected = getBaseline(id) ?? baselineAtCall ?? seeded ?? null;
+-        if (__BME_BENCH__) {
+-          try { reportVault({ op: 'write', path, caller: 'flushTab' }); } catch { /* Measurement must not interrupt a write. */ }
+-        }
+         const result = await writeFileVersionedRef.current(handle, data, expected);
+         if (result.status !== 'written') {
+           // Nothing reached the disk, so the asset diff's baseline is still

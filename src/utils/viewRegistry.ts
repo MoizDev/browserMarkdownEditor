@@ -137,21 +137,40 @@ export interface CanvasApplyResult {
     created: string[];
     updated: string[];
     deleted: string[];
+    /** Authoritative post-commit projection of updated shapes that still exist. */
+    updatedShapes?: readonly ShapeSummary[];
     /** One message per op that was skipped, e.g. "op 3: no shape shape:abc". */
     errors: string[];
 }
 
-/** The agent's hands on a tldraw-based document (drawing, notebook, PDF annotate). */
+export interface CanvasShapeQuery {
+    page?: number;
+    offset?: number;
+    limit?: number;
+    revision?: number;
+}
+export interface CanvasShapePage {
+    shapes: ShapeSummary[];
+    total: number;
+    revision: number;
+    nextOffset?: number;
+    revisionChanged?: true;
+    sections?: readonly { readonly offset: number; readonly name: string; readonly index: number }[];
+}
+
+/** The agent's hands on a canvas document (drawing, notebook, PDF annotate). */
 export interface CanvasAgentOps {
     /** Every shape (or one page's), with full style. */
     shapes(page?: number): ShapeSummary[];
+    /** WB-D12: optional until the new board session supplies revision-fenced paging. */
+    shapePage?(query?: CanvasShapeQuery): CanvasShapePage;
     /** Apply ops as ONE undo step, saved exactly as a user edit is. A shape id
      *  may be written with or without its `shape:` prefix, and `$N` names the
      *  shape op N (1-based) of the same batch created — so one call can draw
      *  two boxes and the arrow between them. Page backdrops and locked shapes
      *  are refused per op. `errors` also carries `op N: note: …` lines for ops
      *  that applied with an adjustment (a point moved onto the page). */
-    apply(ops: CanvasOp[]): CanvasApplyResult;
+    apply(ops: CanvasOp[], guard?: { readonly signal?: AbortSignal; isCurrent(): boolean }): CanvasApplyResult | Promise<CanvasApplyResult>;
     /** 1-based page the user is on (default target for ops without `page`). */
     currentPage(): number;
 }
@@ -162,16 +181,38 @@ export interface TextChange {
     insert: string;
 }
 
+/** Bounds one live read or capture of a mounted native board. */
+export interface LiveJob {
+    readonly signal?: AbortSignal;
+    readonly deadlineMs: number;
+}
+
+/** A mounted NATIVE board (drawing, notebook or PDF ink) answers from its own live lease: the camera, inversion and
+ * source on screen now. `measured` is false until the pane has a viewport; the host then reads the App's last real
+ * view instead, so a hidden or unlaid pane is never described from a camera it does not have. */
+export interface NativeLiveView {
+    measured(): boolean;
+    describe(job: LiveJob): Promise<DrawingViewInfo | NotebookViewInfo | PdfViewInfo>;
+    /** The visible region at its live camera, long side ≤ maxSide. */
+    capture(maxSide: number, job: LiveJob): Promise<Blob>;
+    /** One 1-based page of a paged board, long side ≤ maxSide. */
+    renderPage(page: number, maxSide: number, job: LiveJob): Promise<Blob>;
+}
+
 export interface ViewReporter {
     kind: ViewKind;
     /** Where the user is, now. Cheap enough to call once per message. */
     describe(): ViewInfo | Promise<ViewInfo>;
+    /** Set on a mounted native board. The host reads it for the agent; the PDF/canvas readers never use the bare methods. */
+    live?: NativeLiveView;
     /** A PNG of what is on screen, long side ≤ maxSide px. Canvases and PDFs only. */
     capture?(maxSide: number): Promise<Blob | null>;
     /** PDF text of the given 1-based pages from the loaded document. */
-    pdfText?(pages: number[]): Promise<Array<{ page: number; text: string }>>;
+    pdfText?(pages: number[], signal?: AbortSignal): Promise<Array<{ page: number; text: string; quality?: 'partial'; warnings?: readonly string[] }>>;
     /** A PNG of one 1-based page (PDF / notebook), long side ≤ maxSide. */
     renderPage?(page: number, maxSide: number): Promise<Blob | null>;
+    /** The requested PDF page's actual paint capability, when the native renderer can prove it. */
+    renderPageWithInfo?(page: number, maxSide: number): Promise<{ png: Blob; emphasis?: import('../types/vaultAgent').ClosedPdfEmphasis }>;
     /** Markdown: dispatch changes into the live editor as one undoable
      *  transaction (`userEvent: 'input.agent'`, isolated in the history), in
      *  reading mode too. Offsets are into the CURRENT text. False if the view

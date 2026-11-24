@@ -1,0 +1,12 @@
+diff --git a/src/utils/graph.ts b/src/utils/graph.ts
+--- a/src/utils/graph.ts
++++ b/src/utils/graph.ts
+@@ -50,5 +50,6 @@ export function extractLinks(text: string): string[] {
+     const mdRegex = /\[[^\]]*\]\(([^)]+?\.md)\)/g;
+     while ((m = mdRegex.exec(text)) !== null) {
+-        const target = localMarkdownTarget(m[1]);
+-        if (target !== null) targets.push(target);
++        let target = m[1];
++        try { target = decodeURIComponent(target); } catch { /* keep raw */ }
++        targets.push(target);
+     }

@@ -27,6 +27,7 @@ import type {
 } from '../../shared/vaultAgentProtocol';
 import { CONNECTED_ONCE_KEY, getAgentUpdateNotice, setAgentUpdateNotice } from './agentUpdateNotice';
 import type { AgentUpdateNotice } from './agentUpdateNotice';
+import { removeStoredValue, writeStoredValue } from './storage';
 
 /** Long, because the FIRST probe waits on Chrome's Local Network Access
  *  prompt: a short timeout aborted it while the user was still reading the
@@ -182,10 +183,8 @@ export function hasConnectedBefore(): boolean {
 }
 
 function writeFlag(on: boolean): void {
-    try {
-        if (on) localStorage.setItem(CONNECTED_ONCE_KEY, '1');
-        else localStorage.removeItem(CONNECTED_ONCE_KEY);
-    } catch { /* storage blocked — the click is simply asked for again */ }
+    if (on) writeStoredValue(CONNECTED_ONCE_KEY, '1');
+    else removeStoredValue(CONNECTED_ONCE_KEY);
 }
 
 /**

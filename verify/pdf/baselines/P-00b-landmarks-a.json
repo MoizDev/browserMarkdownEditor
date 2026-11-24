@@ -1,0 +1,50 @@
+[
+  {
+    "fixture": "GEN-08",
+    "dpr": 1,
+    "surface": "original",
+    "sha256": "daa1aab040be8635bfe69d133efa3e46b44411c7eebff08e4f3221c3897db7b2"
+  },
+  {
+    "fixture": "GEN-08",
+    "dpr": 1,
+    "surface": "text",
+    "sha256": "7a8479d074e519ef4c07ef1bae93fe47d2001942efc55a0fa9799b1a3559e734"
+  },
+  {
+    "fixture": "GEN-11",
+    "dpr": 1,
+    "surface": "original",
+    "sha256": "c10a90ac4d6c88aa5198df07187fb6bd502802a08be8ffe437f807de524f1a94"
+  },
+  {
+    "fixture": "GEN-11",
+    "dpr": 1,
+    "surface": "text",
+    "sha256": "5a609586e4df67fd8f1916db53a532135296a7065ce5b5fd383f512f8e24038e"
+  },
+  {
+    "fixture": "GEN-08",
+    "dpr": 2,
+    "surface": "original",
+    "sha256": "9c774712b8de58abeb58c4ce97216819667971f551f03f1fa2f01063396a2860"
+  },
+  {
+    "fixture": "GEN-08",
+    "dpr": 2,
+    "surface": "text",
+    "sha256": "b512a1f7e23710be45472e062dbd1f6a100642f76786a6751d85cd325bcfd4fb"
+  },
+  {
+    "fixture": "GEN-11",
+    "dpr": 2,
+    "surface": "original",
+    "sha256": "6fa8b25333ea82037c26c1f884eb1c9c20cd3880d1f54a954d08cdcb36b47e60"
+  },
+  {
+    "fixture": "GEN-11",
+    "dpr": 2,
+    "surface": "text",
+    "sha256": "3d1596a1e878f43908a4715ac9cad6ee3a5a6ba2a4fe71e5ee62c2a6d11386eb"
+  }
+]

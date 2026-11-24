@@ -19,14 +19,29 @@ import type { VectorOp } from './pdfVector';
  * `vector` empty and `raster` absent is a page with nothing on it — the builder
  * leaves such a page untouched rather than re-encoding it.
  */
+export interface PdfDisplayGeometry {
+    width: number;
+    height: number;
+    /** Inverse of the rendering engine's scale-1 viewport, display to PDF user space. */
+    toUserSpace: [number, number, number, number, number, number];
+    rotation: number;
+    userUnit: number;
+    pageIndex: number;
+    sourceFingerprint: string;
+    engine: string;
+}
+
 export interface PageOverlay {
+    geometry?: PdfDisplayGeometry;
     /** Paths in page-local SVG space. See pdfVector.ts. */
     vector?: VectorOp[];
     /** Transparent page-sized PNG for whatever could not become a path. */
     raster?: Uint8Array;
+    /** Transparent sheets, ordered from bottom to top. */
+    layers?: PageOverlay[];
 }
 
 /** True when this overlay would put nothing on the page. */
 export function isEmptyOverlay(overlay: PageOverlay | undefined): boolean {
-    return !overlay || (!overlay.vector?.length && !overlay.raster?.length);
+    return !overlay || (!overlay.vector?.length && !overlay.raster?.length && !overlay.layers?.some(layer => !isEmptyOverlay(layer)));
 }

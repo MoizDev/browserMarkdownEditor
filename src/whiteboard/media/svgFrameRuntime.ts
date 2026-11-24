@@ -1,0 +1,41 @@
+import { matchingIdentity, validBoardIdentity } from '../workers/protocol';
+
+const CHUNK = 192 * 1024;
+const LIMIT = 5 * 1024 * 1024;
+type Processor = (blob: Blob, size: unknown) => Promise<unknown>;
+
+export function runSvgFrame(process: Processor): void {
+    const initialize = (event: MessageEvent) => {
+        if (event.source !== parent || event.ports.length !== 1) return;
+        const init = event.data as { v?: unknown; token?: unknown; identity?: unknown } | null;
+        if (!init || init.v !== 1 || typeof init.token !== 'string' || !/^[0-9a-f]{32}$/.test(init.token) || !validBoardIdentity(init.identity)) return;
+        removeEventListener('message', initialize);
+        const token = init.token, identity = init.identity;
+        const port = event.ports[0];
+        let expected = 0, total = 0, done = false;
+        const parts: ArrayBuffer[] = [];
+        const send = (data: Record<string, unknown>, transfer: Transferable[] = []) => port.postMessage({ v: 1, token, identity, ...data }, transfer);
+        port.addEventListener('message', (message: MessageEvent<unknown>) => {
+            if (done || !message.data || typeof message.data !== 'object') return;
+            const data = message.data as { v?: unknown; token?: unknown; identity?: unknown; type?: unknown; seq?: unknown; bytes?: unknown; size?: unknown };
+            if (data.v !== 1 || data.token !== token || !validBoardIdentity(data.identity) || !matchingIdentity(data.identity, identity)) return;
+            if (data.type === 'chunk') {
+                if (data.seq !== expected || !(data.bytes instanceof ArrayBuffer) || data.bytes.byteLength > CHUNK || data.bytes.byteLength > LIMIT - total) {
+                    done = true; send({ type: 'error', message: 'Invalid SVG transfer' }); return;
+                }
+                parts.push(data.bytes); total += data.bytes.byteLength;
+                send({ type: 'ack', seq: expected++ });
+            } else if (data.type === 'finish' && data.seq === expected) {
+                done = true;
+                const blob = new Blob(parts, { type: 'image/svg+xml' });
+                void process(blob, data.size).then(result => {
+                    try { send({ type: 'result', result }, result instanceof ImageBitmap ? [result] : []); }
+                    catch { if (result instanceof ImageBitmap) result.close(); }
+                }, () => send({ type: 'error', message: 'SVG could not be read' }));
+            }
+        });
+        port.start();
+        send({ type: 'ready' });
+    };
+    addEventListener('message', initialize);
+}

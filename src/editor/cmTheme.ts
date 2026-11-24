@@ -4,120 +4,200 @@ import { tags } from '@lezer/highlight';
 import type { Extension } from '@codemirror/state';
 
 /**
- * The note's search panel (⌘F — editor/noteSearch.ts), shared by both themes.
+ * The note's ⌘F box (editor/findPanel.ts), shared by both themes and drawn from
+ * the app's own variables — the same card as the PDF pane's find bar
+ * (components/PdfFindBar.css), so the two finds look like one feature.
+ * Matches take the marker yellow the vault search's snippets and its jump
+ * flash already use.
  *
- * Left to CodeMirror's base theme it was a grey form bolted under the note:
- * gradient buttons at 70% type, 1px #888 borders, a browser-blue focus ring,
- * white native checkboxes on the dark theme and cyan / magenta matches — hardly
- * seen while it only opened in Edit mode, and in front of every reader once ⌘F
- * reached Reading mode too. Drawn instead from the app's own variables, after
- * the sidebar's search box (`.search-input` in index.css), so one object serves
- * both themes; matches take the marker yellow the vault search's snippets and
- * its jump flash already use.
- *
- * Selectors carry `.cm-panel.cm-search` wherever the base theme's own rule does
- * (`& input, & button, & label`, `[name=close]`): a bare `.cm-button` loses to
- * those on specificity, and only ties go to a theme over a base theme.
+ * The box floats. CodeMirror's top panel container is `position: sticky` at
+ * the top of the editor; with the box absolutely placed inside it, the
+ * container is 0px tall, so the note keeps its full height and the box stays
+ * in the corner however far it scrolls. Its border and fill go, or a 0px
+ * container still draws a 1px rule across the note.
  */
 const searchPanelStyles = {
     '.cm-panels': {
-        backgroundColor: 'var(--background-secondary)',
+        backgroundColor: 'transparent',
         color: 'var(--text-normal)',
     },
     '.cm-panels.cm-panels-top': {
-        borderBottom: '1px solid var(--background-modifier-border)',
+        borderBottom: 'none',
     },
-    '.cm-panels.cm-panels-bottom': {
-        borderTop: '1px solid var(--background-modifier-border)',
-    },
-    '.cm-panel.cm-search': {
-        padding: '5px 44px 5px 12px',
+    '.cm-panel.bme-find': {
+        position: 'absolute',
+        top: '12px',
+        // Clear of the note's 6px scrollbar.
+        right: '18px',
+        boxSizing: 'border-box',
+        width: 'min(440px, calc(100% - 36px))',
+        padding: '6px',
+        border: '1px solid var(--background-modifier-border)',
+        borderRadius: '8px',
+        backgroundColor: 'var(--background-primary)',
+        color: 'var(--text-normal)',
+        boxShadow: '0 4px 18px #0003',
         fontFamily: 'var(--font-ui)',
-        fontSize: 'var(--nav-item-size)',
+        fontSize: '12px',
+        lineHeight: '1.4',
     },
-    '.cm-panel.cm-search input, .cm-panel.cm-search button, .cm-panel.cm-search label': {
-        margin: '3px 6px 3px 0',
-    },
-    '.cm-panel.cm-search .cm-textfield': {
-        boxSizing: 'border-box',
-        width: '220px',
-        height: '26px',
-        padding: '0 8px',
-        fontFamily: 'inherit',
-        fontSize: 'inherit',
-        color: 'var(--text-normal)',
-        backgroundColor: 'var(--background-primary)',
-        border: '1px solid var(--background-modifier-border)',
-        borderRadius: 'var(--radius-s)',
-        outline: 'none',
-        transition: 'border-color 0.15s',
-    },
-    '.cm-panel.cm-search .cm-textfield:focus': {
-        borderColor: 'var(--interactive-accent)',
-    },
-    '.cm-panel.cm-search .cm-textfield::placeholder': {
-        color: 'var(--text-faint)',
-    },
-    '.cm-panel.cm-search .cm-button': {
-        boxSizing: 'border-box',
-        height: '26px',
-        padding: '0 10px',
-        fontFamily: 'inherit',
-        fontSize: 'inherit',
-        color: 'var(--text-normal)',
-        backgroundColor: 'var(--background-primary)',
-        backgroundImage: 'none',
-        border: '1px solid var(--background-modifier-border)',
-        borderRadius: 'var(--radius-s)',
-        cursor: 'pointer',
-    },
-    '.cm-panel.cm-search .cm-button:hover, .cm-panel.cm-search .cm-button:active': {
-        backgroundColor: 'var(--background-modifier-hover)',
-        backgroundImage: 'none',
-    },
-    '.cm-panel.cm-search button:focus-visible': {
-        outline: '1px solid var(--interactive-accent)',
-        outlineOffset: '-1px',
-    },
-    // As tall as a button and centred on it: left inline, a label's text sat
-    // on its own baseline, 2px above the buttons' (measured in a screenshot).
-    // The gap before each option sits on the label BEFORE it, not on the
-    // checkbox: in a narrow pane the options wrap onto their own row, and a
-    // left margin there left it 4px right of the fields above (measured).
-    '.cm-panel.cm-search label': {
-        display: 'inline-flex',
+    '.bme-find-row': {
+        display: 'flex',
         alignItems: 'center',
-        height: '26px',
-        margin: '3px 10px 3px 0',
-        verticalAlign: 'middle',
-        fontSize: 'inherit',
-        color: 'var(--text-muted)',
-        cursor: 'pointer',
+        gap: '4px',
     },
-    '.cm-panel.cm-search input[type=checkbox]': {
-        margin: '0 5px 0 0',
-        accentColor: 'var(--interactive-accent)',
-        cursor: 'pointer',
+    '.bme-find-replace': {
+        marginTop: '5px',
+        // Under the field, past the disclosure's column.
+        paddingLeft: '24px',
     },
-    // The buttons' ring, not Chrome's default blue one touching the label.
-    '.cm-panel.cm-search input[type=checkbox]:focus-visible': {
-        outline: '1px solid var(--interactive-accent)',
+    '.bme-find-row[hidden]': {
+        display: 'none',
+    },
+    // The field and its three option toggles read as one control, the toggles
+    // sitting inside its right edge.
+    '.bme-find-fieldbox': {
+        flex: '1',
+        minWidth: '60px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '1px',
+        height: '28px',
+        boxSizing: 'border-box',
+        padding: '0 2px 0 0',
+        border: '1px solid var(--background-modifier-border)',
+        borderRadius: 'var(--radius-s)',
+        backgroundColor: 'var(--background-secondary)',
+    },
+    '.bme-find-fieldbox:focus-within': {
+        outline: '2px solid var(--interactive-accent)',
         outlineOffset: '1px',
     },
-    '.cm-panel.cm-search [name=close]': {
-        top: '8px',
-        right: '10px',
-        width: '26px',
+    '.bme-find-field': {
+        flex: '1',
+        minWidth: '0',
+        width: '0',
         height: '26px',
-        fontSize: '18px',
-        lineHeight: '24px',
-        color: 'var(--text-muted)',
+        boxSizing: 'border-box',
+        margin: '0',
+        padding: '0 7px',
+        border: 'none',
+        background: 'transparent',
+        color: 'var(--text-normal)',
+        font: 'inherit',
+        outline: 'none',
+    },
+    '.bme-find-replace .bme-find-field': {
+        height: '28px',
+        border: '1px solid var(--background-modifier-border)',
         borderRadius: 'var(--radius-s)',
+        backgroundColor: 'var(--background-secondary)',
+    },
+    '.bme-find-replace .bme-find-field:focus': {
+        outline: '2px solid var(--interactive-accent)',
+        outlineOffset: '1px',
+    },
+    '.bme-find-field::placeholder': {
+        color: 'var(--text-faint)',
+    },
+    '.bme-find-toggle': {
+        flex: 'none',
+        width: '22px',
+        height: '20px',
+        margin: '0',
+        padding: '0',
+        border: '1px solid transparent',
+        borderRadius: '3px',
+        background: 'transparent',
+        color: 'var(--text-muted)',
+        fontFamily: 'var(--font-monospace, ui-monospace, monospace)',
+        fontSize: '11px',
+        lineHeight: '18px',
         cursor: 'pointer',
     },
-    '.cm-panel.cm-search [name=close]:hover': {
+    // "Whole word" is ab with a bar under it, as in most editors.
+    '.bme-find-toggle[name=word]': {
+        textDecoration: 'underline',
+        textUnderlineOffset: '2px',
+    },
+    '.bme-find-toggle:hover': {
         color: 'var(--text-normal)',
         backgroundColor: 'var(--background-modifier-hover)',
+    },
+    '.bme-find-toggle[aria-pressed=true]': {
+        color: 'var(--text-normal)',
+        borderColor: 'var(--interactive-accent)',
+        backgroundColor: 'color-mix(in srgb, var(--interactive-accent) 22%, transparent)',
+    },
+    // A floor under the count so the field does not shift as "9 of 15"
+    // becomes "10 of 15" while stepping; centred in that slot.
+    '.bme-find-status': {
+        flex: '0 1 auto',
+        minWidth: '58px',
+        maxWidth: '110px',
+        boxSizing: 'border-box',
+        textAlign: 'center',
+        padding: '0 4px',
+        color: 'var(--text-muted)',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        fontVariantNumeric: 'tabular-nums',
+    },
+    '.bme-find-status:empty': {
+        display: 'none',
+    },
+    '.bme-find-button': {
+        flex: 'none',
+        width: '25px',
+        height: '28px',
+        margin: '0',
+        padding: '0',
+        border: '0',
+        borderRadius: 'var(--radius-s)',
+        background: 'transparent',
+        color: 'var(--text-normal)',
+        font: 'inherit',
+        fontSize: '19px',
+        lineHeight: '26px',
+        cursor: 'pointer',
+    },
+    '.bme-find-button:hover:not(:disabled)': {
+        backgroundColor: 'var(--background-modifier-hover)',
+    },
+    '.bme-find-button:disabled': {
+        color: 'var(--text-faint)',
+        cursor: 'default',
+    },
+    '.bme-find-disclosure': {
+        width: '20px',
+        color: 'var(--text-muted)',
+        transition: 'transform 0.12s',
+    },
+    '.bme-find-disclosure[hidden]': {
+        display: 'none',
+    },
+    '.bme-find-disclosure.is-open': {
+        transform: 'rotate(90deg)',
+    },
+    '.bme-find-text-button': {
+        flex: 'none',
+        height: '28px',
+        margin: '0',
+        padding: '0 9px',
+        border: '1px solid var(--background-modifier-border)',
+        borderRadius: 'var(--radius-s)',
+        background: 'var(--background-primary)',
+        color: 'var(--text-normal)',
+        font: 'inherit',
+        cursor: 'pointer',
+    },
+    '.bme-find-text-button:hover': {
+        backgroundColor: 'var(--background-modifier-hover)',
+    },
+    '.bme-find button:focus-visible': {
+        outline: '2px solid var(--interactive-accent)',
+        outlineOffset: '-1px',
     },
     '.cm-searchMatch': {
         backgroundColor: 'var(--text-highlight-bg)',
@@ -198,7 +278,7 @@ export const obsidianDarkTheme: Extension = EditorView.theme({
         background: 'rgba(255,255,255,0.18)',
     },
     ...searchPanelStyles,
-    // Native form controls (the panel's checkboxes) drawn for a dark page.
+    // The box's fields drawn for a dark page (caret, autofill, scrollbars).
     '.cm-panels': { ...searchPanelStyles['.cm-panels'], colorScheme: 'dark' },
 }, { dark: true });
 

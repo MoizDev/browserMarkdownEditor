@@ -1,0 +1,11 @@
+diff --git a/src/utils/pdfTextLayerSelection.ts b/src/utils/pdfTextLayerSelection.ts
+--- a/src/utils/pdfTextLayerSelection.ts
++++ b/src/utils/pdfTextLayerSelection.ts
+@@ -122,7 +122,6 @@ export function bindPdfTextLayerSelection(root: HTMLElement): () => void {
+         range.setEnd(last, last.childNodes.length);
+         selection.addRange(range);
+     };
+-    root.addEventListener('pointerdown', pointerDown);
+     root.addEventListener('pointermove', pointerMove);
+     root.addEventListener('pointerup', pointerEnd);
+     root.addEventListener('pointercancel', pointerEnd);

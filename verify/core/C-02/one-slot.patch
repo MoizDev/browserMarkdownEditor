@@ -1,0 +1,11 @@
+--- a/src/context/FileSystemContext.tsx
++++ b/src/context/FileSystemContext.tsx
+@@ -732,7 +732,7 @@
+    walk is pure IO — the browser's file thread does the work — so this is a
+    queue depth rather than parallelism; serial, it was a chain as long as the
+    vault has folders, and the sidebar said "Loading vault…" for the sum of it. */
+-const WALK_CONCURRENCY = 12;
++const WALK_CONCURRENCY = 1;
+ 
+ /** The watcher's polling cadence — see FileSystemProvider's watcher effect. */
+ const POLL_THROTTLE_MS = 3000;

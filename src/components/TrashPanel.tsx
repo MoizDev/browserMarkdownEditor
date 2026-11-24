@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FileText, FolderIcon, RotateCcw, Trash2 } from './icons';
+import { FileText, FolderIcon, PenTool, RotateCcw, Trash2 } from './icons';
 import { dropTrashSubtree, formatDeletedAt, formatTrashSize } from '../utils/trash';
-import { isCanvasFile, isImageFile } from '../utils/fileTypes';
+import { isCanvasFile, isDrawingFile, isNativeDrawingFile, isImageFile } from '../utils/fileTypes';
 import { isTextFile } from '../utils/vaultSearch';
 import { ASSETS_DIR } from '../utils/assets';
 import type { TrashItem, TrashRestoreResult } from '../types';
@@ -85,6 +85,8 @@ interface TrashPanelProps {
     /** Put one item back. Already includes App's confirmations and its
      *  in-flight guard — the panel only reacts to the outcome. */
     onRestore: (item: TrashItem) => Promise<TrashRestoreResult>;
+    /** Copy without consuming the backup or replacing a live file. */
+    onCopy: (item: TrashItem) => Promise<void>;
     /** Erase one item for good; false if nothing happened. */
     onDelete: (item: TrashItem) => Promise<boolean>;
     /** Erase every .Garbage in the vault; false if nothing happened. */
@@ -113,7 +115,7 @@ interface TrashPanelProps {
  * ConfirmDialog), so `onRestore`/`onDelete`/`onEmpty` have already asked by the
  * time they resolve. The panel draws no dialogs of its own.
  */
-export default function TrashPanel({ onClose, onCrawl, onRestore, onDelete, onEmpty, onReadText, onReadFile }: TrashPanelProps) {
+export default function TrashPanel({ onClose, onCrawl, onRestore, onCopy, onDelete, onEmpty, onReadText, onReadFile }: TrashPanelProps) {
     const panelRef = useRef<HTMLDivElement | null>(null);
     /** null while the crawl is still walking the vault. */
     const [items, setItems] = useState<TrashItem[] | null>(null);
@@ -305,6 +307,8 @@ export default function TrashPanel({ onClose, onCrawl, onRestore, onDelete, onEm
         if (result.status === 'ok') forget(item, result.displaced);
     }), [runExclusive, onRestore, forget]);
 
+    const copy = useCallback((item: TrashItem) => void runExclusive(() => onCopy(item)), [runExclusive, onCopy]);
+
     const erase = useCallback((item: TrashItem) => void runExclusive(async () => {
         if (await onDelete(item)) forget(item);
     }), [runExclusive, onDelete, forget]);
@@ -380,12 +384,21 @@ export default function TrashPanel({ onClose, onCrawl, onRestore, onDelete, onEm
                 onKeyDown={rowKeyHandler(activate)}
             >
                 <span className={`tree-item-icon ${item.kind === 'directory' ? 'folder-icon' : 'file-icon'}`}>
-                    {item.kind === 'directory' ? <FolderIcon size={14} /> : <FileText size={14} />}
+                    {item.kind === 'directory' ? <FolderIcon size={14} />
+                        : isDrawingFile(item.name) || isNativeDrawingFile(item.name) ? <PenTool size={14} />
+                            : <FileText size={14} />}
                 </span>
                 <span className="trash-row-name">{item.name}</span>
                 <span className="trash-row-dir">{restoreLabel(item)}</span>
                 <span className="trash-row-time">{formatDeletedAt(item.deletedAt)}</span>
                 <span className="tree-item-actions">
+                    {item.kind === 'file' && item.origin === 'trashed' && <button
+                        className="tree-action-btn"
+                        data-tooltip="Restore a copy without removing this backup"
+                        aria-label="Restore a copy"
+                        disabled={busy}
+                        onClick={(e) => { e.stopPropagation(); copy(item); }}
+                    ><FileText size={13} /></button>}
                     <button
                         className="tree-action-btn"
                         data-tooltip="Put back"

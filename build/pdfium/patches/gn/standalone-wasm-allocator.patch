@@ -1,0 +1,10 @@
+--- a/toolchain/wasm/BUILD.gn
++++ b/toolchain/wasm/BUILD.gn
+@@ -37,7 +37,6 @@
+     use_debug_fission = false
+     clang_use_chrome_plugins = false
+     clang_use_unsafe_buffers_plugin = false
+-    use_allocator_shim = false
+     is_component_build = false
+ 
+     # We do not support clang profiling in the WASM toolchains.

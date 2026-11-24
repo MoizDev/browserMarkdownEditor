@@ -91,8 +91,18 @@ export function createBoardRecoveryCapture(options: {
         const retainedMedia: RecoveryMediaAsset[] = [], mediaRecords: MediaEntry[] = [], mediaRefs: string[] = [];
         for (const [id, hold] of held) {
             const source = options.mediaAsset(id) ?? hold.asset;
-            if (!source) throw new Error(`Recovery media bytes unavailable for ${id}`);
             const path = options.mediaPath(id) ?? hold.path;
+            if (!source) {
+                // A PDF embeds its pictures, and its open refuses one that is missing, so a PDF copy always has them.
+                if (options.representation === 'pdf-ink') throw new Error(`Recovery media bytes unavailable for ${id}`);
+                // A picture whose file was not in `.Assets` when the board opened (moved without its folder, not yet
+                // synced, deleted by hand) has no bytes to hold. Its reference is in the baseline and the delta exactly as
+                // the file has it, so a recovered board names it as before and shows it again once the file is back; only
+                // the bytes are left out, with their metadata row, which materializing pairs with them. Refusing here
+                // closed the board on its first stroke ("Recovery media bytes unavailable") and lost every stroke after.
+                if (path) { hold.path = path; mediaRefs.push(path); }
+                continue;
+            }
             if (!path && options.representation !== 'pdf-ink') throw new Error(`Recovery media path unavailable for ${id}`);
             const asset = copyAsset(id, source);
             hold.asset = asset; hold.path = path; retainedMedia.push(asset); if (path) mediaRefs.push(path);

@@ -78,8 +78,23 @@ export function PagedBar({ dir, t, settings, toggles, page }: PagedBarProps) {
         const onPointerDown = (event: PointerEvent) => {
             if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
         };
+        // Tab past the last control closes it: left open, the keyboard was in the tool bar with this dialog still over the page
+        // (measured: eight Tabs from the popover, focus in the board toolbar, popover still shown). Only Tab: a control in
+        // here hands the keyboard to the board when it is used, and closing on that shut the popover on every Invert click.
+        const bar = root.current;
+        let tabbed = false;
+        const onKeyDown = (event: KeyboardEvent) => { tabbed = event.key === 'Tab'; };
+        const onFocusOut = (event: FocusEvent) => {
+            if (tabbed && event.relatedTarget instanceof Node && !bar?.contains(event.relatedTarget)) setOpen(false);
+            tabbed = false;
+        };
         document.addEventListener('pointerdown', onPointerDown);
-        return () => { removeEscape(); document.removeEventListener('pointerdown', onPointerDown); };
+        bar?.addEventListener('keydown', onKeyDown);
+        bar?.addEventListener('focusout', onFocusOut);
+        return () => {
+            removeEscape(); document.removeEventListener('pointerdown', onPointerDown);
+            bar?.removeEventListener('keydown', onKeyDown); bar?.removeEventListener('focusout', onFocusOut);
+        };
     }, [open, close]);
     return <div className="board-paper-collapse" ref={root}>
         <div ref={row} className="board-paper-controls board-chrome-tool-row" role="toolbar" dir={dir} aria-label={t('paper.name')}>

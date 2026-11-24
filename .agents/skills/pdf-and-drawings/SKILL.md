@@ -166,8 +166,22 @@ come back to either.
   (marked `%local-vault-pdf/v1;rotation;base=N`) is REPLACED, not stacked: four turns restore the exact original
   bytes. The planner runs the usual role/write-safety gates; a fresh writer verifies (exact prefix, section shape,
   pdf-lib vs. our reader page by page, PDFium count and a sample of sizes/angles) before App's versioned write.
-  Annotated PDFs are refused (the ink rebuild from the pristine would undo a turn). Never decode or hash streams to
-  "prove" preservation again: the old inventory took ~9s on a scan and refused 8 of 11 real files.
+  Never decode or hash streams to "prove" preservation again: the old inventory took ~9s on a scan and refused 8 of
+  11 real files. A notebook's export turns like a plain PDF (its pointer is untouched; re-export asks to replace).
+- **An annotated PDF turns with its marks** (`pdf/writing/inkRotation.ts`), as ONE appended section
+  (`%local-vault-pdf/v1;ink-rotation;base=N`) redefining the turned page dicts AND the stream objects of
+  `original.pdf` (the pristine, turned by `planRotation` over its own bytes), `board.json` and `.vault-write-mark`
+  (new write id, sealed over the whole file). The stamped ink is in user space, so `/Rotate` turns it with the page:
+  nothing is re-stamped; the next save rebuilds from the turned pristine as always. Every turn is computed FROM THE
+  BASE (the prefix before our section) with each page's total quarter turn, so marks go through one transform and
+  four turns drop the section (exact original bytes). The board is spliced record by record (`inkBoardTurn.ts`):
+  only page-root `x`/`y`/`rot` and every node's `b` change, by exact quarter-turn maps (`quarterTurn.ts`: values
+  snapped once onto a grid where `side − v` is exact, ≤ 1 ulp of the page size); the HOST record gets PDFium's
+  geometry of the turned pristine (what `inkHost.ts` validHost compares) and swapped `migration.previousFrames`.
+  Refused: opaque nodes on a turned page (`newer-annotations`), another geometry engine (`other-engine`), a foreign
+  write mark (`foreign-change`), Classic annotations (`legacy-annotations`; converted-but-unsaved asks for one change).
+  The verifier re-inspects the result as acquisition will and recomputes board and pristine byte for byte. App
+  saves pending ink first (`saveInkBeforeTurn`), and a retained Annotate owner is replaced (history starts afresh).
 - A turn shows at the press (`utils/pdfRotationStandIn.ts`): the view draws its mirrored tiles turned into the turned
   layout (a whole-page thumbnail fills what was off screen), writes the position the turned view opens on, and holds
   its camera. App coalesces presses on the tab's chain and adopts the bytes with a new byte generation (no `diskRev`

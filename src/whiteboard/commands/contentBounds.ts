@@ -36,11 +36,13 @@ export async function contentBounds(runtime: BoardRuntime, ids: readonly NodeId[
         if ((i & 255) === 255) await options.cooperate();
     }
     const unresolved: NodeId[] = [];
+    // One publication for every miss (ensureExactBoundsMany): one per node restarted the viewer's paint per node.
+    options.fence();
+    const exact = misses.length ? await scene.ensureExactBoundsMany(misses, options.signal) : null;
+    options.fence();
     for (const id of misses) {
-        options.fence();
-        const exact = await scene.ensureExactBounds(id, options.signal);
-        options.fence();
-        if (exact?.quality === BoundsQuality.Exact && exact.ink) take(exact.ink); else unresolved.push(id);
+        const bounds = exact?.get(id);
+        if (bounds?.quality === BoundsQuality.Exact && bounds.ink) take(bounds.ink); else unresolved.push(id);
     }
     if (unresolved.length) {
         const scope = await acquireBoardGeometryScope(runtime, unresolved, { signal: options.signal, cooperate: options.cooperate,

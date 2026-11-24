@@ -92,6 +92,8 @@ export interface SceneSpatial {
     readonly layout: Readonly<PageStack> | null;
     worldBounds(id: NodeId): SceneBounds | null;
     ensureExactBounds(id: NodeId, signal?: AbortSignal): Promise<SceneBounds | null>;
+    /** Exact bounds for many nodes with one scene publication (see SessionScene.ensureExactBoundsMany). */
+    ensureExactBoundsMany(ids: readonly NodeId[], signal?: AbortSignal): Promise<ReadonlyMap<NodeId, SceneBounds | null>>;
     query(options: SceneQueryOptions, output?: QueryBuffer, visitor?: NearestVisitor): SpatialQuery;
     /** Adapter for GE-3 pick: resume(deadline/maxVisits, visit(ref)), same generation guards. */
     spatialCursor(options: SceneQueryOptions): SpatialCursor;

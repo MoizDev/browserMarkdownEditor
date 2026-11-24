@@ -140,6 +140,7 @@ export const attachView: AttachView = options => {
         worldBounds: id => runtime.scene?.worldBounds(id) ?? (options.session.doc.nodes.has(id)
             ? { revision: options.session.doc.rev, quality: BoundsQuality.Pending, ink: null, selectable: null } : null),
         ensureExactBounds: async (id, signal) => (await runtime.ready).ensureExactBounds(id, signal),
+        ensureExactBoundsMany: async (ids, signal) => (await runtime.ready).ensureExactBoundsMany(ids, signal),
         query(...args) { if (!runtime.scene) throw new Error('Scene is still loading'); return runtime.scene.query(...args); },
         spatialCursor(...args) { if (!runtime.scene) throw new Error('Scene is still loading'); return runtime.scene.spatialCursor(...args); },
         pin() { if (!runtime.scene) throw new Error('Scene is still loading'); return runtime.scene.pin(); },

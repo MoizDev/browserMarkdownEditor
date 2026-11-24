@@ -24,6 +24,10 @@ import type { NearestVisitor, QueryBuffer, SpatialQuery } from './query';
 import type { SceneBounds, ScenePaintBinding, ScenePaintRequest, SceneQueryOptions, SceneSnapshot, SceneSpatial } from './types';
 import { yieldToHost } from '../../platform/yieldToHost';
 
+/** Exact-bounds realisations in flight at once (ensureExactBoundsMany): enough to keep the geometry worker's queue fed across
+ * its round trips; each waits on the worker, so more would only queue there. */
+const EXACT_BOUNDS_CONCURRENCY = 8;
+
 export interface SessionSceneOptions {
     readonly doc: BoardDoc;
     readonly token: RenderToken;
@@ -220,6 +224,45 @@ export class SessionScene implements SceneSpatial {
         this.serial++; this.options.invalidate();
         while (!this.ready) { signal?.throwIfAborted(); this.controller.signal.throwIfAborted(); this.step(16, performance.now() + 3); await cooperate(); }
         return this.worldBounds(id);
+    }
+    /** Exact bounds for many nodes, published once. The geometry is realised a few at a time and the scene steps to ONE
+     * publication for them all: a node whose geometry changed meanwhile keeps the bounds it has (its own invalidation publishes).
+     * One ensureExactBounds per node published once per node, and every publication restarted the viewer's paint: opening an old
+     * drawing of 5,640 pen strokes (no exact bounds yet) fitted its camera through 5,643 publications, 5,624 dropped paint frames
+     * and 29,413 geometry builds, 37 s before the first complete picture (CfT 157, M4 Pro, one pane). */
+    async ensureExactBoundsMany(ids: readonly NodeId[], signal?: AbortSignal): Promise<ReadonlyMap<NodeId, SceneBounds | null>> {
+        if (this.disposed) throw new DOMException('Scene is disposed', 'AbortError');
+        const cooperate = this.options.cooperate ?? yieldToHost, stop = signal ?? this.controller.signal;
+        const settle = async () => {
+            while (!this.ready) { stop.throwIfAborted(); this.controller.signal.throwIfAborted(); this.step(16, performance.now() + 3); await cooperate(); }
+        };
+        await settle();
+        const jobs: { readonly id: NodeId; readonly version: number; readonly node: Readonly<Node> }[] = [];
+        for (const id of ids) {
+            const node = this.options.doc.nodes.get(id);
+            if (node) jobs.push({ id, version: this.versions.get(id) ?? 0, node: createNode(node) });
+        }
+        let next = 0;
+        const realise = async () => {
+            while (next < jobs.length) {
+                const job = jobs[next++];
+                await this.cache.ensure(job.id, job.version, stop, jobSignal => this.options.realize(job.node, jobSignal));
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(EXACT_BOUNDS_CONCURRENCY, jobs.length) }, realise));
+        stop.throwIfAborted();
+        if (this.disposed) throw new DOMException('Scene is disposed', 'AbortError');
+        let marked = false;
+        for (const job of jobs) {
+            if (!this.options.doc.nodes.has(job.id) || (this.versions.get(job.id) ?? 0) !== job.version) continue;
+            this.pendingNodes.set(job.id, (this.pendingNodes.get(job.id) ?? 0) | Flag.Bounds | Flag.Paint);
+            marked = true;
+        }
+        if (marked) { this.serial++; this.options.invalidate(); }
+        await settle();
+        const out = new Map<NodeId, SceneBounds | null>();
+        for (const id of ids) out.set(id, this.worldBounds(id));
+        return out;
     }
     query(options: SceneQueryOptions, output?: QueryBuffer, visitor?: NearestVisitor): SpatialQuery {
         if (!this.ready) throw new Error('Scene publication is pending');

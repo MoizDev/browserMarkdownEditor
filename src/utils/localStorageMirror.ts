@@ -23,6 +23,11 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
     let tail: Promise<void> = Promise.resolve();
     let generation = 0;
     let warned = false;
+    // Set when the startup restore missed its deadline (storage.ts): this page then neither restores nor backs up,
+    // and the next load tries again before it renders. A restore landing after the page has read its settings would
+    // put keys under stores that already cached the old ones, and the page's next write of such a store (a session
+    // record) would overwrite what was just put back.
+    let abandoned = false;
 
     const warn = (error: unknown) => {
         if (!warned) console.warn('Browser settings could not be backed up:', error);
@@ -37,12 +42,22 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
         if (!database) {
             database = new Promise<IDBDatabase>((resolve, reject) => {
                 const request = indexedDB.open(DATABASE, 1);
+                let refused = false;
                 request.onupgradeneeded = () => {
                     if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE, { keyPath: 'key' });
                 };
                 request.onerror = () => { database = null; reject(request.error); };
+                // Another connection is holding the database through a version change (nothing in this app upgrades
+                // it, but an old tab or a pending deletion can): refuse rather than wait, and close the connection
+                // if it is granted after all, so nothing is left holding it.
+                request.onblocked = () => {
+                    refused = true;
+                    database = null;
+                    reject(new DOMException('The settings backup is held by another connection.', 'InvalidStateError'));
+                };
                 request.onsuccess = () => {
                     const db = request.result;
+                    if (refused) { db.close(); return; }
                     db.onversionchange = event => {
                         db.close();
                         database = null;
@@ -94,7 +109,10 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
         warned = false;
     };
 
-    const restore = async () => {
+    /** `include` limits which missing keys may be put back (the startup restore's preferences-only rule, storage.ts);
+     *  every key is still backed up from the live store. */
+    const restore = async (include?: (key: string) => boolean) => {
+        if (abandoned) return;
         const epoch = generation;
         const values = await readAll(); // one getAll; present keys are checked individually below
         if (epoch !== generation) return;
@@ -108,7 +126,7 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
             const backup = values.get(key);
             if (current !== null) {
                 if (backup !== current) updates.set(key, current);
-            } else if (typeof backup === 'string') {
+            } else if (typeof backup === 'string' && (!include || include(key))) {
                 access.put(key, backup);
                 restored++;
             }
@@ -121,6 +139,7 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
     const flush = async () => {
         if (timer) clearTimeout(timer);
         timer = null;
+        if (abandoned) return;
         if (!access.hasSentinel()) { await restore(); return; }
         const epoch = generation;
         const queued = new Map(pending);
@@ -144,6 +163,7 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
         else access.stamp();
     };
     const reconcile = async () => {
+        if (abandoned) return;
         if (!access.hasSentinel()) { await restore(); return; }
         const epoch = generation;
         known = await readAll();
@@ -161,11 +181,19 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
     };
     return {
         queue(key: string, value: Value) {
-            if (!owned.has(key)) return;
+            if (!owned.has(key) || abandoned) return;
             pending.set(key, value);
             if (!timer) timer = setTimeout(() => { timer = null; void enqueue(flush); }, 1000);
         },
-        restore: () => enqueue(restore),
+        restore: (include?: (key: string) => boolean) => enqueue(() => restore(include)),
+        /** Stop restoring and backing up for this page (see `abandoned`); a restore in flight puts nothing more. */
+        abandonRestore() {
+            abandoned = true;
+            generation++;
+            pending.clear();
+            if (timer) clearTimeout(timer);
+            timer = null;
+        },
         reconcile: () => enqueue(reconcile),
         flush: () => enqueue(flush),
     };

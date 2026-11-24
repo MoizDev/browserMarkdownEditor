@@ -15,7 +15,10 @@ import { readJSON, writeJSON } from './storage';
 
 const KEY = 'expandedPaths';
 
-let paths = new Set<string>(readJSON<string[]>(KEY, []));
+// Shape-checked: the value is the user's to edit, and a non-array here (measured: `42`, `{"a":1}`) threw at import —
+// before React could mount anything — leaving a blank page. Anything but a list of strings reads as "none open".
+const stored: unknown = readJSON<unknown>(KEY, []);
+let paths = new Set<string>(Array.isArray(stored) ? stored.filter((path): path is string => typeof path === 'string') : []);
 /** Replaced, never mutated: `getExpandedPaths` is a `useSyncExternalStore`
  *  snapshot and has to change identity exactly when the set does. */
 const listeners = new Set<() => void>();

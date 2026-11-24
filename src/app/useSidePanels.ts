@@ -2,7 +2,7 @@ import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { connectHelperForTerminal } from '../components/terminalLaunch';
 import { scheduleAgentUpdateCheck } from '../components/agentUpdateHint';
-import { writeStoredValue } from '../utils/storage';
+import { readStoredValue, writeStoredValue } from '../utils/storage';
 import type { FileSystemContextValue } from '../types';
 
 /** The agent panel's width: at least 300px (its composer and header need it),
@@ -25,11 +25,11 @@ export function useSidePanels(deps: UseSidePanelsDeps) {
   // sparkles). Width and open state persist like the sidebar's; the width is
   // clamped on read and on every drag, since localStorage is user-editable and
   // a window can shrink under a stored width.
-  const [agentPanelOpen, setAgentPanelOpen] = useState<boolean>(() => localStorage.getItem('agentPanelOpen') === 'true');
+  const [agentPanelOpen, setAgentPanelOpen] = useState<boolean>(() => readStoredValue('agentPanelOpen') === 'true');
   useEffect(() => {
     writeStoredValue('agentPanelOpen', String(agentPanelOpen));
   }, [agentPanelOpen]);
-  const [agentPanelWidth, setAgentPanelWidth] = useState<number>(() => clampAgentWidth(parseInt(localStorage.getItem('agentPanelWidth') || '', 10)));
+  const [agentPanelWidth, setAgentPanelWidth] = useState<number>(() => clampAgentWidth(parseInt(readStoredValue('agentPanelWidth') || '', 10)));
   // Whether the reader has opened the panel this session (⌘⇧X, the footer
   // button), as against it being restored open with the page: only an open
   // they asked for takes the keyboard (AgentPanel's focus hand-off). What was
@@ -46,7 +46,7 @@ export function useSidePanels(deps: UseSidePanelsDeps) {
   // the editor. Open state persists like the agent panel's; its height is the
   // dock's own (TerminalDock). Only an open the reader asked for takes the
   // keyboard, as with the agent panel.
-  const [terminalOpen, setTerminalOpen] = useState<boolean>(() => localStorage.getItem('terminalOpen') === 'true');
+  const [terminalOpen, setTerminalOpen] = useState<boolean>(() => readStoredValue('terminalOpen') === 'true');
   useEffect(() => {
     writeStoredValue('terminalOpen', String(terminalOpen));
   }, [terminalOpen]);

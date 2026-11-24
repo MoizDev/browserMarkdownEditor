@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { clampTabSize } from '../editor/lists';
 import { clampRecentVaultLimit, DEFAULT_RECENT_VAULT_LIMIT } from '../utils/recentVaults';
-import { writeStoredValue } from '../utils/storage';
+import { readStoredValue, writeStoredValue } from '../utils/storage';
 import type { CaretStyle, FileSystemContextValue, SettingsDefaults, Theme } from '../types';
 import { APP_TITLE } from '../utils/appTitle';
 
@@ -20,55 +20,55 @@ export function useAppSettings(deps: UseAppSettingsDeps) {
   const { rootHandle } = deps;
 
   // The global light/dark theme state
-  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('theme') as Theme) || 'dark');
+  const [theme, setTheme] = useState<Theme>(() => (readStoredValue('theme') as Theme) || 'dark');
 
   // Font size and padding settings (persisted via localStorage)
-  const [editorFontSize, setEditorFontSize] = useState<number>(() => parseInt(localStorage.getItem('editorFontSize') || '16', 10));
+  const [editorFontSize, setEditorFontSize] = useState<number>(() => parseInt(readStoredValue('editorFontSize') || '16', 10));
   // Code panes only (editor/codeHighlight.ts reads the variable). Separate from
   // the note size because Fira Code at a note's 16px reads larger than the prose
   // does, and because the two are chosen for different jobs.
-  const [codeFontSize, setCodeFontSize] = useState<number>(() => clampCodeFontSize(parseInt(localStorage.getItem('codeFontSize') || '', 10)));
+  const [codeFontSize, setCodeFontSize] = useState<number>(() => clampCodeFontSize(parseInt(readStoredValue('codeFontSize') || '', 10)));
   // Depth-coloured brackets in code panes. On by default: in a Lisp they are
   // how the code is read (editor/rainbowBrackets.ts).
-  const [rainbowBrackets, setRainbowBrackets] = useState<boolean>(() => localStorage.getItem('rainbowBrackets') !== 'false');
-  const [treeFontSize, setTreeFontSize] = useState<number>(() => parseInt(localStorage.getItem('treeFontSize') || '13', 10));
+  const [rainbowBrackets, setRainbowBrackets] = useState<boolean>(() => readStoredValue('rainbowBrackets') !== 'false');
+  const [treeFontSize, setTreeFontSize] = useState<number>(() => parseInt(readStoredValue('treeFontSize') || '13', 10));
   // Clamped to the slider's range on the way in: localStorage is user-editable,
   // and a `NaN%` voids index.css's `max(var(--editor-padding), …)` outright —
   // the editor's left padding drops to 0 and the collapse arrow is clipped.
   const [editorPadding, setEditorPadding] = useState<number>(() => {
-    const stored = parseInt(localStorage.getItem('editorPadding') || '6', 10);
+    const stored = parseInt(readStoredValue('editorPadding') || '6', 10);
     return Number.isFinite(stored) ? Math.min(20, Math.max(0, stored)) : 6;
   });
   // Spaces a Tab inserts — and how far Tab indents a list item. Clamped on the
   // way in: localStorage is user-editable and a NaN would reach CodeMirror.
-  const [tabSize, setTabSize] = useState<number>(() => clampTabSize(parseInt(localStorage.getItem('tabSize') || '4', 10)));
+  const [tabSize, setTabSize] = useState<number>(() => clampTabSize(parseInt(readStoredValue('tabSize') || '4', 10)));
 
   // How many recently opened vaults the vault switcher's menu lists. Clamped for
   // the same reason as tabSize — this one ends up in Array.slice.
   const [recentVaultLimit, setRecentVaultLimit] = useState<number>(
-    () => clampRecentVaultLimit(parseInt(localStorage.getItem('recentVaultLimit') || String(DEFAULT_RECENT_VAULT_LIMIT), 10))
+    () => clampRecentVaultLimit(parseInt(readStoredValue('recentVaultLimit') || String(DEFAULT_RECENT_VAULT_LIMIT), 10))
   );
 
   // Whether the browser tab is titled with the open vault's name (default on).
-  const [showVaultInTitle, setShowVaultInTitle] = useState<boolean>(() => (localStorage.getItem('showVaultInTitle') ?? 'true') === 'true');
+  const [showVaultInTitle, setShowVaultInTitle] = useState<boolean>(() => (readStoredValue('showVaultInTitle') ?? 'true') === 'true');
 
   // Caret (text cursor) appearance settings — persisted via localStorage.
   // caretStyle: 'line' (thin bar) or 'block' (thick terminal-style block).
   // smoothCaret: glide the caret between positions like MS Word.
   // caretSpeed: duration (ms) of that glide.
-  const [caretStyle, setCaretStyle] = useState<CaretStyle>(() => (localStorage.getItem('caretStyle') as CaretStyle) || 'line');
-  const [caretThickness, setCaretThickness] = useState<number>(() => parseInt(localStorage.getItem('caretThickness') || '10', 10));
-  const [smoothCaret, setSmoothCaret] = useState<boolean>(() => (localStorage.getItem('smoothCaret') ?? 'true') === 'true');
-  const [caretSpeed, setCaretSpeed] = useState<number>(() => parseInt(localStorage.getItem('caretSpeed') || '80', 10));
+  const [caretStyle, setCaretStyle] = useState<CaretStyle>(() => (readStoredValue('caretStyle') as CaretStyle) || 'line');
+  const [caretThickness, setCaretThickness] = useState<number>(() => parseInt(readStoredValue('caretThickness') || '10', 10));
+  const [smoothCaret, setSmoothCaret] = useState<boolean>(() => (readStoredValue('smoothCaret') ?? 'true') === 'true');
+  const [caretSpeed, setCaretSpeed] = useState<number>(() => parseInt(readStoredValue('caretSpeed') || '80', 10));
 
   // Custom font loaded from Google Fonts (empty string = use the default)
-  const [fontFamily, setFontFamily] = useState<string>(() => localStorage.getItem('fontFamily') || '');
+  const [fontFamily, setFontFamily] = useState<string>(() => readStoredValue('fontFamily') || '');
 
   // Custom accent color (empty string = each theme's default purple)
-  const [accentColor, setAccentColor] = useState<string>(() => localStorage.getItem('accentColor') || '');
+  const [accentColor, setAccentColor] = useState<string>(() => readStoredValue('accentColor') || '');
 
   // Base ink for language-less ``` blocks (empty string = follow the accent)
-  const [codeBlockColor, setCodeBlockColor] = useState<string>(() => localStorage.getItem('codeBlockColor') || '');
+  const [codeBlockColor, setCodeBlockColor] = useState<string>(() => readStoredValue('codeBlockColor') || '');
 
   // Keep HTML root data attribute in sync with state for global CSS variables
   useEffect(() => {

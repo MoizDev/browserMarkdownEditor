@@ -35,12 +35,27 @@ export const LOCAL_STORAGE_KEYS = [
     STORAGE_MIRROR_SENTINEL,
 ] as const;
 const ownedKeys = new Set<string>(LOCAL_STORAGE_KEYS);
+// What was open and where, not how the app should look or behave. A running tab that SEES a clear (the storage
+// event) puts these back from a backup it kept current to the second. The startup restore never does: a key missing
+// at startup was cleared while no tab of this build was open — in the field, the old build's canvas library
+// clearing localStorage from its "Reset data" button during the rollback — so the backup is from the last time this
+// build ran, possibly weeks before. Measured (the mirror's own code, OLD → NEW → OLD clears → NEW): the session
+// from that last run came back as the vault's saved tabs. Absent, the live state is "nothing open", which a stale
+// session is worse than; a preference from the last run is still the person's own choice, unlike a default.
+const WORKSPACE_KEYS = new Set<string>([
+    'vaultSessions', 'fileScrollAnchors', 'collapsedHeadings', 'canvasViewPositions', 'pdfViewPositions',
+    'readerViewState', 'pdfTextViewState', 'expandedPaths', 'vaultAgentDrafts', 'vaultAgentOpenChat',
+    'fileScrollPositions', 'openTabPaths', 'openTabGroups', 'openTabGroupFocus', 'openTabGroupSizes',
+    'openTabsVaultId', 'activeTabPath', 'lastFilePath',
+]);
+/** Keys put back by the startup restore of this page (see restoreStorageBeforeRender). */
+let startupPuts = 0;
 let restoreNotice: string | null = null;
 const restoreListeners = new Set<() => void>();
 const mirror = createLocalStorageMirror({
     keys: LOCAL_STORAGE_KEYS.filter(key => key !== STORAGE_MIRROR_SENTINEL),
     get: key => localStorage.getItem(key),
-    put: (key, value) => { localStorage.setItem(key, value); },
+    put: (key, value) => { localStorage.setItem(key, value); startupPuts++; },
     hasSentinel: () => localStorage.getItem(STORAGE_MIRROR_SENTINEL) === MIRROR_VERSION,
     stamp: () => { localStorage.setItem(STORAGE_MIRROR_SENTINEL, MIRROR_VERSION); },
     restored: () => {
@@ -54,6 +69,13 @@ export function isRegisteredStorageKey(key: string): boolean { return ownedKeys.
 // Session data belongs to one tab, especially terminal IDs; never mirror it across windows.
 export function writeSessionValue(key: string, value: string): void { sessionStorage.setItem(key, value); }
 export function removeSessionValue(key: string): void { sessionStorage.removeItem(key); }
+
+/** Raw-string reader, null when absent OR when the browser refuses storage access: some policies throw on every
+ *  localStorage call (measured: a SecurityError from a settings read during App's first render took the whole
+ *  app down), and the app then runs on its defaults. */
+export function readStoredValue(key: string): string | null {
+    try { return localStorage.getItem(key); } catch { return null; }
+}
 
 /** Raw-string writer for keys whose readers do not JSON-parse their value. */
 export function writeStoredValue(key: string, value: string): boolean {
@@ -100,20 +122,54 @@ export function subscribeRestoreNotice(listener: () => void): () => void {
     return () => { restoreListeners.delete(listener); };
 }
 
-/** The normal boot pays ONE read, and no IndexedDB work before first render. */
+/** How long the first render may wait for the settings backup. Measured: with the backup's IndexedDB open never
+ *  answering (a wedged backing store, or a deletion pending behind another tab's connection), the page stayed blank
+ *  for as long as the run lasted — React had not mounted, so not even "Loading vault..." was drawn. */
+const RESTORE_DEADLINE_MS = 1500;
+
+/**
+ * The normal boot pays ONE read, and no IndexedDB work before first render. Resolves true when the page must be
+ * reloaded so its module-scope stores read the restored values; it never waits longer than RESTORE_DEADLINE_MS, and
+ * it never asks for a second reload in a row.
+ *
+ * Why the reload cannot loop: it is asked for only when this load put keys back. Those puts are synchronous
+ * localStorage writes, so the reloaded page finds them present and puts back nothing (a key is only ever put when
+ * missing). And should something clear them again at every start, the restore's one-shot notice key — set before the
+ * reload, consumed by App after mount — is still set on the reloaded page, which then mounts instead.
+ */
 export function restoreStorageBeforeRender(): Promise<boolean> | undefined {
     try {
         if (localStorage.getItem(STORAGE_MIRROR_SENTINEL) === MIRROR_VERSION) return;
-        return mirror.restore().then(() => {
-            const restored = restoreNotice !== null;
-            if (restored) {
-                try { sessionStorage.setItem(RELOAD_NOTICE_KEY, '1'); } catch { /* notice only */ }
-            }
-            return restored;
-        });
     } catch (error) {
         console.warn('Browser settings are unavailable:', error);
+        return;
     }
+    let reloadedForRestore = false;
+    try { reloadedForRestore = sessionStorage.getItem(RELOAD_NOTICE_KEY) === '1'; } catch { /* no guard key: mount */ }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<'late'>(resolve => { timer = setTimeout(() => resolve('late'), RESTORE_DEADLINE_MS); });
+    const restore = mirror.restore(key => !WORKSPACE_KEYS.has(key)).then(() => restoreNotice !== null);
+    return Promise.race([restore, late]).then(outcome => {
+        clearTimeout(timer);
+        let restored = outcome === true;
+        if (outcome === 'late') {
+            mirror.abandonRestore();
+            // Keys already put back are under stores that read the old values at import: reload for them too.
+            restored = startupPuts > 0;
+            console.warn(`The browser settings backup did not answer within ${RESTORE_DEADLINE_MS} ms; starting with the settings as they are${restored ? ' (reloading once for the ones already restored)' : ''}.`);
+        }
+        if (restored && reloadedForRestore) {
+            console.warn('Browser settings were restored again right after a reload for the same; starting without a second reload.');
+            return false;
+        }
+        if (restored) {
+            try { sessionStorage.setItem(RELOAD_NOTICE_KEY, '1'); } catch { /* notice only */ }
+        }
+        return restored;
+    }, error => {
+        console.warn('Browser settings could not be restored:', error);
+        return false;
+    });
 }
 
 let recoveryInstalled = false;

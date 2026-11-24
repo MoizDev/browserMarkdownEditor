@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getSearchRequest, subscribeSearchRequest } from '../utils/searchRequest';
-import { writeStoredValue } from '../utils/storage';
+import { readStoredValue, writeStoredValue } from '../utils/storage';
 
 /** What the sidebar hook reads from App. */
 export interface UseSidebarDeps {
@@ -16,7 +16,7 @@ export function useSidebar(deps: UseSidebarDeps) {
 
   // Sidebar collapse (Cmd+\, the explorer-header button, or the rail) —
   // persisted, and collapsing leaves a thin rail so it can be re-expanded.
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => localStorage.getItem('sidebarCollapsed') === 'true');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => readStoredValue('sidebarCollapsed') === 'true');
   useEffect(() => subscribeSearchRequest(() => {
     if (!getSearchRequest()) return;
     setSidebarCollapsed(false);

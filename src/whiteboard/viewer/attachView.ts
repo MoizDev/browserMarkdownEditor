@@ -83,7 +83,7 @@ export const attachView: AttachView = options => {
     // nothing before that, so the whole-scene decision waits for it (a probe pin would never answer).
     let wholeCount: { readonly revision: number; readonly sheet: string; readonly count: number } | null = null;
     // The view request in force: its key, its device scale and the world it covers (1.5 viewports each side).
-    let viewWorld: { key: SceneKey; world: Rect } | null = null;
+    let viewWorld: { key: SceneKey; world: Rect; z: number } | null = null;
     /** canvas2d's standing view request (see requestPaint): its key, its world, the world its picture tiles cover and its exact scale. */
     let view2d: { key: SceneKey; world: Rect; tiles: Readonly<Rect>; scale: number } | null = null;
     // The zoom settling of both routes (see requestPaint): the last device scale seen, when it was first seen, and the wake that asks
@@ -332,6 +332,15 @@ export const attachView: AttachView = options => {
         ({ x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z });
     const containsRect = (outer: Rect, inner: Rect): boolean => inner.x >= outer.x && inner.y >= outer.y
         && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
+    // Whether a request's world still holds the viewport, with half a viewport to spare while the zoom is the request's (a pan): the
+    // next request is asked while the view is still inside the last one, so it has landed by the time the view leaves it. Asked only
+    // once the viewport left the world, a fast pan drew the items entering the view a frame late, the old frame not holding them
+    // (measured: 4 strokes at the edge on canvas2d, one on WebGL2, for a frame). Not while zooming: a zoom out to fit then asked a
+    // dense board's whole view again mid-animation, 'Updating…' for 4 s more (measured, the 5,642-stroke board at 1745% then ⇧1).
+    const holdsView = (world: Rect, viewport: Rect, samezoom: boolean): boolean => {
+        const lead = samezoom ? 0.5 * Math.max(viewport.width, viewport.height) : 0;
+        return containsRect(world, { x: viewport.x - lead, y: viewport.y - lead, width: viewport.width + 2 * lead, height: viewport.height + 2 * lead });
+    };
     // The whole scene's estimated CPU cost: the owning band's CPU bytes for the current view, scaled from the view's item count
     // to the sheet's. It must fit half the pane's CPU grant: the grant the host reports, or the grant's floor
     // (cpuGrantMinBytes) while the host reports none. The floor is never above the true grant, so it stays the conservative test.
@@ -371,7 +380,7 @@ export const attachView: AttachView = options => {
             const held = (asked: SceneKey | null): boolean => !!asked && asked.band !== null && sameSceneKey(asked, { ...key, band: asked.band })
                 && asked.band >= key.band! && asked.band <= key.band! * Math.SQRT2 * (1 + 1e-9);
             if ((moving || now - zoom2d.at < ZOOM_SETTLE_MS) && (held(sceneAsked) || (!sceneDue && densityMode !== 'dense' && !!viewWorld
-                && held(viewWorld.key) && containsRect(viewWorld.world, viewportOf(viewNow))))) {
+                && held(viewWorld.key) && holdsView(viewWorld.world, viewportOf(viewNow), viewWorld.z === viewNow.camera.z)))) {
                 cancelSettle2d();
                 settle2d = setTimeout(() => { settle2d = null; requestPaint(); }, Math.max(0, zoom2d.at + ZOOM_SETTLE_MS - now) + 1);
                 return;
@@ -379,7 +388,7 @@ export const attachView: AttachView = options => {
         }
         // A view request whose world still holds the viewport, at the same key (band), stands: a pan or a zoom inside the band asks nothing new.
         if (onDevice && !sceneDue && densityMode !== 'dense' && viewNow && viewWorld && sameSceneKey(viewWorld.key, key)
-            && containsRect(viewWorld.world, viewportOf(viewNow))) return;
+            && holdsView(viewWorld.world, viewportOf(viewNow), viewWorld.z === viewNow.camera.z)) return;
         // canvas2d: a request stands while a new one would open the same stream. The 2D adapter flattens the frame's paths at the exact
         // scale itself; the stream reads the scale only for its strokes' realisation band and its pictures' tiles (decoded for the screen
         // and an eighth around it, pictureTileWorld). So a pan inside the world asks nothing new, nor, on a board without pictures, a zoom
@@ -394,12 +403,12 @@ export const attachView: AttachView = options => {
             const scale = viewNow.camera.z * viewNow.viewport.dpr, screen = viewportOf(viewNow), now = performance.now();
             if (zoom2d?.scale !== scale) zoom2d = { scale, at: now };
             const pictures = runtime.session.doc.mediaRefs.size > 0;
-            if (containsRect(view2d.world, screen) && (pictures ? scale === view2d.scale && containsRect(view2d.tiles, screen)
+            if (holdsView(view2d.world, screen, scale === view2d.scale) && (pictures ? scale === view2d.scale && containsRect(view2d.tiles, screen)
                 : inkRealisationNear(scale, view2d.scale, 0))) return;
             // A board with pictures stands through a zoom too while its picture tiles still cover the screen (a zoom in): they draw scaled
             // until the exact ask, as its ink does. Asked on every step, canvas2d presented each step twice (measured, a 4000x3000 picture
             // at DPR 2: 40 view requests and 80 presents for 40 wheel steps).
-            if (containsRect(view2d.world, screen) && (!pictures || containsRect(view2d.tiles, screen))
+            if (holdsView(view2d.world, screen, scale === view2d.scale) && (!pictures || containsRect(view2d.tiles, screen))
                 && (moving || now - zoom2d.at < ZOOM_SETTLE_MS) && inkRealisationNear(scale, view2d.scale, 1)) {
                 cancelSettle2d();
                 settle2d = setTimeout(() => { settle2d = null; requestPaint(); }, Math.max(0, zoom2d.at + ZOOM_SETTLE_MS - now) + 1);
@@ -471,7 +480,7 @@ export const attachView: AttachView = options => {
         auditCount('board', scene ? 'request:scene' : 'request:view');
         if (onDevice) { if (scene) sceneAsked = key; else viewAsked = key; }
         // The world this view request asks for, kept until the camera leaves it (the skip at the top of requestPaint).
-        viewWorld = onDevice && !scene && !dense && world && deviceScale !== undefined ? { key, world } : null;
+        viewWorld = onDevice && !scene && !dense && world && deviceScale !== undefined && current ? { key, world, z: current.camera.z } : null;
         const tiles = screenWorld ? pictureTileWorld({ viewWorld: screenWorld }) : undefined;
         view2d = !onDevice && !scene && !dense && world && tiles && current ? { key, world, tiles, scale: current.camera.z * current.viewport.dpr } : null;
         sceneDue = false;

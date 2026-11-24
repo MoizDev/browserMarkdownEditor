@@ -16,7 +16,7 @@ This is the board's own route. Editing (tools, selection, text) is `whiteboard-e
    by revision, sheet, theme, sensitivity and ink band (`SceneKey`). A camera change inside one band asks nothing:
    the tiles follow the camera. While a zoom is still going a request at an equal or one-finer band stands too (a finer
    band's outline draws at a coarser scale, never the reverse) and the camera's band is asked once it settles: wheel
-   steps alternating across the band at 100% asked the whole scene every step (40 steps: 40 requests → 2). On canvas2d a request stands while it holds the viewport at the same ink realisation
+   steps alternating across the band at 100% asked the whole scene every step (40 steps: 40 requests → 2). A view request (either backend) stands only while its world holds the viewport, with half a viewport to spare during a pan (same zoom), so the next one lands before the pan leaves it (asked at the edge, entering strokes drew a frame late); not while zooming, where it re-asked a dense board's view mid-fit. On canvas2d a request stands while it holds the viewport at the same ink realisation
    (`paintRequestScope.ts`); while a zoom is still going (moving, or a scale change within `ZOOM_SETTLE_MS` 250) it
    stands one ink band across, on a board with pictures only while its picture tiles still cover the screen, and
    the exact scale is asked once the zoom settles. Asked per step, every pan and zoom step presented twice. The 2D

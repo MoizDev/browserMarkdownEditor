@@ -7,6 +7,7 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import type { NativeCanvasReady } from '../../types/reading';
 import type { AttachCanvasSession } from '../../utils/canvasSessionBridge';
 import { prepareNativeRuntime } from '../../whiteboard/host/prepareNativeRuntime';
+import { legacyLoadPhase, showLegacyLoadTarget, subscribeLegacyLoadPhase } from '../../whiteboard/host/legacyLoadQueue';
 import { registerNativeNotebookExporter } from '../../whiteboard/host/registerNativeNotebookExporter';
 import { pinNativeSheetThumbnailBounds } from '../../whiteboard/host/sheetThumbnailBounds';
 import { contentBounds, type ContentRect } from '../../whiteboard/commands/contentBounds';
@@ -270,7 +271,24 @@ function NativeDrawingEditing({ props, board, adapter, onError, onUnavailable }:
         createLease={createLease} renderView={renderView} onError={onError} onUnavailable={onUnavailable} />;
 }
 
+/** Every wait before the board ends in the board or in an error that can be retried: a retry remounts the acquisition, whose
+ * failed flight is already gone (acquireNativeBoard.ts), so it starts over with fresh workers (platform/workers/client.ts). */
 export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
+    const [attempt, setAttempt] = useState(0);
+    const retry = useCallback(() => setAttempt(value => value + 1), []);
+    return <NativeCanvasAcquisition key={attempt} props={props} onRetry={retry} />;
+}
+
+/** What the pane says while a tldraw-format file waits for, or goes through, its load (whiteboard/host/legacyLoadQueue.ts). */
+function useLegacyLoadStatus(documentId: string, kind: NativeCanvasIdentity['kind'], isVisible: boolean): string | null {
+    useEffect(() => isVisible ? showLegacyLoadTarget(documentId) : undefined, [documentId, isVisible]);
+    const phase = useSyncExternalStore(subscribeLegacyLoadPhase, () => legacyLoadPhase(documentId), () => null);
+    const noun = kind === 'notebook' ? 'notebook' : 'drawing';
+    return phase === 'loading' ? `Opening ${noun}…`
+        : phase === 'waiting' ? `Opening ${noun}: waiting for another document to finish opening…` : null;
+}
+
+function NativeCanvasAcquisition({ props, onRetry }: { props: NativeCanvasEntryProps; onRetry: () => void }) {
     const { identity: incoming, nativeCanvasHost, documentId, attachCanvasSession: attach,
         onNativeCanvasReady: ready, deadlineMs, zMax } = props;
     const [identity, setIdentity] = useState(() => incoming);
@@ -309,11 +327,15 @@ export default function NativeCanvasEntry(props: NativeCanvasEntryProps) {
             registerNativeNotebookExporter({ board, host: nativeCanvasHost, identity, onError });
         } catch (cause) { onError(cause); }
     }, [acquired, identity, nativeCanvasHost, onError]);
+    const opening = useLegacyLoadStatus(documentId, identity.kind, props.isVisible);
     if (identity.documentId !== incoming.documentId || identity.session !== incoming.session
         || identity.vaultActivation !== incoming.vaultActivation || identity.bytesGeneration !== incoming.bytesGeneration
-        || identity.kind !== incoming.kind) return <div role="status">Preparing canvas…</div>;
-    if (error) return <div role="alert">Could not open canvas: {error}</div>;
-    if (!acquired) return <div role="status">Preparing canvas…</div>;
+        || identity.kind !== incoming.kind) return <div className="canvas-pane-message is-waiting" role="status">Preparing canvas…</div>;
+    if (error) return <div className="canvas-pane-message" role="alert">
+        <span>Could not open canvas: {error}</span>
+        <button type="button" className="pdf-pane-action" onClick={onRetry}>Retry</button>
+    </div>;
+    if (!acquired) return <div className={`canvas-pane-message${opening ? '' : ' is-waiting'}`} role="status">{opening ?? 'Preparing canvas…'}</div>;
     if (emergencyReadOnly || (editingFailure?.documentId === identity.documentId && editingFailure.session === identity.session)) {
         return <><NativeViewer props={props} identity={identity} board={acquired.adapter.board} onError={onError} />
             {editingFailure && <div role="status">Editing unavailable: {editingFailure.reason}</div>}</>;

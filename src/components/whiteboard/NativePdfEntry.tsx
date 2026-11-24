@@ -1,8 +1,9 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPdfInkHost, pinPdfInkHostForSave, readPdfInkLegacyDigest, rebindPdfInkSource, validateLoadedPdfInkHost } from '../../pdf/session/inkHost';
 import { prepareOwnedPdfInk } from '../../pdf/session/ownedInkAcquisition';
 import { getPdfInkSourceState, preparePdfInkSession } from '../../whiteboard/host/preparePdfInkSession';
 import { prepareLegacyPdfInkSession } from '../../whiteboard/host/prepareLegacyPdfInkSession';
+import { legacyLoadPhase, showLegacyLoadTarget, subscribeLegacyLoadPhase } from '../../whiteboard/host/legacyLoadQueue';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import type { NativeCanvasEntryProps } from './NativeCanvasEntry';
 import { createNativeAcquisitionOptions } from './nativeAcquisitionOptions';
@@ -75,11 +76,16 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
     }), [nativeCanvasHost, identity, attachCanvasSession, onNativeCanvasReady, prepare, onError, emergencyPolicy]);
     const acquired = useNativeBoardAcquisition(acquisition);
     const source = acquired ? getPdfInkSourceState(documentId) : undefined;
+    // An old annotated PDF's tldraw ink is read through the same one-at-a-time queue as tldraw-format boards (legacyLoadQueue.ts).
+    const visible = props.isVisible;
+    useEffect(() => visible ? showLegacyLoadTarget(documentId) : undefined, [documentId, visible]);
+    const phase = useSyncExternalStore(subscribeLegacyLoadPhase, () => legacyLoadPhase(documentId), () => null);
     if (error || acquired && !source) {
         return <div role="alert">{error ?? 'The PDF ink source is unavailable.'}
             <button type="button" onClick={props.onViewOriginal}>Back to view</button></div>;
     }
-    if (!acquired || !source) return <div role="status">Preparing PDF annotations…</div>;
+    if (!acquired || !source) return <div role="status">{phase === 'waiting' ? 'Opening PDF annotations: waiting for another document to finish opening…'
+        : 'Preparing PDF annotations…'}</div>;
     return <NativePdfViewer adapter={acquired.adapter} board={acquired.adapter.board} identity={identity} host={nativeCanvasHost} sourceState={source}
         file={props.file} isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme}
         emphasisEnabled={props.emphasisEnabled} zoomLimits={props.zoomLimits} insets={props.insets}

@@ -101,7 +101,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                 legacy = await acquireLegacyBoard({ bytes: original, kind: options.representation === 'drawing' ? 'whiteboard' : 'notebook',
                     host: options.representation === 'drawing' ? { kind: 'whiteboard' }
                         : { kind: 'notebook', paper: { ...DEFAULT_PAPER }, ext: null },
-                    token, zMax: options.zMax, memory, nativeReport: acquired.report, identity: job,
+                    token, zMax: options.zMax, memory, nativeReport: acquired.report, identity: job, loadKey: identity.documentId,
                     isCurrent: candidate => candidate.session === job.session && candidate.epoch === job.epoch
                         && candidate.revision === job.revision && host.isCurrent(identity),
                     readAsset: (src, assetSignal) => host.readLegacyAsset(identity, src, assetSignal), signal });

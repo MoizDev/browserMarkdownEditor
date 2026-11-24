@@ -6,7 +6,7 @@ import type { ImportReport } from '../import/report';
 import type { LegacyPageRect } from '../import/pages';
 import { inspectMedia } from '../media/inspect';
 import type { InspectedMedia } from '../media/ingest';
-import { boardWorker, importDeadline } from '../workers/client';
+import { boardWorker, LEGACY_LOAD_DEADLINE_MS, importDeadline } from '../workers/client';
 import type { BoardJobIdentity } from '../workers/protocol';
 import { validBoardIdentity } from '../workers/protocol';
 import type { NativeLoadReply } from '../workers/nativeLoad';
@@ -16,6 +16,8 @@ import { scanLegacyBoard } from './legacyScan';
 import { encodeHost } from '../format/encode';
 import { FORMAT_LIMITS } from '../format/schema';
 import { parseJsonIncremental } from '../format/jsonRead';
+import { admitLegacyLoad } from './legacyLoadQueue';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: copied original -> governed legacy mapping -> real native C5.
 // Native R0 is a conversion-pending source, never an invented user edit or disk baseline.
@@ -28,6 +30,8 @@ export interface LegacyAcquisitionOptions {
     readonly memory: MemoryAllocator;
     readonly nativeReport: Pick<NativeLoadReply, 'format' | 'complete' | 'bytesRead'>;
     readonly identity: BoardJobIdentity;
+    /** The document this loads, so a pane showing it is admitted first and can say it is opening (legacyLoadQueue.ts). */
+    readonly loadKey?: string;
     /** App alone resolves local relative paths against this source document's folder. */
     readAsset?(src: string, signal: AbortSignal): Promise<Blob | null>;
     isCurrent(identity: BoardJobIdentity): boolean;
@@ -73,51 +77,21 @@ function frames(value: unknown): value is readonly LegacyPageRect[] {
     return Array.isArray(value) && value.length <= 100_000 && value.every(rect => rect && typeof rect === 'object'
         && [rect.x, rect.y, rect.w, rect.h].every(Number.isFinite) && rect.w > 0 && rect.h > 0);
 }
-// How long a conversion waits for another one (or a board's passing working set) to give the pool back.
-const MEMORY_WAIT_MS = 60_000;
-
-/** Reserves `bytes`, waiting for the pool to have room instead of refusing at once. The third legacy board opened in
- * one session failed "Insufficient shared memory" with each file ~15 KB: every conversion reserves 16 MB + 12 × size
- * of a 32–41 MB CPU pool, and the next board's conversion asked while the previous one (or the board it had just
- * opened, building its first tiles) still held its share (measured: 16.9 MB held, then refused, then released 450 ms
- * later). Nothing leaked; the request was simply refused instead of waiting for that release.
- * The first asks are `prefetch`: a refused plain reservation trims the other boards' caches and steps the app's
- * display quality down, which a conversion that only has to wait its turn must not cause (measured: 2 trims and
- * quality below 1 on 10 frames over six boards opened back to back). After a second it asks plainly. */
-async function reserveWhenAvailable(memory: MemoryAllocator, bytes: number, check: () => void, signal: AbortSignal) {
-    const start = performance.now(), deadline = start + MEMORY_WAIT_MS;
-    for (;;) {
-        check();
-        const lease = memory.reserve(bytes, performance.now() - start < 1_000 ? { prefetch: true } : undefined);
-        if (lease) return lease;
-        const left = deadline - performance.now();
-        if (!memory.whenAvailable || left <= 0) {
-            throw new Error('Not enough memory is free to convert this board right now. Close another board and open it again.');
-        }
-        await new Promise<void>(resolve => {
-            const timer = setTimeout(done, Math.min(left, 1_000));
-            function done() { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }
-            signal.addEventListener('abort', done, { once: true });
-            memory.whenAvailable!(done, bytes);
-        });
-    }
-}
-
 export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Promise<LegacyBoardAcquisition> {
     const { bytes, memory } = options;
-    if (!(bytes instanceof Blob) || (typeof File !== 'undefined' && bytes instanceof File) || bytes.size > 256 * 1024 * 1024
+    if (!(bytes instanceof Blob) || (typeof File !== 'undefined' && bytes instanceof File)
         || !validBoardIdentity(options.identity) || options.host.kind !== options.kind) throw new TypeError('Invalid copied legacy acquisition');
     const original = new Blob([bytes], { type: bytes.type }), identity = Object.freeze({ ...options.identity });
     const signal = options.signal ?? new AbortController().signal;
     const check = () => { signal.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Legacy acquisition became stale', 'AbortError'); };
-    const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
+    const cooperate = async () => { check(); await (options.cooperate?.() ?? yieldToHost()); check(); };
     check();
-    // Original text, legacy object graph, two admitted sample representations and
-    // native assembly coexist. The shared allocator must admit that peak first.
-    const reservation = await reserveWhenAvailable(memory, 16 * 1024 * 1024 + original.size * 12, check, signal);
+    // Original text, legacy object graph, two admitted sample representations and native assembly coexist in the parse
+    // worker's heap: one legacy load at a time holds that peak (legacyLoadQueue.ts), never the render raster pool.
+    const release = await admitLegacyLoad({ key: options.loadKey ?? identity.session, bytes: original.size, signal });
     let owned: NativeBoardAcquisition | undefined;
-    const resourceReservations: ReturnType<MemoryAllocator['reserve']>[] = [];
     try {
+        check();
         const scanned = await scanLegacyBoard({ bytes: original, kind: options.kind, nativeReport: options.nativeReport,
             identity, isCurrent: options.isCurrent, signal }); check();
         if (scanned.status !== 'recognized') return { status: 'read-only', original, legacyReport: scanned.report, conversionPending: true, dispose() {} };
@@ -137,8 +111,7 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
                     blob = new Blob([read], { type: read.type }); resolved.set(asset.src, blob);
                 }
                 if (blob.size > 10 * 1024 * 1024 || blob.size > 256 * 1024 * 1024 - relativeBytes) throw new RangeError('Legacy resource bytes exceed the source limits');
-                const resource = await reserveWhenAvailable(memory, blob.size * 12, check, signal);
-                resourceReservations.push(resource); relativeBytes += blob.size;
+                relativeBytes += blob.size;
                 relativeAssets.push({ sourceOrdinal: asset.sourceOrdinal, src: asset.src, blob });
             } else blob = new Blob([asset.blob], { type: asset.blob.type });
             let info = inspected.get(blob);
@@ -147,7 +120,7 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
         }
         const reply: unknown = await boardWorker('parse').request('legacyPrepare', { bytes: original, kind: options.kind,
             host: options.host, token: options.token, zMax: options.zMax, media: verified, relativeAssets }, identity,
-        { priority: 0, cpu: 'governed', deadlineMs: Math.max(30_000, importDeadline(original.size)), signal }, options.isCurrent);
+        { priority: 0, cpu: 'governed', deadlineMs: LEGACY_LOAD_DEADLINE_MS, signal }, options.isCurrent);
         check();
         if (!reply || typeof reply !== 'object' || Array.isArray(reply)) throw new TypeError('Invalid legacy preparation reply');
         const value = reply as LegacyPrepareReply;
@@ -186,11 +159,8 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
             previousFrames: Object.freeze(value.previousFrames.map(rect => Object.freeze({ ...rect }))),
             nextFrames: Object.freeze(value.nextFrames.map(rect => Object.freeze({ ...rect }))), conversionPending: true });
     } finally {
-        // The native board retires (its builds settle) before the memory it reserved is returned.
-        try { await owned?.dispose(); } finally {
-            for (const resource of resourceReservations) if (resource) memory.release(resource);
-            memory.release(reservation);
-        }
+        // The native board retires (its builds settle) before the next legacy load is admitted.
+        try { await owned?.dispose(); } finally { release(); }
     }
 }
 
@@ -200,7 +170,7 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
  * Caller keeps the old acquisition until this independent result is acquired. */
 export async function rehostLegacyBoard(source: EditableLegacy,
     finalHost: Extract<HostBlock, { kind: 'pdf-ink' }>,
-    options: Pick<LegacyAcquisitionOptions, 'identity' | 'isCurrent' | 'memory' | 'signal' | 'cooperate'>): Promise<EditableLegacy> {
+    options: Pick<LegacyAcquisitionOptions, 'identity' | 'isCurrent' | 'signal' | 'cooperate' | 'loadKey'>): Promise<EditableLegacy> {
     const identity = Object.freeze({ ...options.identity }), signal = options.signal ?? new AbortController().signal;
     const check = () => {
         signal.throwIfAborted();
@@ -220,11 +190,12 @@ export async function rehostLegacyBoard(source: EditableLegacy,
         || source.native.report.bytesRead !== source.bytes.size || !source.native.report.complete) throw new Error('Native R0 HOST has no exact admitted source span');
     const encoded = encodeHost(finalHost);
     if (!encoded.ok) throw new Error(encoded.error.reason);
-    const reservation = await reserveWhenAvailable(options.memory, 16 * 1024 * 1024 + source.bytes.size * 12, check, signal);
+    const release = await admitLegacyLoad({ key: options.loadKey ?? identity.session, signal });
     let owned: NativeBoardAcquisition | undefined;
     try {
+        check();
         const cooperate = async () => {
-            check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check();
+            check(); await (options.cooperate?.() ?? yieldToHost()); check();
         };
         const physical = new Uint8Array(await source.bytes.slice(position.byteOffset, position.byteOffset + position.byteLength).arrayBuffer());
         check();
@@ -277,5 +248,5 @@ export async function rehostLegacyBoard(source: EditableLegacy,
         return ownLegacy({ status: 'editable', original: source.original, originalSha256: source.originalSha256,
             bytes, native, legacyReport: source.legacyReport, media, previousFrames: source.previousFrames,
             nextFrames: source.nextFrames, conversionPending: true });
-    } finally { try { await owned?.dispose(); } finally { options.memory.release(reservation); } }
+    } finally { try { await owned?.dispose(); } finally { release(); } }
 }

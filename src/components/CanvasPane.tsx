@@ -75,13 +75,13 @@ function CanvasPane({ file, documentId, nativeCanvasHost, representation, onNati
         {disk && <DiskBar name={file.name} state={disk} path={file.path} onAction={onDiskAction} />}
         <div className="canvas-pane-body">
             {activated && identity && attachCanvasSession ?
-                <NativeCanvasEntry fallback={<div role="status">{label}</div>} file={file} documentId={documentId} identity={identity} nativeCanvasHost={nativeCanvasHost}
+                <NativeCanvasEntry fallback={<div className="canvas-pane-message is-waiting" role="status">{label}</div>} file={file} documentId={documentId} identity={identity} nativeCanvasHost={nativeCanvasHost}
                     attachCanvasSession={attachCanvasSession} onNativeCanvasReady={onNativeCanvasReady}
                     isVisible={isVisible} isFocused={isFocused} theme={isNotebook ? theme : boardTheme} emergencyReadOnly={route.emergencyReadOnly}
                     zoomLimits={isNotebook ? PAGED_VIEW_LIMITS : DRAWING_VIEW_LIMITS}
                     insets={isNotebook ? PAGED_VIEW_INSETS : DRAWING_VIEW_INSETS}
                     zMax={BOARD_Z_MAX} deadlineMs={30_000} registerKeyboardTarget={registerKeyboardTarget} onFocusPane={onFocusPane} />
-            : activated && <div role="status">Preparing canvas document…</div>}
+            : activated && <div className="canvas-pane-message is-waiting" role="status">Preparing canvas document…</div>}
         </div>
     </div>;
 }

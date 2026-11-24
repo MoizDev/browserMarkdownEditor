@@ -140,7 +140,10 @@ come back to either.
   `legacy-*` record in the native file, and reported with an `item` noun; it never makes the board read-only. Only a
   file with no readable board fails, through `importFailure`. `importNotice` (items left out, repairs carrying a
   `notice`) is shown once in the board's notice; float16 pressure drift below 0 is silent. Never join issue reasons
-  raw: use `groupIssueText`. Conversion memory is reserved with a wait (`reserveWhenAvailable`), never refused at once.
+  raw: use `groupIssueText`. A legacy load (board, notebook or old annotated PDF) is admitted by `host/legacyLoadQueue.ts`:
+  one at a time, a document a visible pane shows first, its working memory the parse worker's heap and never the render
+  raster pool; only a file over 256 MB is refused, at once. The pane says "Opening drawing…" while it waits or runs, and
+  every canvas error offers Retry. Its worker requests use `LEGACY_LOAD_DEADLINE_MS` (a stall is the host watchdog's).
 - HOST media projection excludes only validated bookkeeping fields (`pdf/session/inkHostMedia.ts`). Never invent
   media receipts or fall back to the folder's `.Assets` for embedded PDF media.
 

@@ -75,7 +75,7 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
             const isCurrent = (value: typeof job) => value.session === job.session && value.epoch === job.epoch
                 && value.revision === job.revision && current() && source.isCurrent();
             const convert = (hostBlock: ReturnType<typeof source.createPreviewHost>) => acquireLegacyBoard({ bytes: source.snapshot,
-                kind: 'pdf-ink', host: hostBlock, token, zMax: options.zMax, memory, nativeReport, identity: job,
+                kind: 'pdf-ink', host: hostBlock, token, zMax: options.zMax, memory, nativeReport, identity: job, loadKey: documentId,
                 isCurrent, readAsset: (src, assetSignal) => host.readLegacyAsset(identity, src, assetSignal), signal: internal.signal });
             preview = await convert(source.createPreviewHost());
             if (preview.status !== 'editable') throw new Error(importFailure('The old ink on this PDF could not be read', preview.legacyReport.unrepresentable));
@@ -103,7 +103,7 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
             checkRenderable();
             const previousFrames = preview.previousFrames.map(frame => ({ width: frame.w, height: frame.h }));
             const finalHost = createPdfInkConversionHost(ready, previousFrames);
-            final = await rehostLegacyBoard(preview, finalHost, { identity: job, isCurrent, memory, signal: internal.signal });
+            final = await rehostLegacyBoard(preview, finalHost, { identity: job, isCurrent, loadKey: documentId, signal: internal.signal });
             if (final.status !== 'editable' || final.originalSha256 !== preview.originalSha256
                 || final.previousFrames.length !== preview.previousFrames.length
                 || final.previousFrames.some((frame, i) => {

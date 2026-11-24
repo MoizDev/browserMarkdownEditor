@@ -1,10 +1,11 @@
 import type { BoardKind } from '../model/doc';
 import { SECURITY_LIMITS } from '../security/limits';
-import { boardWorker, importDeadline } from '../workers/client';
+import { boardWorker, LEGACY_LOAD_DEADLINE_MS } from '../workers/client';
 import type { NativeLoadReply } from '../workers/nativeLoad';
 import { closeWorkerResult, validBoardIdentity } from '../workers/protocol';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { LegacyScanReply } from '../workers/legacyScan';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: native format fence, legacy preflight and C5 governed worker
 // contracts; independent acquisition client, no third-party source.
@@ -31,7 +32,6 @@ async function validReply(value: unknown, kind: BoardKind, inputBytes: number, c
     };
     for (const [key, count] of Object.entries(report.counts)) if (!string(key) || !Number.isSafeInteger(count) || (count as number) < 0 || (count as number) > RECORD_LIMIT) return false;
     let visits = 0;
-    const yieldToHost = () => new Promise<void>(resolve => setTimeout(resolve, 0));
     for (const issues of [report.repairs, report.unrepresentable]) for (const issue of issues) {
         if (!issue || typeof issue !== 'object' || Array.isArray(issue)) return false;
         const item = issue as Record<string, unknown>;
@@ -71,7 +71,7 @@ export async function scanLegacyBoard(options: {
     const pinned = Object.freeze({ ...identity });
     if (!options.isCurrent(pinned)) throw new DOMException('Legacy scan is stale', 'AbortError');
     const value: unknown = await boardWorker('parse').request('legacyScan', { bytes, kind: options.kind }, pinned,
-        { priority: 0, cpu: 'governed', deadlineMs: importDeadline(bytes.size), signal: options.signal }, options.isCurrent);
+        { priority: 0, cpu: 'governed', deadlineMs: LEGACY_LOAD_DEADLINE_MS, signal: options.signal }, options.isCurrent);
     try {
         options.signal?.throwIfAborted();
         const check = () => { options.signal?.throwIfAborted(); if (!options.isCurrent(pinned)) throw new DOMException('Legacy scan is stale', 'AbortError'); };

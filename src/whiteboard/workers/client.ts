@@ -24,6 +24,11 @@ export function importDeadline(byteLength: number): number {
     if (!Number.isSafeInteger(byteLength) || byteLength < 0) throw new RangeError('Invalid import length');
     return Math.max(10_000, Math.ceil(byteLength * 30_000 / 100_000_000));
 }
+/** A legacy (tldraw-format) load's request ceiling, the board workers' own absolute cap. A stalled load is caught by the
+ * worker host's progress watchdog instead (every slice heartbeats; 20 s of silence at priority 0 kills the worker), so
+ * this only bounds work that keeps making progress. Sized by bytes, as before, it failed real boards for being large:
+ * `max(30 s, 0.3 ms/KB)` ended a 1.04 MB, ~2,000-shape board at 30.6 s ("Worker request deadline elapsed"). */
+export const LEGACY_LOAD_DEADLINE_MS = 600_000;
 function defaultDeadline(kind: SharedBoardWorker): number {
     return kind === 'decode' ? 10_000 : kind === 'export' ? 60_000 : 120_000;
 }

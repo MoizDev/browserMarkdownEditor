@@ -2,9 +2,10 @@ import { cameraForPagedPosition, fitWidthZ, pagedConstraint, pagedPosition,
     type PagedPosition, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { PageStack } from '../../platform/render/pageStack';
 import type { Camera, Viewport } from '../../platform/types';
+import { PAGED_TOP_INSET } from '../../utils/pagedChrome';
 
-export const NOTEBOOK_INSETS: Readonly<ViewportInsets> = Object.freeze({ left: 0, right: 0, top: 56, bottom: 0 });
-export const PDF_INK_INSETS: Readonly<ViewportInsets> = Object.freeze({ left: 0, right: 0, top: 16, bottom: 0 });
+export const NOTEBOOK_INSETS: Readonly<ViewportInsets> = Object.freeze({ left: 0, right: 0, top: PAGED_TOP_INSET, bottom: 0 });
+export const PDF_INK_INSETS: Readonly<ViewportInsets> = Object.freeze({ left: 0, right: 0, top: PAGED_TOP_INSET, bottom: 0 });
 
 function clampCamera(camera: Camera, viewport: Viewport, stack: Readonly<PageStack>, insets: ViewportInsets, limits: ZoomLimits): Camera {
     const bounds = pagedConstraint(stack, limits, insets).bounds(camera, viewport);

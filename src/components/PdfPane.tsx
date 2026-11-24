@@ -40,12 +40,13 @@ import './PdfPane.css';
 import { getPdfInkSourceState } from '../whiteboard/host/pdfInkSourceState';
 
 import { nativePdfEntrySlot, pdfTiledSurfaceSlot, pdfTiledTextSurfaceSlot } from './pdfSurfaceModules';
+import { PAGED_TOP_INSET } from '../utils/pagedChrome';
 
 const PdfTiledSurface = pdfTiledSurfaceSlot.View;
 const PdfTiledTextSurface = pdfTiledTextSurfaceSlot.View;
 const NativePdfEntry = nativePdfEntrySlot.View;
 const NATIVE_PDF_ZOOM = Object.freeze({ min: 0.4, max: 4 });
-const NATIVE_PDF_INSETS = Object.freeze({ left: 28, right: 28, top: 16, bottom: 0 });
+const NATIVE_PDF_INSETS = Object.freeze({ left: 28, right: 28, top: PAGED_TOP_INSET, bottom: 0 });
 const noSubscription = () => () => {};
 
 export interface PdfPaneProps {

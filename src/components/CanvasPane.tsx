@@ -11,6 +11,7 @@ import { getBoardPreferences, subscribeBoardPreferences, updateBoardPreferences 
 import type { ActiveFile, DiskAction, Theme } from '../types';
 import type { DocumentRepresentation } from '../types/reading';
 import type { NativeCanvasHost } from '../types/nativeCanvas';
+import { PAGED_TOP_INSET } from '../utils/pagedChrome';
 
 const subscribeScheme = (listener: () => void) => subscribeBoardPreferences(listener);
 const readScheme = () => getBoardPreferences().colorScheme;
@@ -33,7 +34,7 @@ const NativeCanvasEntry = nativeCanvasEntrySlot.View;
 const DRAWING_VIEW_LIMITS = Object.freeze({ min: 0.01, max: 100 });
 const PAGED_VIEW_LIMITS = Object.freeze({ min: 0.4, max: 4 });
 const DRAWING_VIEW_INSETS = Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 });
-const PAGED_VIEW_INSETS = Object.freeze({ left: 28, right: 28, top: 16, bottom: 0 });
+const PAGED_VIEW_INSETS = Object.freeze({ left: 28, right: 28, top: PAGED_TOP_INSET, bottom: 0 });
 
 export interface CanvasPaneProps {
     file: ActiveFile;

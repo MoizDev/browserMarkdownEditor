@@ -171,9 +171,10 @@ export function createBoardRenderServices(options: {
     // One ladder per stroke, valid for its geometry signature: an edit replaces the signature, so the old
     // ladder is disposed at the next prepare, and the cache trim and session end release the rest.
     const inkLadders = new Map<NodeId, { readonly signature: readonly unknown[]; readonly ladder: InkLodLadder }>();
-    const evictInkLadders = (bytes: number) => {
+    const evictInkLadders = (bytes: number): number => {
         let freed = 0;
         for (const { ladder } of inkLadders.values()) { if (freed >= bytes) break; freed += ladder.evict(bytes - freed); }
+        return freed;
     };
     // Idle entries are bounded by bytes, and each lease is charged to the derived handle, so the governor reclaims them first.
     const idle = new Map<string, { readonly node: NodeId; readonly bytes: number; readonly lease: ByteLease | null }>();
@@ -244,11 +245,15 @@ export function createBoardRenderServices(options: {
         if (entry && !variantsOf.has(entry.node)) dropInkLadder(entry.node);
         return { bytes: entry?.bytes ?? 0, charged: entry?.lease?.bytes ?? 0 };
     };
-    // The governor's request: idle geometry first (rebuildable from the document), then stroke ladders.
+    // The governor's request: idle geometry first (rebuildable from the document), then stroke ladders, then the session's resolved
+    // paint (rebuilt by the next resolve). Left out, the resolved paint was the one derived charge no trim could take: an old board of
+    // 450 pen strokes held most of the 32 MiB CPU pool in it, every frame was refused, idle geometry was trimmed and rebuilt 379 times
+    // in 15 s, and the pane stayed on "Waiting for memory to draw this board…" for good (measured, CfT 157, M4 Pro, one pane).
     const evictDerived = (bytes: number) => {
         let freed = 0;
         while (freed < bytes) { const evicted = evictOldestIdle(); if (!evicted) break; freed += evicted.charged; }
-        if (freed < bytes) evictInkLadders(bytes - freed);
+        if (freed < bytes) freed += evictInkLadders(bytes - freed);
+        if (freed < bytes && sessionResolved) { auditCount(AUDIT, 'geometry:evict-resolved'); freed += sessionResolved.evict(); }
     };
     const derived = options.derivedMemory?.(evictDerived);
     // The session's resolved paint, one revision at a time. A node resolves to the same items in every stream and frame of one

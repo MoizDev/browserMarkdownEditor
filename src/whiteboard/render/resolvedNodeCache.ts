@@ -44,6 +44,16 @@ export class ResolvedNodeCache {
         this.#used = used;
     }
 
+    /** Drops every resolved node and returns the bytes released; the cache stays usable (the governor's trim of a session's cache). */
+    evict(): number {
+        const freed = this.#leased;
+        this.#nodes.clear(); this.#used = 0; this.#variant = '';
+        const leases = this.#leases.splice(0);
+        this.#leased = 0;
+        for (const lease of leases) this.memory.release(lease);
+        return freed;
+    }
+
     /** Drops every resolved node and releases its charge; a disposed cache keeps nothing further. */
     dispose(): void {
         if (this.#closed) return;

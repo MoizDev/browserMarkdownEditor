@@ -155,7 +155,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   selection, Space held pages the view, otherwise they pan); a printable unbound key with a selection starts typing
   into it (`typeText`; Space never does); Space and `z` hold pan and zoom; then the binding. A bound key is a shortcut
   before it is text (⌘⌥/, Ctrl+Alt+/ off macOS, opens the dialog, never types `/`). Modifier releases are debounced 150 ms
-  (`input/modifierRelease.ts`). A read-only board runs only the `view` and `accessibility` rows, `select.*`,
+  (`input/modifierRelease.ts`), and every pointer event's own flags (and blur, focus loss, a hidden page) reconcile what
+  is held: the board may see only half of a keydown/keyup pair. A temporary tool a view put up (the ⌘ eraser) is given
+  back when that view detaches; the tool state outlives it. A read-only board runs only the `view` and `accessibility` rows, `select.*`,
   `tool.select`, `tool.hand` and `preferences.*`.
 - Every gesture or shortcut a person can use belongs in the help page (`utils/helpDoc.ts`, owned by AGENTS.md's
   rule): a user-facing change is not finished until it is described there.

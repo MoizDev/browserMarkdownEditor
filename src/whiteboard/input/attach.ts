@@ -161,14 +161,16 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   }
   const holdAccelEraser = (modifiers: Modifiers) => {
     accelHeld = modifiers.accel
-    if (!editable() || !services.tools.getRegistration('eraser')) return
-    const active = services.tools.getSnapshot().active.id
-    if (modifiers.accel) {
-      if (accelTool === null && !router.activeOwner && (active === 'pen' || active === 'highlighter')) { accelTool = active; services.tools.setTool('eraser') }
-    } else if (accelTool !== null) {
+    // Giving the tool back never waits on the view being editable: a release that did was lost for good.
+    if (!modifiers.accel) {
+      if (accelTool === null) return
       if (router.activeOwner) accelReturn = true
       else releaseAccelEraser()
+      return
     }
+    if (!editable() || !services.tools.getRegistration('eraser')) return
+    const active = services.tools.getSnapshot().active.id
+    if (accelTool === null && !router.activeOwner && (active === 'pen' || active === 'highlighter')) { accelTool = active; services.tools.setTool('eraser') }
   }
   const modifierRelease = new ModifierRelease(modifiers => { trackShift(modifiers.shift); altHeld = modifiers.alt; showZoomCursor(); holdAccelEraser(modifiers); pointer.modifiersChanged(modifiers) })
   const wholeItems = (owner: GestureOwner): GestureOwner => ({
@@ -431,12 +433,19 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     zoomIn: zoomInOneStep, changed: services.cameraChanged })
   const contact = (event: PointerEvent): ContactPoint => ({ ...view.mappings.surface(event.timeStamp, event.clientX, event.clientY),
     id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
+  const modifiersOf = (event: KeyboardEvent | MouseEvent): Modifiers => ({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: services.mac ? event.metaKey : event.ctrlKey })
+  // What is held is read off every pointer event too, never only off a keydown/keyup pair the board may half see: a
+  // key-up that went to another element or window left the temporary tool up until the key was pressed and released
+  // again on the board (measured: ⌘'s key-up kept from the board, Draw stayed the Eraser through hovers and presses).
+  const reconcileModifiers = (event: PointerEvent) => { if (current()) modifierRelease.update(modifiersOf(event)) }
   const down = (event: PointerEvent) => {
     rememberPointer(event)
     services.textInput?.cancelPending()
     if (!current()) return
     services.cancelMotion?.()
-    // A key released a moment ago must not count as held at the start of this press (catalogue I§1.4).
+    // A key released a moment ago must not count as held at the start of this press (catalogue I§1.4); nor one the board
+    // saw go down but never come up, which this press's own flags say is not held.
+    reconcileModifiers(event)
     modifierRelease.flush()
     if (!router.activeOwner) { dismissKeyboardCursor(); cancelContinuations(); services.cancelPendingGestures() }
     let focusSurface = event.pointerType !== 'touch'
@@ -463,6 +472,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (event.pointerType !== 'touch' && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) overview.track(view.clientToSurface(event.clientX, event.clientY))
     services.textInput?.cancelPending()
     if (!current()) return
+    // A hover is enough: the tool shown on the bar follows the keys really held before any press.
+    reconcileModifiers(event)
     if (event.pointerType === 'touch') { const point = contact(event); doubleTap.move(event.pointerId, point); touch.touchMove(point) }
     else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover()
   }
@@ -589,7 +600,6 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cursor.activate(services.keyboardCursorInitial?.() ?? { x: viewport.width / 2, y: viewport.height / 2 })
     view.surface.focus()
   })
-  const modifiersOf = (event: KeyboardEvent): Modifiers => ({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: services.mac ? event.metaKey : event.ctrlKey })
   const stopKeys = installKeyboard(view.surface, {
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
@@ -771,6 +781,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const detach = () => {
     if (!live) return
     flush()
+    // The tool state belongs to the runtime and outlives this view; a temporary eraser this view put up must not. ⌘E out
+    // of Annotate holds ⌘ on the board (eraser) and then takes the board away before ⌘ comes up: every later entry, by
+    // shortcut or by click, opened on the Eraser and a stroke erased instead of drawing (measured: 3 of 3 re-entries).
+    if (accelTool !== null) releaseAccelEraser()
     window.removeEventListener('pagehide', pagehide)
     stopFlush?.(); delegated?.dispose(); unbindPointer(); unbindChromeDrag(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.(); modifierRelease.dispose()
     pointer.dispose()

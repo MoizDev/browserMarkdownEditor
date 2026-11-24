@@ -304,6 +304,8 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
   }
   const clear = (): void => { started.clear(); spaceHeld = false; actions.clearLatches() }
   const blur = (): void => { clear() }
+  // A tab or window hidden with a key held never sees its key-up here (and a hidden tab is not always blurred first).
+  const visibility = (): void => { if (document.visibilityState === 'hidden') clear() }
   const focusout = (event: FocusEvent): void => {
     if (!(event.relatedTarget instanceof Node) || !root.contains(event.relatedTarget)) clear()
   }
@@ -311,5 +313,6 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
   root.addEventListener('keydown', keydown)
   window.addEventListener('keyup', keyup)
   window.addEventListener('blur', blur)
-  return () => { root.removeEventListener('focusout', focusout); root.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('blur', blur); clear() }
+  document.addEventListener('visibilitychange', visibility)
+  return () => { root.removeEventListener('focusout', focusout); root.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', visibility); clear() }
 }

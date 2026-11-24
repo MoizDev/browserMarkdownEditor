@@ -48,6 +48,9 @@ export interface ItemRoute<I extends PaintItem = PaintItem> {
      *  composer's encodeOffscreen runs after the passes of the layers encoded before it. */
     uploadPrepared?(): void;
     retire(run: PreparedRun): void;
+    /** A run whose admission the route keeps across frames (deferred part way, resumed at the item it stopped at) is let go: what it
+     *  had admitted is retired. The composer calls it for every run of a position it cancels. */
+    abandon?(items: readonly I[]): void;
     /** Every GPU resource; idempotent. */
     release(): void;
     memory(): { gpuBytes: number; cpuBytes: number };
@@ -105,8 +108,8 @@ export interface TileStore {
     acquire(key: TileKey, blend: Blend, device: GfxDevice, prefetch?: boolean): TileEntry | null;
     putEmpty(key: TileKey): TileEntry;
     markDirty(world: Readonly<Rect> | 'all', band?: PaintBand): number;
-    /** Composed entries of other scales covering `world`, nearest scale first. */
-    standIns(band: PaintBand, world: Readonly<Rect>, scale: number): readonly TileEntry[];
+    /** Composed entries of other scales covering `world`, nearest scale first; `empty` includes the cells composed empty. */
+    standIns(band: PaintBand, world: Readonly<Rect>, scale: number, empty?: boolean): readonly TileEntry[];
     touch(entry: TileEntry, frameId: number): void;
     /** Never an on-view entry touched in `frameId`, unless the composer draws the view live (`live`: no tile is drawn). Order:
      *  free list, other scales off view (live: every other scale), same scale off view (farthest first), then, live while the view
@@ -114,7 +117,9 @@ export interface TileStore {
     evict(bytes: number, frameId: number, view: ViewState, live?: LiveEviction): number;
     /** Stamps every held entry the view shows, at any scale, as used in `frameId` (see Layer.protectFrame). */
     touchVisible(view: ViewState, frameId: number): void;
-    dropScalesExcept(scale: number, band: PaintBand): number;
+    /** Drops every entry of `band` at another scale than `scale`, but `keep` (the composer's floor) and the entries used in frame
+     * `usedSince` or later (a picture on screen). Returns the entries dropped. */
+    dropScalesExcept(scale: number, band: PaintBand, keep?: number, usedSince?: number): number;
     wait(bytes: number, wake: () => void): void;
     releaseAll(): void;
     memory(): { gpuBytes: number; cpuBytes: number };

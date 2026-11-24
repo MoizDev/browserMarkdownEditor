@@ -1,7 +1,7 @@
 import type { Affine, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { AreaOutput, ByteLease, GpuPass, RectI } from '../../../platform/render/gfx/api';
-import { createAreaKit, type AreaPart, type PreparedArea } from '../../../platform/render/areaCoverage';
+import { createAreaKit, type AreaAdmission, type AreaPart, type PreparedArea } from '../../../platform/render/areaCoverage';
 import { ArenaError } from '../../../platform/render/resourceArena';
 import type { InkCoverage } from '../../ink/outline';
 import { unionOutline } from '../../ink/unionOutline';
@@ -33,7 +33,8 @@ type UnionEntry = { readonly kind: 'area'; readonly prepared: PreparedArea }
     | { readonly kind: 'grid'; readonly prepared: PreparedPathCoverage; readonly paint: { colour: Rgba } };
 class UnionInkRun implements PreparedRun {
     readonly route = 'ink-union' as const;
-    constructor(readonly blend: Blend, readonly entries: readonly UnionEntry[], readonly items: readonly PaintInkItem[]) {}
+    /** `inexact`: a stroke of it draws another band's outline (see admitArea), so its picture is recomposed once the view rests. */
+    constructor(readonly blend: Blend, readonly entries: readonly UnionEntry[], readonly items: readonly PaintInkItem[], readonly inexact = false) {}
 }
 
 /** The flattening tolerance of a stroke's arcs, in device px at its band's largest scale (the path route's exact-area tolerance). */
@@ -109,15 +110,24 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
     const areaKit = createAreaKit();
     areaKit.warm(host);
     const areas = new Map<object, InkArea>();
+    // The outline a stroke had at its last band, kept while its new band's outline is still uploading: a moving view draws it meanwhile
+    // (admitArea), never nothing. Let go once the new one is admitted, or by the reclaims, first.
+    const previous = new Map<object, InkArea>();
     // The route's current frame and the one before it (areas either used are kept by the size limit, see reclaimAreas).
     let areaBytes = 0, areaFrame = -1, areaPrevious = -1;
     const pinned = new Set<object>();
-    const dropArea = (key: object, old: InkArea): number => {
-        areas.delete(key);
+    const freeArea = (old: InkArea): number => {
         if (old.edges) areaKit.forget(old.edges);
         if (!old.lease) return 0;
         areaBytes -= old.bytes; host.allocator.cpu.release(old.lease);
         return old.bytes;
+    };
+    const dropArea = (key: object, old: InkArea): number => { areas.delete(key); return freeArea(old); };
+    const dropPrevious = (key: object): number => {
+        const old = previous.get(key);
+        if (!old) return 0;
+        previous.delete(key);
+        return freeArea(old);
     };
     /** Drops the least recently used outlines no admission in progress holds. `keepRecent` (the size limit's trim) also keeps what this
      * frame or the route's previous one used: a deferred admission resumes next frame from the outlines it built, and dropped at the
@@ -126,6 +136,8 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
      * good). A refused CPU lease reclaims recent ones too: memory comes first, and the bytes kept are the pool's leases either way. */
     const reclaimAreas = (bytes: number, keepRecent = false): number => {
         let freed = 0;
+        // The outlines kept only to stand in while a new band uploads go first: each stroke has its current one.
+        for (const key of [...previous.keys()]) { if (freed >= bytes) break; if (!pinned.has(key)) freed += dropPrevious(key); }
         for (const [key, old] of areas) {
             if (freed >= bytes) break;
             if (!pinned.has(key) && !(keepRecent && old.used >= areaPrevious)) freed += dropArea(key, old);
@@ -143,7 +155,8 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
             if (cached.band !== band) auditCount(audit, 'ink:area:band-held');
             areas.delete(key); areas.set(key, cached); pinned.add(key); cached.used = areaFrame; return cached;
         }
-        if (cached) dropArea(key, cached);
+        // The outgoing band's outline is kept aside, not dropped, until the new one is admitted (see admitArea): one kept per stroke.
+        if (cached) { areas.delete(key); dropPrevious(key); if (cached.edges?.length) previous.set(key, cached); else freeArea(cached); }
         const chunks = inkCoverageChunks(item.coverage);
         const outline = chunks.length ? strokeOutline(chunks, AREA_FLATTEN_DEVICE_PX / band) : { edges: new Float64Array(0), why: null };
         let area: InkArea;
@@ -171,12 +184,8 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
     };
     const part: AreaPart[] = [{ edges: new Float32Array(0), affine: [1, 0, 0, 1, 0, 0] }];
     /** A stroke's exact area: admitted, or null when the grid draws it (the reason counted), or a stop that ends the run's admission. */
-    const admitArea = (item: PaintInkItem, view: ViewState, band: number, budget: FrameBudget):
-        PreparedArea | 'grid' | 'empty' | Admission<PreparedRun> => {
-        const area = areaOf(item, band, view.moving);
-        if ('refused' in area) return { status: 'denied', pool: 'cpu', bytes: area.refused };
-        if (!area.edges) { auditCount(audit, `ink:area:fallback:${area.why}`); return 'grid'; }
-        if (!area.edges.length) return 'empty';
+    /** Admits one outline of a stroke at the view: its device bounds and affine, then the kit. */
+    const admitOutline = (item: PaintInkItem, area: InkArea & { readonly edges: Float32Array }, view: ViewState, budget: FrameBudget): 'empty' | AreaAdmission => {
         const viewport = pixels(view);
         const [A, B, C, D, E, F] = affineAt(item.localToWorld, area.origin, view);
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -189,7 +198,31 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         if (!(x1 > x0 && y1 > y0)) return 'empty';
         const bounds: RectI = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
         part[0] = { edges: area.edges, affine: [A, B, C, D, E - x0, F - y0] };
-        const result = areaKit.admit(host, part, bounds, budget, viewport);
+        return areaKit.admit(host, part, bounds, budget, viewport);
+    };
+    /** Set when admitArea drew a stroke from its outgoing band's outline: the run it joins is inexact. */
+    let heldBand = false;
+    /** A stroke's exact area: admitted, or null when the grid draws it (the reason counted), or a stop that ends the run's admission. */
+    const admitArea = (item: PaintInkItem, view: ViewState, band: number, budget: FrameBudget):
+        PreparedArea | 'grid' | 'empty' | Admission<PreparedRun> => {
+        const area = areaOf(item, band, view.moving);
+        if ('refused' in area) return { status: 'denied', pool: 'cpu', bytes: area.refused };
+        if (!area.edges) { auditCount(audit, `ink:area:fallback:${area.why}`); return 'grid'; }
+        if (!area.edges.length) return 'empty';
+        let result = admitOutline(item, area as InkArea & { readonly edges: Float32Array }, view, budget);
+        if (result === 'empty') return 'empty';
+        // A moving view whose new band's outline is still uploading (the frame's upload allowance spent) draws the stroke from the outline
+        // it had at its last band, already on the device, marked inexact so the rest recomposes it. Deferred, the stroke left the frame:
+        // a zoom crossing a band dropped every stroke in view for a frame or more (measured, 450 strokes pinched at 120 Hz: ~330 gone
+        // for up to 7 frames). The other band's flattening is within 0.08 px at the octave this route crosses per band.
+        if (result.status === 'deferred' && view.moving) {
+            const old = previous.get(item.coverage);
+            if (old?.edges?.length) {
+                const held = admitOutline(item, old as InkArea & { readonly edges: Float32Array }, view, budget);
+                if (held === 'empty') return 'empty';
+                if (held.status === 'ready') { auditCount(audit, 'ink:area:band-stand-in'); heldBand = true; result = held; }
+            }
+        } else if (result.status === 'ready') dropPrevious(item.coverage);
         if (result.status === 'ready') { auditCount(audit, 'ink:area:exact'); return result.value; }
         if (result.status === 'empty') return 'empty';
         if (result.status === 'unsupported') { auditCount(audit, 'ink:area:fallback:unsupported'); return 'grid'; }
@@ -214,18 +247,44 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         host.invalidate('ink-area-refused');
     };
 
-    const union: ItemRoute<PaintInkItem> & { drawRefusedThisFrame(): boolean } = {
+    // Runs deferred part way, by their item array (see admit): what each had admitted and where it stopped. A run its composer lets go
+    // of is abandoned (abandon), which retires what it held.
+    const pendingRuns = new Map<readonly PaintInkItem[], { readonly view: ViewState; readonly blend: Blend; readonly entries: UnionEntry[];
+        readonly admittedItems: PaintInkItem[]; readonly next: number; readonly inexact: boolean }>();
+    const abandon = (items: readonly PaintItem[]): void => {
+        const pend = pendingRuns.get(items as readonly PaintInkItem[]);
+        if (!pend) return;
+        pendingRuns.delete(items as readonly PaintInkItem[]);
+        for (const entry of pend.entries) retireEntry(entry);
+    };
+    const union: ItemRoute<PaintInkItem> & { drawRefusedThisFrame(): boolean; exact(run: PreparedRun): boolean } = {
         id: 'ink-union',
+        abandon,
+        exact: (run: PreparedRun): boolean => !(run instanceof UnionInkRun) || !run.inexact,
         drawRefusedThisFrame: (): boolean => kit.drawRefusedThisFrame() || areaRefusedFrame === areaFrame,
         accepts: (item: PaintItem): item is PaintInkItem => item.kind === 'ink' && inkRouteFor(item) === 'ink-union',
         admit(items, view, blend, budget): Admission<PreparedRun> {
             beginFrame(budget.frameId);
+            // A run deferred part way resumes at the stroke it stopped at, with the strokes it had admitted (the same run: its items, view and
+            // blend). Started over, a run whose strokes did not all fit one frame's upload allowance spent each frame re-admitting its first
+            // strokes and never reached its last: a slow GPU's frames left one tile deferred at every vsync for good (measured, the
+            // 5,642-stroke board zoomed to 1745% and back to fit with the GPU slowed: 'Updating…' for 90 s, 182 frames per 10 s).
+            let resumed = pendingRuns.get(items);
+            if (resumed) { pendingRuns.delete(items); if (resumed.view !== view || resumed.blend !== blend) { for (const entry of resumed.entries) retireEntry(entry); resumed = undefined; } }
+            heldBand = resumed?.inexact ?? false;
             // A multiply slice: the area kit's modulate output, or the grid's modulate cover (each stroke multiplies k = C·c + 1 − α·c).
             const modulate = blend === 'modulate';
-            const entries: UnionEntry[] = [], admittedItems: PaintInkItem[] = [];
+            const entries: UnionEntry[] = resumed?.entries ?? [], admittedItems: PaintInkItem[] = resumed?.admittedItems ?? [];
             const retireAll = (): void => { for (const entry of entries) retireEntry(entry); };
+            /** Keeps what this run admitted for its next call, and defers. */
+            const deferAt = (next: number): Admission<PreparedRun> => {
+                if (entries.length) pendingRuns.set(items, { view, blend, entries, admittedItems, next, inexact: heldBand });
+                auditCount(audit, 'ink:union:deferred-at', 1);
+                return { status: 'deferred' };
+            };
             try {
-                for (const item of items) {
+                for (let index = resumed?.next ?? 0; index < items.length; index++) {
+                    const item = items[index];
                     if (item.material.blend !== (modulate ? 'multiply' : 'normal')) { retireAll(); return { status: 'unsupported', why: 'blend-mismatch' }; }
                     const [a, b, c, d] = item.localToWorld;
                     const deviceScale = view.camera.z * view.viewport.dpr * Math.hypot(a, b, c, d);
@@ -236,7 +295,7 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                     if (timed) { auditCount(audit, 'ink:area-calls'); auditCount(audit, 'ink:area-hundredths-ms', Math.round((performance.now() - timed) * 100)); }
                     if (area === 'empty') continue;
                     if (area !== 'grid') {
-                        if ('status' in area) { retireAll(); return area; }
+                        if ('status' in area) { if (area.status === 'deferred') return deferAt(index); retireAll(); return area; }
                         entries.push({ kind: 'area', prepared: area }); admittedItems.push(item);
                         continue;
                     }
@@ -252,6 +311,7 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                         sampling: 'grid4',
                     }, budget);
                     if (result.status === 'ready') { entries.push({ kind: 'grid', prepared: result.value, paint: { colour: item.material.color } }); admittedItems.push(item); }
+                    else if (result.status === 'deferred') return deferAt(index);
                     else if (result.status !== 'empty') {
                         retireAll();
                         // The kit's own upload: two doubles per vertex are eight bytes, so a double is four bytes.
@@ -260,13 +320,12 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                             for (const set of stroke.sets) bytes += set.triangles.length * 4;
                             return { status: 'denied', pool: 'gpu', bytes };
                         }
-                        if (result.status === 'deferred') return { status: 'deferred' };
                         return { status: 'unsupported', why: 'coverage-kit' };
                     }
                 }
             } finally { pinned.clear(); }
             if (!entries.length) return { status: 'empty' };
-            return { status: 'ready', value: new UnionInkRun(blend, entries, admittedItems) };
+            return { status: 'ready', value: new UnionInkRun(blend, entries, admittedItems, heldBand) };
         },
         draw(pass: GpuPass, run: PreparedRun): void {
             if (!(run instanceof UnionInkRun)) throw new Error('Not a union ink run');
@@ -306,7 +365,9 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
             if (run instanceof UnionInkRun) for (const entry of run.entries) retireEntry(entry);
         },
         release(): void {
+            for (const items of [...pendingRuns.keys()]) abandon(items);
             kit.release(); geometry.release();
+            for (const key of [...previous.keys()]) dropPrevious(key);
             for (const [key, old] of [...areas]) dropArea(key, old);
             areaKit.release();
         },

@@ -306,8 +306,9 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
         };
         lease.setViewCommands(id => {
             switch (id) {
-                case 'camera.zoomIn': return operation(camera.zoomIn);
-                case 'camera.zoomOut': return operation(camera.zoomOut);
+                // The view tracks no pointer of its own, so the "at cursor" rows step about the middle rather than do nothing.
+                case 'camera.zoomIn': case 'camera.zoomInCursor': return operation(camera.zoomIn);
+                case 'camera.zoomOut': case 'camera.zoomOutCursor': return operation(camera.zoomOut);
                 case 'camera.reset': return operation(camera.zoomTo100);
                 case 'camera.fit': return operation(camera.zoomToFit);
                 case 'camera.selection': return operation(camera.zoomToSelection);

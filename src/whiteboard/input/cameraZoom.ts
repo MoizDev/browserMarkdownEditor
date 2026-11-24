@@ -22,7 +22,10 @@ export function stepBoardZoom(doc: BoardDoc, camera: CameraController, direction
         if (relative >= (STEPS[i - 1] + STEPS[i]) / 2) nearest = i;
         else break;
     }
-    return STEPS[Math.max(0, Math.min(STEPS.length - 1, nearest + direction))] * unit;
+    const rung = STEPS[Math.max(0, Math.min(STEPS.length - 1, nearest + direction))] * unit;
+    // Past either end of the ladder (zoom to fit on a tiny drawing, a pinch) a step holds where it is: clamped to the end
+    // rung, Zoom in at 1193% zoomed OUT to 800%.
+    return direction > 0 ? Math.max(rung, camera.camera.z) : Math.min(rung, camera.camera.z);
 }
 export function resetBoardZoom(doc: BoardDoc, camera: CameraController): number {
     const unit = boardZoomBase(doc, camera);

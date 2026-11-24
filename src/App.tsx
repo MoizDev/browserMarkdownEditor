@@ -462,7 +462,7 @@ export default function App() {
     currentPdfOwner, keepPdfBaseline, flushTab, documentBuffers, documentSessions, removeTab, hasUnsaved,
     reloadFromDisk, bumpBytesGeneration, clearSaveTimer, syncExitGuard, recoveryEvent, announce, ask,
     tell, getVaultActivation, recreateFile, resolveFileHandle, resolveVaultFile, readBytesVersioned,
-    readFileVersioned, writeConflictCopy
+    readFileVersioned, writeFileVersioned, writeConflictCopy
   });
 
   const {

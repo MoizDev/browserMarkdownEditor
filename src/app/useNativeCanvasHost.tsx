@@ -85,7 +85,9 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
         return 'The native canvas changed; reopen it to continue.';
       if (!hasHostedNativeOwner(entry, identity.documentId)) return 'The native canvas has no active editor.';
       if (!getBaseline(identity.documentId)) return 'The file has no disk baseline yet.';
-      if (diskStateRef.current.has(identity.documentId)) return 'The file changed on disk; resolve the conflict first.';
+      const held = diskStateRef.current.get(identity.documentId);
+      if (held) return held === 'deleted' ? 'This file was deleted on disk. Choose Save again or Close in the bar above.'
+        : 'This file changed on disk. Choose Reload or Keep mine in the bar above to go on editing.';
       if (identity.kind === 'pdfInk' && policy.pdfWriteAuthority?.canWriteSource() !== true) return 'The PDF source is locked for writing.';
       return null;
     };

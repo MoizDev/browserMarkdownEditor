@@ -44,6 +44,7 @@ export interface UseDiskBarActionsDeps {
   resolveVaultFile: FileSystemContextValue['resolveVaultFile'];
   readBytesVersioned: FileSystemContextValue['readBytesVersioned'];
   readFileVersioned: FileSystemContextValue['readFileVersioned'];
+  writeFileVersioned: FileSystemContextValue['writeFileVersioned'];
   writeConflictCopy: FileSystemContextValue['writeConflictCopy'];
 }
 
@@ -54,7 +55,7 @@ export function useDiskBarActions(deps: UseDiskBarActionsDeps) {
     currentPdfOwner, keepPdfBaseline, flushTab, documentBuffers, documentSessions, removeTab, hasUnsaved,
     reloadFromDisk, bumpBytesGeneration, clearSaveTimer, syncExitGuard, recoveryEvent, announce, ask, tell,
     getVaultActivation, recreateFile, resolveFileHandle, resolveVaultFile, readBytesVersioned,
-    readFileVersioned, writeConflictCopy,
+    readFileVersioned, writeFileVersioned, writeConflictCopy,
   } = deps;
 
   /**
@@ -70,10 +71,10 @@ export function useDiskBarActions(deps: UseDiskBarActionsDeps) {
       currentPdfOwner, keepPdfBaseline, flushTab, documentBuffers, documentSessions, removeTab, hasUnsaved,
       reloadFromDisk, bumpBytesGeneration, clearSaveTimer, syncExitGuard, recoveryEvent, announce, ask, tell,
       getVaultActivation, recreateFile, resolveFileHandle, resolveVaultFile, readBytesVersioned,
-      readFileVersioned, writeConflictCopy, resolvingRef,
+      readFileVersioned, writeFileVersioned, writeConflictCopy, resolvingRef,
     }, path, action), [
       ask, tell, announce, hasUnsaved, removeTab, recreateFile, setDiskState, clearSaveTimer,
-      resolveFileHandle, readBytesVersioned, readFileVersioned, writeConflictCopy, reloadFromDisk, flushTab,
+      resolveFileHandle, readBytesVersioned, readFileVersioned, writeFileVersioned, writeConflictCopy, reloadFromDisk, flushTab,
       resolveVaultFile, syncExitGuard, getVaultActivation, currentPdfOwner, keepPdfBaseline,
       setPdfRebuildNotice, documentBuffers, documentSessions, indexGraphRef, recoveryEvent,
       bumpBytesGeneration, bytesGenerationsRef, diskStateRef, nativePoliciesRef, pdfRebuildRef,

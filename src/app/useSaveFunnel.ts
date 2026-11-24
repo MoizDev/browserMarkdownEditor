@@ -183,7 +183,7 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
   // vault switch passes the one being left, since by then the context already
   // names the next one.
   const flushTab = useCallback(async (
-    path: string | null, force = false, closing = false,
+    path: string | null, force: boolean | 'rewrite' = false, closing = false,
     vaultRoot?: FileSystemDirectoryHandle | null, trashOwned = false, serializerCallback = false,
   ): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
     if (!path) return 'skipped';
@@ -228,9 +228,12 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     // Native pending work includes the own-save source rebind, not just new
     // content. Rewriting an already-acknowledged checkpoint bumps PDF bytes
     // without a second checkpoint acknowledgement, stranding that live source.
-    if (nativeSource && !documentBuffers.isDirty(tab.id)) return 'skipped';
+    // Keep mine is the exception: the file is somebody else's now, and the saved checkpoint is the version being kept
+    // (its caller replaces a PDF's session after the write, so no live source is left stranded).
+    const rewrite = force === 'rewrite' && nativeSource;
+    if (nativeSource && !documentBuffers.isDirty(tab.id) && !rewrite) return 'skipped';
     const acceptedFlushable = documentBuffers.get(tab.id)?.flushable;
-    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !((pending || documentBuffers.isDirty(tab.id)) && acceptedFlushable && tab.representation.status === 'ready'
+    if (tab.representation?.emergencyReadOnly || (!canFlushTab(tab) && !((pending || documentBuffers.isDirty(tab.id) || rewrite) && acceptedFlushable && tab.representation.status === 'ready'
       && (nativeAuthorized || tab.representation.loadedKind === 'pdf' && getPdfRenderData(path))))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
     if (!tab.dirty && !documentBuffers.isDirty(tab.id) && !pending && !force) return 'skipped';

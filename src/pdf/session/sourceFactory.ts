@@ -19,6 +19,7 @@ interface Entry {
     readonly session: PdfTiledDocumentSession;
     binding: PdfReadingBinding;
     version?: Promise<DiskVersion>;
+    stable?: Promise<Blob>;
     ready?: Promise<PdfTiledSource>;
 }
 
@@ -57,12 +58,13 @@ export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSo
             if (!current(token)) throw new DOMException('PDF session replaced during source release', 'AbortError');
             let entry = identity.getSlot<Entry>(sourceSlot);
             if (!entry || !matches(entry.token, token)) {
-                const holder: { binding: PdfReadingBinding; version?: Promise<DiskVersion> } = { binding: reading };
+                const holder: { binding: PdfReadingBinding; version?: Promise<DiskVersion>; stable?: Promise<Blob> } = { binding: reading };
                 const session = new PdfTiledDocumentSession(token, 'outer', requestSignal =>
                     holder.binding.acquireSnapshot(holder.binding.identity, requestSignal), pool, current,
                 (stable, stat, requestSignal) => {
                     const version = stable.then(blob => fingerprintSnapshot(blob, requestSignal)).then(hash => ({ ...stat, hash }));
                     holder.version = version;
+                    holder.stable = stable;
                     // Unversioned, the App never compares this document with the disk: a write that landed during the open
                     // left the old pages up for good with no DiskBar (measured: a 287 MB textbook overwritten 0.5 s after the click).
                     void stable.catch(error => {
@@ -72,7 +74,7 @@ export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSo
                     void version.catch(() => {});
                 }, requestPdfPassword);
                 entry = { token, session, get binding() { return holder.binding; }, set binding(value) { holder.binding = value; },
-                    get version() { return holder.version; } };
+                    get version() { return holder.version; }, get stable() { return holder.stable; } };
                 identity.setSlot(sourceSlot, entry, old => old.session.close());
             } else entry.binding = reading;
             await awaitSessionDisposals(id);
@@ -114,4 +116,22 @@ export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSo
             return waitFor(ready, signal);
         },
     };
+}
+
+/**
+ * The bytes Original shows for a document's live byte generation — its memory-backed copy, which no later change on
+ * disk reaches — with their version. Undefined when no reader has opened this generation, or its copy failed.
+ *
+ * The DiskBar's one source for a PDF with no Annotate session: with the file replaced by another program, this copy is
+ * the only place the app's version still exists (it may hold saved ink), so Keep mine writes it back and Reload keeps it.
+ */
+export async function pdfReaderBytes(documentId: string): Promise<{ blob: Blob; version: DiskVersion } | undefined> {
+    const identity = getSessionIdentity(documentId);
+    const entry = identity?.getSlot<Entry>(sourceSlot);
+    if (!identity || !entry?.stable || !entry.version || entry.token.session !== identity.serial
+        || entry.token.bytesGeneration !== identity.bytesGeneration || !entry.session.isCurrent()) return undefined;
+    try {
+        const [blob, version] = await Promise.all([entry.stable, entry.version]);
+        return entry.session.isCurrent() ? { blob, version } : undefined;
+    } catch { return undefined; }
 }

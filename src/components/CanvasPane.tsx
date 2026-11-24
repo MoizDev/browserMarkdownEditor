@@ -51,11 +51,13 @@ export interface CanvasPaneProps {
     registerKeyboardTarget: (path: string, take: () => void) => () => void;
     theme: Theme;
     disk?: 'conflict' | 'deleted';
+    /** Unsaved bytes, as the DiskBar words a conflict. */
+    isDirty: boolean;
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
 }
 
 function CanvasPane({ file, documentId, nativeCanvasHost, representation, onNativeCanvasReady, attachCanvasSession,
-    isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, registerKeyboardTarget, theme, disk, onDiskAction }: CanvasPaneProps) {
+    isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, registerKeyboardTarget, theme, disk, isDirty, onDiskAction }: CanvasPaneProps) {
     const activated = useActivated(isVisible);
     const boardTheme = useWhiteboardTheme(theme);
     const [routes] = useState(() => routeEngines());
@@ -72,7 +74,7 @@ function CanvasPane({ file, documentId, nativeCanvasHost, representation, onNati
     return <div className={`canvas-pane${isVisible ? '' : ' canvas-pane-hidden'}`} style={slotStyle}
         data-board-theme={loadedKind === 'drawing' ? boardTheme : undefined}
         onPointerDownCapture={() => { if (isVisible) onFocusPane(file.path); }}>
-        {disk && <DiskBar name={file.name} state={disk} path={file.path} onAction={onDiskAction} />}
+        {disk && <DiskBar name={file.name} state={disk} unsaved={isDirty} path={file.path} onAction={onDiskAction} />}
         <div className="canvas-pane-body">
             {activated && identity && attachCanvasSession ?
                 <NativeCanvasEntry fallback={<div className="canvas-pane-message is-waiting" role="status">{label}</div>} file={file} documentId={documentId} identity={identity} nativeCanvasHost={nativeCanvasHost}

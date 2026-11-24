@@ -5,7 +5,7 @@ import { canFlushTab } from '../utils/documentReading';
 import { sourceIsNewer, type ContentSource, type DocumentBufferStore } from '../utils/documentBuffers';
 import type { DocumentSessionStore } from '../utils/documentSessions';
 import type { DiskVersion } from '../utils/diskVersion';
-import { getPdfRenderData } from '../utils/pdfRenderCache';
+import { hashBytes } from '../utils/diskVersion';
 import { authorizeKeptPdfRole } from '../utils/pdfRole';
 import { recordFileWritten } from '../utils/fileTimes';
 import { getBaseline, setBaseline } from '../utils/docBaselines';
@@ -37,7 +37,7 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
   'documentBuffers' | 'documentSessions' | 'removeTab' | 'hasUnsaved' | 'reloadFromDisk' |
   'bumpBytesGeneration' | 'clearSaveTimer' | 'syncExitGuard' | 'recoveryEvent' | 'announce' | 'ask' |
   'tell' | 'getVaultActivation' | 'recreateFile' | 'resolveFileHandle' | 'resolveVaultFile' |
-  'readBytesVersioned' | 'readFileVersioned' | 'writeConflictCopy' | 'resolvingRef'
+  'readBytesVersioned' | 'readFileVersioned' | 'writeFileVersioned' | 'writeConflictCopy' | 'resolvingRef'
 >, path: string, action: DiskAction) {
   const {
     tabsRef, rootHandleRef, pdfRebuildRef, diskStateRef, nativePoliciesRef, bytesGenerationsRef,
@@ -45,7 +45,7 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
     currentPdfOwner, keepPdfBaseline, flushTab, documentBuffers, documentSessions, removeTab, hasUnsaved,
     reloadFromDisk, bumpBytesGeneration, clearSaveTimer, syncExitGuard, recoveryEvent, announce, ask, tell,
     getVaultActivation, recreateFile, resolveFileHandle, resolveVaultFile, readBytesVersioned,
-    readFileVersioned, writeConflictCopy, resolvingRef,
+    readFileVersioned, writeFileVersioned, writeConflictCopy, resolvingRef,
   } = deps;
   const tab = tabsRef.current.find(t => t.file.path === path);
   if (!tab || resolvingRef.current.has(tab.id)) return;
@@ -104,7 +104,6 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
     const snapshot = documentBuffers.retainSnapshotForDocument(id);
     if (!snapshot) throw new Error('The document buffer is unavailable.');
     const sourceRevision = typeof source === 'string' ? undefined : source?.revision;
-    const pdf = isPdf && typeof snapshot.data === 'string' ? getPdfRenderData(path) : undefined;
     const nativeOwned = !!session && session.kind !== 'markdown' && !!source && typeof source !== 'string'
       && source.owner.documentId === id && source.owner.session === session.serial;
     return { revision: snapshot.revision, sourceRevision, session, nativeOwned, release: snapshot.release, build: async (): Promise<string | Uint8Array | Blob | null> => {
@@ -112,11 +111,20 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
       if (typeof content === 'object' && !(content instanceof Uint8Array) && !(content instanceof Blob)) {
         content = await content.run(new AbortController().signal);
       }
-      if (!isPdf || typeof content !== 'string') return content;
-      if (!pdf) return null;
-      const { buildAnnotatedPdfAsync } = await loadChunk(() => import('../utils/pdfBuildClient'));
-      return buildAnnotatedPdfAsync(pdf.original, content, pdf.overlays);
+      // A PDF's text buffer is not the file: with no Annotate session there is no ink of the tab's own to build.
+      return isPdf && typeof content === 'string' ? null : content;
     } };
+  };
+  // A PDF with no Annotate session has nothing unsaved, and its version is the bytes Original shows: the reader's
+  // memory-backed copy, the only place they still exist once another program has replaced the file (it may hold saved
+  // ink). Used only while it is provably the version this document last read or wrote (the baseline). Measured before:
+  // every PDF took the read-only route here (it asked for the pre-native `pdfRenderCache`, which nothing fills), so Keep
+  // mine reloaded the other program's file and kept no copy, and with unsaved ink it failed outright.
+  const readerMine = async (): Promise<Blob | null> => {
+    if (!isPdf || nativeConflict) return null;
+    const { pdfReaderBytes } = await loadChunk(() => import('../pdf/session/sourceFactory'));
+    const held = await pdfReaderBytes(id), baseline = getBaseline(id);
+    return held && baseline && held.version.hash === baseline.hash ? held.blob : null;
   };
   let capturedMine: ReturnType<typeof captureMine> | undefined;
   try {
@@ -135,7 +143,7 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
       await drain(id);
       const captured = capturedMine = captureMine();
       const dataRevision = captured.revision;
-      const data = await captured.build();
+      const data = await captured.build() ?? await readerMine();
       if (data === null) {
         void tell({ title: 'Nothing to save', confirmLabel: 'OK', body: <>This PDF has no annotations of yours to write back. Close the tab, or put <strong>{file.name}</strong> back from wherever it went.</> });
         return;
@@ -188,16 +196,20 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
     if (action === 'reload') {
       await drain(id);
       const captured = capturedMine = captureMine();
-      const keep = await captured.build();
+      const keep = await captured.build() ?? await readerMine();
       const read = isPdf || isNativeDrawingFile(file.name)
         ? { text: '', version: (await readBytesVersioned(handle)).version }
         : await readFileVersioned(handle);
+      // Bytes equal to the disk's are not a second version to keep (hashed only at the same size: a PDF can be hundreds of MB).
+      const same = typeof keep === 'string' ? keep === read.text
+        : !!keep && (keep instanceof Blob ? keep.size : keep.byteLength) === read.version.size
+          && await hashBytes(keep instanceof Blob ? new Uint8Array(await keep.arrayBuffer()) : keep) === read.version.hash;
       if (__BME_BENCH__) {
         try {
-          if (keep !== null && keep !== read.text) reportVault({ op: 'write', path, caller: 'disk-reload-conflict' });
+          if (keep !== null && !same) reportVault({ op: 'write', path, caller: 'disk-reload-conflict' });
         } catch { /* Measurement must not interrupt a write. */ }
       }
-      const copy = keep !== null && keep !== read.text ? await writeConflictCopy(path, keep) : null;
+      const copy = keep !== null && !same ? await writeConflictCopy(path, keep) : null;
       const now = tabsRef.current.find(t => t.id === id);
       if (!now) return;
       const latest = documentSessions.checkpoint(id);
@@ -210,27 +222,35 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
       return;
     }
 
-    // A read-only PDF has no local version to prefer. Reopen the current
-    // bytes rather than leave a clean tab behind a revoked preflight.
-    if (isPdf && !getPdfRenderData(path)) {
-      await drain(id);
-      const current = tabsRef.current.find(t => t.id === id);
-      if (!current || hasUnsaved(current)) throw new Error('Pending annotations cannot be reloaded yet.');
-      const disk = await readBytesVersioned(handle);
-      const now = tabsRef.current.find(t => t.id === id);
-      if (now) reloadFromDisk(now, '', disk.version);
-      return;
-    }
-
-    // 'keep': theirs goes beside the file, then mine is saved through the
-    // one save funnel — against the version just read, so a disk that moved
+    // 'keep': theirs goes beside the file, then mine is written — against the version just read, so a disk that moved
     // AGAIN in between raises the conflict again rather than being overwritten.
     await drain(id);
+    const reader = isPdf && !nativeConflict ? await readerMine() : null;
+    if (isPdf && !nativeConflict && !reader) {
+      // Nothing to write back: offering Keep mine would leave the other program's file under a tab that claims otherwise.
+      setTabs(prev => prev.map(t => t.id === id ? { ...t, diskMineLost: true } : t));
+      return;
+    }
     const disk = await readBytesVersioned(handle);
     if (__BME_BENCH__) {
       try { reportVault({ op: 'write', path, caller: 'disk-keep-conflict' }); } catch { /* Measurement must not interrupt a write. */ }
     }
     const copy = await writeConflictCopy(path, disk.bytes);
+    const baselineBefore = getBaseline(id);
+    if (reader) {
+      // The version Original shows goes back as it was, byte for byte, so the reader stays on it with nothing to reload.
+      const result = await writeFileVersioned(handle, reader, disk.version);
+      if (result.status === 'deleted') { setDiskState(id, 'deleted'); return; }
+      if (result.status === 'changed') { announce(`“${file.name}” changed on disk again. The earlier version was kept as “${shortName(copy)}”.`); return; }
+      setBaseline(id, result.version);
+      const entry = pdfRebuildRef.current.get(id);
+      if (entry) entry.baseline = result.version;
+      recordFileWritten(path, result.version.lastModified);
+      setDiskState(id, null);
+      bumpSaveEpoch();
+      announce(`The version on disk was kept as “${shortName(copy)}”.`);
+      return;
+    }
     setBaseline(id, disk.version);
     const entry = pdfRebuildRef.current.get(id);
     if (entry) { entry.baseline = disk.version; entry.copyName = undefined; }
@@ -240,13 +260,28 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
       entry.approved = true;
       setPdfRebuildNotice(id, { state: 'kept', generation: entry.value.role.generation, approved: true, copyName: entry.copyName });
     }
-    const outcome = await flushTab(path, true);
-    if (isPdf && outcome === 'written') {
-      const now = tabsRef.current.find(t => t.id === id), version = getBaseline(id);
-      if (now && version) reloadFromDisk(now, '', version);
+    // 'rewrite': a board whose ink is all saved is still the version being kept, and its checkpoint is written again.
+    const rewritten = !documentBuffers.isDirty(id);
+    const outcome = await flushTab(path, 'rewrite');
+    if (outcome === 'written') {
+      // Unsaved ink went out as the board's own save, which its live source already paints (useSaveFunnel), so the board
+      // stays as it is. A rewritten checkpoint carries a write id its PDF source never acknowledged, and a later rebind
+      // would refuse the file as not its own: that one reopens on the bytes, once the board's after-write step has run
+      // (replaced under it, the step failed as stale and logged "PDF ink rebind failed").
+      if (isPdf && rewritten) {
+        try { await documentSessions.get(id)?.adapter.drain?.(); } catch { /* the reopen below replaces it either way */ }
+        const now = tabsRef.current.find(t => t.id === id), version = getBaseline(id);
+        if (now && version) reloadFromDisk(now, '', version);
+      }
+      announce(`The version on disk was kept as “${shortName(copy)}”.`);
+    } else if (outcome === 'changed') announce(`“${file.name}” changed on disk again. The earlier version was kept as “${shortName(copy)}”.`);
+    else if (outcome !== 'deleted') {
+      // Nothing was written: the file is still theirs. Put the question back rather than call it kept.
+      if (baselineBefore) setBaseline(id, baselineBefore);
+      if (entry && baselineBefore) entry.baseline = baselineBefore;
+      setDiskState(id, 'conflict');
+      void tell({ title: 'Your version was not saved', confirmLabel: 'OK', body: <>Could not write your version of <strong>{file.name}</strong>, so the file is still the one on disk. A copy of that one was kept as “{shortName(copy)}”.</> });
     }
-    if (outcome === 'changed') announce(`“${file.name}” changed on disk again. The earlier version was kept as “${shortName(copy)}”.`);
-    else announce(`The version on disk was kept as “${shortName(copy)}”.`);
   } catch (err) {
     console.error('Could not resolve a document’s disk state:', path, action, err);
     void tell({ title: 'That did not work', confirmLabel: 'OK', body: <>Could not finish for <strong>{file.name}</strong>: {describeReadError(err)}</> });

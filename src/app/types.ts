@@ -16,8 +16,9 @@ export type SetLayout = React.Dispatch<React.SetStateAction<TabLayout>>;
 
 /** What one pass of the save funnel did (flushTab). */
 export type FlushOutcome = 'written' | 'changed' | 'deleted' | 'skipped' | 'failed';
+/** `'rewrite'` also writes a canvas whose checkpoint is already saved: Keep mine, over a file somebody else replaced. */
 export type FlushTab = (
-  path: string | null, force?: boolean, closing?: boolean,
+  path: string | null, force?: boolean | 'rewrite', closing?: boolean,
   vaultRoot?: FileSystemDirectoryHandle | null, trashOwned?: boolean, serializerCallback?: boolean,
 ) => Promise<FlushOutcome>;
 

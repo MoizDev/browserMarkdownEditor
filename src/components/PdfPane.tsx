@@ -105,6 +105,8 @@ export interface PdfPaneProps {
      *  drawn HERE, not by DocumentPane: this pane floats over the slot and
      *  would paint over one placed there. */
     disk?: 'conflict' | 'deleted';
+    /** OpenTab.diskMineLost: the DiskBar offers only Reload. */
+    diskMineLost?: boolean;
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
     /** App owns the baseline and held choice, bound to the FULL reader token.
      *  When supplied, this callback also owns initial-edit baseline adoption. */
@@ -127,7 +129,7 @@ interface PdfSource {
  * and a dirty/rebinding document must keep its actual editing shell mounted. */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode: requestedMode, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, onAdoptSavedInk, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
+function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode: requestedMode, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, onAdoptSavedInk, isDirty, disk, diskMineLost, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
     // A page turn held for this document (utils/pdfTurnHold.ts): the pane is Original, whatever mode was asked, until
     // it settles; no Annotate board mounts, reads the role of the bytes being replaced or takes ink meant for the old
@@ -854,7 +856,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                 {print === 'ready' ? 'Open the saved PDF in a new tab, then print from the browser’s PDF viewer. An encrypted PDF may ask for its password again.' : 'Any pending annotations will be saved first. The saved PDF opens in the browser’s PDF viewer for printing.'}
                 {printError && <> {printError}</>}
             </ConfirmDialog>}
-            {(disk || pdfRebuild) && <DiskBar name={file.name} state={disk ?? pdfRebuild!.state} pdfRebuild={disk ? undefined : pdfRebuild} path={file.path} onAction={onDiskAction} />}
+            {(disk || pdfRebuild) && <DiskBar name={file.name} state={disk ?? pdfRebuild!.state} pdfRebuild={disk ? undefined : pdfRebuild} unsaved={isDirty} mineLost={diskMineLost} path={file.path} onAction={onDiskAction} />}
             {legacyOffer && !legacyConversion && <div className="pdf-signed-notice" role="status" onContextMenu={event => event.preventDefault()}>
                 <span>These annotations use Classic format. The original PDF remains available to read.</span>
                 <button type="button" className="pdf-pane-action" disabled={!canConvertLegacy}

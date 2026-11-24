@@ -47,7 +47,9 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
             const importNotice = prepared!.importNotice ? { text: prepared!.importNotice,
                 isDismissed: () => noticeDismissed, dismiss() { noticeDismissed = true; } } : undefined;
             const owned = prepared!.take(owner, isLiveOwner, () => reason ??
-                (sourceAuthorized() ? null : 'Canvas source is not currently authorized for editing.'));
+                // The board shows this as its notice: under a DiskBar it read "Canvas source is not currently authorized
+                // for editing.", which named nothing the person could do.
+                (sourceAuthorized() ? null : options.sourceBlockReason?.() ?? 'Canvas source is not currently authorized for editing.'));
             taken = true;
             try {
                 policy = onNativeCanvasReady({ owner, vaultActivation, bytesGeneration, kind,

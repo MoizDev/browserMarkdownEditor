@@ -1471,7 +1471,7 @@ function DocumentPane({
             {/* A canvas draws its own: its float stands over this slot and
                 would paint over a bar placed here. */}
             {tab.disk && (!isCanvas || isEpub) && (
-                <DiskBar readOnly={isEpub || !canReadTabText(tab)} name={file.name} state={tab.disk} path={path} onAction={onDiskAction} />
+                <DiskBar readOnly={isEpub || !canReadTabText(tab)} name={file.name} state={tab.disk} unsaved={tab.dirty} path={path} onAction={onDiskAction} />
             )}
             <div className="editor-slot-body">
                 {isEpub && <EpubReaderHost key={`${readerIdentity.vaultId}|${readerIdentity.vaultEpoch}|${tab.id}|${readerIdentity.byteGeneration}`} identity={readerIdentity} integration={reading} isFocused={isFocused} onFocusPane={onFocusPane} onRetryRead={onRetryRead} registerKeyboardTarget={registerKeyboardTarget} theme={theme} />}

@@ -118,8 +118,14 @@ are copy-only (`recoveryCopy`), never applied to the live file.
   fresh session (`documentSessions.replace`) and `diskRev + 1`. EPUB/PDF invalidate their reader token.
 - **The DiskBar** sits between the slot header and body (inside `PdfPane` for a PDF; read-only for EPUB).
   Conflict: **Reload** (mine → `(conflict)` copy, disk re-read now) / **Keep mine** (disk → copy, baseline := what
-  was read, forced flush; a disk that moved again re-raises it). Deleted: **Save again** (`recreateFile`) /
-  **Close** (asks when unsaved).
+  was read, then `flushTab(path, 'rewrite')`, which also writes a canvas whose checkpoint is already saved; a disk that
+  moved again re-raises it, and a write that did not happen puts the bar back). Deleted: **Save again** (`recreateFile`) /
+  **Close** (asks when unsaved). A conflict can be raised with nothing unsaved (a save or a PDF turn met the other
+  write): the bar words it from `unsaved` (the buffer's dirty bit), never assumes edits.
+- **A PDF's "mine"** is its Annotate session's build (pristine + ink) when one is live; otherwise the bytes Original
+  shows — the reader's memory-backed copy (`pdf/session/sourceFactory.ts` `pdfReaderBytes`), used only while its hash is
+  the baseline's. Neither → `OpenTab.diskMineLost`, and the bar offers only Reload. (`pdfRenderCache` is the pre-native
+  path; nothing fills it, so nothing may decide a PDF's authority by it.)
 
 ## Session persistence is PER VAULT (`utils/tabSessions.ts`, `useSessionPersistence`, `useSessionRestore`)
 - One localStorage record `vaultSessions: Record<vaultId, StoredSession>` = `{v:2, paths, groups, focus, sizes,

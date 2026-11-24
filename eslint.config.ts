@@ -213,8 +213,9 @@ export default defineConfig([
           // pdfSurfaceModules warms the PDF open path (dynamic imports only) from loadPdfPane, itself reached only when a
           // PDF is opened or the vault holds one.
           // App's closed-PDF agent seam (src/app/useAgentCanvasAccess) imports the contained host only on an
-          // awaited tiled tool call; its PDF gestures and a new canvas's empty bytes load on the gesture.
-          darkLazy: ['src/app/useAgentCanvasAccess.ts', 'src/app/agentCanvas.ts', 'src/app/pdfGestures.ts', 'src/app/useCreateEntries.tsx', 'src/utils/agentHost.ts', 'src/utils/recoveryCopy.ts', 'src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx', 'src/components/PdfTiledSurface.tsx', 'src/components/pdfSurfaceModules.ts', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/ViewerHost.tsx', 'src/components/whiteboard/nativeViewPlatform.ts'],
+          // awaited tiled tool call; its PDF gestures and a new canvas's empty bytes load on the gesture. The DiskBar's
+          // actions ask a PDF's reader for the bytes it shows only on a Keep mine/Reload/Save again click.
+          darkLazy: ['src/app/useAgentCanvasAccess.ts', 'src/app/agentCanvas.ts', 'src/app/pdfGestures.ts', 'src/app/diskBarActions.tsx', 'src/app/useCreateEntries.tsx', 'src/utils/agentHost.ts', 'src/utils/recoveryCopy.ts', 'src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx', 'src/components/PdfTiledSurface.tsx', 'src/components/pdfSurfaceModules.ts', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/ViewerHost.tsx', 'src/components/whiteboard/nativeViewPlatform.ts'],
           message: 'The new engines stay dark until their switch is wired',
         },
         {

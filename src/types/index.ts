@@ -129,6 +129,9 @@ export interface OpenTab {
    * Session-only, like `readError`.
    */
   disk?: 'conflict' | 'deleted';
+  /** Keep mine found no version of this document's own to write back (a PDF whose reader copy is gone): the DiskBar
+   *  stops offering it. Cleared whenever `disk` changes. Session-only. */
+  diskMineLost?: boolean;
   /** PDF rebuild choice is separate from a disk conflict: a kept legacy copy
    *  informs the reader but does not suspend autosave. Session-only. */
   pdfRebuild?: PdfRebuildNotice;

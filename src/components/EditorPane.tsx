@@ -1110,6 +1110,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             // after a completed save (t5zy/t606). The header keeps the combined flag.
                             isDirty={documentBuffers.isDirty(tab.id)}
                             disk={tab.disk}
+                            diskMineLost={tab.diskMineLost}
                             pdfRebuild={tab.pdfRebuild}
                             pdfRebuildApproval={tab.pdfRebuild?.approved ? tab.pdfRebuild : undefined}
                             onAnnotationPreflight={onAnnotationPreflight}
@@ -1168,6 +1169,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             attachCanvasSession={attachCanvasSession}
                             theme={theme}
                             disk={tab.disk}
+                            isDirty={documentBuffers.isDirty(tab.id)}
                             onDiskAction={onDiskAction}
                         />
                     </ErrorBoundary>

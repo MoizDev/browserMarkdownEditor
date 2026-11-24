@@ -6,6 +6,10 @@ interface DiskBarProps {
     /** The document's file name, as the bar names it. */
     name: string;
     state: 'conflict' | 'deleted' | 'foreign' | 'kept';
+    /** The tab held edits not yet written when the file changed (the bar says so only then). */
+    unsaved?: boolean;
+    /** Keep mine found no version of the tab's own to write back (OpenTab.diskMineLost): only Reload is offered. */
+    mineLost?: boolean;
     pdfRebuild?: PdfRebuildNotice;
     path: string;
     /** App's resolution for this document (stable). Resolves once it is done,
@@ -30,7 +34,7 @@ function conflictName(name: string): string {
  * beside the file as a `(conflict)` copy (AGENTS.md: nothing the user made is
  * destroyed outright).
  */
-function DiskBar({ name, state, path, onAction, readOnly, pdfRebuild }: DiskBarProps) {
+function DiskBar({ name, state, path, onAction, readOnly, pdfRebuild, unsaved, mineLost }: DiskBarProps) {
     const [busy, setBusy] = useState(false);
     const run = async (action: DiskAction) => {
         if (busy) return;
@@ -53,7 +57,12 @@ function DiskBar({ name, state, path, onAction, readOnly, pdfRebuild }: DiskBarP
                         ? <>A copy of <strong>{name}</strong> was kept in Trash as “{pdfRebuild.copyName}”.</>
                         : <>Before the first save, a copy of this file is kept in Trash.</>
                     : state === 'conflict'
-                    ? <><strong>{name}</strong> changed on disk{readOnly ? '.' : ' while you had unsaved edits.'}</>
+                    // A conflict is also raised with nothing unsaved (a save or a page turn of this app's that met the other
+                    // program's write); "while you had unsaved edits" then sent people looking for edits that never existed.
+                    ? <><strong>{name}</strong> changed on disk{readOnly ? '.'
+                        : mineLost ? '. This app no longer holds the version it showed, so only the one on disk can be shown.'
+                        : unsaved ? ' while you had unsaved edits.'
+                        : '. This tab still shows the version from before, with nothing unsaved.'}</>
                     : <><strong>{name}</strong> was deleted on disk.</>}
                 {pdfRebuild?.error && <> {pdfRebuild.error} Nothing was rebuilt or saved. Try again when the copy can be kept.</>}
             </span>
@@ -67,13 +76,13 @@ function DiskBar({ name, state, path, onAction, readOnly, pdfRebuild }: DiskBarP
                             type="button"
                             className="disk-bar-btn"
                             disabled={busy}
-                            data-tooltip={`Show the version on disk. Yours is kept beside it as “${copy}”.`}
+                            data-tooltip={mineLost ? 'Show the version on disk' : `Show the version on disk. Yours is kept beside it as “${copy}”.`}
                             data-tooltip-position="bottom"
                             onClick={() => void run('reload')}
                         >
                             Reload
                         </button>
-                        <button
+                        {!mineLost && <button
                             type="button"
                             className="disk-bar-btn is-primary"
                             disabled={busy}
@@ -82,7 +91,7 @@ function DiskBar({ name, state, path, onAction, readOnly, pdfRebuild }: DiskBarP
                             onClick={() => void run('keep')}
                         >
                             Keep mine
-                        </button>
+                        </button>}
                     </>
                 ) : (
                     <>

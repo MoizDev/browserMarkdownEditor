@@ -33,6 +33,8 @@ export interface NativeBoardAcquisitionOptions<S extends BoardSessionPort> {
     currentOwner(): boolean;
     /** The real nonrecursive App source policy, rechecked by every session mutation. */
     sourceAuthorized(): boolean;
+    /** Why the source is not authorized, in the person's words (App's first failing guard); the board shows it. */
+    sourceBlockReason?(): string | null;
     /** Final App authority; checked only after the temporary view guard is lifted. */
     editingAuthorized(): boolean;
     existing?(): AcquiredNativeBoard<S> | undefined;

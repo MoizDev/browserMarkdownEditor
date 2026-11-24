@@ -54,7 +54,7 @@ export function useDiskState(deps: UseDiskStateDeps) {
     }
     const next = state ?? undefined;
     setTabs(prev => prev.some(t => t.id === id && t.disk !== next)
-      ? prev.map(t => (t.id === id ? { ...t, disk: next } : t))
+      ? prev.map(t => (t.id === id ? { ...t, disk: next, diskMineLost: undefined } : t))
       : prev);
   }, [setPdfRebuildNotice, setTabs]);
 

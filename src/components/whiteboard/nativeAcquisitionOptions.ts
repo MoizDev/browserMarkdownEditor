@@ -3,7 +3,7 @@ import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter
 import type { NativeBoardAcquisitionOptions } from './nativeBoardAcquisitionTypes';
 
 export function createNativeAcquisitionOptions<S extends BoardSessionPort>(
-    options: Omit<NativeBoardAcquisitionOptions<S>, 'documentId' | 'vaultActivation' | 'bytesGeneration' | 'kind' | 'existing' | 'currentOwner' | 'sourceAuthorized' | 'editingAuthorized'> & {
+    options: Omit<NativeBoardAcquisitionOptions<S>, 'documentId' | 'vaultActivation' | 'bytesGeneration' | 'kind' | 'existing' | 'currentOwner' | 'sourceAuthorized' | 'sourceBlockReason' | 'editingAuthorized'> & {
         host: NativeCanvasHost;
         identity: NativeCanvasIdentity;
         emergencyReadOnly: () => boolean;
@@ -17,6 +17,7 @@ export function createNativeAcquisitionOptions<S extends BoardSessionPort>(
         kind: identity.kind,
         currentOwner: () => host.isCurrent(identity),
         sourceAuthorized: () => host.canWriteSource(identity),
+        sourceBlockReason: () => host.writeBlockReason(identity),
         editingAuthorized: () => host.canWrite(identity),
         prepare, attachCanvasSession, onNativeCanvasReady, onError, emergencyReadOnlyReason,
         acceptConvertedSource: (source, digest) => host.acceptConvertedSource(identity, source, digest),

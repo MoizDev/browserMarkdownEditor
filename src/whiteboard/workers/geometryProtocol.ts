@@ -31,6 +31,9 @@ export interface InkBatchRequest { readonly input: ArrayBuffer; readonly items: 
 export type InkBatchResult = { readonly at: number; readonly bytes: number; readonly level: 'fine' | 'coarse' }
     | { readonly error: string; readonly name: string };
 export interface InkBatchReply { readonly output: ArrayBuffer; readonly items: readonly InkBatchResult[] }
+/** The error name of a chunk whose geometry crashed the geometry worker when it was asked for alone: the stroke is left out of
+ * the picture and never asked for again on this page (inkCoverageClient.ts, services.ts). */
+export const INK_GEOMETRY_CRASHED = 'InkGeometryCrashed';
 
 /** Items one batch may carry: a batch is one message, one transfer each way and one reply the main thread unpacks at once. */
 export const INK_BATCH_MAX_ITEMS = 256;

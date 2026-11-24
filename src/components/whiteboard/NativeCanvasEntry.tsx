@@ -175,6 +175,20 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
     viewNotice?: string | null;
 }) {
     const setNotice = notices.show;
+    // A stroke whose geometry crashed the geometry worker is left out of the picture (render/services.ts); the board says how many,
+    // in one notice that a higher count replaces.
+    const clearNotice = notices.clear;
+    useEffect(() => {
+        let shown: string | null = null;
+        const stop = lease.runtime.render.subscribeStrokeFailures(count => {
+            const text = count === 1
+                ? 'One stroke could not be drawn: working out its shape stopped the drawing worker. The rest of the board is drawn, and the stroke is unchanged in the file.'
+                : `${count} strokes could not be drawn: working out their shapes stopped the drawing worker. The rest of the board is drawn, and the strokes are unchanged in the file.`;
+            if (shown) clearNotice(shown);
+            shown = text; setNotice(text);
+        });
+        return stop;
+    }, [lease, setNotice, clearNotice]);
     const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
     const selection = lease.runtime.selection;

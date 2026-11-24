@@ -1,4 +1,4 @@
-import { createWorkerClient, type Priority, type RequestOptions, type WorkerClient } from '../../platform/workers';
+import { createWorkerClient, type ClientState, type Priority, type RequestOptions, type WorkerClient } from '../../platform/workers';
 import { boardEnvelope, closeWorkerResult, matchingIdentity, validBoardIdentity } from './protocol';
 import type { BoardJobIdentity, BoardWorkerEnvelope } from './protocol';
 
@@ -11,6 +11,10 @@ export interface BoardWorkerClient {
     on(event: string, handler: (payload: unknown, identity: BoardJobIdentity) => void): () => void;
     cancelSession(session: string, epoch: number): void;
     recycle(reason: string): Promise<void>;
+    /** The host's state: `'failed'` refuses every request until its cool-down has passed and a request revives it. */
+    readonly state: ClientState;
+    /** Requests asked of the worker and not yet settled, every operation's. */
+    readonly inFlight: number;
 }
 const clients = new Map<SharedBoardWorker, BoardWorkerClient>();
 function spawn(kind: SharedBoardWorker): Worker {
@@ -39,15 +43,29 @@ export function boardWorker(kind: SharedBoardWorker): BoardWorkerClient {
     clients.set(kind, client);
     return client;
 }
-const pools = new Map<SharedBoardWorker, BoardWorkerClient[]>();
+const pools = new Map<SharedBoardWorker, (BoardWorkerClient & { dispose(): void } | undefined)[]>();
 /** Member `index` of a small pool of `kind` workers: member 0 is the shared worker (`boardWorker`), each other member a worker of
- * its own, made on its first request and kept, like the shared one, for the page's life. */
+ * its own, made on its first request and ended by `endBoardWorkerPoolMember` once its user has no more work for it. */
 export function boardWorkerPoolMember(kind: SharedBoardWorker, index: number): BoardWorkerClient {
     if (!Number.isSafeInteger(index) || index < 0) throw new RangeError('Invalid board worker pool member');
     if (index === 0) return boardWorker(kind);
     let pool = pools.get(kind);
     if (!pool) pools.set(kind, pool = []);
     return pool[index - 1] ??= createBoardWorkerClient(kind, `whiteboard-${kind}-pool-${index}`);
+}
+/** The state of pool member `index` without making it: `'idle'` for a member that is not running. */
+export function boardWorkerPoolState(kind: SharedBoardWorker, index: number): ClientState {
+    if (index === 0) return clients.get(kind)?.state ?? 'idle';
+    return pools.get(kind)?.[index - 1]?.state ?? 'idle';
+}
+/** Ends idle pool member `index` (not the shared member 0), so its isolate and the garbage of its last requests go at once: an idle
+ * isolate is seldom collected (see `dedicatedBoardWorker`). Its next request makes a new one. A member with a request in flight, or
+ * one that has failed (its failure keeps it refused until its cool-down), is kept. */
+export function endBoardWorkerPoolMember(kind: SharedBoardWorker, index: number): void {
+    const pool = pools.get(kind), member = index > 0 ? pool?.[index - 1] : undefined;
+    if (!pool || !member || member.inFlight || member.state === 'failed') return;
+    pool[index - 1] = undefined;
+    member.dispose();
 }
 let dedicatedSerial = 0;
 /** A board worker of its own for one job, whose `dispose` ends the worker and so returns its whole heap at once. An old board's
@@ -106,6 +124,8 @@ function createBoardWorkerClient(kind: SharedBoardWorker, name: string): BoardWo
             host.cancelAll((_op, args) => boardEnvelope(args) && args.identity.session === session && args.identity.epoch === epoch);
         },
         recycle: reason => host.recycle(reason, { lazy: true }),
+        get state() { return host.state; },
+        get inFlight() { return host.inFlight; },
         dispose: () => host.dispose(),
     };
     return client;

@@ -143,6 +143,24 @@ function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: 
     return Object.freeze(chunks);
 }
 
+/** A box sure to hold a stroke's ink, from its samples alone (no curve, no outline): their bounds, widened by the widest radius
+ * and the longest step between two samples, which bounds how far the fitted curve can leave them. For a stroke whose geometry
+ * could not be built (services.ts), so the scene still places it; it is never drawn from. */
+export function strokeSampleBounds(node: StrokeNode, samples: SampleStoreReader): [number, number, number, number] {
+    const points = realizeStrokePoints(sequence(samples, node), node.sx, node.sy);
+    const width: InkWidth = { width: node.width, model: node.widthModel, pressure: node.pressure };
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, radius = 0, step = 0;
+    for (let i = 0; i < points.count; i++) {
+        const x = points.x(i), y = points.y(i);
+        minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+        radius = Math.max(radius, radiusAtSample(points, i, width));
+        if (i) step = Math.max(step, Math.hypot(x - points.x(i - 1), y - points.y(i - 1)));
+    }
+    if (!(minX <= maxX)) return [0, 0, 0, 0];
+    const pad = radius + step;
+    return [minX - pad, minY - pad, maxX + pad, maxY + pad];
+}
+
 /** Chunks are one stroke's union, not independently composited alpha bands. */
 export async function buildStrokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: {
     deviceScale: number; cooperate?: () => Promise<void>; signal?: AbortSignal; worker?: CoverageWorker;

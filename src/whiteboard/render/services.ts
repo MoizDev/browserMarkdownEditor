@@ -21,14 +21,14 @@ import { inkCoverageBytes } from '../ink/packedCoverage';
 import { CURVE_CHUNK_SPANS } from '../ink/curve';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
-import { createNode, type ConnectorNode, type Node } from '../model/nodes';
+import { createNode, type ConnectorNode, type Node, type StrokeNode } from '../model/nodes';
 import type { SampleStoreReader } from '../model/samples';
 import type { MediaStore } from '../media/store';
 import { localBounds, BoundsQuality, type BoundsProvider, type Box, type LocalGeometryBounds } from '../scene/bounds';
 import type { ScenePaintRequest } from '../scene/types';
 import { paintConnector } from './connectorPaint';
 import { conservativeConnectorBounds } from './conservativeConnector';
-import { buildStrokeCoverage, buildStrokeCoverageNow } from './inkGeometry';
+import { buildStrokeCoverage, buildStrokeCoverageNow, strokeSampleBounds } from './inkGeometry';
 import { InkLodLadder } from './inkLodLadder';
 import { paintStrokeNode, paintVectorNode, paintVectorNodeNow, type PreviewMedia } from './nodePaint';
 import { DEFAULT_BOARD_PALETTES } from './palette';
@@ -42,6 +42,7 @@ import { prepareBoardVectorGeometry, prepareBoardVectorGeometryNow, prepareOpaqu
 import { connectorBytes, inkChunkBytes, vectorBytes } from './residentBytes';
 import { ResolvedNodeCache } from './resolvedNodeCache';
 import { auditCount } from '../../platform/render/renderAudit';
+import { INK_GEOMETRY_CRASHED } from '../workers/geometryProtocol';
 import { inkRealisationScale, pictureTileWorld } from './paintRequestScope';
 import { loadChunk } from '../../platform/chunkLoad';
 import { yieldToHost } from '../../platform/yieldToHost';
@@ -165,6 +166,16 @@ export function createBoardRenderServices(options: {
     // the signature, and no other variant is dropped on a store: the byte budget ages them out.
     const cached = new Map<string, Prepared>(), variantsOf = new Map<NodeId, Set<string>>();
     const listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
+    // Strokes left out of the picture because their geometry crashed the geometry worker; their listeners hear the count.
+    const failedStrokes = new Set<NodeId>(), failureListeners = new Set<(count: number) => void>();
+    let failureAnnounce = false;
+    const strokeFailed = (id: NodeId) => {
+        if (failedStrokes.has(id)) return;
+        failedStrokes.add(id); auditCount(AUDIT, 'geometry:crashed');
+        if (failureAnnounce) return;
+        failureAnnounce = true;
+        queueMicrotask(() => { failureAnnounce = false; for (const listener of [...failureListeners]) listener(failedStrokes.size); });
+    };
     const sessionRasters = new SessionDenseRasters();
     // Every coverage these services built, counted until it is collected: what a board's geometry costs while anything holds it.
     // The frames that draw it, the idle cache and the surviving index all share one object per chunk, so it is counted once.
@@ -385,7 +396,7 @@ export function createBoardRenderServices(options: {
     };
     const releaseHolder = () => {
         if (--holders !== 0) return;
-        disposed = true; for (const controller of warmControllers) controller.abort(); text.dispose(); for (const key of [...cached.keys()]) dropVariant(key); textIds.clear(); listeners.clear(); sessionRasters.dispose();
+        disposed = true; warmController.abort(); text.dispose(); for (const key of [...cached.keys()]) dropVariant(key); textIds.clear(); listeners.clear(); sessionRasters.dispose();
         for (const id of [...inkLadders.keys()]) dropInkLadder(id);
         sessionResolved?.dispose();
         derived?.close();
@@ -412,18 +423,19 @@ export function createBoardRenderServices(options: {
         return { scale, lod, key: `${scale}:${lod ? 'lod' : 'fine'}` };
     };
     // Wanted bands building in the background during a zoom: one build per node and band at a time.
-    const warming = new Set<string>(), warmFailed = new Set<string>(), warmControllers = new Set<AbortController>();
-    // A warm build has its own controller: a band crossing aborts the request's paint, and a build tied to it would restart from zero
-    // at every crossing. A failure other than the abort is counted, and that node and band is not retried (the previous band serves).
+    const warming = new Set<string>(), warmFailed = new Set<string>();
+    // Warm builds share one controller, ended only with the services: a band crossing aborts the request's paint, and a build tied to
+    // it would restart from zero at every crossing. Shared, the warm builds a task asks for travel to the geometry workers as one
+    // batch (inkCoverageClient.ts keys a batch by its signal). A failure other than the abort is counted, and that node and band
+    // is not retried (the previous band serves).
+    const warmController = new AbortController();
     const warmBand = (borrowed: Readonly<Node>, doc: BoardDoc,
         context: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousDeviceScale'>, key: string): void => {
         if (disposed || warming.has(key) || warmFailed.has(key)) return;
         warming.add(key);
-        const controller = new AbortController();
-        warmControllers.add(controller);
-        prepare(borrowed, doc, controller.signal, { ...context, previousDeviceScale: undefined })
-            .catch(() => { if (!controller.signal.aborted) { warmFailed.add(key); auditCount(AUDIT, 'geometry:warm-failed'); } })
-            .finally(() => { warming.delete(key); warmControllers.delete(controller); });
+        prepare(borrowed, doc, warmController.signal, { ...context, previousDeviceScale: undefined })
+            .catch(() => { if (!warmController.signal.aborted) { warmFailed.add(key); auditCount(AUDIT, 'geometry:warm-failed'); } })
+            .finally(() => { warming.delete(key); });
     };
     const prepare = async (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
         context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousDeviceScale'>): Promise<Prepared> => {
@@ -637,7 +649,16 @@ export function createBoardRenderServices(options: {
                 const known = reuse?.cache.get(reuse.variant, node.id, context.sensitive);
                 if (known) { auditCount(AUDIT, 'paint:resolve-hit'); return known; }
                 auditCount(AUDIT, 'paint:resolve-built');
-                const geometry = await prepare(node, doc, itemSignal, context);
+                let geometry: Prepared;
+                try { geometry = await prepare(node, doc, itemSignal, context); }
+                catch (error) {
+                    // A stroke whose geometry stops the geometry worker is left out of the picture, and the board says so: failing
+                    // its paint failed the whole frame, and on canvas2d the board ("Could not open canvas"). It is never asked
+                    // again on this page (inkCoverageClient.ts), so it costs no more crashes; the file keeps it as it is.
+                    if (node.kind !== 'stroke' || !(error instanceof Error) || error.name !== INK_GEOMETRY_CRASHED) throw error;
+                    strokeFailed(node.id);
+                    return { content: [] };
+                }
                 const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
                     : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
                     : await paintVectorNode(node, geometry.vector!, context, palette, text.faces,
@@ -977,7 +998,14 @@ export function createBoardRenderServices(options: {
         // drew (measured: 5,640 extra builds beside the view's, the open's whole second half).
         async realize(node: Readonly<Node>, signal: AbortSignal) {
             const known = variantFor(node.id, signature(node, options.doc));
-            return (known ?? await prepare(node, options.doc, signal, lastPaintPrecision ?? undefined)).bounds;
+            try { return (known ?? await prepare(node, options.doc, signal, lastPaintPrecision ?? undefined)).bounds; }
+            catch (error) {
+                // A stroke left out of the picture (see `resolve`) is still placed by a box from its samples: failing here failed
+                // the scene, and the board did not open.
+                if (node.kind !== 'stroke' || !(error instanceof Error) || error.name !== INK_GEOMETRY_CRASHED) throw error;
+                strokeFailed(node.id);
+                return { ink: strokeSampleBounds(createNode(node) as StrokeNode, options.samples) };
+            }
         },
         preparePaint: paint, preparePaintStream: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder, resolved?: ResolvedNodeCache | null) =>
             paintStream(doc, request, signal, order, undefined, resolved),
@@ -985,6 +1013,13 @@ export function createBoardRenderServices(options: {
             return paint(doc, request, signal, ids);
         },
         subscribeInvalidation(listener: (ids: ReadonlySet<NodeId>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+        /** Hears how many strokes this document has left out of its picture because their geometry crashed the geometry worker:
+         * at once when some already are, and on each new one. */
+        subscribeStrokeFailures(listener: (count: number) => void) {
+            failureListeners.add(listener);
+            if (failedStrokes.size) listener(failedStrokes.size);
+            return () => { failureListeners.delete(listener); };
+        },
         /** No view shows the document: gives back everything derived it holds (idle geometry, stroke levels, resolved paint), all of it
          * rebuildable. A geometry a frame still draws is found again through `surviving` while that frame lives. */
         releaseDerived() {

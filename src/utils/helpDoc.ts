@@ -426,6 +426,8 @@ For drawing without a pointer, the **Use keyboard drawing cursor** button gives 
 ### When the graphics card cannot be used
 Drawings, notebooks and PDFs are drawn with your computer's graphics card (WebGL2) whenever the browser offers it, and otherwise with the browser's ordinary drawing, which shows exactly the same thing but can be slower on large documents. When a document has no usable graphics card — graphics acceleration switched off in Chrome, software-only graphics, an unsupported card, or repeated graphics errors on that document — a notice says so once, with **Dismiss**: on a board in a box just above the tool bar, on a PDF at the bottom left. A board's other notices, such as a picture that could not be shown, appear in the same box with it, newest last, each with its own **Dismiss**; a new notice never hides one you have not read.
 
+In the rare case that one stroke cannot be drawn at all — working out its shape stopped the app's drawing worker — the rest of the board is still drawn, that stroke is left out of the picture, and the same box says how many strokes are missing. The stroke stays in the file unchanged, and it is not tried again until the page is reloaded.
+
 ### Drawings
 A **drawing** (\`.drawing\`) is a canvas with no pages at all — an endless sheet in every direction, for diagrams and thinking rather than for a page you intend to hand in. Its **Minimap** (bottom right) shows the artwork and your current view: click or drag in it to move there; with the minimap focused, the arrow keys move a quarter of the view (a full view with \`Shift\`), and \`Home\` / \`End\` go to the artwork's top-left / bottom-right. A drawing has no paper, and its own **Theme**.
 

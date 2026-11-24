@@ -25,8 +25,13 @@ This is the board's own route. Editing (tools, selection, text) is `whiteboard-e
 3. **Stream** (`paintStream.ts`, `scenePaintStream.ts`): each node yields `underlay` items then `content` items
    (`PaintBand`); every node's underlay is emitted before any content. The source resolves up to `RESOLVE_AHEAD_STROKES`
    (256) strokes and `RESOLVE_AHEAD` (16) other nodes ahead of the one it emits, in canonical order (`sceneSource.ts`). The
-   chunks a task asks for go to the geometry workers as ONE `ink.batch` per pool member (`workers/inkCoverageClient.ts`: up to
-   3 workers, more than one only for 32+ chunks; one input buffer, one packed reply). The services build a node once per band
+   chunks a task asks for with one abort signal go to the geometry workers as ONE `ink.batch` per pool member
+   (`workers/inkCoverageClient.ts`: one input buffer, one packed reply; a stream fills 9-15 chunks a task, so the pool's extra
+   members, made for 64+ chunks and ended after 5 s idle, are rare). Keyed by signal, a replaced stream cancels its batch whole;
+   warm builds share one controller so they still batch. A batch that crashes its worker is asked again chunk by chunk on a
+   serial isolation worker: the chunk that crashes there is refused for the page (`INK_GEOMETRY_CRASHED`), and the services leave
+   that stroke out of the picture (`realize` answers a box from its samples) and say so; a member that failed for good is skipped
+   and its queued chunks re-sent to a live one. The services build a node once per band
    and signature at a time (`building`), reuse geometry a frame still holds after its idle entry went (`surviving`, a `WeakRef`
    to the coverage), and `realize` (bounds only) builds at the band the paint last asked for.
    - **A chunk's coverage is one buffer** (`ink/packedCoverage.ts`): its segment, disc and centreline rows and run starts. The
@@ -230,7 +235,8 @@ refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF wri
 - **Geometry is a document model, not raster**: the services count every live coverage (built, not yet collected) and report it
   through `governor.reportDerivedModel` (readout `derivedModelBytes`), never into a pane's CPU pool: charged as the board's
   working set, a 10,060-stroke drawing's 122 MB held the 128 MB pool over target and the app reduced its quality at rest.
-  When no view of the document is visible the runtime releases the session's derived caches (`render.releaseDerived`), and the
+  When no view of the document has been visible for 2 s (`RELEASE_HIDDEN_MS`; a graph-view visit detaches every view, a tab
+  moved to another pane does not) the runtime releases the session's derived caches (`render.releaseDerived`), and the
   hide drops everything that names a paint: frames, the composer's part index (`TileParts.release`), the adapter's memos, the
   routes' paint resources (re-handed at the next prepare: `tileComposer` resets `resourcesSeen`), the 2D picture records and
   the audit's scene. Check: `__bmeRenderAudit.memory().derivedModelBytes` is 0 a few seconds after a hide and a forced GC.

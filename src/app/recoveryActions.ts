@@ -9,6 +9,7 @@ import { hashBytes } from '../utils/diskVersion';
 import { materializeRecoveryCopy, recoveryCopyMedia } from '../utils/recoveryCopy';
 import { recoveryAdapter } from '../utils/recoveryAdapters';
 import { fingerprintSnapshot } from '../utils/snapshotFingerprint';
+import { hasOldBoardName, startsAsOldBoard } from '../utils/oldBoards';
 import type { UseRecoveryActionsDeps } from './useRecoveryActions';
 import { loadChunk } from '../platform/chunkLoad';
 
@@ -45,6 +46,10 @@ export async function inspectRecovery(deps: Pick<RecoveryActionsDeps,
     const snapshot = await readFileSnapshot(handle);
     try {
       const version = await snapshot.fingerprint();
+      if (!current()) return 'unavailable';
+      // A drawing or notebook that is still in the old app's format (the edits were made by an earlier build that would
+      // have converted it on save) is never written: its recovered changes can only be kept as a copy (utils/oldBoards.ts).
+      if (startsAsOldBoard(await snapshot.blob.slice(0, 512).text(), entry.path)) return 'copy';
       if (!current()) return 'unavailable';
       const copy = await materializeRecoveryCopy(entry, new AbortController().signal);
       const copyHash = copy instanceof Blob ? await fingerprintSnapshot(copy)
@@ -130,7 +135,10 @@ export async function saveRecoveryCopy(deps: Pick<RecoveryActionsDeps,
     if (!asset.id || ids.has(asset.id)) throw new Error('Invalid or duplicate recovery media.');
     ids.add(asset.id);
   }
-  let copy = await writeConflictCopy(entry.path, copyData, root);
+  // A board's recovered changes are this app's format: beside an old drawing they are a `.drawing`, never a second
+  // `.tldraw` that the old app would try to read (utils/oldBoards.ts).
+  const copyPath = entry.kind === 'drawing' && hasOldBoardName(entry.path) ? entry.path.replace(/\.(tldraw|tldr)$/i, '.drawing') : entry.path;
+  let copy = await writeConflictCopy(copyPath, copyData, root);
   check();
   if (assets.length) {
     // The generated file is the asset-write owner, never the missing original.
@@ -166,7 +174,7 @@ export async function saveRecoveryCopy(deps: Pick<RecoveryActionsDeps,
         } finally { snapshot.dispose(); }
       }
       check();
-      if (!written) copy = await writeConflictCopy(entry.path, data, root);
+      if (!written) copy = await writeConflictCopy(copyPath, data, root);
     }
   }
   check();

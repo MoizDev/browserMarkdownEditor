@@ -22,8 +22,9 @@ export async function applyNativeCanvasOperations(options: {
     if (!tab || (loaded !== 'drawing' && loaded !== 'notebook' && loaded !== 'pdf')) {
         throw new DOMException('Canvas representation changed', 'AbortError');
     }
-    // Every loaded canvas, legacy text included, is admitted by its App-owned session (which converts a legacy
-    // board under its own consent and backup rules). A refusal there throws; no second editor takes over.
+    // Every loaded canvas is admitted by its App-owned session. An old-format board's session is read-only for life, so
+    // its editing admission refuses with the reason the agent passes on (ask the user for an editable copy); a refusal
+    // there throws, and no second editor takes over.
     if (!deps.ensureNativeAgentRuntime) throw new Error('Native canvas source acquisition is unavailable');
     const source = await deps.ensureNativeAgentRuntime(path, AbortSignal.any([signal, AbortSignal.timeout(15_000)]));
     check();

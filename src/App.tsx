@@ -56,12 +56,14 @@ import { useAgentHostDeps } from './app/useAgentHostDeps';
 import { useReaderIntegration } from './app/useReaderIntegration';
 import { useGlobalShortcuts } from './app/useGlobalShortcuts';
 import { useRecoveryActions } from './app/useRecoveryActions';
+import { useEditableCopy } from './app/useEditableCopy';
 import { requestDocumentKeyboard } from './utils/documentKeyboard';
 import SaveNotices from './components/SaveNotices';
 import { moduleSlot } from './components/moduleSlot';
 import { AppFailure, AppRecoveryProvider, ErrorBoundary, PartFailureBox } from './components/ErrorBoundary';
 import { opensInApp } from './utils/documentReading';
 import type { FileTreeNode } from './types';
+import type { NativeCanvasHost } from './types/nativeCanvas';
 
 // The AI agent panel and everything under it (its CSS, the WebSocket bridge,
 // the reply renderer, the aicss components) load on first open — a reader who
@@ -161,6 +163,7 @@ export default function App() {
     readBoardAsset,
     readLegacyBoardAsset,
     putBoardAsset,
+    writeBoardCopy,
     readBytesVersioned,
     inspectExportTarget,
     writeNotebookExport,
@@ -176,6 +179,9 @@ export default function App() {
 
   const { currentVaultIdRef, rootHandleRef, fileTreeRef, readerEpochRef } = useLiveVault(rootHandle, currentVaultId, fileTree);
   const { saveStatus, setSaveStatus, showStatus, holdStatus, announce } = useStatusLine();
+  // An old board's editable copy is composed after the opener and the canvas host that call into it (useEditableCopy).
+  const editableCopyRef = useRef<NativeCanvasHost['makeEditableCopy'] | null>(null);
+  const oldBoardOpenedRef = useRef<((id: string, name: string) => void) | null>(null);
   const {
     tabs, setTabs, setClosingDocumentIds, closingRef, reopenedClosingRef, layout, setLayout,
     activeTabPath, activeFile, tabsRef, sessionReportRef, nativeTransitionRef,
@@ -267,7 +273,7 @@ export default function App() {
   } = useDocumentOpener({
     handleIO, readFileVersioned, fileTree, rootHandleRef, tabsRef, closingRef, reopenedClosingRef,
     setLayout, setTabs, setSaveStatus, setMainView, rememberAssetRefs, seedPdfBaseline,
-    seedDocumentBuffer
+    seedDocumentBuffer, oldBoardOpenedRef
   });
   // A click (or Enter) on a file in the tree opens it AND gives it the keyboard, as a tab-bar click does: the
   // keyboard otherwise stays on the tree row, so a drawing's first tool shortcut went nowhere.
@@ -295,7 +301,7 @@ export default function App() {
     getVaultActivation, tabsRef, documentSessions, documentBuffers, nativePoliciesRef, diskStateRef,
     rootHandleRef, currentVaultIdRef, flushingRef, saveTimersRef, nativeTransitionRef, sessionReportRef,
     dialogRef, ask, recoveryEvent, recoveryJournal, readFileSnapshot, readBoardAsset,
-    readLegacyBoardAsset, putBoardAsset, keepConversionBackup
+    readLegacyBoardAsset, putBoardAsset, keepConversionBackup, editableCopyRef
   });
 
   useConversionRestore({
@@ -355,7 +361,7 @@ export default function App() {
   }, [pickDirectorySafely, tell]);
 
   const {
-    releaseOverwritten, removeTab, closeDocuments, closeTab, reopenClosedTab, retryUnreadTab,
+    releaseTab, releaseOverwritten, removeTab, closeDocuments, closeTab, reopenClosedTab, retryUnreadTab,
     changeTabMode, toggleTabMode
   } = useTabLifecycle({
     clearSaveTimer, tabsRef, documentSessions, bufferPathIdsRef, documentBuffers, syncExitGuard,
@@ -366,6 +372,11 @@ export default function App() {
     preparePdfDeparture, fileTreeRef, handleFileClick, retryUnreadTabRef, rememberAssetRefs,
     readFileVersioned, readBytesVersioned, resolveFileHandle, bumpBytesGeneration, seedDocumentBuffer,
     setDiskState
+  });
+
+  useEditableCopy({
+    ask, tell, announce, getVaultActivation, writeBoardCopy, handleIO, rootHandleRef, tabsRef, layoutRef, nativePoliciesRef,
+    setTabs, setLayout, handleFileClick, releaseTab, seedDocumentBuffer, editableCopyRef, oldBoardOpenedRef
   });
 
   const {
@@ -510,6 +521,7 @@ export default function App() {
       questionId={dialog.id ?? 0}
       title={dialog.title}
       confirmLabel={dialog.confirmLabel}
+      cancelLabel={dialog.cancelLabel}
       danger={dialog.danger}
       input={dialog.input}
       altLabel={dialog.altLabel}

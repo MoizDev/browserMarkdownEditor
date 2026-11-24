@@ -66,9 +66,10 @@ export function importFailure(prefix: string, issues: readonly ImportIssue[]): s
     return reasons ? `${prefix}: ${reasons}.` : `${prefix}.`;
 }
 
-/** The board's own notice after a conversion that opened: what was left out, and the repairs the person would care
- * about, each grouped and counted. Null when there is nothing worth reading. */
-export function importNotice(report: ImportReport): string | null {
+/** The board's own notice after an import that opened: what was left out, and the repairs the person would care
+ * about, each grouped and counted, then `closing` (where the left-out items are kept). Null when there is nothing worth
+ * reading. */
+export function importNotice(report: ImportReport, closing: string): string | null {
     const parts: string[] = [];
     const lost = report.unrepresentable.filter(issue => issue.item);
     if (lost.length) {
@@ -89,5 +90,5 @@ export function importNotice(report: ImportReport): string | null {
         parts.push(sentence[0].toUpperCase() + sentence.slice(1));
     }
     if (!parts.length) return null;
-    return `${parts.join(' ')} The original file is kept in Trash when you first edit.`;
+    return `${parts.join(' ')} ${closing}`;
 }

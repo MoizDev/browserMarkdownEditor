@@ -1,6 +1,7 @@
-// `.tldraw` (the old drawing format, opened only to be converted) and `.notebook`
-// can contain legacy text canvases; `.drawing` is reserved for native boards and
-// must never be decoded as a text buffer.
+// `.tldraw` (the old app's drawings), tldraw's own `.tldr` and `.notebook` can
+// contain old-format text canvases, which open read-only and are never written
+// (utils/oldBoards.ts); `.drawing` is reserved for native boards and must never
+// be decoded as a text buffer.
 // Canvas documents are not prose and must not be content-indexed by search.
 
 export const DRAWING_EXT = '.tldraw';
@@ -11,8 +12,11 @@ export const NATIVE_DRAWING_EXT = '.drawing';
  *  which is which and "New notebook" makes something unambiguous. */
 export const NOTEBOOK_EXT = '.notebook';
 
+/** An old-app drawing name: `.tldraw`, or tldraw's own `.tldr` (a text file otherwise, which the text editor would
+ *  happily have written). Its bytes still decide whether it is an old board (utils/oldBoards.ts). */
 export function isDrawingFile(name: string): boolean {
-    return name.toLowerCase().endsWith(DRAWING_EXT);
+    const lower = name.toLowerCase();
+    return lower.endsWith(DRAWING_EXT) || lower.endsWith('.tldr');
 }
 
 export function isNativeDrawingFile(name: string): boolean {

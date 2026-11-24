@@ -130,6 +130,15 @@ async function freeEntryName(
     }
 }
 
+/** Move `name` out of `dir/.Assets` into `dir/.Garbage/.Assets`, where an unreferenced picture is retired (retireAsset's
+ *  move, for a picture no note's text refers to: one a failed board copy wrote moments before). */
+async function retireUnusedPicture(dir: FileSystemDirectoryHandle, name: string): Promise<void> {
+    const assets = await dir.getDirectoryHandle(ASSETS_DIR);
+    const file = await (await assets.getFileHandle(name)).getFile();
+    await copyFileInto(await retiredAssetsDir(dir, true), name, file);
+    await assets.removeEntry(name);
+}
+
 /** Copy one file's bytes into `dir` under `name`. */
 async function copyFileInto(dir: FileSystemDirectoryHandle, name: string, file: File): Promise<void> {
     const handle = await dir.getFileHandle(name, { create: true });
@@ -1919,9 +1928,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         await boardAssetGuard(request, activation);
         return found;
     }, [boardAssetGuard, findBoardAsset]);
-    const putBoardAsset = useCallback((request: BoardAssetAccess & { extension: string; blob: Blob }) => {
-        const activation = vaultActivationRef.current;
-        const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
+    /** One picture into `<board folder>/.Assets` under its content address, staged and hash-verified; `created` says whether
+     *  this call wrote it (false: the same bytes were already there). Runs inside the caller's board-asset queue job. */
+    const storeBoardAsset = useCallback(async (request: BoardAssetAccess & { extension: string; blob: Blob }, activation: number) => {
             await boardAssetGuard(request, activation);
             if (!/^[a-z0-9]{1,8}$/.test(request.extension)) throw new Error('Invalid board media extension');
             if (request.blob.size > 10 * 1024 * 1024) throw new RangeError('Board media exceeds 10 MiB');
@@ -1930,7 +1939,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             const dir = await request.parent.getDirectoryHandle(ASSETS_DIR, { create: true });
             const existing = await findBoardAsset(dir, request);
             await boardAssetGuard(request, activation);
-            if (existing) return existing.name;
+            if (existing) return { name: existing.name, created: false };
             const temporaryName = await freeEntryName(dir, `.incoming-${crypto.randomUUID()}`);
             await boardAssetGuard(request, activation);
             const temporary = await dir.getFileHandle(temporaryName, { create: true });
@@ -1955,7 +1964,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                     await output.close();
                 } catch (error) { await output.abort().catch(() => {}); throw error; }
                 await boardAssetGuard(request, activation);
-                return name;
+                return { name, created: true };
             } finally {
                 // Only remove the temp we created, never a name another actor
                 // replaced while the write was in flight.
@@ -1968,10 +1977,81 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                     }
                 } catch { /* a failed cleanup leaves recoverable staging bytes */ }
             }
-        }));
+    }, [boardAssetGuard, findBoardAsset]);
+    const putBoardAsset = useCallback((request: BoardAssetAccess & { extension: string; blob: Blob }) => {
+        const activation = vaultActivationRef.current;
+        const job = boardAssetQueueRef.current.then(() => withMutation(async () => (await storeBoardAsset(request, activation)).name));
         boardAssetQueueRef.current = job.then(() => {}, () => {});
         return untilAborted(job, request.signal);
-    }, [boardAssetGuard, findBoardAsset, withMutation]);
+    }, [storeBoardAsset, withMutation]);
+
+    /**
+     * An old-format board's editable copy (utils/oldBoards.ts): `bytes` as a NEW file beside the original, under the first
+     * of `names` that no file or folder holds, with its pictures in that folder's `.Assets`. All or nothing as the person
+     * sees it: pictures land first (each content-addressed and hash-verified, as any board's), then the board, read back and
+     * hash-checked. If anything fails, the board file this call created is removed — its name was proven free moments
+     * before and it holds nothing of anyone's — and every picture it added is retired into `.Garbage/.Assets` the way an
+     * unreferenced picture is, so no half-written copy or orphan picture is left. The original (`request.owner`) is only
+     * ever looked at, as the guard that the folder is still the one it was.
+     */
+    const writeBoardCopy = useCallback((request: BoardOwnerAccess & { names: Iterable<string>;
+        bytes: (files: ReadonlyMap<string, string>) => Promise<Blob>; media: readonly { hash: string; extension: string; blob: Blob }[] }) => {
+        const activation = vaultActivationRef.current;
+        const job = boardAssetQueueRef.current.then(() => withMutation(async () => {
+            await boardOwnerGuard(request, activation);
+            const parentPath = (await request.root.resolve(request.parent))?.join('/');
+            if (parentPath === undefined) throw new Error('The board’s folder is no longer in this vault.');
+            const added: string[] = [], files = new Map<string, string>();
+            let created: FileSystemFileHandle | null = null, createdName = '';
+            try {
+                for (const picture of request.media) {
+                    const stored = await storeBoardAsset({ ...request, hash: picture.hash, preferredName: null,
+                        extension: picture.extension, blob: picture.blob }, activation);
+                    if (stored.created) added.push(stored.name);
+                    files.set(picture.hash, stored.name);
+                }
+                // The board names each picture by the file that now holds it (an existing one with the same bytes included).
+                const bytes = await request.bytes(files);
+                await boardOwnerGuard(request, activation);
+                let name: string | undefined;
+                // A bounded walk: the 10,000th taken name is a folder full of copies, not a reason to loop forever.
+                let tried = 0;
+                for (const candidate of request.names) {
+                    if (++tried > 10_000) break;
+                    if (!candidate || /[\\/\0]/.test(candidate)) continue;
+                    if (!await entryExists(request.parent, candidate)) { name = candidate; break; }
+                }
+                if (!name) throw new Error('No free name was found for the copy.');
+                await boardOwnerGuard(request, activation);
+                // Proven free (files and folders both) the line above: never createFile, which opens-or-truncates.
+                created = await request.parent.getFileHandle(name, { create: true });
+                createdName = name;
+                await writeAllBytes(created, bytes);
+                const version = await versionAfterWrite(created, bytes);
+                const written = await created.getFile();
+                if (written.size !== bytes.size || await fingerprintSnapshot(written) !== version.hash) {
+                    throw new Error('The copy did not read back as written.');
+                }
+                if (rootHandleRef.current === request.root) await patchTreeDirs(request.root, [parentPath]);
+                return { name, path: joinVaultPath(parentPath, name), handle: created, version, bytes };
+            } catch (error) {
+                if (created) {
+                    try {
+                        const current = await request.parent.getFileHandle(createdName);
+                        if (await current.isSameEntry(created)) await request.parent.removeEntry(createdName);
+                    } catch { /* already gone */ }
+                }
+                for (const name of added) {
+                    try { await retireUnusedPicture(request.parent, name); }
+                    catch { /* a picture that cannot be moved stays in .Assets, where it harms nothing */ }
+                }
+                if (rootHandleRef.current === request.root) await patchTreeDirs(request.root, [parentPath]).catch(() => {});
+                throw error;
+            }
+        }));
+        boardAssetQueueRef.current = job.then(() => {}, () => {});
+        return job;
+    }, [boardOwnerGuard, storeBoardAsset, withMutation, patchTreeDirs]);
 
     const keepConversionBackup = useCallback((request: BoardAssetAccess & { blob: Blob }): Promise<TrashItem> => {
         const activation = vaultActivationRef.current;
@@ -3142,6 +3222,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         keepCopyInGarbage,
         readBoardAsset,
         putBoardAsset,
+        writeBoardCopy,
         keepConversionBackup,
         restoreConversionCopy,
         copyTrashFile,
@@ -3199,6 +3280,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         keepCopyInGarbage,
         readBoardAsset,
         putBoardAsset,
+        writeBoardCopy,
         keepConversionBackup,
         restoreConversionCopy,
         copyTrashFile,

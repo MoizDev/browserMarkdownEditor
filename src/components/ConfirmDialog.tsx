@@ -38,6 +38,8 @@ interface ConfirmDialogProps {
     children: ReactNode;
     /** The label on the button that goes ahead. */
     confirmLabel: string;
+    /** The label on the button that backs out; "Cancel" when absent. Escape and the click outside do what it does. */
+    cancelLabel?: string;
     /** Whether going ahead destroys something, which colours that button. */
     danger?: boolean;
     /**
@@ -89,7 +91,7 @@ interface ConfirmDialogProps {
     onAlt?: () => void;
 }
 
-export default function ConfirmDialog({ questionId = 0, title, children, confirmLabel, danger, input, onConfirm, onCancel, altLabel, onAlt }: ConfirmDialogProps) {
+export default function ConfirmDialog({ questionId = 0, title, children, confirmLabel, cancelLabel, danger, input, onConfirm, onCancel, altLabel, onAlt }: ConfirmDialogProps) {
     const titleId = useId();
     const inputId = useId();
     const confirmRef = useRef<HTMLButtonElement | null>(null);
@@ -202,7 +204,7 @@ export default function ConfirmDialog({ questionId = 0, title, children, confirm
                 )}
                 <div className="confirm-actions">
                     {onCancel && (
-                        <button className="confirm-btn" onClick={onCancel}>Cancel</button>
+                        <button className="confirm-btn" onClick={onCancel}>{cancelLabel ?? 'Cancel'}</button>
                     )}
                     {altLabel && onAlt && (
                         <button className="confirm-btn" onClick={onAlt}>{altLabel}</button>

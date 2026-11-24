@@ -121,7 +121,7 @@ export default function ViewerHost<T extends object>({
             <div className="board-viewer-overlay" ref={setOverlay} />
         </BoardAccessibility>
         <BoardPaintStatus readiness={readiness} paint={paint} isVisible={isVisible} reason={reason} />
-        {readOnly && !admitting && <div className="board-viewer-notice" role="status">{reason ?? readOnlyNotice}</div>}
+        {readOnly && !admitting && (reason ?? readOnlyNotice) && <div className="board-viewer-notice" role="status">{reason ?? readOnlyNotice}</div>}
         {chrome}
     </div>;
 }

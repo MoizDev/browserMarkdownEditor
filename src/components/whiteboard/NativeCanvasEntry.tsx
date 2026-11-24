@@ -3,7 +3,7 @@ import { useBoardNotices, type BoardNotices } from './boardNotices';
 import { BoardNoticeStack } from './BoardNoticeStack';
 import type { ViewportInsets, ZoomLimits } from '../../platform/render/camera';
 import type { ActiveFile, Theme } from '../../types';
-import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
+import type { NativeCanvasHost, NativeCanvasIdentity, NativeCopyView } from '../../types/nativeCanvas';
 import type { NativeCanvasReady } from '../../types/reading';
 import type { AttachCanvasSession } from '../../utils/canvasSessionBridge';
 import { prepareNativeRuntime } from '../../whiteboard/host/prepareNativeRuntime';
@@ -18,6 +18,9 @@ import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes
 import { createNativeAcquisitionOptions } from './nativeAcquisitionOptions';
 import { useNativeBoardAcquisition } from './useNativeBoardAcquisition';
 import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
+import { createNativeCameraOperations } from './nativeCameraOperations';
+import { ReadOnlyBoardChrome } from './ReadOnlyBoardChrome';
+import { isEditableCopyRequested, requestEditableCopy, subscribeEditableCopyRequests, takeCopyNotice, takeEditableCopyRequest } from '../../utils/oldBoards';
 import ViewerHost from './ViewerHost';
 import NativeNotebookThumbnails from './NativeNotebookThumbnails';
 import NativeMinimap, { type NativeMinimapBox, type NativeMinimapThumbnail } from './NativeMinimap';
@@ -70,14 +73,61 @@ export interface NativeCanvasEntryProps {
     readonly onFocusPane: (path: string) => void;
 }
 
-function NativeViewer({ props, identity, board, onError }: {
-    props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; board: ComposedBoardSession; onError(error: unknown): void;
+/** An old-format board's copy, run by the pane that holds the board (utils/oldBoards.ts): one at a time, from a request
+ * the open dialog, the strip's button or a tree row made. The copy is App's to finish once started — it replaces this
+ * pane's tab — so it is never aborted from here; a failure is told by App and leaves the original as it was. */
+function useEditableCopy(adapter: HostedBoardAdapter<BoardSessionPort>, host: NativeCanvasHost, identity: NativeCanvasIdentity,
+    view: () => NativeCopyView | undefined) {
+    const oldBoard = adapter.oldBoard, documentId = identity.documentId;
+    const requested = useSyncExternalStore(subscribeEditableCopyRequests, () => isEditableCopyRequested(documentId), () => false);
+    const [copying, setCopying] = useState(false);
+    const mounted = useRef(true);
+    // The strip's button had the keyboard when it asked: it goes with the pane, so the copy that replaces the pane takes the
+    // keyboard instead of leaving it on the page (a column reached by Tab is not the focused pane, so App cannot tell).
+    const keyboardHere = useRef(false);
+    useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+    useEffect(() => {
+        if (!oldBoard || !requested || copying || !takeEditableCopyRequest(documentId)) return;
+        setCopying(true);
+        const signal = new AbortController().signal, focus = keyboardHere.current;
+        keyboardHere.current = false;
+        void (async () => {
+            try {
+                const source = await oldBoard.copySource(signal, view());
+                await host.makeEditableCopy(identity, { source, notice: oldBoard.copyNotice, focus }, signal);
+            } catch (error) {
+                if (!(error instanceof DOMException && error.name === 'AbortError')) console.error('Could not make an editable copy:', error);
+            } finally { if (mounted.current) setCopying(false); }
+        })();
+    }, [oldBoard, requested, copying, documentId, host, identity, view]);
+    const onCopy = useCallback((trigger: HTMLElement) => {
+        keyboardHere.current = trigger === document.activeElement;
+        requestEditableCopy(documentId);
+    }, [documentId]);
+    return oldBoard ? { kind: oldBoard.kind, copying: copying || requested, onCopy } : undefined;
+}
+
+function NativeViewer({ props, identity, board, adapter, onError }: {
+    props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; board: ComposedBoardSession;
+    adapter: HostedBoardAdapter<BoardSessionPort>; onError(error: unknown): void;
 }) {
     const latest = useRef(props);
     useLayoutEffect(() => { latest.current = props; }, [props]);
     const [inverted, setInverted] = useState(false);
-    const notices = useBoardNotices();
+    const importNotice = adapter.importNotice;
+    // As the editing view does: dismissed, an import's notice is done for this session, a remounted pane included.
+    const dismissImport = useCallback((message: string) => { if (importNotice && message === importNotice.text) importNotice.dismiss(); }, [importNotice]);
+    const notices = useBoardNotices(importNotice && !importNotice.isDismissed() ? [importNotice.text] : [], dismissImport);
     const { show: setNotice, clear: clearNotice } = notices;
+    // Where the person is looking, read when the copy is made: the copy opens there.
+    const leaseRef = useRef<NativeViewLease | null>(null);
+    const copyView = useCallback((): NativeCopyView | undefined => {
+        const view = leaseRef.current;
+        if (!view || view.camera.viewport.width <= 0) return undefined;
+        const { x, y, z } = view.camera.camera;
+        return { sheet: view.runtime.selection.getSnapshot().sheet, x, y, zoom: z };
+    }, []);
+    const oldBoard = useEditableCopy(adapter, props.nativeCanvasHost, identity, copyView);
     const [lease, setLease] = useState<NativeViewLease | null>(null);
     const { nativeCanvasHost, zoomLimits: { min, max }, insets: { left, right, top, bottom } } = props;
     useEffect(() => {
@@ -90,10 +140,15 @@ function NativeViewer({ props, identity, board, onError }: {
                 onNoticeCleared: clearNotice });
         } catch (error) { onError(error); return; }
         setLease(view);
-        return () => { setLease(previous => previous === view ? null : previous); view.dispose(); };
+        leaseRef.current = view;
+        return () => {
+            if (leaseRef.current === view) leaseRef.current = null;
+            setLease(previous => previous === view ? null : previous); view.dispose();
+        };
     }, [board, identity, nativeCanvasHost, min, max, left, right, top, bottom, onError, setNotice, clearNotice]);
-    if (!lease) return <div role="status">Preparing canvas view…</div>;
-    return <AttachedViewer props={props} identity={identity} lease={lease} inverted={inverted} setInverted={setInverted} notices={notices} />;
+    if (!lease) return <div className="canvas-pane-message is-waiting" role="status">Preparing canvas view…</div>;
+    return <AttachedViewer props={props} identity={identity} lease={lease} inverted={inverted} setInverted={setInverted} notices={notices}
+        oldBoard={oldBoard} viewNotice={oldBoard ? null : VIEW_REASON} />;
 }
 
 export interface NativeEditingChromeContext {
@@ -103,12 +158,16 @@ export interface NativeEditingChromeContext {
     readonly setInverted: (value: boolean) => void;
     readonly zoom: number;
 }
-export function AttachedViewer({ props, identity, lease, inverted, setInverted, notices, editingChrome, editingWritable, editingAdmitting }: {
+export function AttachedViewer({ props, identity, lease, inverted, setInverted, notices, editingChrome, editingWritable, editingAdmitting, oldBoard, viewNotice = VIEW_REASON }: {
     props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; lease: NativeViewLease; inverted: boolean;
     setInverted(value: boolean): void; notices: BoardNotices;
     editingChrome?: (context: NativeEditingChromeContext) => ReactNode;
     editingWritable?: boolean;
     editingAdmitting?: boolean;
+    /** An old-format board's copy, for the read-only strip. */
+    oldBoard?: { readonly kind: 'drawing' | 'notebook'; readonly copying: boolean; readonly onCopy: (trigger: HTMLElement) => void };
+    /** What a read-only view says it is, at the bottom; null when its own strip already says so (an old board). */
+    viewNotice?: string | null;
 }) {
     const setNotice = notices.show;
     const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
@@ -218,33 +277,34 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
     useLayoutEffect(() => { currentTheme.current = props.theme; }, [props.theme]);
     const readTheme = useCallback(() => currentTheme.current, []);
     const viewer = useNativeClipboard(lease, props.nativeCanvasHost, identity, readTheme, setNotice);
+    // The view's zoom panel runs the editing view's own camera operations (one fit, contentBounds.ts), over this lease.
+    const [viewCamera, setViewCamera] = useState<ReturnType<typeof createNativeCameraOperations> | null>(null);
+    const minimapOpenRef = useRef(minimapOpen);
+    useLayoutEffect(() => { minimapOpenRef.current = minimapOpen; }, [minimapOpen]);
+    useEffect(() => {
+        if (editingChrome) return;
+        const lifetime = new AbortController();
+        setViewCamera(createNativeCameraOperations({ runtime: lease.runtime, lease, current, signal: lifetime.signal,
+            minimapVisible: () => minimapOpenRef.current, setMinimapVisible: setMinimapOpen }));
+        return () => { lifetime.abort(); setViewCamera(null); };
+    }, [editingChrome, lease, current, setMinimapOpen]);
+    const pageCount = board.doc.kind === 'notebook' && board.doc.host.kind === 'notebook' ? board.doc.host.paper.pageCount : 0;
+    // An old board's own read-only reason is written for the agent and the write seams; its strip says it to the person.
+    const viewReason = oldBoard && view.reason === board.readOnlyReason ? null : view.reason;
     return <ViewerHost name={props.file.name} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
-        view={editingChrome ? lease.view : viewer} layers={view.layers} platform={view.platform} readiness={view.readiness} paint={view.paint} reason={view.reason ?? (editingChrome ? '' : VIEW_REASON)}
+        view={editingChrome ? lease.view : viewer} layers={view.layers} platform={view.platform} readiness={view.readiness} paint={view.paint} reason={viewReason ?? (editingChrome ? '' : viewNotice)}
         readOnly={editingChrome ? board.isReadOnly || !editingWritable : true} admitting={!!editingChrome && !!editingAdmitting} externalAccessibility
-        readOnlyNotice={editingChrome ? (board.readOnlyReason ?? VIEW_REASON) : VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
-        chrome={<>{editingChrome ? editingChrome({ minimapOpen, setMinimapOpen, inverted, setInverted, zoom: navigation.zoom }) : <div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">
-            {sheets.length > 1 && <label>Sheet <select value={selected.sheet} onChange={event => {
-                const sheet = sheets.find(item => item.id === event.currentTarget.value);
-                if (sheet) selection.setSheet(sheet.id);
-            }}>{sheets.map(sheet => <option key={sheet.id} value={sheet.id}>{sheet.name}</option>)}</select></label>}
-            {board.doc.kind === 'notebook' && board.doc.host.kind === 'notebook' && <label>Page <input type="number" min={1}
-                max={board.doc.host.paper.pageCount} value={navigation.page + 1} onChange={event => {
-                    const page = event.currentTarget.valueAsNumber;
-                    if (Number.isFinite(page)) lease.jump(Math.max(0, Math.min(board.doc.host.kind === 'notebook' ? board.doc.host.paper.pageCount - 1 : 0, Math.floor(page) - 1)));
-                }} /> / {board.doc.host.paper.pageCount}</label>}
-            <button type="button" onClick={() => lease.zoomStep(-1)} aria-label="Zoom out">−</button>
-            <span>{Math.round(navigation.zoom * 100)}%</span>
-            <button type="button" onClick={() => lease.zoomStep(1)} aria-label="Zoom in">+</button>
-            <button type="button" aria-pressed={inverted} onClick={() => setInverted(!inverted)}>Invert</button>
-            {board.doc.kind === 'whiteboard' && <button type="button" aria-pressed={minimapOpen} onClick={() => setMinimapOpen(!minimapOpen)}>Minimap</button>}
-            {stack && <NativeNotebookThumbnails pages={stack.rects} revision={revision} page={navigation.page} isVisible={props.isVisible}
-                current={current} currentRevision={getRevision} capturePage={capturePage} jump={jump} onError={reportThumbnailError} />}
-            {notices.list.map(message => <span key={message} role="status">{message}</span>)}
-        </div>}
-        {/* The editing board's notices (a picture that could not be shown, no usable GPU, ...): a bare span here sat unstyled in the
-            chrome fragment and never appeared on screen. They persist until the person puts each away. */}
-        {editingChrome && <BoardNoticeStack notices={notices} />}
+        readOnlyNotice={editingChrome ? (board.readOnlyReason ?? VIEW_REASON) : viewNotice ?? ''} registerKeyboardTarget={register} onFocus={onFocus}
+        chrome={<>{editingChrome ? editingChrome({ minimapOpen, setMinimapOpen, inverted, setInverted, zoom: navigation.zoom })
+            : viewCamera && <ReadOnlyBoardChrome camera={viewCamera} zoom={navigation.zoom} minimapOpen={minimapOpen} kind={board.doc.kind}
+                sheets={sheets} sheet={selected.sheet} setSheet={id => { const target = sheets.find(item => item.id === id); if (target) selection.setSheet(target.id); }} inverted={inverted} setInverted={setInverted}
+                output={clipboard} oldBoard={oldBoard} thumbnails={stack && pageCount > 1 ? (open, setOpen) => <NativeNotebookThumbnails open={open} onOpenChange={setOpen}
+                    pages={stack.rects} revision={revision} page={navigation.page} isVisible={props.isVisible}
+                    current={current} currentRevision={getRevision} capturePage={capturePage} jump={jump} onError={reportThumbnailError} /> : undefined} />}
+        {/* The board's notices (a picture that could not be shown, no usable GPU, what an old board's import left out): a bare
+            span sat unstyled in the chrome fragment and never appeared on screen. They persist until the person puts each away. */}
+        <BoardNoticeStack notices={notices} />
         {board.doc.kind === 'whiteboard' && <NativeMinimap thumbnail={thumbnail?.key === thumbnailKey ? thumbnail : null} currentCamera={cameraState.camera} viewport={cameraState.viewport}
             isVisible={props.isVisible && minimapOpen} currentOwner={minimapCurrent} highlights={highlights} onNavigate={navigateMinimap} onFocus={onFocus} />}
         {minimapOpen && minimapNotice && <div className="board-viewer-notice" role="status">{minimapNotice}</div>}</>} />;
@@ -311,7 +371,11 @@ function NativeCanvasAcquisition({ props, onRetry }: { props: NativeCanvasEntryP
         if (identity.documentId !== documentId || identity.kind === 'pdfInk') throw new Error('Canvas identity does not match this entry');
         return prepareNativeRuntime({ host: nativeCanvasHost, identity, representation: identity.kind, signal,
             deadlineMs, zMax,
-            onError, onHistoryLimit: () => setError('The board history limit was reached.') });
+            onError, onHistoryLimit: () => setError('The board history limit was reached.') }).then(prepared => {
+            // An editable copy of an old board opens with what that board's import left out, said once (utils/oldBoards.ts).
+            const handed = takeCopyNotice(identity.documentId);
+            return handed && !prepared.importNotice ? { ...prepared, importNotice: handed } : prepared;
+        });
     }, [identity, documentId, nativeCanvasHost, deadlineMs, zMax, onError]);
     const acquisition = useMemo(() => createNativeAcquisitionOptions<ComposedBoardSession>({ host: nativeCanvasHost,
         identity, attachCanvasSession: attach, onNativeCanvasReady: ready, prepare, onError,
@@ -328,6 +392,9 @@ function NativeCanvasAcquisition({ props, onRetry }: { props: NativeCanvasEntryP
         } catch (cause) { onError(cause); }
     }, [acquired, identity, nativeCanvasHost, onError]);
     const opening = useLegacyLoadStatus(documentId, identity.kind, props.isVisible);
+    // A copy asked for from the tree before the file's bytes were read (a `.tldraw` an earlier build already converted in
+    // place) finds a board that is editable as it is: there is nothing to copy, and the request must not wait for a reload.
+    useEffect(() => { if (acquired && !acquired.adapter.oldBoard) takeEditableCopyRequest(documentId); }, [acquired, documentId]);
     if (identity.documentId !== incoming.documentId || identity.session !== incoming.session
         || identity.vaultActivation !== incoming.vaultActivation || identity.bytesGeneration !== incoming.bytesGeneration
         || identity.kind !== incoming.kind) return <div className="canvas-pane-message is-waiting" role="status">Preparing canvas…</div>;
@@ -336,8 +403,9 @@ function NativeCanvasAcquisition({ props, onRetry }: { props: NativeCanvasEntryP
         <button type="button" className="pdf-pane-action" onClick={onRetry}>Try again</button>
     </div>;
     if (!acquired) return <div className={`canvas-pane-message${opening ? '' : ' is-waiting'}`} role="status">{opening ?? 'Preparing canvas…'}</div>;
-    if (emergencyReadOnly || (editingFailure?.documentId === identity.documentId && editingFailure.session === identity.session)) {
-        return <><NativeViewer props={props} identity={identity} board={acquired.adapter.board} onError={onError} />
+    // An old-format board is only ever viewed: the viewer route, with no editing capabilities loaded at all (utils/oldBoards.ts).
+    if (acquired.adapter.oldBoard || emergencyReadOnly || (editingFailure?.documentId === identity.documentId && editingFailure.session === identity.session)) {
+        return <><NativeViewer props={props} identity={identity} board={acquired.adapter.board} adapter={acquired.adapter} onError={onError} />
             {editingFailure && <div role="status">Editing unavailable: {editingFailure.reason}</div>}</>;
     }
     return <NativeDrawingEditing props={{ ...props, identity }} board={acquired.adapter.board} adapter={acquired.adapter}

@@ -21,6 +21,26 @@ export interface NativeCanvasMedia {
     readonly preferredName?: string | null;
 }
 
+/** An editable copy's content, taken from the old board in memory: its pictures, and the board's bytes once each picture
+ *  has a file (built by the serializer, naming every picture by the file that holds it, as a saved board does). */
+export interface NativeBoardCopySource {
+    readonly media: readonly { readonly hash: string; readonly extension: string; readonly blob: Blob }[];
+    build(files: ReadonlyMap<string, string>, signal: AbortSignal): Promise<Blob>;
+}
+
+/** Where the person is looking on an old drawing, written into its copy's own view record so the copy opens there. */
+export interface NativeCopyView { readonly sheet: string; readonly x: number; readonly y: number; readonly zoom: number }
+
+/** A board read from an old-format file (utils/oldBoards.ts): shown read-only, never written, copied on request. */
+export interface NativeOldBoard {
+    readonly kind: 'drawing' | 'notebook';
+    /** What the import left out or repaired, for the original's pane; null when nothing is worth saying. */
+    readonly notice: string | null;
+    /** The same, said once in the copy's notice. */
+    readonly copyNotice: string | null;
+    copySource(signal: AbortSignal, view?: NativeCopyView): Promise<NativeBoardCopySource>;
+}
+
 export interface NativeEmbedHost {
     readonly manifest: EmbedFrameManifest;
     readonly create: EmbedContainmentFactory;
@@ -52,10 +72,17 @@ export interface NativeCanvasHost {
         accept(source: DeferredSource): void;
         release(): void;
     };
+    /** An old annotated PDF's conversion only (`pdfInk`): a drawing or notebook is never converted in place. */
     keepConversionBackup(identity: NativeCanvasIdentity, original: Blob, digest: string, signal: AbortSignal): Promise<TrashItem>;
     confirmLegacyPdfConversion(identity: NativeCanvasIdentity, request: { originalSha256: string;
         foreign: Extract<import('../utils/pdfWriteMark').PdfWriteMarkCheck, { kind: 'foreign' }> | null }, signal: AbortSignal): Promise<boolean>;
+    /** An old annotated PDF's conversion only (`pdfInk`), as keepConversionBackup. */
     acceptConvertedSource(identity: NativeCanvasIdentity, source: DeferredSource, originalDigest: string): void;
+    /** Write `source` as a new file in this old board's folder and open it in the board's tab position. Resolves once
+     *  the copy is on disk and open; throws a sentence for the person when it could not be made, with nothing left behind.
+     *  `focus`: the pane had the keyboard when the copy was asked for, so the copy takes it. */
+    makeEditableCopy(identity: NativeCanvasIdentity, copy: { source: NativeBoardCopySource; notice: string | null; focus?: boolean },
+        signal: AbortSignal): Promise<void>;
     appendJournal(identity: NativeCanvasIdentity, source: ContentSource, capture: JournalCapture): Promise<void>;
     readMedia(identity: NativeCanvasIdentity, media: NativeCanvasMedia, signal: AbortSignal): Promise<{ name: string; blob: Blob } | null>;
     /** Resolve a local legacy media reference relative to this document's folder. */

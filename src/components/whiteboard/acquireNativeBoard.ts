@@ -28,10 +28,13 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
         if (ready) return ready;
         prepared = await prepare(signal);
         requireOwner();
+        // Only an old annotated PDF is converted in place; an old drawing or notebook is never written (utils/oldBoards.ts).
+        if (prepared.conversionPending && kind !== 'pdfInk') throw new Error('Only an annotated PDF is converted in place');
         if (prepared.conversionPending && (!prepared.legacyOriginalSha256 || !/^[a-f0-9]{64}$/.test(prepared.legacyOriginalSha256))) {
             throw new Error('Legacy conversion requires a verified original digest');
         }
         if (prepared.conversionPending && !acceptConvertedSource) throw new Error('Legacy conversion has no source acceptance port');
+        if (prepared.oldBoard && kind === 'pdfInk') throw new Error('An annotated PDF is not an old-format board');
         let policy: { emergencyReadOnly: boolean } | null = null;
         let sourceAccepted = false;
         const adapter = attachCanvasSession<HostedBoardAdapter<S>>(documentId, (owner, isLiveOwner) => {
@@ -48,13 +51,14 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
             taken = true;
             try {
                 policy = onNativeCanvasReady({ owner, vaultActivation, bytesGeneration, kind,
-                    legacyOriginalSha256: prepared!.legacyOriginalSha256,
+                    legacyOriginalSha256: prepared!.legacyOriginalSha256, oldBoard: !!prepared!.oldBoard,
                     ...(owned.pdfWriteAuthority ? { pdfWriteAuthority: owned.pdfWriteAuthority } : {}) });
                 if (!policy || !isLiveOwner(owner)) throw new DOMException('Board session ended', 'AbortError');
                 if (!owned.board.isReadOnly) throw new Error('Board session did not enforce its initial read-only policy');
                 const emergency = policy.emergencyReadOnly;
                 const hosted = createBoardSessionAdapter(owner, owned.board, isLiveOwner, () => owned.dispose());
-                return { ...hosted, ...(importNotice ? { importNotice } : {}), activateEditing() {
+                const oldBoard = prepared!.oldBoard;
+                return { ...hosted, ...(importNotice ? { importNotice } : {}), ...(oldBoard ? { oldBoard } : {}), activateEditing() {
                     // A versioned PDF save advances bytes, not the retained board/undo owner.
                     if (!isLiveOwner(owner) || !currentOwner() || getSessionIdentity(documentId)?.serial !== owner.session) throw new DOMException('Board session ended', 'AbortError');
                     if (sealed) throw new Error(sealed);
@@ -64,6 +68,7 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
                         return;
                     }
                     if (emergency) throw new Error(emergencyReadOnlyReason);
+                    if (oldBoard) throw new Error(owned.board.readOnlyReason ?? 'This board is read-only.');
                     reason = null;
                     if (owned.board.isReadOnly) {
                         const denied = owned.board.readOnlyReason ?? 'This board cannot be edited safely.';
@@ -104,7 +109,7 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
         if (adapter.owner?.session !== identity.serial) throw new DOMException('Board session ended', 'AbortError');
         if (!adapter.board || !adapter.owner) throw new Error('Canvas session is not a board session');
         policy ??= onNativeCanvasReady({ owner: adapter.owner, vaultActivation, bytesGeneration, kind,
-            legacyOriginalSha256: prepared.legacyOriginalSha256 });
+            legacyOriginalSha256: prepared.legacyOriginalSha256, oldBoard: !!prepared.oldBoard });
         if (!policy) throw new DOMException('Board session ended', 'AbortError');
         if (policy.emergencyReadOnly && !adapter.board.isReadOnly) throw new Error('Board session did not enforce read-only policy');
         return { adapter, emergencyReadOnly: policy.emergencyReadOnly };

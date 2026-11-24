@@ -6,7 +6,9 @@ import { isCanvasFile, isCodeFile, isEpubFile, isNativeDrawingFile, isPdfFile } 
 import { isTextFile } from '../utils/vaultSearch';
 import { opensInApp, representationFor } from '../utils/documentReading';
 import { setBaseline } from '../utils/docBaselines';
-import { focusTab, openTab as openTabIn } from '../utils/tabPanes';
+import { focusTab, openTab as openTabIn, renamePath } from '../utils/tabPanes';
+import { sniffCanvas } from '../utils/canvasFormat';
+import { isOldBoardSniff } from '../utils/oldBoards';
 import { getNoteResolver } from '../utils/noteResolver';
 import { loadHelpDoc } from '../utils/helpDocLoader';
 import { externalOpenUrl } from './externalOpen';
@@ -32,18 +34,32 @@ export interface UseDocumentOpenerDeps {
   rememberAssetRefs: (file: ActiveFile, content: string) => void;
   seedPdfBaseline: (id: string, handle: FileSystemFileHandle) => void;
   seedDocumentBuffer: (id: string, path: string, content: string, readable: boolean) => void;
+  /** A person opened a drawing or notebook whose bytes are the old app's: offer an editable copy (useEditableCopy). */
+  oldBoardOpenedRef: React.RefObject<((id: string, name: string) => void) | null>;
+}
+
+/** How a document is opened. Every route a person takes (the tree, a link, search, the switcher, ⌥⇧T) is the default;
+ *  the agent and the copy that replaces an old board say otherwise. */
+export interface OpenOptions {
+  /** Offer an editable copy when the file turns out to be an old-format board. Off for opens nobody asked for. */
+  readonly offerCopy?: boolean;
+  /** Open it in this open document's place (its column, index and focus), as an old board's editable copy does. The
+   *  caller releases the replaced document. */
+  readonly replacing?: string;
+  /** The new tab's id, minted by a caller that has to name the document before it opens (a copy's notice). */
+  readonly id?: string;
 }
 
 export function useDocumentOpener(deps: UseDocumentOpenerDeps) {
   const {
     handleIO, readFileVersioned, fileTree, rootHandleRef, tabsRef, closingRef, reopenedClosingRef,
-    setLayout, setTabs, setSaveStatus, setMainView, rememberAssetRefs, seedPdfBaseline, seedDocumentBuffer,
+    setLayout, setTabs, setSaveStatus, setMainView, rememberAssetRefs, seedPdfBaseline, seedDocumentBuffer, oldBoardOpenedRef,
   } = deps;
 
   const retryUnreadTabRef = useRef<(path: string) => Promise<boolean>>(async () => false);
 
   // Returns whether the file was actually opened (as a tab or externally).
-  const handleFileClick = useCallback(async (node: FileTreeNode): Promise<boolean> => {
+  const handleFileClick = useCallback(async (node: FileTreeNode, options: OpenOptions = {}): Promise<boolean> => {
     const rootAtOpen = rootHandleRef.current;
     try {
       // PDFs open in a pane like any other file. Everything else non-textual
@@ -84,7 +100,7 @@ export function useDocumentOpener(deps: UseDocumentOpenerDeps) {
       // What this note referred to when it was opened — the baseline every
       // later save's asset diff is taken against.
       if (read) rememberAssetRefs(node, content);
-      const id = newTabId();
+      const id = options.id ?? newTabId();
       if (read) setBaseline(id, read.version); else if (isPdfFile(node.name) || isNativeDrawingFile(node.name)) seedPdfBaseline(id, handle);
       // Re-check inside the updater: a second click can land while the first
       // read is still in flight, and tabsRef only updates post-commit.
@@ -97,15 +113,23 @@ export function useDocumentOpener(deps: UseDocumentOpenerDeps) {
         ? prev
         : [...prev, { id, file: node, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, readError, representation: representationFor(node.name,false,0,!!readError) }]);
       // openTab re-checks too, and focuses an existing tab rather than minting a
-      // second one — the same race, answered the same way.
-      setLayout(l => openTabIn(l, node.path));
+      // second one — the same race, answered the same way. A replacement takes the
+      // replaced document's slot instead: same column, same place in its strip.
+      const replacing = options.replacing;
+      setLayout(l => replacing && l.panes.some(p => p.paths.includes(replacing)) && !l.panes.some(p => p.paths.includes(node.path))
+        ? renamePath(l, replacing, node.path) : openTabIn(l, node.path));
       setSaveStatus('');
+      // Sniffed from the bytes just read, never the name: a `.notebook` may be either kind, and a `.tldraw` may hold a
+      // board an earlier build already converted in place.
+      if (read && options.offerCopy !== false && !replacing && isOldBoardSniff(sniffCanvas(content, node.name))) {
+        oldBoardOpenedRef.current?.(id, node.name);
+      }
       return true;
     } catch (err) {
       console.error('Failed to read file:', err);
       return false;
     }
-  }, [handleIO, readFileVersioned, rememberAssetRefs, seedPdfBaseline, seedDocumentBuffer, closingRef, reopenedClosingRef, rootHandleRef, setLayout, setSaveStatus, setTabs, tabsRef]);
+  }, [handleIO, readFileVersioned, rememberAssetRefs, seedPdfBaseline, seedDocumentBuffer, closingRef, reopenedClosingRef, rootHandleRef, setLayout, setSaveStatus, setTabs, tabsRef, oldBoardOpenedRef]);
 
   // The graph and the click share one canonical resolver revision. Read it
   // through an App-lifetime ref: the wikilink handler is baked into cached

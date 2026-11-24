@@ -6,9 +6,13 @@ import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter
 /** Preparation owns the original bytes until take transfers them to the App-owned session. */
 export interface PreparedNativeBoard<S extends BoardSessionPort> {
     readonly legacyOriginalSha256: string | null;
+    /** An old annotated PDF converted for editing (`pdfInk` only): its first editing admission installs the converted
+     *  source as the clean baseline. A drawing or notebook is never converted in place. */
     readonly conversionPending?: boolean;
-    /** The board notice for a converted old board (items left out, repairs worth reading); null when none. */
+    /** The board notice for an imported old board (items left out, repairs worth reading); null when none. */
     readonly importNotice?: string | null;
+    /** The board came from an old-format file: read-only for life, copied on request (utils/oldBoards.ts). */
+    readonly oldBoard?: import('../../types/nativeCanvas').NativeOldBoard;
     /** Commit a captured dirty cold input only after the bridge owns this board. */
     acceptPinnedSource?(source: DeferredSource): boolean;
     take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null): {
@@ -33,6 +37,7 @@ export interface NativeBoardAcquisitionOptions<S extends BoardSessionPort> {
     editingAuthorized(): boolean;
     existing?(): AcquiredNativeBoard<S> | undefined;
     prepare(signal: AbortSignal): Promise<PreparedNativeBoard<S>>;
+    /** An old annotated PDF's conversion only (see `conversionPending`). */
     acceptConvertedSource?: (source: DeferredSource, originalDigest: string) => void;
     onError(error: unknown): void;
 }

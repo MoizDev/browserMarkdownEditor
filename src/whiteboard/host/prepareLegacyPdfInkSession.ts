@@ -120,7 +120,7 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
             if (accepted.board !== qualification.board) { await accepted.release(); throw new Error('Converted PDF source changed its qualified board'); }
             transferred = true;
             const prepared = await prepareAcceptedPdfInkSession(options, accepted, detach);
-            const notice = final.status === 'editable' ? importNotice(final.legacyReport) : null;
+            const notice = final.status === 'editable' ? importNotice(final.legacyReport, 'The original file is kept in Trash when you first edit.') : null;
             return { ...prepared, importNotice: notice, async dispose() { try { await prepared.dispose(); } finally { detach(); } } };
         } finally { try { preview?.dispose(); } finally { try { final?.dispose(); } finally { cache.close(); } } }
     } catch (error) {

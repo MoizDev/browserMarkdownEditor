@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BookOpen, ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool, Notebook } from './icons';
-import { isCanvasFile, isEpubFile, isNotebookFile, isPdfFile, noteDisplayName } from '../utils/fileTypes';
+import { isCanvasFile, isEpubFile, isNativeDrawingFile, isNotebookFile, isPdfFile, noteDisplayName } from '../utils/fileTypes';
 import { requestConversionRestore } from '../utils/conversionRestore';
+import { isOldBoardRow, makeEditableCopyOf } from '../utils/oldBoards';
 import {
     clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor, requestCreate,
     subscribeCreateRequest, type CreateKind,
@@ -285,10 +286,17 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
                 onStyleEntry(node.path, icon, color, nodes as IconNode[] | undefined),
         };
 
-        const entries: ContextMenuEntry[] = node.kind === 'file'
-            ? [rename, ...(isCanvasFile(node.name) || isPdfFile(node.name)
+        // An old-format board's one way on (utils/oldBoards.ts). The original's own rows stay ordinary file operations. It
+        // has never been converted (nothing converts one now), so it offers no restore from before a conversion: that row is
+        // for a board an earlier version converted in place, whose bytes are this app's own.
+        const editableCopy: ContextMenuEntry[] = [{ kind: 'command', id: 'make-editable-copy', label: 'Make an editable copy',
+            run: () => makeEditableCopyOf(node) }];
+        const fileEntries = (oldBoard: boolean): ContextMenuEntry[] => [rename, ...(oldBoard ? editableCopy : []),
+            ...(!oldBoard && (isCanvasFile(node.name) || isPdfFile(node.name))
                 ? [{ kind: 'command' as const, id: 'restore-before-conversion', label: 'Restore the copy from before conversion', run: () => requestConversionRestore(node) }]
-                : []), { kind: 'separator', id: 'sep-style' }, styleRow, ...trash]
+                : []), { kind: 'separator', id: 'sep-style' }, styleRow, ...trash];
+        const entries: ContextMenuEntry[] = node.kind === 'file'
+            ? fileEntries(false)
             : [
                 { kind: 'command', id: 'new-note', label: 'New note', run: () => startCreate('file') },
                 { kind: 'command', id: 'new-folder', label: 'New folder', run: () => startCreate('folder') },
@@ -308,22 +316,30 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
                 ...trash,
             ];
 
-        openContextMenu({
-            x: e.clientX,
-            y: e.clientY,
-            entries,
-            label: node.kind === 'file' ? 'File actions' : 'Folder actions',
-            opener: row,
-            onClose: () => setMarked(false),
-        });
-        // Marked AFTER the request is raised, not before, and the order is
-        // load-bearing: openContextMenu closes whatever menu it replaces, which
-        // runs that raiser's `onClose`. Right-clicking THIS row twice in a row
-        // makes the two calls this row's own — `setMarked(false)` from the
-        // outgoing request and `setMarked(true)` from this one — and React
-        // batches both into one render, so raising the mark first would leave
-        // the row unmarked underneath its own open menu.
-        setMarked(true);
+        const x = e.clientX, y = e.clientY;
+        const raise = (menu: ContextMenuEntry[]) => {
+            openContextMenu({
+                x,
+                y,
+                entries: menu,
+                label: node.kind === 'file' ? 'File actions' : 'Folder actions',
+                opener: row,
+                onClose: () => setMarked(false),
+            });
+            // Marked AFTER the request is raised, not before, and the order is
+            // load-bearing: openContextMenu closes whatever menu it replaces, which
+            // runs that raiser's `onClose`. Right-clicking THIS row twice in a row
+            // makes the two calls this row's own — `setMarked(false)` from the
+            // outgoing request and `setMarked(true)` from this one — and React
+            // batches both into one render, so raising the mark first would leave
+            // the row unmarked underneath its own open menu.
+            setMarked(true);
+        };
+        // A drawing or notebook may be an old-format board, which its bytes say, not its name: App answers, within a
+        // moment (oldBoards.ts isOldBoardRow), and the menu waits for it rather than offer a copy of a native board.
+        if (node.kind === 'file' && isCanvasFile(node.name) && !isNativeDrawingFile(node.name)) {
+            void isOldBoardRow(node).then(oldBoard => raise(fileEntries(oldBoard)));
+        } else raise(entries);
     };
 
     // ── Drag handlers ──

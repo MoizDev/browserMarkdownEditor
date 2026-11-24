@@ -189,6 +189,9 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     if (!path) return 'skipped';
     const initial = tabsRef.current.find(t => t.file.path === path);
     if (!initial || initial.file.isHelp || !initial.file.handle || initial.representation.emergencyReadOnly) return 'skipped';
+    // An old-format board is never written, by any route: not a save, a close, a ⌘S or a vault switch (utils/oldBoards.ts).
+    // Before the drain and the checkpoint below, whose board source would otherwise read as newer than the file's text.
+    if (initial.representation.oldBoard || nativePoliciesRef.current.get(initial.id)?.oldBoard) return 'skipped';
     // Save captures immediately. Only leaving the document awaits unfinished
     // work; legacy serializers retain their migration fallback until attached.
     const initialSource = documentBuffers.get(initial.id)?.source;
@@ -245,7 +248,8 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     const bufferRevision = captured?.revision;
     const sourceRevision = typeof bufferedSource === 'string' ? undefined : bufferedSource?.revision;
     const sessionAtCall = documentSessions.get(tab.id);
-    const conversionDigest = nativeSource ? tab.representation.legacyOriginalSha256 : undefined;
+    // An old annotated PDF's first rebuild keeps its original in Trash; a drawing or notebook is never converted in place.
+    const conversionDigest = nativeSource && tab.representation.loadedKind === 'pdf' ? tab.representation.legacyOriginalSha256 : undefined;
     const conversionIdentity = conversionDigest ? nativeCanvasHost.identity(tab.id) : undefined;
     const existingWrite = pendingWritesRef.current.get(tab.id);
     if (pending && existingWrite?.revision === revision) return existingWrite.promise;
@@ -557,6 +561,8 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       || transitionBuffer.source !== transition.prior || transitionBuffer.owner.documentId !== content.owner.documentId
       || transitionBuffer.owner.session !== content.owner.session)) return;
     const policy = target && nativePoliciesRef.current.get(target.id);
+    // Only its disk's own text reaches an old-format board's buffer (a reload in place); the board shown never reports in.
+    if (target && (target.representation.oldBoard || policy?.oldBoard) && !(typeof content === 'string' && options?.fromDisk)) return;
     const liveNativePolicy = !!target && !!policy && policy.kind === (target.representation.loadedKind === 'pdf' ? 'pdfInk' : target.representation.loadedKind)
       && policy.activation === getVaultActivation()
       && policy.retainedThroughGeneration === (bytesGenerationsRef.current.get(target.id) ?? 0)

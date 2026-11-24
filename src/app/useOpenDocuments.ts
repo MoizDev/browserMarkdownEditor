@@ -203,19 +203,23 @@ export function useOpenDocuments(deps: UseOpenDocumentsDeps) {
     const same = prior && prior.session === owner.session && prior.sourceGeneration === bytesGeneration && prior.activation === vaultActivation && prior.kind === kind;
     const emergencyReadOnly = same ? prior.emergencyReadOnly : !!withNativeCanvasPolicy(tab.representation, kind).emergencyReadOnly;
     if (!same && kind === 'pdfInk' && !acquisition.pdfWriteAuthority) return null;
+    // What the board's own admission read: an old-format board (a `.drawing` holding one included, which has no text
+    // buffer to sniff) is never written, whatever its name says.
+    const oldBoard = kind !== 'pdfInk' && !!acquisition.oldBoard;
     if (!same) nativePoliciesRef.current.set(owner.documentId, { session: owner.session, sourceGeneration: bytesGeneration,
       retainedThroughGeneration: bytesGeneration, activation: vaultActivation, kind, emergencyReadOnly,
+      ...(oldBoard ? { oldBoard } : {}),
       ...(acquisition.pdfWriteAuthority ? { pdfWriteAuthority: acquisition.pdfWriteAuthority } : {}) });
     const digest = acquisition.legacyOriginalSha256;
     const legacyOriginalSha256 = digest && /^[a-f0-9]{64}$/.test(digest) ? digest : undefined;
-    // The bridge's initial conversion report follows this callback synchronously,
+    // A converted old annotated PDF's initial source report follows this callback synchronously,
     // before React commits the representation update.
+    const admitted = (representation: OpenTab['representation']) => ({ ...representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session,
+      emergencyReadOnly, legacyOriginalSha256, ...(kind === 'pdfInk' ? {} : { oldBoard }) });
     tabsRef.current = tabsRef.current.map(current => current.id === owner.documentId && live()
-      ? { ...current, representation: { ...current.representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session, emergencyReadOnly, legacyOriginalSha256 } }
-      : current);
+      ? { ...current, representation: admitted(current.representation) } : current);
     setTabs(previous => previous.map(current => current.id === owner.documentId && live()
-      ? { ...current, representation: { ...current.representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session, emergencyReadOnly, legacyOriginalSha256 } }
-      : current));
+      ? { ...current, representation: admitted(current.representation) } : current));
     return { emergencyReadOnly };
   }, [documentSessions, getVaultActivation]);
 

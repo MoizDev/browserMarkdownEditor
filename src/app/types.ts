@@ -33,6 +33,8 @@ export interface NativePolicy {
   activation: number;
   kind: 'drawing' | 'notebook' | 'pdfInk';
   emergencyReadOnly: boolean;
+  /** The session holds an old-format board, which is never written (utils/oldBoards.ts). */
+  oldBoard?: boolean;
   pdfWriteAuthority?: { canWriteSource(): boolean; canWrite(): boolean };
 }
 

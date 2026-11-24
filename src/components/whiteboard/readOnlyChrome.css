@@ -1,0 +1,54 @@
+/* The read-only view's strip (ReadOnlyBoardChrome.tsx), on the editing strip's grey (chrome.css .board-chrome-strip). */
+.board-readonly-chrome .board-chrome-strip {
+    gap: 2px;
+    padding-right: 6px;
+}
+
+/* What the board is, quiet beside the controls: muted 13px text with the lock before it. */
+.board-readonly-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 32px;
+    padding: 0 8px;
+    color: var(--text-muted);
+    font-size: 13px;
+    white-space: nowrap;
+}
+.board-readonly-note > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.board-readonly-note > svg { flex: none; }
+
+/* The one way on from an old board: the app's accent button, sized to the strip's 32px row. */
+.board-readonly-copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    height: 28px;
+    margin-left: 2px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.board-readonly-copy:not(:disabled):hover { background: var(--interactive-accent-hover, var(--interactive-accent)); }
+.board-readonly-copy:disabled { cursor: progress; opacity: .7; }
+
+/* A narrow pane keeps the button and lets the note go first: its explanation is the button's tooltip too. */
+@container (max-width: 520px) {
+    .board-readonly-note { display: none; }
+}
+@container (max-width: 300px) {
+    .board-readonly-copy > span { display: none; }
+    .board-readonly-copy { padding: 0 7px; }
+}

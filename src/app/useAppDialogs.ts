@@ -7,6 +7,8 @@ export interface DialogRequest {
   title: string;
   body: React.ReactNode;
   confirmLabel: string;
+  /** The label on the button that backs out (Escape and a click outside do the same); "Cancel" when absent. */
+  cancelLabel?: string;
   danger?: boolean;
   /**
    * Turns the dialog into a question with an answer to TYPE (see

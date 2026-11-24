@@ -17,6 +17,15 @@ const copy: IconNode[] = [['rect', { width: 14, height: 14, x: 8, y: 8, rx: 2, r
 const ellipsisVertical: IconNode[] = [['circle', { cx: 12, cy: 12, r: 1 }], ['circle', { cx: 12, cy: 5, r: 1 }],
     ['circle', { cx: 12, cy: 19, r: 1 }]];
 
+/** The read-only view's strip (ReadOnlyBoardChrome): Lucide's lock, copy-plus, layout-grid and contrast (ISC). */
+const lock: IconNode[] = [['rect', { width: 18, height: 11, x: 3, y: 11, rx: 2, ry: 2 }], ['path', { d: 'M7 11V7a5 5 0 0 1 10 0v4' }]];
+const copyPlus: IconNode[] = [['line', { x1: 15, x2: 15, y1: 12, y2: 18 }], ['line', { x1: 12, x2: 18, y1: 15, y2: 15 }],
+    ['rect', { width: 14, height: 14, x: 8, y: 8, rx: 2, ry: 2 }], ['path', { d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2' }]];
+const layoutGrid: IconNode[] = [['rect', { width: 7, height: 7, x: 3, y: 3, rx: 1 }], ['rect', { width: 7, height: 7, x: 14, y: 3, rx: 1 }],
+    ['rect', { width: 7, height: 7, x: 14, y: 14, rx: 1 }], ['rect', { width: 7, height: 7, x: 3, y: 14, rx: 1 }]];
+const contrast: IconNode[] = [['circle', { cx: 12, cy: 12, r: 10 }], ['path', { d: 'M12 18a6 6 0 0 0 0-12v12z' }]];
+export const readOnlyIcons = { lock, copyPlus, pages: layoutGrid, invert: contrast } as const;
+
 /** The bar's icon buttons other than the menu and the sheet name. */
 export const headerIcons = { menu, chevronDown, actions: ellipsisVertical } as const;
 

@@ -52,7 +52,7 @@ export interface UseAgentHostDepsDeps {
   requeueAssetsAffected: (path: string) => void;
   handleRenameFile: (node: FileTreeNode, newName: string) => Promise<boolean>;
   handleMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
-  handleFileClick: (node: FileTreeNode) => Promise<boolean>;
+  handleFileClick: (node: FileTreeNode, options?: import('./useDocumentOpener').OpenOptions) => Promise<boolean>;
   trashForAgent: (node: FileTreeNode) => Promise<'ok' | 'busy' | 'failed'>;
   changeTabMode: (path: string | null, requestedMode?: EditorMode) => void;
   ask: Ask;
@@ -184,7 +184,8 @@ export function useAgentHostDeps(deps: UseAgentHostDepsDeps) {
       openFile: path => {
         const node = collectFiles(fileTreeRef.current).find(f => f.path === path);
         if (!node) return;
-        void handleFileClick(node);
+        // Not the person's open: an old board the agent opens asks them nothing (its pane offers the copy).
+        void handleFileClick(node, { offerCopy: false });
         setMainView('editor');
       },
       ask,

@@ -512,7 +512,10 @@ export interface FileSystemContextValue {
   /** Read one local legacy reference relative to the current board's actual folder. */
   readLegacyBoardAsset: (request: BoardOwnerAccess & { src: string }) => Promise<Blob | null>;
   putBoardAsset: (request: BoardAssetAccess & { extension: string; blob: Blob }) => Promise<string>;
-  /** Preserve exact original bytes in the owning folder's Trash without changing the source. */
+  /** An old-format board's editable copy: a NEW file under the first free of `names`, pictures first, all or nothing. */
+  writeBoardCopy: (request: BoardOwnerAccess & { names: Iterable<string>; bytes: (files: ReadonlyMap<string, string>) => Promise<Blob>;
+    media: readonly { hash: string; extension: string; blob: Blob }[] }) => Promise<{ name: string; path: string; handle: FileSystemFileHandle; version: DiskVersion; bytes: Blob }>;
+  /** Preserve exact original bytes in the owning folder's Trash without changing the source (an old annotated PDF's conversion). */
   keepConversionBackup: (request: BoardAssetAccess & { blob: Blob }) => Promise<TrashItem>;
   /** Copy a verified pre-conversion backup out of Trash without removing it. */
   restoreConversionCopy: (request: BoardAssetAccess, item: TrashItem) => Promise<string>;

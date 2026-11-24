@@ -129,3 +129,12 @@ export function writeNativeDrawingViewPos(path: string, pos: NativeDrawingViewPo
 export function flushCanvasViewPositions(): void {
     flushRecord(POSITIONS_KEY);
 }
+
+/** Where `from` is left, recorded for `to` too: an old board's editable copy opens where the person was looking at the
+ *  original (same document, same sheet ids and pages). Memory is current every frame of a pan, so it is what is copied. */
+export function copyCanvasViewPos(from: string, to: string): void {
+    const records = readRecord<unknown>(POSITIONS_KEY), pos = records[scopedKey(from)];
+    if (!pos || typeof pos !== 'object') return;
+    records[scopedKey(to)] = structuredClone(pos);
+    flushRecord(POSITIONS_KEY);
+}

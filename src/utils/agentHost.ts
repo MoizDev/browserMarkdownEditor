@@ -572,7 +572,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                     if (reason) throw new Error(reason);
                 } finally { captured?.release(); }
             }
-            // The board mounts through its own native session (App's acquisition, legacy conversion and consent included).
+            // The board mounts through its own native session (App's acquisition; an old-format board mounts read-only).
             // Its live reporter, registered by the mounted lease, is the only thing waited for.
             const now = getView(path);
             if (now?.live) return now;

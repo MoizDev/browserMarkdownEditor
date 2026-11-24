@@ -16,6 +16,7 @@ import type { AppDialog, Ask } from './useAppDialogs';
 import type { DiskHold, NativePolicy, RecoveryEvent, RecoveryJournal } from './types';
 import { byteReadMs, withinFileDeadline } from '../utils/fileReadDeadline';
 import { loadChunk } from '../platform/chunkLoad';
+import { oldBoardReadOnlyReason } from '../utils/oldBoards';
 
 /** What the native-canvas host hook reads from App. */
 export interface UseNativeCanvasHostDeps {
@@ -40,6 +41,8 @@ export interface UseNativeCanvasHostDeps {
   readLegacyBoardAsset: FileSystemContextValue['readLegacyBoardAsset'];
   putBoardAsset: FileSystemContextValue['putBoardAsset'];
   keepConversionBackup: FileSystemContextValue['keepConversionBackup'];
+  /** The App side of "Make an editable copy" (useEditableCopy), composed after this hook. */
+  editableCopyRef: React.RefObject<NativeCanvasHost['makeEditableCopy'] | null>;
 }
 
 export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
@@ -47,7 +50,7 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
     getVaultActivation, tabsRef, documentSessions, documentBuffers, nativePoliciesRef, diskStateRef,
     rootHandleRef, currentVaultIdRef, flushingRef, saveTimersRef, nativeTransitionRef, sessionReportRef,
     dialogRef, ask, recoveryEvent, recoveryJournal, readFileSnapshot, readBoardAsset, readLegacyBoardAsset,
-    putBoardAsset, keepConversionBackup,
+    putBoardAsset, keepConversionBackup, editableCopyRef,
   } = deps;
 
   const [nativeClipboard] = useState(() => createClipboardCache(error => console.error('Could not release clipboard resources:', error)));
@@ -73,6 +76,7 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
       if (!current(identity)) return 'The native canvas session has ended.';
       if (!policy) return 'The native canvas is not available for editing.';
       if (policy.emergencyReadOnly) return 'This canvas is in emergency read-only mode.';
+      if (policy.oldBoard) return oldBoardReadOnlyReason(identity.kind === 'notebook' ? 'notebook' : 'drawing');
       if (policy.session !== identity.session || policy.activation !== identity.vaultActivation || policy.kind !== identity.kind
         || policy.sourceGeneration !== identity.bytesGeneration || policy.retainedThroughGeneration !== entry?.bytesGeneration)
         return 'The native canvas changed; reopen it to continue.';
@@ -247,6 +251,8 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
         return true;
       },
       async keepConversionBackup(identity, original, digest, signal) {
+        // An old drawing or notebook is never converted, so nothing of one is ever "backed up" before an overwrite.
+        if (identity.kind !== 'pdfInk') throw new Error('Only an annotated PDF is converted in place.');
         const tab = current(identity);
         if (!tab) throw new DOMException('Canvas session ended', 'AbortError');
         const path = tab.file.path, handle = tab.file.handle;
@@ -264,7 +270,7 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
       },
       acceptConvertedSource(identity, source, digest) {
         const tab = current(identity);
-        if (!tab || !writable(identity) || !/^[a-f0-9]{64}$/.test(digest)
+        if (identity.kind !== 'pdfInk' || !tab || !writable(identity) || !/^[a-f0-9]{64}$/.test(digest)
           || getBaseline(identity.documentId)?.hash !== digest || tab.representation.legacyOriginalSha256 !== digest
           || tab.representation.nativeCanvasKind !== identity.kind || tab.representation.nativeCanvasSession !== identity.session
           || source.kind !== 'deferred' || source.owner.documentId !== identity.documentId || source.owner.session !== identity.session
@@ -272,9 +278,9 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
           throw new DOMException('Legacy conversion is no longer authorized', 'AbortError');
         }
         const prior = documentBuffers.get(identity.documentId);
-        // The converted source IS the disk bytes, re-expressed: install it as the clean baseline.
-        // As an edit it marked the tab dirty and autosaved, converting every legacy file on mere
-        // open; import.md I-2 has the first real change convert (with its .Garbage backup).
+        // The converted PDF source IS the disk bytes, re-expressed: install it as the clean baseline.
+        // As an edit it marked the tab dirty and autosaved, converting every legacy PDF on mere
+        // open; the first real change converts it (with its .Garbage backup).
         sessionReportRef.current(identity.documentId, source, { fromDisk: true });
         const accepted = documentBuffers.get(identity.documentId);
         if (!accepted || accepted.revision === prior?.revision || accepted.source !== source) {
@@ -324,6 +330,11 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
         if (!isCurrent()) throw new DOMException('Canvas session ended', 'AbortError');
         return blob;
       },
+      async makeEditableCopy(identity, copy, signal) {
+        const make = editableCopyRef.current;
+        if (!make) throw new Error('Copies cannot be made yet.');
+        await make(identity, copy, signal);
+      },
       async putMedia(identity, media, blob, signal) {
         const name = await putBoardAsset({ ...request(identity, media, signal, true), extension: media.extension, blob });
         signal.throwIfAborted();
@@ -331,7 +342,7 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
         return name;
       },
     };
-  }, [nativeClipboard, nativeEmbeds, documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, readLegacyBoardAsset, putBoardAsset, keepConversionBackup, recoveryEvent, recoveryJournal, ask, currentVaultIdRef, dialogRef, diskStateRef, flushingRef, nativePoliciesRef, nativeTransitionRef, rootHandleRef, saveTimersRef, sessionReportRef, tabsRef]);
+  }, [nativeClipboard, nativeEmbeds, documentBuffers, documentSessions, getVaultActivation, readFileSnapshot, readBoardAsset, readLegacyBoardAsset, putBoardAsset, keepConversionBackup, recoveryEvent, recoveryJournal, ask, currentVaultIdRef, dialogRef, editableCopyRef, diskStateRef, flushingRef, nativePoliciesRef, nativeTransitionRef, rootHandleRef, saveTimersRef, sessionReportRef, tabsRef]);
 
   return { nativeCanvasHost };
 }

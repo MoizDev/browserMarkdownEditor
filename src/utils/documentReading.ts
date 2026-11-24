@@ -4,6 +4,7 @@ import type { DocumentRepresentation, LoadedDocumentKind, ReaderCapabilities, Re
 import { isCanvasFile,isCodeFile,isDrawingFile,isNativeDrawingFile,isEpubFile,isMarkdownFile,isNotebookFile,isPdfFile,isTexFile } from './fileTypes';
 import { isTextFile } from './vaultSearch';
 import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
+import { isOldBoardSniff } from './oldBoards';
 import { routeEngines, type CanvasEngineKind } from './engineRouting';
 
 /** Applied once when native representation is acquired, including PDF ink.
@@ -48,18 +49,22 @@ export function classifyLoadedTabs(next: OpenTab[], previous: OpenTab[], sourceF
    ? withNativeCanvasPolicy(r, r.loadedKind === 'notebook' ? 'notebook' : 'drawing') : r;
   const admittedNative = policy.nativeCanvasSession !== undefined && !!policy.nativeCanvasKind
    && !policy.emergencyReadOnly && sniff?.format === 'native' && !sniff.kindMismatch;
+  // A text buffer's own bytes decide; a binary `.drawing` has none, and keeps what its board's admission said.
+  const oldBoard = sniff ? isOldBoardSniff(sniff) : !!r.oldBoard;
   const writable = policy.status === 'ready' && policy.bufferKind === 'text' && !tab.readError && !tab.file.isHelp && !policy.emergencyReadOnly
-   && !!sniff && (admittedNative || !canvasReadOnlyReason(sniff));
-  return policy === r && r.contentWritable === writable ? tab : {...tab, representation: {...policy, contentWritable: writable}};
+   && !!sniff && !oldBoard && (admittedNative || !canvasReadOnlyReason(sniff));
+  return policy === r && r.contentWritable === writable && !!r.oldBoard === oldBoard ? tab
+   : {...tab, representation: {...policy, contentWritable: writable, oldBoard}};
  });
 }
 export function canReadTabText(tab:OpenTab):boolean{return !tab.readError&&tab.representation?.status==='ready'&&tab.representation.bufferKind==='text'}
 export function canUpdateTabContent(tab:OpenTab,source:'user'|'disk'|'annotation'='user'):boolean {
  const r=tab.representation;if(!r||tab.readError||r.status!=='ready'||r.loadedKind==='epub'||r.loadedKind==='unsupported'||tab.file.isHelp)return false;
- if(r.emergencyReadOnly && source!=='disk')return false;
+ // An old-format board takes only what its disk says (a reload in place); nothing it shows is ever written back.
+ if((r.emergencyReadOnly||r.oldBoard) && source!=='disk')return false;
  return (r.bufferKind==='text'&&r.contentWritable)||(r.loadedKind==='pdf'&&source==='annotation');
 }
-export function canFlushTab(tab:OpenTab):boolean {return !tab.representation?.emergencyReadOnly&&(canUpdateTabContent(tab)||(!tab.readError&&tab.representation?.status==='ready'&&tab.representation.loadedKind==='pdf'&&tab.representation.bufferKind==='annotationSnapshot'&&tab.representation.contentWritable))}
+export function canFlushTab(tab:OpenTab):boolean {return !tab.representation?.emergencyReadOnly&&!tab.representation?.oldBoard&&(canUpdateTabContent(tab)||(!tab.readError&&tab.representation?.status==='ready'&&tab.representation.loadedKind==='pdf'&&tab.representation.bufferKind==='annotationSnapshot'&&tab.representation.contentWritable))}
 export function canChangeTabMode(tab:OpenTab,_mode?:EditorMode):boolean {return !tab.file.isHelp&&!tab.readError&&tab.representation?.status==='ready'&&!['epub','unsupported','drawing','notebook'].includes(tab.representation.loadedKind)}
 export function readingCapabilities(tab:OpenTab,live?:ReaderCapabilities):ReaderCapabilities {
  if(tab.readerStatus && ['error','missing','stale','loading'].includes(tab.readerStatus.phase)) return {surface:'unsupported',emphasis:{kind:'inactive',reason:tab.readerStatus.message??'Reading content is unavailable'},text:'none',find:false,appearance:'none',copy:false};

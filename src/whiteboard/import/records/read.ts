@@ -1,5 +1,6 @@
 import { parseJson } from '../../format/jsonRead';
 import { carryLegacyMetadata } from '../../format/legacyMetadata';
+import type { LegacyRecordFamily } from '../../format/legacyRecords';
 import type { Sheet } from '../../model/doc';
 import type { RawJson } from '../../model/json';
 import { sheetId, type NodeId, type SheetId } from '../../model/ids';
@@ -70,7 +71,8 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
     const preservedIds = new Set<string>();
     // A record is kept once however many reasons keep it (extra props, then an unknown kind, wrote it twice).
     const preservedSources = new WeakSet<LegacyObject>();
-    const preserve = (record: LegacyObject, id: string, family: string) => {
+    // Each family's meaning is fixed in legacyRecords.ts, which the PDF and print preflight reads: a new one is added there.
+    const preserve = (record: LegacyObject, id: string, family: LegacyRecordFamily) => {
         if (preservedSources.has(record)) return;
         preservedSources.add(record);
         const type = `legacy-${family}`;
@@ -114,7 +116,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                 case 'asset': assets.push(record); assetOrdinals.set(record, sourceOrdinal); break;
                 case 'document': case 'user': {
                     if (!id) throw new Error('Metadata record has no identifier');
-                    preserve(record, id, String(record.typeName));
+                    preserve(record, id, record.typeName);
                     break;
                 }
                 default:
@@ -233,8 +235,9 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                         const rich = convertLegacyRichText(value);
                         for (const reason of rich.repairs) report.repair(owner, reason);
                         if (rich.repairs.length || rich.unrepresentable.length) preserve(shape.source, owner, 'rich-text');
-                        // The text is kept; only formatting it cannot hold is simplified (the record keeps the original).
-                        for (const reason of rich.unrepresentable) report.repair(owner, reason, 'formatting simplified', 'text');
+                        // Formatting it cannot hold is simplified and the text kept (a repair); text it cannot represent at all is
+                        // left empty, so the notice counts it as text not shown, not as simplified (the record keeps the original).
+                        for (const reason of rich.unrepresentable) report.refuse(owner, reason, 'text');
                         return rich.text;
                     }, endpoints);
             }

@@ -27,7 +27,7 @@ import type { PaintImageItem, PaintNodeSource } from '../render/paintStream';
 import { measureBoardPaintBounds } from '../render/worldBounds';
 import { notebookBackdrop } from './notebookBackdrop';
 import { concatPaintSources } from './allSheetPaint';
-import { inspectPdfVisualDoc } from './pdfVisualPreflight';
+import { inspectPdfVisualDoc, visualRefusal } from './pdfVisualPreflight';
 import type { PdfInkSourceLease } from './pdfInkSourceOwner';
 import type { BoardRuntime } from './runtime';
 
@@ -193,7 +193,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         operationSignal.throwIfAborted();
         const visual = await inspectPdfVisualDoc(frozenDoc, { signal: operationSignal,
             ...(selectionOnly ? { includeNodes: visualNodes } : {}) });
-        if (visual.status !== 'known') throw new Error('The export contains unsupported visual content.');
+        if (visual.status !== 'known') throw new Error(visualRefusal(visual, route === 'print' ? 'printing it' : route === 'copy' ? 'copying it' : 'exporting it'));
         if (runtime.render.text.fonts.epoch !== fontEpoch) throw new Error('Board fonts changed while preparing the export; retry.');
         const raw = await pin.paintSource({ sheetId: selection.sheet, theme: meta.kind === 'whiteboard' ? theme : 'light', deviceScale: 2 }, operationSignal);
         operationSignal.throwIfAborted();

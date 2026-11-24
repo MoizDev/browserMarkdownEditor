@@ -6,7 +6,7 @@ import type { MediaLease } from '../media/store';
 import type { SheetId } from '../model/ids';
 import type { MediaId } from '../model/media';
 import type { BoardRuntime } from './runtime';
-import { inspectPdfVisualDoc, type PdfVisualPreflight } from './pdfVisualPreflight';
+import { inspectPdfVisualDoc, visualRefusal, type PdfVisualPreflight } from './pdfVisualPreflight';
 
 /** Pin the actual paged scene and embedded/media-store bytes, not live view geometry. */
 export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, current: () => boolean, onError: (error: unknown) => void) {
@@ -31,7 +31,7 @@ export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, curr
                 error => { signal.removeEventListener('abort', abort); reject(error); });
             if (signal.aborted) abort();
         });
-        if (result.status !== 'known') throw new Error('Board content cannot be safely represented in a PDF');
+        if (result.status !== 'known') throw new Error(visualRefusal(result, 'a PDF of it'));
     };
     const release = () => {
         if (released) return;

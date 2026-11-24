@@ -1,5 +1,6 @@
 import { NODE_FILE_FIELDS } from '../model/fileFields';
 import { isKnownLegacyMetadata } from '../format/legacyMetadata';
+import { IMPORTED_LEGACY_NODE_FIELDS, isImportedLegacyRecord } from '../format/legacyRecords';
 import type { NodeId } from '../model/ids';
 import type { RehydratedLoad } from '../model/loadTypes';
 import type { BoardDoc } from '../model/doc';
@@ -48,12 +49,13 @@ export async function inspectPdfVisualDoc(doc: BoardDoc, options: {
         }
         for (const field of node.ext.fields.keys()) {
             if (due()) await tick();
-            issues.push({ kind: 'node-extension', nodeId: node.id, field });
+            if (!IMPORTED_LEGACY_NODE_FIELDS.has(field)) issues.push({ kind: 'node-extension', nodeId: node.id, field });
         }
     }
     for (const record of doc.preserved.records) {
         if (due()) await tick();
-        if (!isKnownLegacyMetadata(record)) issues.push({ kind: 'preserved-record', type: record.type, id: record.id });
+        // The old-board importer's own records are provenance and bookkeeping, never an undrawn visual (legacyRecords.ts).
+        if (!isKnownLegacyMetadata(record) && !isImportedLegacyRecord(record)) issues.push({ kind: 'preserved-record', type: record.type, id: record.id });
     }
     options.signal.throwIfAborted();
     return { status: issues.length ? 'unknown' : 'known', issues: Object.freeze(issues) };
@@ -78,4 +80,17 @@ export async function inspectPdfVisualModel(load: RehydratedLoad, options: {
     }
     options.signal.throwIfAborted();
     return { status: issues.length ? 'unknown' : 'known', issues: Object.freeze(issues) };
+}
+
+/** What a refused print, export, preview or minimap tells the person, in their words: what is on the board that this
+ * version cannot draw, and that the output would leave it out. Old boards' own records are never among these
+ * (legacyRecords.ts); what is left is an item or field from a newer version of the app. */
+export function visualRefusal(preflight: PdfVisualPreflight, output: string): string {
+    const items = new Set<string>();
+    for (const issue of preflight.issues) {
+        items.add('nodeId' in issue ? `node:${issue.nodeId}` : issue.kind === 'preserved-record' ? `record:${issue.type}:${issue.id}` : `unmapped:${issue.ordinal}`);
+    }
+    const count = items.size, noun = count === 1 ? 'item' : 'items';
+    return `This board has ${count} ${noun} this version of the app cannot draw, most likely made with a newer version, `
+        + `so ${output} would leave ${count === 1 ? 'it' : 'them'} out.`;
 }

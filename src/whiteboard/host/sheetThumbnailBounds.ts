@@ -2,7 +2,7 @@ import { getPlatformRuntime } from '../../platform/render/platformRuntime';
 import type { Rect } from '../../platform/types';
 import type { SheetId } from '../model/ids';
 import { measureBoardPaintBounds } from '../render/worldBounds';
-import { inspectPdfVisualDoc } from './pdfVisualPreflight';
+import { inspectPdfVisualDoc, visualRefusal } from './pdfVisualPreflight';
 import type { BoardRuntime } from './runtime';
 
 let serial = 0;
@@ -44,7 +44,7 @@ export async function pinNativeSheetThumbnailBounds(options: {
         const frozen = await pin.readDocument(signal); check();
         if (frozen.rev !== revision || !frozen.sheets.has(sheet)) throw new Error('Drawing sheet is unavailable');
         const visual = await inspectPdfVisualDoc(frozen, { signal }); check();
-        if (visual.status !== 'known') throw new Error('The minimap cannot represent unsupported drawing content.');
+        if (visual.status !== 'known') throw new Error(visualRefusal(visual, 'the minimap'));
         const paint = await pin.paintSource({ sheetId: sheet, theme: 'light' }, signal); check();
         const measured = await measureBoardPaintBounds(paint, { memory, signal }); check();
         const value = measured.bounds;

@@ -162,9 +162,11 @@ come back to either.
   file with no readable board fails, through `importFailure`. `importNotice` (items left out, repairs carrying a
   `notice`) is shown once in the board's notice (its closing sentence is the caller's: a board's says the file is
   never changed, the PDF's says where the original is kept); float16 pressure drift below 0 is silent. Never join issue reasons
-  raw: use `groupIssueText`. A legacy load (board, notebook or old annotated PDF) is admitted by `host/legacyLoadQueue.ts`:
+  raw: use `groupIssueText`. Its `legacy-*` records and node fields are provenance or bookkeeping, never an undrawn visual
+  (`format/legacyRecords.ts`, every family's meaning), so the print/PDF/thumbnail/minimap preflight (`host/pdfVisualPreflight.ts`)
+  passes them and refuses only what a NEWER app version wrote; a new family is added there, or every old board's export breaks. A legacy load (board, notebook or old annotated PDF) is admitted by `host/legacyLoadQueue.ts`:
   one at a time, a document a visible pane shows first, its working memory the parse worker's heap and never the render
-  raster pool; only a file over 256 MB is refused, at once. The pane says "Opening drawing…" while it waits or runs, and
+  raster pool; only a file over 256 MB is refused, at once. The pane says "Opening drawing…" (or notebook) while it waits or runs, and
   every canvas error offers Try again. Its worker requests use `LEGACY_LOAD_DEADLINE_MS` (a stall is the host watchdog's).
 - HOST media projection excludes only validated bookkeeping fields (`pdf/session/inkHostMedia.ts`). Never invent
   media receipts or fall back to the folder's `.Assets` for embedded PDF media.

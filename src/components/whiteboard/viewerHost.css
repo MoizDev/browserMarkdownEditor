@@ -94,6 +94,13 @@
     background: var(--background-primary-alt);
     color: var(--text-error, var(--text-normal));
     font-size: 12px;
+    /* At most three lines (3 x 18px, 18px of padding, 2px of border) and an ellipsis: the notice stands above this box at
+       a height that has to be known (below). Scrolled instead, half of a fourth line showed in the bottom padding. */
+    line-height: 18px;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
 }
 /* Bottom-right is the chrome's zoom and minimap corner, and above it one column, bottom up: the app's status pill
    (index.css .status-bar.is-lifted: 62px up over the bottom row, 212px over an open minimap, 28px tall), this board's paint
@@ -109,6 +116,11 @@
 .board-viewer-host:has(.native-minimap) .board-paint-status-pending,
 .board-viewer-host:has(.native-minimap) .board-paint-status-failed { bottom: 248px; }
 .board-viewer-host:has(.native-minimap) .board-viewer-notice { bottom: 284px; }
+/* A failure's box is taller than "Updating…" and wraps in a narrow pane, so the notice clears its three lines instead of the
+   pill's one (110 + 74 + 8). At the pill's height the notice covered the first line of a two-line failure (measured: 436px
+   pane, failure 694 to 744px, notice 634 to 708px). */
+.board-viewer-host:has(.board-chrome-overlay):has(.board-paint-status-failed) .board-viewer-notice { bottom: 192px; }
+.board-viewer-host:has(.native-minimap):has(.board-paint-status-failed) .board-viewer-notice { bottom: 330px; }
 
 /* The space the chrome's bottom edge takes, which the docked style panel stops above (chrome.css .board-chrome-pen): the
    column above, through the paint status (146px, 284px over a minimap), and through a notice when one shows (its 50px and
@@ -126,6 +138,8 @@
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-pending,
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-failed { bottom: 306px; }
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-viewer-notice { bottom: 342px; }
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay):has(.board-paint-status-failed) .board-viewer-notice { bottom: 238px; }
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap):has(.board-paint-status-failed) .board-viewer-notice { bottom: 388px; }
 .board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) { --board-chrome-reserve: 192px; }
 .board-viewer-host[data-chrome-stacked]:has(.board-viewer-notice) { --board-chrome-reserve: 250px; }
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) { --board-chrome-reserve: 342px; }

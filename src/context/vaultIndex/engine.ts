@@ -10,11 +10,16 @@ import type { PersistSession } from './persistSession';
 
 /** One session's mutable index. IO is injected so handle cloning and path
  * resolution do not leak into graph assembly or its revision rules. */
+/** How long a document open may hold the index's reads back; long enough for any read that is going to finish. */
+const FOREGROUND_HOLD_MS = 5000;
+
 export class IndexEngine {
     readonly store = new IndexStore();
     private graphGen = 0;
     private stopped = false;
     private foreground = 0;
+    /** When the foreground count last rose from zero (performance.now()). */
+    private foregroundSince = 0;
     private foregroundRevision = -1;
     private ioActive = 0;
     private ioWaiters: (() => void)[] = [];
@@ -74,8 +79,17 @@ export class IndexEngine {
     foregroundIO(active: number, revision: number): void {
         if (revision < this.foregroundRevision) return;
         this.foregroundRevision = revision;
+        if (!this.foreground && active > 0) this.foregroundSince = performance.now();
         this.foreground = Math.max(0, active);
         if (!this.foreground) this.ioWaiters.splice(0).forEach(wake => wake());
+    }
+    /**
+     * Whether a document open is holding the index's reads back. The hold lapses after FOREGROUND_HOLD_MS: the count
+     * drops only when a read SETTLES, and a read that never settles (a cloud file not downloaded, a stalled volume)
+     * paused the whole index — search, backlinks, the graph, `[[` — for the rest of the page.
+     */
+    private foregroundHolds(): boolean {
+        return this.foreground > 0 && performance.now() - this.foregroundSince < FOREGROUND_HOLD_MS;
     }
     async publishGraph(context: WorkerContext, stale = false): Promise<void> {
         if (this.stopped) return;
@@ -95,7 +109,7 @@ export class IndexEngine {
     }
     private async acquireIO(context: WorkerContext): Promise<boolean> {
         while (!this.stopped && !context.cancelled) {
-            if (!this.foreground && this.ioActive < 8) { this.ioActive++; return true; }
+            if (!this.foregroundHolds() && this.ioActive < 8) { this.ioActive++; return true; }
             await new Promise<void>(resolve => {
                 const wake = () => {
                     clearInterval(timer);
@@ -106,7 +120,10 @@ export class IndexEngine {
                 };
                 this.ioWaiters.push(wake);
                 context.signal.addEventListener('abort', wake, { once: true });
-                const timer = setInterval(() => context.heartbeat(), 1000);
+                const timer = setInterval(() => {
+                    context.heartbeat();
+                    if (this.foreground && !this.foregroundHolds()) wake();
+                }, 1000);
                 if (context.signal.aborted) wake();
             });
         }

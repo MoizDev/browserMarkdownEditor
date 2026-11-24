@@ -111,7 +111,8 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
     const [lease] = useState(() => ++nextViewLease);
     const [page, setPage] = useState(0);
-    const [zoom, setZoom] = useState(1);
+    // Until the first layout restores the camera, the zoom the view will open at (not 100%).
+    const [zoom, setZoom] = useState(() => readPdfViewPos(filePath)?.zoom ?? 1);
     const readQuality = useCallback(() => getPdfPageQuality(pdf.poolDocument.docKey, page), [pdf, page]);
     const pageQuality = useSyncExternalStore(subscribePdfPageQuality, readQuality, readQuality);
     const readPageStatus = useCallback(() => getPdfPageStatus(pdf.poolDocument.docKey, page), [pdf, page]);
@@ -767,10 +768,13 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                 const restored = cameraForPagedPosition({ ...pos, zoom: pos.zoom ?? 1 }, next, stack, INSETS, LIMITS);
                 if (restored) {
                     camera.current = clamp(restored); initialized.current = true;
-                    // The page field reads the restored page, not 0: persist() is what sets it, and it waits for a camera
-                    // move (and skips turns) — measured, after a turn on page 3 the field said 1 until the next scroll.
-                    const opened = pagedPosition(camera.current, next, stack, INSETS)?.page ?? pos.page;
-                    setPage(opened); thumbsRef.current?.setCurrentPage(opened);
+                    // The page field and the zoom pill read the restored view, not 0 and 100%: persist() is what sets them,
+                    // and it waits for a camera move (and skips turns) — measured, after a turn on page 3 the field said 1,
+                    // and after a turn at 120% the pill said 100%, until the next scroll or zoom.
+                    const opened = pagedPosition(camera.current, next, stack, INSETS);
+                    const openedPage = opened?.page ?? pos.page;
+                    setPage(openedPage); thumbsRef.current?.setCurrentPage(openedPage);
+                    if (opened) setZoom(opened.zoom);
                     if (!paperShown.current) {
                         // The same projection the page layer paints with (pagePresentation), so no page moves when it lands.
                         const view = { camera: camera.current, viewport: next, epoch: 0, moving: false };

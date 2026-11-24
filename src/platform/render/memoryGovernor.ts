@@ -858,6 +858,7 @@ export class MemoryGovernor {
             // A pane grant refuses only its own residency, so that is reclaimed first; the pool's idle residency
             // (redundant levels, idle geometry) goes only when the reclaim did not make room.
             this.reclaimPane(cache, bytes);
+            if (!allowed()) this.revokeHiddenContextsFor(cache, bytes);
             // Only a pool that cannot hold the request is trimmed. A pane at its own grant with the pool at 81% evicted the
             // paper, the board and the device working set of that same pane, and the stroke froze for a second.
             if (!allowed() && this.charged[pool] + bytes > this.target[pool]) this.trimPool(pool, Math.max(0, Math.min(this.target[pool] - bytes,
@@ -1042,6 +1043,32 @@ export class MemoryGovernor {
                 excess -= freed;
             }
         } finally { this.trimming = false; }
+    }
+
+    /** A visible pane refused at its own GPU grant takes back the reserves kept for hidden panes' contexts, oldest hidden first: each
+     * is planned off the top of every grant (plan's overhead), so the visible pane's share shrank with every tab opened, never with
+     * the pool full enough to trim (measured, ten dense boards as tabs of one pane: contexts 12 → 28 MB of a 71 MB pool, the visible
+     * board's grant 33.4 → 17.4 MB, a first visit refused the 1 MB tile and the 4 MB text page it needed under 'Updating…' for good).
+     * A revoked pane asks for a new context when it is shown again, as one past the context ceiling does. */
+    private revokeHiddenContextsFor(cache: CacheRecord, bytes: number): void {
+        const { paneId, pool, kind } = cache.registration;
+        const pane = paneId === undefined ? undefined : this.paneById.get(paneId);
+        const grant = paneId === undefined ? undefined : this.grants.get(paneId);
+        if (pool !== 'gpu' || paneId === undefined || !pane?.visible || !grant || this.trimming || cache.activity.hiddenAt !== null ||
+            ['surface', 'program', 'context', 'live-input', 'canvas-working', 'surface-scratch'].includes(kind)) return;
+        const excess = this.paneUsed(paneId, pool, kind) + bytes - grant.gpuCacheBytes;
+        if (excess <= 0) return;
+        let freed = 0;
+        this.trimming = true;
+        try {
+            for (const other of this.caches.values()) {
+                if (freed >= excess) break;
+                if (other.registration.kind === 'context' && other.registration.pool === pool && other.bytes > 0) freed += this.evictCache(other, excess - freed);
+            }
+        } finally { this.trimming = false; }
+        if (freed <= 0) return;
+        auditCount('governor', 'reclaim:gpu:hidden-contexts', 1, { bytes: freed });
+        this.replan();
     }
 
     /** Asks one cache for up to `bytes` and returns the bytes it freed: the larger of what it reports and what its reservation

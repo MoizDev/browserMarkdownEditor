@@ -211,6 +211,9 @@ draws differently because a GPU exists.
   governor asks every other cache of the pane for all it holds (`releaseHiddenPane`, on the pane's visible→hidden demand; a
   layer's `cpuEvict` on a hidden pane keeps nothing). Kept: the broker's context/program reserve and the session mirrors
   (`HIDDEN_KEPT_KINDS`; mirrors belong to the App document session and have their own hidden budget; unmount returns a borrow).
+  A kept context's 4 MB is planned off the top of every grant, so a visible pane refused at its own GPU grant revokes hidden
+  panes' contexts, oldest first (`revokeHiddenContextsFor`, `governor:reclaim:gpu:hidden-contexts`): ten tabs' contexts took
+  28 of a 71 MB pool and the visible board's first visit waited on 17 MB for good.
   A hidden pane's caches are the first any trim takes (`hidden-pane` class). Why: the CPU target counts visible floors only,
   so whatever a hidden pane keeps is room no floor can get (seven hidden dense tabs held 32.1 of 33.6 MB, and every board shown
   after them waited for memory for good). Counted `governor:hidden-release:<pool>` (bytes given back) and

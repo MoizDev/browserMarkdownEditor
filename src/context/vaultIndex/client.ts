@@ -1,4 +1,5 @@
-import { createWorkerClient } from '../../platform/workers';
+import { createWorkerClient, workerScript } from '../../platform/workers';
+import indexWorkerUrl from './index.worker.ts?worker&url';
 import type { WorkerClient } from '../../platform/workers';
 import type { IndexGraph, IndexMediaSnapshot, IndexSession } from '../../utils/vaultIndex/types';
 import { observeForegroundReads } from './foreground';
@@ -6,6 +7,8 @@ import { newIndexSession } from './session';
 import { notifySearchChanges } from '../../utils/searchChanges';
 import type { SearchBatch } from '../../utils/searchController';
 import type { MatchAnswer } from '../../utils/agentMatcher/types';
+// It imports shared chunks and starts the matcher worker, so it cannot be kept (platform/workers/script.ts).
+const indexWorker = workerScript(indexWorkerUrl, { keep: false });
 
 export interface SearchBuffer { path: string; revision: number; text: string }
 export interface IndexTreeFile { path: string; kind: string; handle: FileSystemFileHandle }
@@ -49,7 +52,7 @@ export class VaultIndexClient {
         this.worker = createWorkerClient({
             name: `vault-index-${session.sessionNo}`, protocol: 1,
             restartPolicy: { delaysMs: [1000, 4000, 16000], maxFailures: 3, windowMs: 60000 },
-            spawn: () => new Worker(new URL('./index.worker.ts', import.meta.url), { type: 'module' }),
+            spawn: () => indexWorker.start(),
             fileHandleOps: ['treeChunk', 'treeDelta'], events: ['graph', 'problem', 'status', 'results', 'fileTimes', 'searchChanged', 'mediaChanged'], eventLimit: Infinity,
             onStart: async bootstrap => {
                 if (this.started) this.session = newIndexSession(this.session.vaultId);

@@ -45,6 +45,16 @@ const tooltipRestrictions = [
   },
 ]
 
+// Every worker starts from a script declared through platform/workers/script.ts (`workerScript`): a raw
+// `new Worker(url)` stops starting once a newer version replaces this one on the server, in a tab that was working
+// (measured: an open drawing stopped saving, PDF Annotate stopped saving, an open book stopped opening).
+const workerRestrictions = [
+  {
+    selector: 'NewExpression[callee.name=/^(Shared)?Worker$/]',
+    message: 'Start workers through workerScript (platform/workers/script.ts) with a `?worker&url` import, never new Worker().',
+  },
+]
+
 export default defineConfig([
   // `planning/` is git-ignored and exists only in the main checkout: its evidence
   // scripts are records of the planning run, not code of this repository.
@@ -84,15 +94,21 @@ export default defineConfig([
       // it, late and unthemed. Intrinsic elements only (lowercase name): a
       // component's `title` prop (ConfirmDialog's) is data, and an SVG `<title>` is a
       // child, not an attribute. `document.title` is the tab title, not a tooltip.
-      'no-restricted-syntax': ['error', ...tooltipRestrictions],
+      'no-restricted-syntax': ['error', ...tooltipRestrictions, ...workerRestrictions],
     },
+  },
+  {
+    // The one place a worker is made, and the contained PDF frame's runtime, whose engine code arrives from the app as a
+    // Blob that is already in hand.
+    files: ['src/platform/workers/script.ts', 'src/pdf/contained/brokerRuntime.ts'],
+    rules: { 'no-restricted-syntax': ['error', ...tooltipRestrictions] },
   },
   {
     // D7 R7: the old optional-break regex backtracked exponentially. PDF find and
     // its anchors keep the bounded automaton, never a regular expression.
     files: ['src/utils/pdfFind.ts', 'src/utils/pdfTextAnchors.ts'],
     rules: {
-      'no-restricted-syntax': ['error', ...tooltipRestrictions,
+      'no-restricted-syntax': ['error', ...tooltipRestrictions, ...workerRestrictions,
         { selector: 'Literal[regex]', message: 'PDF find/anchors use the bounded matcher, never a regular expression (D7 R7).' },
         { selector: 'NewExpression[callee.name="RegExp"]', message: 'PDF find/anchors use the bounded matcher, never RegExp (D7 R7).' },
         { selector: 'CallExpression[callee.name="RegExp"]', message: 'PDF find/anchors use the bounded matcher, never RegExp (D7 R7).' },

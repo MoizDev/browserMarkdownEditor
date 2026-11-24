@@ -1,4 +1,8 @@
-import { createWorkerClient, type ClientState, type Priority, type RequestOptions, type WorkerClient } from '../../platform/workers';
+import { createWorkerClient, workerScript, type ClientState, type Priority, type RequestOptions, type WorkerClient } from '../../platform/workers';
+import parseWorkerUrl from './parse.worker.ts?worker&url';
+import geometryWorkerUrl from './geometry.worker.ts?worker&url';
+import decodeWorkerUrl from '../media/decode.worker.ts?worker&url';
+import exportWorkerUrl from './export.worker.ts?worker&url';
 import { boardEnvelope, closeWorkerResult, matchingIdentity, validBoardIdentity } from './protocol';
 import type { BoardJobIdentity, BoardWorkerEnvelope } from './protocol';
 
@@ -17,12 +21,13 @@ export interface BoardWorkerClient {
     readonly inFlight: number;
 }
 const clients = new Map<SharedBoardWorker, BoardWorkerClient>();
-function spawn(kind: SharedBoardWorker): Worker {
-    if (kind === 'parse') return new Worker(new URL('./parse.worker.ts', import.meta.url), { type: 'module' });
-    if (kind === 'geometry') return new Worker(new URL('./geometry.worker.ts', import.meta.url), { type: 'module' });
-    if (kind === 'decode') return new Worker(new URL('../media/decode.worker.ts', import.meta.url), { type: 'module' });
-    return new Worker(new URL('./export.worker.ts', import.meta.url), { type: 'module' });
-}
+// The geometry and picture workers import nothing, so every copy after the first starts from the bytes of the first and
+// keeps starting after a newer version replaced this one on the server (platform/workers/script.ts): a board that is
+// open keeps drawing and showing its pictures. The parser and exporter import shared code and fonts, so they cannot.
+const parseWorker = workerScript(parseWorkerUrl, { keep: false });
+const scripts = { parse: parseWorker, geometry: workerScript(geometryWorkerUrl, { keep: true }),
+    decode: workerScript(decodeWorkerUrl, { keep: true }), export: workerScript(exportWorkerUrl, { keep: false }) };
+function spawn(kind: SharedBoardWorker): Promise<Worker> { return scripts[kind].start(); }
 /** Import deadline: 30 seconds per 100 MB, with a ten-second minimum. */
 export function importDeadline(byteLength: number): number {
     if (!Number.isSafeInteger(byteLength) || byteLength < 0) throw new RangeError('Invalid import length');

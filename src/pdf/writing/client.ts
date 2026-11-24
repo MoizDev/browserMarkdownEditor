@@ -1,12 +1,15 @@
 import { createWorkerClient } from '../../platform/workers/client';
+import { workerScript } from '../../platform/workers/script';
+import writerWorkerUrl from './worker.ts?worker&url';
 import type { IncrementalEmittedPdf } from './incrementalTypes';
 import { validNotebookSourcePath } from './notebookPointer';
+const writerWorker = workerScript(writerWorkerUrl, { keep: true });
 
 // This generated-only finalizer is selected before work in a no-engine build.
 // Imported PDFs and native ink never enter this worker.
 const client = createWorkerClient({
     name: 'generated-notebook-writer', protocol: 1,
-    spawn: () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
+    spawn: () => writerWorker.start(),
 });
 
 /** Finalize generated incremental notebook pages without selecting a PDF engine. */

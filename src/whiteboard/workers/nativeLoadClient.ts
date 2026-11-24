@@ -1,4 +1,5 @@
-import { cpuGovernor, createWorkerClient, WorkerHostError } from '../../platform/workers';
+import { cpuGovernor, createWorkerClient, WorkerHostError, workerScript } from '../../platform/workers';
+import parseWorkerUrl from './parse.worker.ts?worker&url';
 import type { BoardKind } from '../model/doc';
 import type { BoardLoadAdmission } from '../model/loadAdmission';
 import type { RehydratedLoad } from '../model/loadTypes';
@@ -8,6 +9,7 @@ import type { NativeLoadReply } from './nativeLoad';
 import { validateNativeRequest } from './nativeRequest';
 import { boardEnvelope, closeWorkerResult, matchingIdentity, validBoardIdentity } from './protocol';
 import type { BoardJobIdentity } from './protocol';
+const parseWorker = workerScript(parseWorkerUrl, { keep: false });
 
 // Provenance: worker-host C5, board envelope and load admission contracts;
 // independent session client, no third-party source.
@@ -41,7 +43,7 @@ export function createNativeLoadClient(config: { authority: JobAuthority; identi
     const owner = { session: config.identity.session, epoch: config.identity.epoch };
     if (!validBoardIdentity({ ...owner, revision: 0 })) throw new TypeError('Invalid native load identity');
     const worker = createWorkerClient({ name: `board-native-load-${++serial}`, protocol: 1, permits: cpuGovernor,
-        spawn: () => new Worker(new URL('./parse.worker.ts', import.meta.url), { type: 'module' }),
+        spawn: () => parseWorker.start(),
         disposeResult: (_op, result) => closeWorkerResult(result) });
     const active = new Set<AbortController>();
     let disposed = false;

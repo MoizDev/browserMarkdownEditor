@@ -1,11 +1,13 @@
 import affUrl from '../../../../node_modules/dictionary-en/index.aff?url';
 import dicUrl from '../../../../node_modules/dictionary-en/index.dic?url';
-import { createWorkerClient } from '../../../platform/workers';
+import { createWorkerClient, workerScript } from '../../../platform/workers';
+import spellWorkerUrl from './spell.worker.ts?worker&url';
 import type { WorkerClient } from '../../../platform/workers';
 import type { Misspelling } from './menu';
 import { normalizeUserDictionary } from './dictionary';
 import { packedMisspellings } from './packedRanges';
 import { yieldToHost } from '../../../platform/yieldToHost';
+const spellWorker = workerScript(spellWorkerUrl, { keep: true });
 
 async function misspellings(value: unknown, text: string, signal: AbortSignal): Promise<readonly Misspelling[]> {
     if (!(value instanceof Uint32Array) || value.length % 2 || value.length > text.length * 2) throw new Error('Invalid spelling worker response');
@@ -75,7 +77,7 @@ export class BoardSpellClient {
         const host: WorkerClient = createWorkerClient({
             name: this.name,
             protocol: 1,
-            spawn: () => new Worker(new URL('./spell.worker.ts', import.meta.url), { type: 'module' }),
+            spawn: () => spellWorker.start(),
             onStart: async bootstrap => {
                 const data = await this.dictionaryData();
                 if (this.host !== host || this.disposed) throw new DOMException('Spelling client closed', 'AbortError');

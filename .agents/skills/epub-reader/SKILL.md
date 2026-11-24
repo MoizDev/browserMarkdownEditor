@@ -90,7 +90,8 @@ support limits and licence provenance: `docs/architecture/epub-reading-contract.
 - The Vite plugin regenerates at `buildStart` (dev and build) and on dev changes under `src/epub/`,
   `utils/readingEmphasis.ts` or `containedFrameBuild.mjs` (full reload). `generateBundle` emits the
   vendor licences, `source-lock.json` and the integrity file into `dist/`. Preview serves `dist` as built.
-- The archive worker uses `new URL('./archive.worker.ts', import.meta.url)` so base paths work.
+- The archive worker is a kept `workerScript` (`?worker&url`, `rendering-platform` Boundaries): a book is re-read each
+  time its pane is shown, and must keep opening after a deploy replaced this build's files.
 - Vendored Foliate code (`src/epub/vendor/`, metadata/TOC/CFI only — its loader and renderers are never
   called) is pinned in `source-lock.json`. Re-vendoring means rebuilding exactly as that file records
   and updating its hashes.

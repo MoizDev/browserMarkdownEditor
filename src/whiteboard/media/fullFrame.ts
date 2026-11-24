@@ -1,4 +1,5 @@
-import { cpuGovernor, createWorkerClient } from '../../platform/workers';
+import { cpuGovernor, createWorkerClient, workerScript } from '../../platform/workers';
+import decodeWorkerUrl from './decode.worker.ts?worker&url';
 import type { WorkerClient } from '../../platform/workers';
 import type { InspectedMedia } from './ingest';
 import type { SafeFullFrameLease } from './paintImages';
@@ -6,6 +7,7 @@ import { svgParseBudget } from './svgBudget';
 import { boardWorker } from '../workers/client';
 import { boardEnvelope, closeWorkerResult, matchingIdentity, validBoardIdentity } from '../workers/protocol';
 import type { BoardJobIdentity } from '../workers/protocol';
+const decodeWorker = workerScript(decodeWorkerUrl, { keep: true });
 
 // Provenance: media admission, governed worker and isolated SVG frame contracts;
 // independent full-frame ownership wiring, no third-party source.
@@ -72,7 +74,7 @@ export function createBoardFullFrameDecoder(options: FullFrameDecoderOptions): B
             else if (info.mime.startsWith('video/')) bitmap = await options.video(blob, info, owner, combined);
             else {
                 worker = createWorkerClient({ name: `whiteboard-full-frame-${++serial}`, protocol: 1, permits: cpuGovernor,
-                    spawn: () => new Worker(new URL('./decode.worker.ts', import.meta.url), { type: 'module' }),
+                    spawn: () => decodeWorker.start(),
                     disposeResult: (_op, result) => closeWorkerResult(result) });
                 workers.add(worker);
                 // A native decode is not interruptible inside a worker turn. Termination

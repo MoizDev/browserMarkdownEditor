@@ -1,9 +1,11 @@
-import { createWorkerClient } from '../platform/workers';
+import { createWorkerClient, workerScript } from '../platform/workers';
+import graphLayoutWorkerUrl from './graphLayout.worker.ts?worker&url';
 import type { WorkerClient } from '../platform/workers';
 import { GraphLayout } from '../utils/graphLayout';
 import type { GraphLink } from '../types';
 import { graphReheat, graphTopology, graphTopologySignature, parseGraphTopology } from '../utils/graphLayoutStore';
 import type { GraphTopology, StoredGraphLayout } from '../utils/graphLayoutStore';
+const graphLayoutWorker = workerScript(graphLayoutWorkerUrl, { keep: true });
 
 export interface GraphFrame {
     gen: number; frame: number; buffer: Float64Array<ArrayBuffer>; alpha: number; steps: number;
@@ -31,7 +33,7 @@ export class GraphLayoutClient extends GraphLayout {
         this.client = createWorkerClient({
             name: `graph-layout-${++nextClient}`,
             protocol: 1,
-            spawn: () => new Worker(new URL('./graphLayout.worker.ts', import.meta.url), { type: 'module' }),
+            spawn: () => graphLayoutWorker.start(),
             onStart: async client => {
                 const positions = new Float64Array(this.ids.length * 2);
                 for (let i = 0; i < this.ids.length; i++) { positions[2 * i] = this.x[i]; positions[2 * i + 1] = this.y[i]; }

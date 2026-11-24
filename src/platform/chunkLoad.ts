@@ -42,6 +42,21 @@ export function isChunkLoadError(error: unknown): error is ChunkLoadError {
     return error instanceof ChunkLoadError;
 }
 
+/** The `ChunkLoadError` an error is, or was caused by. A worker that could not start reaches its caller as the worker
+ *  host's own error (platform/workers/client.ts) with the delivery failure as its `cause`, and callers wrap it again. */
+export function chunkFailureOf(error: unknown): ChunkLoadError | null {
+    for (let link = error, depth = 0; link && depth < 8; depth++) {
+        if (link instanceof ChunkLoadError) return link;
+        link = link instanceof Error ? link.cause : undefined;
+    }
+    return null;
+}
+
+/** True when only a reload can help: a file this page's build needs is no longer on the server. */
+export function isAppReplaced(error: unknown): boolean {
+    return chunkFailureOf(error)?.failure === 'gone';
+}
+
 const goneListeners = new Set<(url: string | undefined) => void>();
 const failureListeners = new Set<() => void>();
 let goneSeen = false;
@@ -87,16 +102,41 @@ function isLoadFailure(error: unknown): boolean {
     return error instanceof Error && LOAD_FAILURE.test(error.message);
 }
 
+/** The server's answer for a file of this build says it is not there: a 404/410, or a page in its place. */
+export function answeredGone(response: Response): boolean {
+    return response.status === 404 || response.status === 410
+        || (response.ok && (response.headers.get('content-type') ?? '').includes('text/html'));
+}
+
 /** Ask the server whether a chunk still exists: a 404/410 means this build's files were replaced. */
 async function isGone(url: string | undefined): Promise<boolean> {
     if (!url) return false;
     try {
         const target = new URL(url, location.href);
         if (target.origin !== location.origin) return false;
-        const response = await fetch(target, { method: 'HEAD', cache: 'no-store', signal: AbortSignal.timeout(5000) });
-        return response.status === 404 || response.status === 410
-            || (response.ok && (response.headers.get('content-type') ?? '').includes('text/html'));
+        return answeredGone(await fetch(target, { method: 'HEAD', cache: 'no-store', signal: AbortSignal.timeout(5000) }));
     } catch { return false; }
+}
+
+/** A file of this build named by URL could not be loaded by something other than `import()` (a worker's script): ask
+ *  the server whether it is still there, announce it when it is not, and say which failure it was. */
+export async function classifyMissingFile(url: string, cause: unknown): Promise<ChunkLoadError> {
+    announceFailure();
+    if (await isGone(url)) return fileGone(url, cause);
+    return new ChunkLoadError('unreachable', url, cause);
+}
+
+/** The server answered that a file of this build is gone (see `answeredGone`): announce it, and the error to throw. */
+export function fileGone(url: string, cause?: unknown): ChunkLoadError {
+    announceGone(url);
+    return new ChunkLoadError('gone', url, cause);
+}
+
+/** A file of this build could not be fetched at all (offline, refused, timed out): worth a Retry, and worth asking
+ *  the server at once whether a new version is live. */
+export function fileUnreachable(url: string, failure: 'unreachable' | 'timeout', cause?: unknown): ChunkLoadError {
+    announceFailure();
+    return new ChunkLoadError(failure, url, cause);
 }
 
 /** Classify a failed import, announcing a gone chunk. Exported for the `vite:preloadError` listener. */

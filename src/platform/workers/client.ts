@@ -2,6 +2,8 @@ import { now, watchClock } from './clock';
 import { assertPayload, isPriority, isWorkerMessage, WorkerHostError } from './envelope';
 import { cpuGovernor, workerPermitCounts } from './governor';
 import { reportWorkerOwnedBytes, workerStopped } from './lifecycle';
+import { startFailure } from './script';
+import { chunkFailureOf, type ChunkLoadError } from '../chunkLoad';
 import type { ClientState, ContainedPort, CpuPermit, MainMessage, Priority, RequestOptions, WorkerClient, WorkerMessage, WorkerSpec } from './envelope';
 
 const benchmarkPerf = __BME_BENCH__ ? await import('./perf') : null;
@@ -316,7 +318,7 @@ class Client implements WorkerClient {
         const generation = ++this.generation;
         this.spawningAt = now();
         this.syncClock();
-        let spawned: Worker | Promise<ContainedPort>;
+        let spawned: Worker | Promise<Worker | ContainedPort>;
         try { spawned = this.spec.spawn(); }
         catch (error) { this.fail(`Cannot spawn worker: ${String(error)}`); return; }
         void Promise.resolve(spawned).then(placement => {
@@ -344,8 +346,11 @@ class Client implements WorkerClient {
             const error = (event: Event) => {
                 if (this.connection !== connection) return;
                 event.preventDefault();
-                if (!connection.hello) this.fail('Worker failed before its hello');
-                else this.crash(connection, 'Worker error');
+                if (connection.hello) { this.crash(connection, 'Worker error'); return; }
+                // Its script may be gone from the server (a newer version replaced this one): only the server can say.
+                void startFailure(endpoint, event).then(cause => {
+                    if (this.connection === connection && !connection.hello) this.fail('Worker failed before its hello', cause);
+                });
             };
             this.connection = connection;
             endpoint.addEventListener('message', message as EventListener);
@@ -353,7 +358,7 @@ class Client implements WorkerClient {
             endpoint.addEventListener('error', error);
             if (contained) placement.port.start();
         }).catch(error => {
-            if (this.generation === generation && this.state === 'starting') this.fail(`Cannot create contained worker: ${String(error)}`);
+            if (this.generation === generation && this.state === 'starting') this.fail(`Cannot start worker: ${String(error)}`, chunkFailureOf(error));
         });
     }
 
@@ -526,12 +531,13 @@ class Client implements WorkerClient {
         connection.sent.clear();
     }
 
-    private fail(reason: string): void {
+    /** `cause`: the worker's script could not be delivered (gone from the server, or unreachable) — what its callers show. */
+    private fail(reason: string, cause?: ChunkLoadError | null): void {
         const time = now();
         this.failures = time - this.failedAt > failureMemoryMs ? 1 : this.failures + 1;
         this.failedAt = time;
         this.state = 'failed';
-        this.failure = this.error('WorkerFailed', reason);
+        this.failure = this.error('WorkerFailed', reason, false, cause ?? undefined);
         this.disconnect();
         this.stopClock?.();
         this.stopClock = undefined;
@@ -607,7 +613,10 @@ class Client implements WorkerClient {
         catch (error) { console.warn(`${marker}: result disposal failed`, error); }
     }
 
-    private error(name: string, message: string, poisoned = false): WorkerHostError {
+    private error(name: string, message: string, poisoned = false, cause?: ChunkLoadError): WorkerHostError {
+        // A script that could not be delivered is said in the person's words (chunkLoad.ts), since callers show a failure's
+        // message as it is: "bme-worker-host-v1: Worker failed before its hello" reached the canvas pane after a deploy.
+        if (cause) return new WorkerHostError(name, cause.message, false, poisoned, { cause });
         return new WorkerHostError(name, `${marker}: ${message}`, name === 'WorkerCrashed', poisoned);
     }
 

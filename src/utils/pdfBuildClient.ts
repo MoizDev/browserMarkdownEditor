@@ -9,8 +9,14 @@ import type { PageOverlay } from './pdfOverlay';
 import type { PdfBuildRequest, PdfBuildResponse } from './pdfBuild.worker';
 import { PDF_EDITABLE_JSON_LIMIT, PDF_PRISTINE_LIMIT, pdfOuterForSource, type PdfRole, type PdfWriteSafety } from './pdfRole';
 import { PdfBuildRefused, pdfSnapshotRefusal, type PdfBuildRefusal } from './pdfBuildRefusal';
+import { workerScript } from '../platform/workers/script';
+import pdfBuildWorkerUrl from './pdfBuild.worker.ts?worker&url';
 
+// Kept (platform/workers/script.ts): an annotated PDF's saves keep working after a newer version replaced this one on
+// the server, whenever its worker is first needed.
+const pdfBuildWorker = workerScript(pdfBuildWorkerUrl, { keep: true });
 let worker: Worker | null = null;
+let starting: Promise<Worker> | null = null;
 let nextId = 1;
 const pending = new Map<number, { resolve: (b: Uint8Array) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 const rolePending = new Map<number, { resolve: (role: PdfRole) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>;
@@ -121,10 +127,21 @@ function failWorker(error: Error) {
     worker = null;
 }
 
-function getWorker(): Worker {
-    if (worker) return worker;
-    worker = new Worker(new URL('./pdfBuild.worker.ts', import.meta.url), { type: 'module' });
-    worker.onmessage = (e: MessageEvent<PdfBuildResponse>) => {
+function getWorker(): Promise<Worker> {
+    if (worker) return Promise.resolve(worker);
+    starting ??= pdfBuildWorker.start().then(started => { starting = null; return listen(worker = started); },
+        error => { starting = null; throw error; });
+    return starting;
+}
+
+/** Post to the worker once it has started; a start that failed fails every request waiting on it, with its reason. */
+function post(request: PdfBuildRequest, transfer: Transferable[] = []): void {
+    getWorker().then(started => started.postMessage(request, transfer))
+        .catch((error: unknown) => failWorker(error instanceof Error ? error : new Error(String(error))));
+}
+
+function listen(started: Worker): Worker {
+    started.onmessage = (e: MessageEvent<PdfBuildResponse>) => {
         const { id, bytes, aliases, error, role, refusal } = e.data;
         const inspection = rolePending.get(id);
         if (inspection) {
@@ -163,13 +180,13 @@ function getWorker(): Worker {
             entry.resolve(bytes);
         }
     };
-    worker.onerror = (e) => {
+    started.onerror = (e) => {
         // A worker-level failure kills every in-flight build; fail them all
         // rather than leave saves hanging forever.
         failWorker(new Error(`PDF worker failed: ${e.message}`));
     };
-    worker.onmessageerror = () => failWorker(new Error('PDF worker response could not be read'));
-    return worker;
+    started.onmessageerror = () => failWorker(new Error('PDF worker response could not be read'));
+    return started;
 }
 
 /** Read-only union inventory in the same warm worker as the assembler. */
@@ -180,8 +197,7 @@ export function inspectPdfRoleAsync(bytes: Uint8Array, generation: string): Prom
         // stamped outer pages. Terminating also releases an unbounded decoder.
         const timer = setTimeout(() => failWorker(new Error('PDF role read timed out')), 30000);
         rolePending.set(id, { resolve, reject, timer, generation, source: bytes, validating: false });
-        try { getWorker().postMessage({ kind: 'inspect-role', id, bytes, generation } satisfies PdfBuildRequest); }
-        catch (error) { failWorker(error instanceof Error ? error : new Error(String(error))); }
+        post({ kind: 'inspect-role', id, bytes, generation } satisfies PdfBuildRequest);
     });
 }
 
@@ -223,7 +239,6 @@ function dispatch(build: (id: number) => PdfBuildRequest, transfer: Transferable
     return new Promise<Uint8Array>((resolve, reject) => {
         const timer = setTimeout(() => failWorker(new Error('PDF build timed out; the PDF was not changed. Retry saving.')), 120_000);
         pending.set(id, { resolve, reject, timer });
-        try { getWorker().postMessage(request, transfer); }
-        catch (error) { failWorker(error instanceof Error ? error : new Error(String(error))); }
+        post(request, transfer);
     });
 }

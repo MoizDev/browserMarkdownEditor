@@ -1,4 +1,5 @@
-import { cpuGovernor, createWorkerClient, WorkerHostError } from '../../platform/workers';
+import { cpuGovernor, createWorkerClient, WorkerHostError, workerScript } from '../../platform/workers';
+import serializerWorkerUrl from './serializer.worker.ts?worker&url';
 import type { WorkerClient } from '../../platform/workers';
 import type { ExtBag } from '../model/json';
 import type { PinnedBoardBuild } from '../session/contentSource';
@@ -6,6 +7,8 @@ import type { RecordIntegrity } from './lineTable';
 import { boardEnvelope, matchingIdentity, validBoardIdentity } from '../workers/protocol';
 import type { BoardJobIdentity, BoardWorkerEnvelope } from '../workers/protocol';
 import type { SerializerBuild, SerializerChange, SerializerDelta, SerializerPrime, SerializerProduct, SerializerRecordOverride, SerializerReply } from './serializerProtocol';
+// Kept: a board's saves keep working after a newer version replaced this one on the server (platform/workers/script.ts).
+const serializerWorker = workerScript(serializerWorkerUrl, { keep: true });
 
 interface Root { readonly prime: SerializerPrime; readonly header: string; }
 interface Revision {
@@ -74,7 +77,7 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
     if (!validBoardIdentity({ session, epoch, revision: prime.revision })) throw new RangeError('Invalid serializer session identity');
     const client: WorkerClient = createWorkerClient({
         name: `board-serializer-${number}`, protocol: 1, permits: cpuGovernor,
-        spawn: () => new Worker(new URL('./serializer.worker.ts', import.meta.url), { type: 'module' }),
+        spawn: () => serializerWorker.start(),
     });
     function serial<T>(work: () => Promise<T>): Promise<T> {
         const next = queue.then(work, work);

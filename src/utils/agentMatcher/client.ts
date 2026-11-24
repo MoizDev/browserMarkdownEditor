@@ -1,6 +1,10 @@
 import type { WorkerClient } from '../../platform/workers';
 import type { MatchAnswer, MatchBatch, MatchConfig, MatchFile, MatchProgress } from './types';
 import { loadChunk } from '../../platform/chunkLoad';
+import { workerScript } from '../../platform/workers/script';
+import matcherWorkerUrl from './matcher.worker.ts?worker&url';
+
+const matcherWorker = workerScript(matcherWorkerUrl, { keep: true });
 
 const CHUNK_CHARS = 64 * 1024;
 // Matching line by line limits input granularity, not one regex match's runtime.
@@ -44,7 +48,7 @@ export async function matchAgentSearch(
     const client = owner = createWorkerClient({
         name: 'agent-matcher',
         protocol: 1,
-        spawn: () => new Worker(new URL('./matcher.worker.ts', import.meta.url), { type: 'module' }),
+        spawn: () => matcherWorker.start(),
     });
     // A new message, not the agent's next tool call, is an explicit user retry. The persistent
     // owner retains crash/poison accounting across disposable workers and searches in one run.

@@ -1,9 +1,12 @@
 import { createWorkerClient } from '../workers/client';
+import { workerScript } from '../workers/script';
+import coverageCountWorkerUrl from './coverageCount.worker.ts?worker&url';
 import type { WorkerClient } from '../workers/envelope';
 import type { ByteLease } from './gfx/api';
 import type { MemoryAllocator } from './memoryGovernor';
 import type { FrameToken } from './types';
 import { coverageScratchBytes } from './coverageCountSizing';
+const coverageCountWorker = workerScript(coverageCountWorkerUrl, { keep: __BME_BENCH__ });
 
 export interface CoverageFrameTag {
     readonly frameId: number;
@@ -100,7 +103,7 @@ export function createCoverageCounter(options: CoverageCounterOptions): Coverage
             client ??= createWorkerClient({ name: `coverage-count:${++nextCounter}`, protocol: 1,
                 spawn: () => {
                     if (!__BME_BENCH__) throw new Error('Coverage counting is disabled');
-                    return new Worker(new URL('./coverageCount.worker.ts', import.meta.url), { type: 'module' });
+                    return coverageCountWorker.start();
                 } });
             const request = client.request<CoverageCount>('count', { bitmap: item.bitmap, frame: item.frame, encoding: item.encoding }, {
                 priority: 3, cpu: 'governed', deadlineMs: remaining, terminateOnDeadline: true, transfer: [item.bitmap],

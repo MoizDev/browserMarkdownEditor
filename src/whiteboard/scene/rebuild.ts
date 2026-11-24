@@ -1,8 +1,10 @@
-import { createWorkerClient, type WorkerClient } from '../../platform/workers';
+import { createWorkerClient, workerScript, type WorkerClient } from '../../platform/workers';
+import geometryWorkerUrl from '../workers/geometry.worker.ts?worker&url';
 import { validBox } from '../geom/bounds';
 import { boardEnvelope, matchingIdentity, validBoardIdentity, type BoardJobIdentity } from '../workers/protocol';
 import { SceneColumns } from './columns';
 import { HybridIndex, PackedTree, type PackedSnapshot, type PackedTreeData } from './index';
+const geometryWorker = workerScript(geometryWorkerUrl, { keep: true });
 
 let nextRebuild = 0;
 type Phase = 'idle' | 'count' | 'copy' | 'waiting' | 'ready' | 'cleanup';
@@ -30,7 +32,7 @@ export class ScenePackedRebuild {
         private readonly onError: (error: unknown) => void, private readonly onReady?: () => void) {
         if (!validBoardIdentity({ ...identity, revision: 0 })) throw new TypeError('Invalid scene worker identity');
         this.client = createWorkerClient({ name: `scene-packed-${++nextRebuild}`, protocol: 1,
-            spawn: () => new Worker(new URL('../workers/geometry.worker.ts', import.meta.url), { type: 'module' }) });
+            spawn: () => geometryWorker.start() });
     }
     private clear(): void {
         if (this.external && this.externalAbort) this.external.removeEventListener('abort', this.externalAbort);

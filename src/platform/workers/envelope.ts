@@ -15,8 +15,8 @@ export type WorkerMessage =
     | { v: 1; event: string; data: unknown };
 
 export class WorkerHostError extends Error {
-    constructor(name: WorkerErrorName | string, message: string, readonly retryable = false, readonly poisoned = false) {
-        super(message);
+    constructor(name: WorkerErrorName | string, message: string, readonly retryable = false, readonly poisoned = false, options?: ErrorOptions) {
+        super(message, options);
         this.name = name;
     }
 }
@@ -74,7 +74,8 @@ export interface CpuPermits {
 export interface WorkerSpec {
     name: string;
     protocol: number;
-    spawn(): Worker | Promise<ContainedPort>;
+    /** A worker, or one on its way: a script started through `workerScript` (script.ts), or a contained port. */
+    spawn(): Worker | Promise<Worker | ContainedPort>;
     onStart?(client: WorkerClient): Promise<void>;
     silenceMs?: Record<Priority, number>;
     absoluteMs?: number;

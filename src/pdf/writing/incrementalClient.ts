@@ -1,7 +1,10 @@
-import { createWorkerClient, cpuGovernor } from '../../platform/workers';
+import { createWorkerClient, cpuGovernor, workerScript } from '../../platform/workers';
+import incrementalWorkerUrl from './incrementalWorker.ts?worker&url';
 import type { IncrementalPdfPage, IncrementalPdfSession, IncrementalPdfWriter } from '../../whiteboard/export/incrementalPdf';
 import type { IncrementalEmittedPdf, IncrementalOperation } from './incrementalTypes';
 export type { IncrementalEmittedPdf } from './incrementalTypes';
+// Kept: PDF saves and exports keep working after a newer version replaced this one on the server (platform/workers/script.ts).
+const incrementalWorker = workerScript(incrementalWorkerUrl, { keep: true });
 
 const aborted = () => new DOMException('PDF export cancelled', 'AbortError');
 let nextSession = 0;
@@ -16,7 +19,7 @@ export function createIncrementalPdfWriter(options: {
             signal.throwIfAborted();
             if (input.notebookSource && !options.onFinish) throw new Error('Notebook source requires the native notebook finalizer');
             const client = createWorkerClient({ name: `pdf-incremental-${++nextSession}`, protocol: 1, permits: cpuGovernor,
-                spawn: () => new Worker(new URL('./incrementalWorker.ts', import.meta.url), { type: 'module' }) });
+                spawn: () => incrementalWorker.start() });
             let closed = false, busy = false, generation: number | undefined;
             const lifetime = new AbortController(), retirements = new Set<Promise<void>>();
             let finalizing: Promise<Uint8Array> | undefined;

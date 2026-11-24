@@ -10,6 +10,7 @@ import { pdfFontAssets } from './build/pdfFontAssets'
 import { whiteboardSvgFrames } from './build/whiteboardSvgFrames.mjs'
 import { containedEmbedFrames } from './build/embedFrame.mjs'
 import { thirdPartyNotices } from './build/thirdPartyNotices'
+import { selfContainedWorkers } from './build/selfContainedWorkers'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 const regenerateFrame = () => execFileSync(process.execPath, ['src/epub/build-frame.mjs'], { cwd: root, stdio: 'pipe' })
@@ -22,7 +23,7 @@ const BUILD_ID_SLOT = 'bme-build-id-slot'
 
 export default defineConfig({
   // Index workers share split modules; Chromium-only module workers support ES chunks.
-  worker: { format: 'es' },
+  worker: { format: 'es', plugins: () => [selfContainedWorkers()] },
   plugins: [react(), pdfiumAssets(), pdfContainedAssets(), pdfFontAssets(), whiteboardSvgFrames(root), containedEmbedFrames(root), thirdPartyNotices(root), {
     // The benchmark-build constant (verification.md §2.1, contracts C9): true only
     // in `vite build --mode benchmark` (a dev server in that mode stays false: the

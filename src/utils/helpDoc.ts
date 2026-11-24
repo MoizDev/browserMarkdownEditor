@@ -410,6 +410,8 @@ Navigation, selection, copying and exporting never edit the file; only drawing a
 ### Saving, reopening and the agent
 Every change is saved to the file a second after you stop; \`Cmd/Ctrl + Z\` undoes and \`Cmd/Ctrl + Shift + Z\` redoes. Drawings and notebooks **reopen where you left them** — the same spot on a drawing, the same page and zoom in a notebook — just as a PDF does, whether you switch tabs, close the file or reload the app. A drawing you open here for the first time shows the view saved in the file, if it has one (an older \`.tldraw\` drawing opens where it was last viewed); otherwise it frames everything on the page with a margin, never zoomed in past 100 %.
 
+While a drawing or notebook in the older tldraw format opens, its pane says **Opening drawing…** (or notebook); several open one after another, the one on screen first, and the others say they are waiting. If a drawing or notebook cannot open — its file did not arrive in time, as can happen with a file a cloud folder has not downloaded yet, or a part of the app could not start — the pane says why, with **Try again**.
+
 A drawing or notebook this version cannot read safely — an unreadable file, one written in a newer format, or one that is not the kind its name says — **opens read-only**: neither drawing on it nor Save can overwrite the original file. An empty file is still a valid new board.
 
 The agent's **canvas tools** work on the document rather than its view: they can change a drawing or notebook while its pane is hidden, each batch is one undo step, and a disk conflict or a read-only file still refuses them.

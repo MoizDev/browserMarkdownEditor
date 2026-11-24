@@ -133,17 +133,24 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     // another key does not cancel them (cancelPending above leaves them alone); the view's end does, and an undo cancels
     // the ones whose landing would be its undo step. `settled` lets a new gesture's first decision wait for them.
     const settling = new Map<() => void, boolean>();
-    let settledWaiters: (() => void)[] = [];
+    // Each waiter waits for the work landing when it asked, never for work registered after: a press released before its own
+    // decision registers itself as settling, and waiting for an empty registry made it wait for itself. Measured: two quick clicks
+    // on empty canvas of a board holding a frame (whose first hit query is the slower one) left every later press, Escape and
+    // ⌘A waiting, still 10 s later.
+    const settledWaiters = new Set<{ readonly work: Set<() => void>; readonly wake: () => void }>();
     const registerSettling = (cancel: () => void, undoable: boolean) => {
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
         settling.set(cancel, undoable);
         return () => {
-            if (!settling.delete(cancel) || settling.size) return;
-            const waiters = settledWaiters; settledWaiters = [];
-            for (const wake of waiters) wake();
+            if (!settling.delete(cancel)) return;
+            for (const waiter of [...settledWaiters]) {
+                if (!waiter.work.delete(cancel) || waiter.work.size) continue;
+                settledWaiters.delete(waiter); waiter.wake();
+            }
         };
     };
-    const settled = (): Promise<void> => settling.size ? new Promise(resolve => { settledWaiters.push(resolve); }) : Promise.resolve();
+    const settled = (): Promise<void> => settling.size
+        ? new Promise(wake => { settledWaiters.add({ work: new Set(settling.keys()), wake }); }) : Promise.resolve();
     // An undo takes back ONE step: the latest undoable work still landing. Cancelling every one made a ⌘Z right after two
     // shapes drawn back to back take both. The view's end (undo false) cancels them all.
     const cancelSettling = (undo: boolean): boolean => {

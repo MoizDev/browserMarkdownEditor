@@ -67,7 +67,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   (`session.beginGesture('settling')`, and so does the preview's commit hold) and registers with `registerSettling`, not
   `registerPending`: the next press is admitted (`claimInput` reads `isInputGestureActive`), Escape/Delete/tool keys wait for it
   (`attach.ts` queues them with `enqueueAfterGesture`), only the view's end or — for an erase — an undo cancels it, and a
-  revision that moves meanwhile is prepared again, not abandoned. A new gesture that reads the selection waits for `settled()`.
+  revision that moves meanwhile is prepared again, not abandoned. A new gesture that reads the selection waits for `settled()`:
+  the work landing when it was pressed, never its own entry (a press released before deciding registers itself).
   The creation tools (figure, frame, connector, polyline, text/sticky placement) follow the same rule: released shapes land
   in the order drawn (`creationTurn`), each prepared again on a moved revision (`CreationGesture.rebase`); an undo while
   work settles cancels only the latest undoable one; an arrow key waits behind settling work, then nudges or pans.

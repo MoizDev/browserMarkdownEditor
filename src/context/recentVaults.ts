@@ -9,7 +9,7 @@
 // stored: re-opening a vault from this list needs the real handle, and there is
 // no path to rebuild one from (see NAMES below).
 
-import { get, set } from 'idb-keyval';
+import { createStore, get, set, type UseStore } from 'idb-keyval';
 import type { RecentVault, StoredVault } from '../types';
 import { MAX_STORED_VAULTS } from '../utils/recentVaults';
 import { forgetIndex } from './vaultIndex/persistence';
@@ -49,28 +49,62 @@ function isStoredVault(v: unknown): v is StoredVault {
     // Both read back as "not pinned" rather than as a broken record.
 }
 
+/** How long one stored handle may take to say whether it is the folder being opened. */
+const SAME_ENTRY_MS = 3000;
+
+async function sameEntryWithin(stored: FileSystemDirectoryHandle, handle: FileSystemDirectoryHandle): Promise<'same' | 'other' | 'unknown'> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            stored.isSameEntry(handle).then(same => (same ? 'same' as const : 'other' as const), () => 'other' as const),
+            new Promise<'unknown'>(resolve => { timer = setTimeout(() => resolve('unknown'), SAME_ENTRY_MS); }),
+        ]);
+    } finally { clearTimeout(timer); }
+}
+
 function newId(): string {
     // randomUUID needs a secure context; this app is served over https/localhost
     // (the File System Access API requires it too), but never fail over an id.
     return crypto.randomUUID?.() ?? `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
-async function readList(): Promise<StoredVault[]> {
-    try {
-        const list = await get<StoredVault[]>(IDB_KEY);
-        if (!Array.isArray(list)) return [];
-        // Newest first. The writes below already unshift, so this only matters
-        // if a record ever lands out of order.
-        return list.filter(isStoredVault).sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0));
-    } catch (err) {
-        console.warn('Could not read the recent vault list:', err);
-        return [];
+/**
+ * The list as stored, or a THROW when it cannot be read — never `[]` for "unreadable".
+ *
+ * Every mutation below writes back what it read, so an unreadable list taken for an empty one was destructive:
+ * `rememberVault` then minted a fresh id for the open vault and wrote a one-entry list over the whole history,
+ * orphaning that vault's saved tabs and every record kept under its id, and the session pruning that follows a
+ * list change deleted every other vault's saved tabs (measured: one failed `get` on reload → new id, the vault's
+ * three saved tabs gone for good, its session pruned). So a failed read is retried, the second time over a
+ * connection of its own (a connection the browser has closed keeps failing until it is replaced), and only a
+ * missing or malformed record reads as empty. The connection is opened without a version, as idb-keyval's own:
+ * an explicit version would wait behind every older tab that holds the database, and those cannot release it.
+ */
+async function readList(): Promise<{ list: StoredVault[]; store: UseStore | undefined }> {
+    let lastError: unknown;
+    for (const [attempt, delay] of READ_RETRY_DELAYS.entries()) {
+        if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+        const store = attempt ? (fallbackStore ??= createStore('keyval-store', 'keyval')) : undefined;
+        try {
+            const list = await get<StoredVault[]>(IDB_KEY, store);
+            if (!Array.isArray(list)) return { list: [], store };
+            // Newest first. The writes below already unshift, so this only matters
+            // if a record ever lands out of order.
+            return { list: list.filter(isStoredVault).sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0)), store };
+        } catch (err) {
+            lastError = err;
+        }
     }
+    console.warn('Could not read the recent vault list:', lastError);
+    throw lastError;
 }
+const READ_RETRY_DELAYS = [0, 250, 1000];
+/** One spare connection for the retries, opened on the first failure and kept (a connection per retry would leak). */
+let fallbackStore: UseStore | undefined;
 
 /** Every folder ever opened as a vault, newest first. */
 export function loadRecentVaults(): Promise<StoredVault[]> {
-    return serialize(readList);
+    return serialize(async () => (await readList()).list);
 }
 
 /**
@@ -84,16 +118,19 @@ export function loadRecentVaults(): Promise<StoredVault[]> {
  */
 export function rememberVault(handle: FileSystemDirectoryHandle): Promise<{ list: StoredVault[]; id: string }> {
     return serialize(async () => {
-        const list = await readList();
+        // Unreadable throws, and the vault then runs without an id (nothing is filed under one) rather than under
+        // a new one that forks its identity — see readList.
+        const { list, store } = await readList();
 
-        let existing = -1;
-        for (let i = 0; i < list.length; i++) {
-            try {
-                if (await list[i].handle.isSameEntry(handle)) { existing = i; break; }
-            } catch {
-                // A handle that can't answer is one we can't match on — skip it
-                // rather than abandon the whole record.
-            }
+        // Asked of every stored vault at once, each with a deadline: one stored handle on a volume that never
+        // answers (measured with an injected never-settling isSameEntry) held the queue — and with it the open
+        // vault's id and every later list change — for good. A handle that throws can't match and is skipped, as
+        // before; one that does not ANSWER might be this very folder, so if no other entry matched, the vault is
+        // left without an id for this load rather than given a new one (which would orphan its saved tabs).
+        const answers = await Promise.all(list.map(vault => sameEntryWithin(vault.handle, handle)));
+        const existing = answers.indexOf('same');
+        if (existing < 0 && answers.includes('unknown')) {
+            throw new Error('A stored vault did not answer whether it is this folder; not recording it under a new id.');
         }
 
         // The freshly-picked handle replaces the stored one: it is the object
@@ -109,7 +146,7 @@ export function rememberVault(handle: FileSystemDirectoryHandle): Promise<{ list
         };
 
         const next = trim([entry, ...list.filter((_, i) => i !== existing)]);
-        await set(IDB_KEY, next);
+        await set(IDB_KEY, next, store);
         const retained = new Set(next.map(vault => vault.id));
         for (const vault of list) if (!retained.has(vault.id)) void forgetIndex(vault.id);
         return { list: next, id: entry.id };
@@ -137,12 +174,12 @@ function trim(list: StoredVault[]): StoredVault[] {
 /** Pin or unpin one vault, and return the list as it now stands. */
 export function setVaultPinned(id: string, pinned: boolean): Promise<StoredVault[]> {
     return serialize(async () => {
-        const list = await readList();
+        const { list, store } = await readList();
         if (!list.some(v => v.id === id)) return list;
         const next = list.map(v => (v.id === id
             ? (pinned ? { ...v, pinned: true } : (() => { const { pinned: _was, ...rest } = v; return rest; })())
             : v));
-        await set(IDB_KEY, next);
+        await set(IDB_KEY, next, store);
         return next;
     });
 }
@@ -154,8 +191,9 @@ export function setVaultPinned(id: string, pinned: boolean): Promise<StoredVault
  */
 export function forgetVault(id: string): Promise<StoredVault[]> {
     return serialize(async () => {
-        const next = (await readList()).filter(v => v.id !== id);
-        await set(IDB_KEY, next);
+        const { list, store } = await readList();
+        const next = list.filter(v => v.id !== id);
+        await set(IDB_KEY, next, store);
         void forgetIndex(id);
         return next;
     });

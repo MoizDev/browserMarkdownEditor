@@ -1,7 +1,7 @@
 import { selectableAtFocus } from '../selection';
 import { childrenOf } from '../model/doc';
 import { planDelete } from '../commands/delete';
-import { createBoardSelectionCommands, type SelectionOrder } from '../commands/selection';
+import { createBoardSelectionCommands, ungroupEligibility, type SelectionOrder } from '../commands/selection';
 import { createBoardArrangementCommands } from '../commands/arrangement';
 import { arrangeNotebook } from '../input/notebookArrange';
 import type { Align, Axis } from '../geom/arrange';
@@ -134,7 +134,14 @@ export function createSelectionCommandDriver(options: SelectionCommandDriverOpti
             if (count >= 2) return schedule((ids, signal) => selection.group(ids, signal).then(() => {}));
             return doc.nodes.get(runtime.selection.getSnapshot().selected[0])?.kind === 'group' ? schedule((ids, signal) => selection.ungroup(ids, signal).then(() => {})) : false;
         }
-        if (id === 'ungroup') return schedule((ids, signal) => selection.ungroup(ids, signal).then(() => {}));
+        // The menu's own rule (ungroupEligibility): a selection that is not all groups leaves the key unhandled, as the menu shows
+        // Ungroup disabled; a locked or otherwise blocked group still reaches the command and its own message. Scheduled anyway,
+        // Select All then ⌘⇧G on a page holding a group and a text showed the command's internal "Ungroup requires groups".
+        if (id === 'ungroup') {
+            const state = runtime.selection.getSnapshot(), reason = ungroupEligibility(doc, state.selected, state).reason;
+            if (reason === 'not-groups' || reason === 'no-selection') return false;
+            return schedule((ids, signal) => selection.ungroup(ids, signal).then(() => {}));
+        }
         if (id === 'lock') return schedule((ids, signal) => selection.toggleLocked(ids, signal));
         if (id === 'frame.toggle') return schedule((ids, signal) => {
             const allFrames = ids.every(value => doc.nodes.get(value)?.kind === 'frame');

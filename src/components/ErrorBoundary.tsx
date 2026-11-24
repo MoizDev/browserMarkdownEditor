@@ -1,5 +1,5 @@
 import { Component, Fragment, createContext, useContext, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
-import { classifyChunkFailure, isChunkLoadError, type ChunkLoadError } from '../platform/chunkLoad';
+import { chunkFailureOf, classifyChunkFailure, type ChunkLoadError } from '../platform/chunkLoad';
 import { retryFailedModuleSlots } from './moduleSlot';
 import { runCrashCheckpoint } from '../utils/crashCheckpoint';
 
@@ -55,11 +55,12 @@ export class ErrorBoundary extends Component<BoundaryProps, BoundaryState> {
     }
 }
 
-/** The failure, classified once: a chunk that is gone, one that did not arrive, or a bug. */
+/** The failure, classified once: a chunk that is gone, one that did not arrive, or a bug. A worker whose script could not
+ *  be delivered carries that as its error's `cause` (platform/workers/client.ts). */
 function useClassified(error: unknown): ChunkLoadError | null {
-    const [classified, setClassified] = useState<ChunkLoadError | null>(isChunkLoadError(error) ? error : null);
+    const [classified, setClassified] = useState<ChunkLoadError | null>(() => chunkFailureOf(error));
     useEffect(() => {
-        if (isChunkLoadError(error)) return;
+        if (chunkFailureOf(error)) return;
         let live = true;
         void classifyChunkFailure(error).then(result => { if (live && result) setClassified(result); });
         return () => { live = false; };

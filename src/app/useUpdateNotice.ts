@@ -6,6 +6,7 @@ import type { DocumentSessionStore } from '../utils/documentSessions';
 import { watchForNewVersion } from '../utils/versionPoll';
 import { anyPending } from '../utils/unloadCoordinator';
 import { setCrashCheckpoint } from '../utils/crashCheckpoint';
+import { isAppReplaced } from '../platform/chunkLoad';
 
 export interface UseUpdateNoticeDeps {
   flushingRef: React.MutableRefObject<Map<string, number>>;
@@ -30,6 +31,20 @@ export function useUpdateNotice(deps: UseUpdateNoticeDeps) {
   const { flushingRef, tabsRef, hasUnsaved, documentSessions, documentBuffers, checkpointNow, notifyRef } = deps;
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => watchForNewVersion(() => setUpdateAvailable(true)), []);
+  // A gesture whose code was replaced on the server by a newer version, and whose caller let the failure go: said here,
+  // once for each such gesture. Measured: Export to PDF after a deploy did nothing but raise the update notice, the
+  // export's own chunk having answered 404 (an unhandled ChunkLoadError) — and every gesture that loads its code on
+  // first use (the Trash bin's, Recover's, the DiskBar's) can do the same.
+  useEffect(() => {
+    const unhandled = (event: PromiseRejectionEvent) => {
+      if (!isAppReplaced(event.reason)) return;
+      event.preventDefault();
+      console.warn('A gesture needed a part of the app that a newer version replaced:', event.reason);
+      notifyRef.current('That needs a part of the app that a newer version has replaced. Reload to use it.');
+    };
+    window.addEventListener('unhandledrejection', unhandled);
+    return () => window.removeEventListener('unhandledrejection', unhandled);
+  }, [notifyRef]);
   // Do not discard an in-flight save, a not-yet-committed text edit, or ink
   // still held by a canvas serializer. Conflicts remain for the reader to fix.
   // `dirty`, `disk` and the buffer's own revision are asked too: a document held in a disk conflict (its autosave is

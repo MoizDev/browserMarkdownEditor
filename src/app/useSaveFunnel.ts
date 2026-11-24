@@ -30,7 +30,7 @@ import { hasHostedNativeOwner, hasWritableHostedNativeOwner } from './nativeOwne
 import { describeReadError } from './readErrors';
 import { clearSaveNotice, showSaveNotice } from '../utils/saveNotices';
 import { tracksAssets } from './tracksAssets';
-import { loadChunk } from '../platform/chunkLoad';
+import { isAppReplaced, loadChunk } from '../platform/chunkLoad';
 
 /** Everything the save funnel reads from App. Refs are App's own `useRef`s. */
 export interface UseSaveFunnelDeps {
@@ -514,9 +514,13 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         // A notice, never a dialog: this fires while the person types, and a dialog took their next keys (utils/saveNotices.ts).
         // One per document, replaced by a retry that fails again and removed by the save that succeeds.
         setSaveStatus('Not saved');
-        const why = describeReadError(err).replace(/[.\s]+$/, '');
-        showSaveNotice(id, isPdf ? `The PDF was not saved: ${why}. Your next change tries again.`
-          : `“${path.split('/').pop()}” was not saved: ${why}. Your next change tries again.`);
+        const what = isPdf ? 'The PDF' : `“${path.split('/').pop()}”`;
+        // What saving needs is gone from the server (a newer version replaced this one): another change cannot bring it
+        // back. The app's own Reload refuses while a document is unsaved, but the changes are in the recovery journal:
+        // measured with a save that kept failing, the browser's reload asked before leaving and Recover gave every stroke
+        // back. Written workers are kept (platform/workers/script.ts), so an open document should never get here.
+        if (isAppReplaced(err)) showSaveNotice(id, `${what} was not saved: a newer version of the app replaced this one, and this page can no longer save it. Reload the page from your browser, then choose Recover to get your changes back.`);
+        else showSaveNotice(id, `${what} was not saved: ${describeReadError(err).replace(/[.\s]+$/, '')}. Your next change tries again.`);
         return 'failed';
       }
     };

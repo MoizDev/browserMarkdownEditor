@@ -5,6 +5,8 @@ import { readPdfRole } from '../utils/pdfRoleRead';
 import { dropPdfStandInFrame, pdfStandInFrame, presentedPdfRotation, subscribePdfRotationStandIn, type PdfStandInFrame } from '../utils/pdfRotationStandIn';
 import { ClassicPdfError, classicPdfFailureIsFatal, createClassicPdfHealth } from '../utils/pdfClassicHealth';
 import PdfRenderNotice from './PdfRenderNotice';
+import { PartFailureBox } from './ErrorBoundary';
+import { isAppReplaced } from '../platform/chunkLoad';
 import ConfirmDialog from './ConfirmDialog';
 import { USER_TEXT_NAVIGATION_CAUSES } from '../utils/pdfReadingText';
 import type { PdfTextAnchor, PdfTextReader, PdfTextTypography } from '../utils/pdfReadingText';
@@ -305,6 +307,8 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const pageDigest = useRef<string | undefined>(undefined);
     const restoredRecord = useRef(false);
     const [roleRetry, setRoleRetry] = useState(0);
+    // Annotate's code is gone from the server (a newer version replaced this one): the pane says so and offers Reload.
+    const [annotateReplaced, setAnnotateReplaced] = useState<unknown>(null);
     const readerIdentity = reading?.identity;
     const annotateEntry = useMemo(() => ({ mode, handle: file.handle, path: file.path, attempt: roleRetry, readerIdentity,
         session: appSession?.serial, generation: appSession?.bytesGeneration }),
@@ -580,6 +584,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         const parked = getPdfRenderData(file.path);
         if (parked) revokePdfSource(parked.original);
         setSource(null);
+        setAnnotateReplaced(null);
 
         (async () => {
             try {
@@ -626,6 +631,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
             } catch (err) {
                 if (inspected) revokePdfRole(inspected);
                 console.error('Could not open PDF:', err);
+                if (isAppReplaced(err)) { if (isCurrent()) setAnnotateReplaced(err); return; }
                 if (isCurrent()) setSource({ role: { kind: 'unreadable', alreadyAnnotated: true, generation: '', attachment: 'PDF', reason: 'corrupt' }, handle: file.handle as FileSystemFileHandle, path: file.path, entry: annotateEntry });
             }
         })();
@@ -764,6 +770,8 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
             body = documentRenderIssue ? <div className="pdf-render-failed"><PdfRenderNotice issue={documentRenderIssue} annotation={annotationMode}
                 onRetry={retryRendering} retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>
                 : <div className="pdf-pane-message">Could not open this PDF: {error}</div>;
+        } else if (mode === 'edit' && !source && !retainedNative && annotateReplaced) {
+            body = <PartFailureBox error={annotateReplaced} retry={() => setRoleRetry(value => value + 1)} what={<>Annotate for <strong>{file.name}</strong></>} />;
         } else if (mode === 'edit' && !source && !retainedNative) {
             /* Waiting on the ROLE read, which is lazy — only annotating needs
                it. Gating every branch on it (as this did) left a PDF opened for

@@ -20,6 +20,8 @@ import { useNativeBoardAcquisition } from './useNativeBoardAcquisition';
 import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
 import { createNativeCameraOperations } from './nativeCameraOperations';
 import { isCancellation } from '../../platform/workers/envelope';
+import { isAppReplaced } from '../../platform/chunkLoad';
+import { PartFailureBox } from '../ErrorBoundary';
 import { ReadOnlyBoardChrome } from './ReadOnlyBoardChrome';
 import { isEditableCopyRequested, requestEditableCopy, subscribeEditableCopyRequests, takeCopyNotice, takeEditableCopyRequest } from '../../utils/oldBoards';
 import ViewerHost from './ViewerHost';
@@ -405,11 +407,13 @@ function NativeCanvasAcquisition({ props, onRetry }: { props: NativeCanvasEntryP
     const [emergencyReadOnly] = useState(() => props.emergencyReadOnly);
     const emergencyPolicy = useCallback(() => emergencyReadOnly, [emergencyReadOnly]);
     const [error, setError] = useState<string | null>(null);
+    const [failure, setFailure] = useState<unknown>(null);
     const [editingFailure, setEditingFailure] = useState<{ documentId: string; session: number; reason: string } | null>(null);
     const editingUnavailable = useCallback((cause: unknown) => setEditingFailure({ documentId: identity.documentId, session: identity.session,
         reason: cause instanceof Error ? cause.message : String(cause) }), [identity.documentId, identity.session]);
     const onError = useCallback((cause: unknown) => {
         console.error('Native canvas acquisition failed:', cause);
+        setFailure(cause);
         setError(cause instanceof Error ? cause.message : String(cause));
     }, []);
     const prepare = useCallback((signal: AbortSignal) => {
@@ -448,6 +452,8 @@ function NativeCanvasAcquisition({ props, onRetry }: { props: NativeCanvasEntryP
     if (identity.documentId !== incoming.documentId || identity.session !== incoming.session
         || identity.vaultActivation !== incoming.vaultActivation || identity.bytesGeneration !== incoming.bytesGeneration
         || identity.kind !== incoming.kind) return <div className="canvas-pane-message is-waiting" role="status">Preparing canvas…</div>;
+    // A part of the app this board needs is gone from the server: Try again cannot fetch it, a reload can.
+    if (error && isAppReplaced(failure)) return <PartFailureBox error={failure} retry={onRetry} what={<strong>{props.file.name}</strong>} />;
     if (error) return <div className="canvas-pane-message" role="alert">
         <span>Could not open canvas: {error}{copyAbandoned && `${/[.!?…]$/.test(error) ? '' : '.'} No copy was made, because it did not open.`}</span>
         <button type="button" className="pdf-pane-action" onClick={onRetry}>Try again</button>

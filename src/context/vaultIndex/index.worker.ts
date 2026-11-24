@@ -55,10 +55,18 @@ serve({ protocol: 1, buildId: 'vault-index-1', handlers: {
         const owner = engine;
         const persistence = new PersistSession(session.vaultId, (kind, detail) => context.emit('problem', { session, kind, detail }));
         owner.persistence = persistence;
-        const records = await persistence.open();
-        if (current(session) !== owner) { await persistence.close(); return null; }
-        owner.store.hydrate(records);
-        const media = await persistence.readMedia();
+        // The cached index is read by whole-store IndexedDB requests the worker cannot slice, so it heartbeats while it waits:
+        // silent, a large vault's read on a slow disk met the client's 20 s silence watchdog (priority 1), which killed the
+        // worker mid-open, and three kills in a minute left search unavailable. A read that never settles is still ended by
+        // the client's 120 s absolute cap.
+        const beat = setInterval(() => context.heartbeat(), 1_000);
+        let records: Awaited<ReturnType<typeof persistence.open>>, media: Awaited<ReturnType<typeof persistence.readMedia>>;
+        try {
+            records = await persistence.open();
+            if (current(session) !== owner) { await persistence.close(); return null; }
+            owner.store.hydrate(records);
+            media = await persistence.readMedia();
+        } finally { clearInterval(beat); }
         if (current(session) !== owner) return null;
         if (owner.store.treeGen < 0) owner.media.restore(media);
         owner.store.onChange = (path, record, text) => persistence.mark(path, record, text);

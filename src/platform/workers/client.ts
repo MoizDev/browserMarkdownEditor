@@ -9,6 +9,12 @@ const benchmarkPerf = __BME_BENCH__ ? await import('./perf') : null;
 const clients = new Map<string, Client>();
 const silence = [20000, 20000, 60000, 60000];
 const backoff = [0, 250, 1000, 4000];
+// How long a failed client refuses at once before the next request may start a fresh worker, by consecutive failure.
+// A failure used to be terminal for the page: one slow hello (10 s) or one crash burst of the shared parse, geometry or
+// decode worker failed every later board open until a reload. Respawn happens only when a request asks for it, so a
+// worker that keeps failing is retried at most once per step and never loops on its own.
+const failedRetryMs = [1_000, 5_000, 30_000, 120_000];
+const failureMemoryMs = 600_000;
 const marker = 'bme-worker-host-v1';
 
 type Job = {
@@ -78,6 +84,8 @@ class Client implements WorkerClient {
     private respawnAt = 0;
     private crashes: number[] = [];
     private restartAttempts = 0;
+    private failedAt = 0;
+    private failures = 0;
     private pumping = false;
     private pumpAgain = false;
     private poison = new Map<string, number>();
@@ -91,6 +99,8 @@ class Client implements WorkerClient {
 
     private enqueue<T>(op: string, args: unknown, options: RequestOptions, bootstrap?: number): Promise<T> {
         if (this.state === 'disposed') return Promise.reject(this.error('Cancelled', 'Worker disposed'));
+        if (this.state === 'failed' && bootstrap === undefined
+            && now() - this.failedAt >= failedRetryMs[Math.min(this.failures, failedRetryMs.length) - 1]) this.revive();
         if (this.state === 'failed') return Promise.reject(this.failure);
         if (bootstrap !== undefined && bootstrap !== this.generation) return Promise.reject(this.error('Cancelled', 'Stale worker initialisation'));
         if (!isPriority(options.priority) || (options.deadlineMs !== undefined && (!Number.isFinite(options.deadlineMs) || options.deadlineMs < 0))) {
@@ -517,6 +527,9 @@ class Client implements WorkerClient {
     }
 
     private fail(reason: string): void {
+        const time = now();
+        this.failures = time - this.failedAt > failureMemoryMs ? 1 : this.failures + 1;
+        this.failedAt = time;
         this.state = 'failed';
         this.failure = this.error('WorkerFailed', reason);
         this.disconnect();
@@ -528,13 +541,18 @@ class Client implements WorkerClient {
 
     reset = (): void => {
         if (this.state !== 'failed') return;
+        this.revive();
+        this.spawn();
+    };
+
+    /** Back to idle, so the request that asked spawns a fresh worker; the failure count keeps the next cool-down growing. */
+    private revive(): void {
         this.failure = undefined;
         this.crashes = [];
         this.restartAttempts = 0;
         this.poison.clear();
         this.state = 'idle';
-        this.spawn();
-    };
+    }
 
     recycle = (reason: string, options: { lazy?: boolean } = {}): Promise<void> => {
         if (this.state === 'disposed') return Promise.reject(this.error('Cancelled', 'Worker disposed'));

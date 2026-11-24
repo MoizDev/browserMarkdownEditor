@@ -2,7 +2,13 @@
  *  (BoardAccessibility), and a popup's trigger sits outside that root, so closing a popup onto its trigger left every
  *  shortcut dead until the board was clicked. */
 export function focusBoardInteraction(from: Element | null): void {
-    from?.closest('.board-viewer-host')?.querySelector<HTMLElement>('.board-interaction-root')?.focus({ preventScroll: true });
+    boardInteractionRoot(from)?.focus({ preventScroll: true });
+}
+
+/** The keyboard root of the board a chrome control belongs to: the place a chrome menu hands the keyboard back to when it
+ *  closes (its `opener`). Given back to the raising button, the read-only Page menu left ⌘A selecting the app's own text. */
+export function boardInteractionRoot(from: Element | null): HTMLElement | null {
+    return from?.closest('.board-viewer-host')?.querySelector<HTMLElement>('.board-interaction-root') ?? null;
 }
 
 /** A control that ends by leaving the DOM (Apply, or a press that commits a crop) takes the focus down with it, and the board

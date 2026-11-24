@@ -3,6 +3,7 @@ import LucideGlyph from '../LucideGlyph';
 import { openContextMenu } from '../../utils/contextMenu';
 import { ZoomControls } from './chrome/ZoomControls';
 import { headerIcons, readOnlyIcons } from './chrome/boardIcons';
+import { boardInteractionRoot } from './chrome/boardFocus';
 import type { MainAction } from './chrome/mainMenu';
 import type { CommandState } from './chrome/boardCommands';
 import type { createNativeCameraOperations } from './nativeCameraOperations';
@@ -70,7 +71,7 @@ export function ReadOnlyBoardChrome({ camera, zoom, minimapOpen, kind, sheets, s
         const rect = anchor.getBoundingClientRect();
         const dark = anchor.closest('[data-board-theme="dark"]') !== null;
         const notReady = 'The board is still opening';
-        openContextMenu({ x: rect.left, y: rect.bottom, anchor, opener: anchor, label: 'Board menu',
+        openContextMenu({ x: rect.left, y: rect.bottom, anchor, opener: boardInteractionRoot(anchor) ?? anchor, label: 'Board menu',
             className: dark ? 'board-main-menu board-main-menu-dark' : 'board-main-menu',
             entries: [
                 { kind: 'command', id: 'print', label: 'Print…', shortcut: mac ? '⌘P' : 'Ctrl+P',
@@ -90,7 +91,7 @@ export function ReadOnlyBoardChrome({ camera, zoom, minimapOpen, kind, sheets, s
                         aria-haspopup="menu" onClick={event => {
                             const anchor = event.currentTarget, rect = anchor.getBoundingClientRect();
                             const dark = anchor.closest('[data-board-theme="dark"]') !== null;
-                            openContextMenu({ x: rect.left, y: rect.bottom, anchor, opener: anchor, label: 'Sheets',
+                            openContextMenu({ x: rect.left, y: rect.bottom, anchor, opener: boardInteractionRoot(anchor) ?? anchor, label: 'Sheets',
                                 className: dark ? 'board-main-menu board-main-menu-dark' : 'board-main-menu',
                                 entries: sheets.map(item => ({ kind: 'command' as const, id: `sheet:${item.id}`, label: item.name,
                                     checked: item.id === current.id, run: () => setSheet(item.id) })) });

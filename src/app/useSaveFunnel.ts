@@ -504,6 +504,10 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       } catch (err) {
         if (err instanceof PdfBuildRefused) { setSaveStatus('Not saved'); showSaveNotice(id, err.message); return 'skipped'; }
         if (err instanceof SaveSuperseded) return 'failed';
+        // A board's first save that put its pictures in .Assets under new names: the names are an edit at a newer revision, whose
+        // own save follows at once, so this save is superseded, not failed (whiteboard/host/saveBuild.ts; matched by name, the app
+        // does not import the engine). Treated as a failure, every old board with a picture flashed "was not saved" on its first save.
+        if (err instanceof Error && err.name === 'MediaLocationsChanged') return 'failed';
         console.error('Auto-save failed:', err);
         // Never silent, for any document: the person is told it was not saved and why; the tab stays dirty, so the next edit's
         // save tries again. A drawing or notebook used to fail into the console alone.

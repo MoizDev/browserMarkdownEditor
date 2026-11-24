@@ -7,6 +7,7 @@ import { awaitSessionDisposals } from '../utils/sessionIdentity';
 import { sourceIsNewer, type ContentSource, type DeferredSource, type DocumentBufferStore } from '../utils/documentBuffers';
 import type { DocumentSessionStore } from '../utils/documentSessions';
 import { getBaseline, setBaseline } from '../utils/docBaselines';
+import { pdfTurnHeld } from '../utils/pdfTurnHold';
 import { isNativeDrawingFile } from '../utils/fileTypes';
 import { getView } from '../utils/viewRegistry';
 import { createClipboardCache } from '../utils/clipboardCache';
@@ -74,6 +75,8 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
       const policy = nativePoliciesRef.current.get(identity.documentId);
       const entry = documentSessions.get(identity.documentId);
       if (!current(identity)) return 'The native canvas session has ended.';
+      // The turn will replace this owner with one on the turned pages; ink taken now would be lost (pdfTurnHold.ts).
+      if (identity.kind === 'pdfInk' && pdfTurnHeld(identity.documentId)) return 'The PDF’s pages are being turned. Try again once they have turned.';
       if (!policy) return 'The native canvas is not available for editing.';
       if (policy.emergencyReadOnly) return 'This canvas is in emergency read-only mode.';
       if (policy.oldBoard) return oldBoardReadOnlyReason(identity.kind === 'notebook' ? 'notebook' : 'drawing');

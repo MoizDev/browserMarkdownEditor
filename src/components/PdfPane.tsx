@@ -18,6 +18,7 @@ import { peekPdfFindMemory, retainPdfFindMemory } from '../utils/pdfFindHighligh
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
+import { pdfTurnHeld, pdfTurnQueued, subscribePdfTurnHolds } from '../utils/pdfTurnHold';
 import type { ActiveFile, DiskAction, EditorMode, PdfRebuildNotice } from '../types';
 import type { LocationCause, PdfReadingBinding, ReaderCapabilities, ReaderIdentity, ReaderToken } from '../types/reading';
 import type { DiskVersion } from '../utils/diskVersion';
@@ -123,8 +124,14 @@ interface PdfSource {
  * and a dirty/rebinding document must keep its actual editing shell mounted. */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
+function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode: requestedMode, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
+    // A page turn held for this document (utils/pdfTurnHold.ts): the pane is Original, whatever mode was asked, until
+    // it settles; no Annotate board mounts, reads the role of the bytes being replaced or takes ink meant for the old
+    // pages. Asked for Annotate meanwhile, it opens by itself on the turned pages once the turn is released.
+    const turnHeld = useSyncExternalStore(subscribePdfTurnHolds, () => pdfTurnHeld(documentId), () => false);
+    const annotateQueued = useSyncExternalStore(subscribePdfTurnHolds, () => pdfTurnQueued(documentId), () => false);
+    const mode: EditorMode = turnHeld ? 'read' : requestedMode;
     const appSession = useSyncExternalStore(subscribeSessionIdentity,
         () => getSessionIdentity(documentId), () => undefined);
     const pdfRoute = useSyncExternalStore(subscribePdfSessionRoute,
@@ -866,6 +873,8 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                 the viewer and lose the reading position. */}
             <div className="pdf-pane-body">
                 {body}
+                {/* Floating, not a bar: a bar would push the page view out from under the turn's picture. */}
+                {(annotateQueued || turnHeld && requestedMode === 'edit') && isVisible && <div className="pdf-turn-pending" role="status">Turning the pages… Annotate opens once they have turned.</div>}
                 {!fatalRenderIssue && !error && (documentRenderIssue || renderDelayIssue) && <div className="pdf-render-document-notice"><PdfRenderNotice
                     issue={(documentRenderIssue || renderDelayIssue)!} annotation={annotationMode} onRetry={retryRendering}
                     retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>}

@@ -13,6 +13,7 @@ import { PdfBuildRefused, pdfSnapshotRefusal } from '../utils/pdfBuildRefusal';
 import { describeReadError } from './readErrors';
 import { RECOVERY_SESSION_BINDING } from './nativeOwners';
 import { loadChunk } from '../platform/chunkLoad';
+import { holdPdfTurn } from '../utils/pdfTurnHold';
 
 /** Everything the PDF actions read from App. Refs are App's own `useRef`s. */
 export interface UsePdfActionsDeps {
@@ -78,8 +79,7 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
       diskStateRef, flushChainsRef, flushingRef, pdfSeedForRef, rootHandleRef, tabsRef,
     ]);
 
-  /** Turn a PDF's pages a quarter at a time and write it (pdfGestures.rotatePdf says how). */
-  const rotatePdf = useCallback(async (path: string, delta: number, pageIndex?: number) =>
+  const turnPdf = useCallback(async (path: string, delta: number, pageIndex?: number) =>
     (await loadChunk(() => import('./pdfGestures'))).rotatePdf({
       getVaultActivation, readFileSnapshot, notifyRef, rootHandleRef, currentVaultIdRef,
       readerEpochRef, tabsRef, documentBuffers, documentSessions, setTabs, nativePoliciesRef,
@@ -91,6 +91,13 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
       nativePoliciesRef, notifyRef, pdfSeedForRef, readerEpochRef, rootHandleRef, setTabs, tabsRef,
       writeFileVersionedRef,
     ]);
+  /** Turn a PDF's pages a quarter at a time and write it (pdfGestures.rotatePdf says how). Held from the press until
+   * this press's write has settled, synchronously, before the writer's chunk loads (utils/pdfTurnHold.ts says why). */
+  const rotatePdf = useCallback(async (path: string, delta: number, pageIndex?: number) => {
+    const id = tabsRef.current.find(t => t.file.path === path)?.id;
+    const release = id ? holdPdfTurn(id) : undefined;
+    try { await turnPdf(path, delta, pageIndex); } finally { release?.(); }
+  }, [tabsRef, turnPdf]);
 
   const pdfDeparturesRef = useRef(new Set<string>());
   const preparePdfDeparture = useCallback(async (paths: readonly string[], trashOwned = false): Promise<boolean> => {

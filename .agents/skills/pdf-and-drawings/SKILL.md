@@ -207,6 +207,8 @@ come back to either.
   layout (a whole-page thumbnail fills what was off screen), writes the position the turned view opens on, and holds
   its camera. App coalesces presses on the tab's chain and adopts the bytes with a new byte generation (no `diskRev`
   remount); the picture leaves on the pane's first sharp frame of the written hash, or rolls back on failure.
+  From press to settle the turn is HELD (`utils/pdfTurnHold.ts`): the pane stays Original, a switch to Annotate is
+  queued until release, and the native host refuses writers — the turn replaces the owner, so ink taken meanwhile was lost.
 - `prepareUnsignedPdfCopy` is copy-only: a distinct collision-free target, the signed original untouched, no claim of
   signature validation.
 - PDF-pane print hands the exact saved bytes to the browser after flushing pending ink, not a raster spool.

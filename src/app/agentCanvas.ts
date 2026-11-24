@@ -109,7 +109,7 @@ export async function ensureNativeAgentRuntime(deps: Pick<AgentCanvasDeps,
   return { identity, runtime, isCurrent, canWrite: () => isCurrent() && nativeCanvasHost.canWrite(identity),
     writeBlockReason: () => isCurrent() ? nativeCanvasHost.writeBlockReason(identity) : 'The native canvas session has ended.',
     activateEditing() {
-      if (!isCurrent() || !nativeCanvasHost.canWriteSource(identity)) throw new Error('The native canvas source is not writable.');
+      if (!isCurrent() || !nativeCanvasHost.canWriteSource(identity)) throw new Error(nativeCanvasHost.writeBlockReason(identity) ?? 'The native canvas source is not writable.');
       if (!acquired.adapter.activateEditing) throw new Error('The native session has no editing admission.');
       acquired.adapter.activateEditing();
       if (!isCurrent() || !nativeCanvasHost.canWrite(identity)) throw new Error('The native canvas source is no longer writable.');

@@ -1,5 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useRef } from 'react';
+import { afterPdfTurn, cancelAfterPdfTurn, pdfTurnHeld } from '../utils/pdfTurnHold';
 import type { ActiveFile, EditorMode, FileSystemContextValue, FileTreeNode, OpenTab } from '../types';
 import type { ReaderIdentity } from '../types/reading';
 import type { DiskVersion } from '../utils/diskVersion';
@@ -389,6 +390,15 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     const tab = tabsRef.current.find(t => t.file.path === path);
     if (!tab || !canChangeTabMode(tab)) return;
     const mode = requestedMode ?? (tab.mode === 'edit' ? 'read' : 'edit');
+    // A page turn being written: Annotate waits for it and opens on the turned pages (utils/pdfTurnHold.ts), so the
+    // tab's mode stays what is on screen meanwhile; the same toggle again takes the request back.
+    if (tab.representation.loadedKind === 'pdf' && pdfTurnHeld(tab.id)) {
+      if (!requestedMode && cancelAfterPdfTurn(tab.id)) return;
+      if (mode === 'edit') {
+        afterPdfTurn(tab.id, () => setTabs(prev => prev.map(t => t.id === tab.id && t.file.path === path && t.mode === 'read' && canChangeTabMode(t) ? { ...t, mode: 'edit' } : t)));
+        return;
+      }
+    }
     if (mode === tab.mode) return;
     const view = getView(path);
     const nativeEntry = documentSessions.get(tab.id);

@@ -341,6 +341,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     // in #reset (about 45 GL calls per draw), 117 ms of submit per frame.
     #replaying = false;
     #dirty = false;
+    #bufferSizeVerified = false;
     readonly #uniformBindings: number;
     readonly #maxAttributes: number;
     readonly #maxElementIndex: number;
@@ -2469,7 +2470,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                     const target = desc.pack ? gl.PIXEL_PACK_BUFFER : gl.COPY_WRITE_BUFFER;
                     gl.bindBuffer(target, buffer);
                     gl.bufferData(target, desc.bytes, desc.pack ? gl.STREAM_READ : gl.DYNAMIC_DRAW);
-                    if (gl.getBufferParameter(target, gl.BUFFER_SIZE) !== desc.bytes) throw new ArenaError('allocation');
+                    // The size read back is a synchronous wait on the GPU process, so it proves the allocation path once per device;
+                    // a later failed allocation is the context loss the broker already handles. Read per buffer, a zoom into a dense
+                    // notebook spent 7.9 of 15 s of main thread in getBufferParameter as its tiles' area kits made their buffers.
+                    if (!this.#bufferSizeVerified) {
+                        if (gl.getBufferParameter(target, gl.BUFFER_SIZE) !== desc.bytes) throw new ArenaError('allocation');
+                        this.#bufferSizeVerified = true;
+                    }
                     const native: NativeBuffer = { buffer, bytes: desc.bytes, uses: new Set(desc.uses), pack: !!desc.pack,
                         indices, indexLease };
                     if (indices) this.#indexBuffers.add(native);

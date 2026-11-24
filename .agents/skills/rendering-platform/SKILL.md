@@ -142,6 +142,8 @@ draws differently because a GPU exists.
   glide of a pan delta over `GLIDE_MS` (320 ms; the board's Space+arrow paging and its pan use it). Reduced motion, a
   zero duration or a pane that cannot run frames jump at once, so a caller's move (back to content, the minimap)
   still lands. `startFling` and `cancelMotion` are wired the same way (`scheduler.ts`, `attachPlatformPane.ts`).
+- An offscreen-only encode that recorded no pass settles its layers as submitted (`offscreenSettled(true)`): told
+  "discarded", the board composer asked for the next frame forever at rest. At rest a settled pane runs 0 frames.
 - Ask for a frame only for a cause. With the audit on, each present is named `present:<cause>` (`input`, `camera`,
   `wake`, `invalidate:<reason>`, `needsFrame:<layer>`); `none` is a fault.
 - A layer passed over by the budget counts as changed. A layer's class (critical/optional) is read once as its
@@ -211,13 +213,13 @@ draws differently because a GPU exists.
   `readPixels`, `getBufferSubData`, a blocking `clientWaitSync` each wait for the GPU process (measured: 17–24 ms
   per LARGE drag start/release from one `checkFramebufferStatus`). They belong at device creation, once per kind of
   target, in capture/export, or behind `__BME_BENCH__`. Fence and query polls stay non-blocking.
+- **State stays between the draws of one replay**: a draw marks the device dirty and the baseline (`#reset`, ~45 GL calls)
+  is restored once, before a raw write (`gl()`) or at `endReplay` (a thrown replay too). Reset per draw, a settling dense
+  notebook spent 55 of 90 s in `#reset`. Buffer creation reads its size back once per device, never per buffer.
 - Nothing unchanged is redone and nothing per frame is allocated: no re-raster, re-tessellation, re-upload, per-frame
   string keys or snapshot arrays. On a tiled GPU the cost is render-target switches (`gpu:target-switch`).
 - Mask clips and groups need isolation targets planned in prepare (`host.reserveIsolation`).
 - **Uploads belong in prepare.** A route's `uploadPrepared()` (`render/gpu/contracts.ts`) runs at the end of every
-- **State stays between the draws of one replay**: a draw marks the device dirty and the baseline (`#reset`, ~45 GL calls)
-  is restored once, before a raw write (`gl()`) or at `endReplay` (a thrown replay too). Reset per draw, a settling dense
-  notebook spent 55 of 90 s in `#reset`. Buffer creation reads its size back once per device, never per buffer.
   prepare, because a device refuses `writeBuffer`/`writeTexture` once a pass is recorded in the frame, and
   `encodeOffscreen` runs after the earlier layers' passes. Anything staged after that upload is a composer bug and
   fails the frame (`routeText.ts`, "staged after its upload"), never a silent draw from rows that lack it.

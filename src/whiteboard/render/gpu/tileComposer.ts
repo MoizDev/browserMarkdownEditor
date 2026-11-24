@@ -2158,7 +2158,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 auditCount(audit, 'live:deferred:stopped');
             }
             if (waiting) return indexing || finished.length > 0;
-            return indexing || !settled || building.size > 0 || finished.length > 0 || inexactPending.size > 0;
+            const wants = indexing || !settled || building.size > 0 || finished.length > 0 || inexactPending.size > 0;
+            // Which outstanding work keeps the board asking for frames: at rest none may (0 frames), and a count here names it.
+            if (wants && renderAuditEnabled()) auditCount(audit, `needs-frame:${indexing ? 'indexing' : building.size ? 'building' : finished.length ? 'finished'
+                : inexactPending.size ? 'inexact-pending' : 'unsettled'}`);
+            return wants;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
             const own = store.memory();

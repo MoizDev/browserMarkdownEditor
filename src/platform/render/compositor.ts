@@ -626,7 +626,12 @@ export class GpuCompositor implements PaneCompositor {
             this.#atlasRegions.clear();
             try { offscreen = this.#encodeOffscreen(snapshot, frame, encoder, drawScope); } finally { this.#active = null; }
             if (!offscreen) {
-                this.#encodings.delete(encoder); this.#discard(encoder);
+                // Nothing was recorded, so nothing a layer counted at encode can be lost: its layers settle as submitted. Told the
+                // frame was discarded, the board's tile composer asked for the next frame to redo conversions that never existed,
+                // at every unchanged frame: measured, a notebook at rest prepared 60 frames a second for good, drawing its ~450
+                // visible strokes live in each.
+                this.#encodings.delete(encoder);
+                try { this.#options.owner.discardFrame(encoder); } finally { this.#settle(encoder, true); }
                 return null;
             }
             auditCount('compositor', 'offscreen-on-refuse', offscreen);

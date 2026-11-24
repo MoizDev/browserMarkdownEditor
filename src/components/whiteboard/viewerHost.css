@@ -95,52 +95,41 @@
     color: var(--text-error, var(--text-normal));
     font-size: 12px;
 }
-/* Lifted clear of the board's bottom row and an open minimap: the same steps as the notice and status pill. */
-.board-viewer-host:has(.board-chrome-overlay) .board-paint-status-pending { right: 16px; bottom: 62px; }
-.board-viewer-host:has(.board-chrome-overlay) .board-paint-status-failed { bottom: 62px; }
+/* Bottom-right is the chrome's zoom and minimap corner, and above it one column, bottom up: the app's status pill
+   (index.css .status-bar.is-lifted: 62px up over the bottom row, 212px over an open minimap, 28px tall), this board's paint
+   status ("Updating…", or a picture that failed), then the notice. Each starts 8px above the one below, and each keeps its
+   place whether or not the ones below are showing, so nothing moves for a passing pill. The paint status stands at 110px,
+   8px over both the pill (top 90px) and the tool lock (chrome.css .board-chrome-tool-lock, 66px to 102px up, at the bar's
+   left end, under which a failure's full-width box would run); the notice at 110 + 28 + 8 = 146px. At the pill's own height
+   "Updating…" lay exactly under the app's status pill, hidden by it (measured: both at 712 to 740px, right edge 1384px, a
+   note beside the board keeping the pill up); the notice moved up from 98px to stay over it. The minimap rules come later and win. */
+.board-viewer-host:has(.board-chrome-overlay) .board-paint-status-pending { right: 16px; bottom: 110px; }
+.board-viewer-host:has(.board-chrome-overlay) .board-paint-status-failed { bottom: 110px; }
+.board-viewer-host:has(.board-chrome-overlay) .board-viewer-notice { bottom: 146px; }
 .board-viewer-host:has(.native-minimap) .board-paint-status-pending,
-.board-viewer-host:has(.native-minimap) .board-paint-status-failed { bottom: 212px; }
+.board-viewer-host:has(.native-minimap) .board-paint-status-failed { bottom: 248px; }
+.board-viewer-host:has(.native-minimap) .board-viewer-notice { bottom: 284px; }
 
-/* Bottom-right is the chrome's zoom and minimap corner, and above it the app's status pill (index.css
-   .status-bar.is-lifted: 62px up over the bottom row, 212px over an open minimap, 28px tall). With chrome mounted the
-   notice stands above both, 8px clear: 62 + 28 + 8 = 98px, and 248px over a minimap; the minimap rule comes later and
-   wins. At the pill's own height (62px) every announcement and every board save's "Saved" lay over the notice's right
-   end and its Dismiss (measured after Make an editable copy); the notice stays put rather than move for a passing pill. */
-.board-viewer-host:has(.board-chrome-overlay) .board-viewer-notice {
-    bottom: 98px;
-}
+/* The space the chrome's bottom edge takes, which the docked style panel stops above (chrome.css .board-chrome-pen): the
+   column above, through the paint status (146px, 284px over a minimap), and through a notice when one shows (its 50px and
+   8px over its place). The more specific combinations come last. */
+.board-viewer-host:has(.board-chrome-overlay) { --board-chrome-reserve: 146px; }
+.board-viewer-host:has(.board-viewer-notice) { --board-chrome-reserve: 204px; }
+.board-viewer-host:has(.native-minimap) { --board-chrome-reserve: 284px; }
+.board-viewer-host:has(.native-minimap):has(.board-viewer-notice) { --board-chrome-reserve: 342px; }
 
-/* The tool lock stands 8px above the bar's left end, 36px tall (chrome.css .board-chrome-tool-lock; measured 66px to
-   102px up), so while a lockable tool is chosen the notice starts 8px above it: at 62px the notice lay over the lock,
-   the button half hidden under a notice that takes no clicks. The stacked rules below already clear it. */
-.board-viewer-host:has(.board-chrome-tool-lock) .board-viewer-notice {
-    bottom: 110px;
-}
-
-.board-viewer-host:has(.native-minimap) .board-viewer-notice {
-    bottom: 248px;
-}
-
-/* The space the chrome's bottom edge takes, which the docked style panel stops above (chrome.css .board-chrome-pen).
-   Each rule sets the same numbers as the notice and minimap offsets around it; the more specific combinations come last. */
-.board-viewer-host:has(.board-chrome-overlay) { --board-chrome-reserve: 62px; }
-.board-viewer-host:has(.board-viewer-notice) { --board-chrome-reserve: 156px; }
-.board-viewer-host:has(.board-chrome-tool-lock):has(.board-viewer-notice) { --board-chrome-reserve: 168px; }
-.board-viewer-host:has(.native-minimap) { --board-chrome-reserve: 212px; }
-.board-viewer-host:has(.native-minimap):has(.board-viewer-notice) { --board-chrome-reserve: 306px; }
-
-/* Stacked bottom row (ViewerHost's CHROME_STACK_BELOW_PX): the zoom row tops out at 112px, so 120px, and an open
-   minimap at 120 + 142 + 8; the notice adds the status pill's 28px and 8px over those, as above. */
+/* Stacked bottom row (ViewerHost's CHROME_STACK_BELOW_PX): the zoom row tops out at 112px, so the pill stands at 120px
+   and an open minimap's at 270px; the same column stands above it. */
 .board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-paint-status-pending,
-.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-paint-status-failed { bottom: 120px; }
-.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-viewer-notice { bottom: 156px; }
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-paint-status-failed { bottom: 156px; }
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-viewer-notice { bottom: 192px; }
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-pending,
-.board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-failed { bottom: 270px; }
-.board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-viewer-notice { bottom: 306px; }
-.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) { --board-chrome-reserve: 120px; }
-.board-viewer-host[data-chrome-stacked]:has(.board-viewer-notice) { --board-chrome-reserve: 214px; }
-.board-viewer-host[data-chrome-stacked]:has(.native-minimap) { --board-chrome-reserve: 270px; }
-.board-viewer-host[data-chrome-stacked]:has(.native-minimap):has(.board-viewer-notice) { --board-chrome-reserve: 364px; }
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-failed { bottom: 306px; }
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-viewer-notice { bottom: 342px; }
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) { --board-chrome-reserve: 192px; }
+.board-viewer-host[data-chrome-stacked]:has(.board-viewer-notice) { --board-chrome-reserve: 250px; }
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap) { --board-chrome-reserve: 342px; }
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap):has(.board-viewer-notice) { --board-chrome-reserve: 400px; }
 
 /* The helper buttons (Exit pen mode, Back to content) stack in one column under the top bar, top left, as tldraw does.
    Their hidden state must win over the button's own display, or a hidden button still takes its row. */

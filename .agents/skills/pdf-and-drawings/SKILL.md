@@ -1,6 +1,6 @@
 ---
 name: pdf-and-drawings
-description: PDF and canvas documents end to end — the contained PDFium engine and pool, PDF tile layers, the PDF pane's Original/Text/Annotate routes, editable PDF ink and its saved-source rebind, legacy (.tldraw/.notebook/old-annotated PDF) conversion, notebook PDF export, writers, print and capture, canvas document sessions, and the lazy-chunk import rules. Load before touching src/pdf/, PdfPane/PdfTiled*/pdfPaneModule, components/whiteboard/Native*Entry, CanvasPane, whiteboard/host/ (sessions, PDF ink, notebook export), utils/paper.ts or utils/pdfBuild*.ts, or anything a PDF or canvas pane imports.
+description: PDF and canvas documents end to end — the contained PDFium engine and pool, PDF tile layers, the PDF pane's Original/Text/Annotate routes, editable PDF ink and its saved-source rebind, old boards (.tldraw/.notebook/.tldr: read-only, editable copy) and old-annotated PDF conversion, notebook PDF export, writers, print and capture, canvas document sessions, and the lazy-chunk import rules. Load before touching src/pdf/, PdfPane/PdfTiled*/pdfPaneModule, components/whiteboard/Native*Entry, CanvasPane, whiteboard/host/ (sessions, PDF ink, notebook export), utils/paper.ts or utils/pdfBuild*.ts, or anything a PDF or canvas pane imports.
 ---
 
 # PDF and canvas documents
@@ -24,8 +24,8 @@ Drawing pixels is `rendering-platform` (shared) and `board-gpu-path` (boards). E
 | Board format and model | `whiteboard/format/` (binary `.drawing`, `NATIVE_VERSION`), `whiteboard/model/` |
 
 **File kinds** (`utils/fileTypes.ts`): `.drawing` is the native binary board and must never be decoded as text;
-`.tldraw` and `.notebook` may hold legacy JSON, opened through the governed legacy mapping
-(`whiteboard/host/legacyAcquisition.ts`: read-only or editable-after-conversion). A PDF's role (plain, annotated,
+`.tldraw`, `.tldr` and `.notebook` may hold legacy JSON, opened through the governed legacy mapping
+(`whiteboard/host/legacyAcquisition.ts`) and ALWAYS read-only: an old board is never written (see Legacy boards). A PDF's role (plain, annotated,
 notebook export) is read from its attachments, never its name. pdf.js and tldraw are gone; no reader or writer may
 come back to either.
 
@@ -126,7 +126,25 @@ come back to either.
 - Platform document tokens are immutable: detach old input/platform, transfer the camera, attach a new platform with
   the new token. There is no token-update API.
 
-## Legacy conversion (old annotated PDFs, `.tldraw`, `.notebook`)
+## Legacy boards (`.tldraw`, `.tldr`, old-app `.notebook`): never written, edited through a copy
+
+- Old is decided from the bytes of EACH load (`sniffCanvas` for a text buffer, the engine's admission for the pane;
+  `utils/oldBoards.ts`), never a name or a remembered flag. Every write seam refuses one: the funnel
+  (`canUpdateTabContent`/`canFlushTab`/`flushTab` on `representation.oldBoard`/`policy.oldBoard`), the host's
+  `writeBlockSource`, `activateEditing` and the agent (`oldBoardReadOnlyReason`, which names the gesture). There is no
+  board conversion code left, dormant or otherwise; `conversionPending`/`acceptConvertedSource`/`keepConversionBackup`
+  are PDF ink only and throw for a board.
+- `prepareNativeRuntime` seals the runtime read-only, makes `pinMedia` a no-op restore (a build's media restore wrote
+  pictures beside the board and refused on a sealed session: "Board session ended"), and exposes `oldBoard.copySource`.
+  The pane routes to `NativeViewer` (view lease, no editing chunk) with `ReadOnlyBoardChrome`.
+- The copy is built from the board ALREADY in memory, never a second read or a second trip through the legacy queue:
+  `copySource(signal, view)` → `build(files)` checkpoints the serializer with `encodeMedia` overrides naming each
+  picture's stored file (a picture with `file: null` failed its first save with `MediaLocationsChanged`) and, for a
+  drawing, an `encodeView` override carrying the camera. App's `writeBoardCopy` (vault-filesystem) writes it under a
+  free name; `useEditableCopy` swaps the tab in place (one commit: release, `setTabs`, `renamePath`). Requests (dialog,
+  strip, tree row) go through the store in `oldBoards.ts` and are run by the pane that holds the board.
+
+## Legacy conversion (old annotated PDFs only)
 
 - `acquireLegacyPdfInkCandidate().prepare` needs the C5/visual gate, the app's own confirmation, foreign-mark consent
   when applicable, and `NativeCanvasHost.keepConversionBackup` of the EXACT outer bytes; App enforces the backup
@@ -139,7 +157,8 @@ come back to either.
   (`records/versions.ts`; stroke layouts in `segments.ts`). An item it cannot represent is left out, preserved raw as a
   `legacy-*` record in the native file, and reported with an `item` noun; it never makes the board read-only. Only a
   file with no readable board fails, through `importFailure`. `importNotice` (items left out, repairs carrying a
-  `notice`) is shown once in the board's notice; float16 pressure drift below 0 is silent. Never join issue reasons
+  `notice`) is shown once in the board's notice (its closing sentence is the caller's: a board's says the file is
+  never changed, the PDF's says where the original is kept); float16 pressure drift below 0 is silent. Never join issue reasons
   raw: use `groupIssueText`. A legacy load (board, notebook or old annotated PDF) is admitted by `host/legacyLoadQueue.ts`:
   one at a time, a document a visible pane shows first, its working memory the parse worker's heap and never the render
   raster pool; only a file over 256 MB is refused, at once. The pane says "Opening drawing…" while it waits or runs, and

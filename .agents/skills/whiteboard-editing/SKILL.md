@@ -45,6 +45,11 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   `viewer/accessibilityDom.ts` with `readOnly: true` (`nativeViewLease.ts`, `readonlyAccessibility`), which omits the drawing
   cursor and pen-mode helper, and whose skip link only moves focus. A chosen object there gets its outline alone (the
   selection frame's `outlineOnly` mode, `viewer/selectionHandles.ts`, written from the view's `writeOverlays`), no handles.
+- A board that opens in the VIEW route (an old-format board, the developer emergency switch, a failed editing chunk) has
+  no editing chrome: `ReadOnlyBoardChrome.tsx` draws the strip (☰ with Print… and Export to PDF from the document's
+  clipboard service, sheets, page thumbnails, invert) and the zoom panel in the editing chrome's places, and nothing
+  that edits, so nothing on screen silently does nothing. ⌘A/⌘C/⇧⌘C/⌘P stay on their keys (`useNativeClipboard.ts`
+  binds them on every view). An old board's strip adds its note and "Make an editable copy" (`pdf-and-drawings`).
 - The AI agent edits boards through the same transactions (`whiteboard/agent/`, `change/agentBatch.ts`;
   `vault-agent` skill).
 

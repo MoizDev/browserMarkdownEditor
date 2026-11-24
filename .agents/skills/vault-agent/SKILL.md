@@ -127,9 +127,10 @@ Drawings (`.drawing`, legacy `.tldraw`), notebooks and PDF ink are read and chan
   focus* (`addTabQuietly`, which seeds the buffer and baseline exactly as a click would), then
   `utils/nativeCanvasAgentMutation.ts` acquires the session through `app/agentCanvas.ts`
   `ensureNativeAgentRuntime` (15 s), and `whiteboard/host/nativeAgentMutation.ts` applies every op as ONE
-  undo step under a 30 s deadline. **No mounted pane, camera or input router is needed.** A legacy board
-  is admitted by the session's own conversion (consent and backup rules included); a refusal throws and
-  nothing else takes over. Write authority is the session's (`canWrite`/`writeBlockReason`) — emergency
+  undo step under a 30 s deadline. **No mounted pane, camera or input router is needed.** An old-format
+  board is never changed: its session is sealed and the write is refused with `oldBoardReadOnlyReason`, which
+  tells the agent to have the user make an editable copy; an old annotated PDF is admitted by the session's own
+  conversion (consent and backup rules included). A refusal throws and nothing else takes over. Write authority is the session's (`canWrite`/`writeBlockReason`) — emergency
   read-only, the App's disk baseline and the session's seals stay authoritative; the request's own
   mutation work retires in `finally`, the document session keeps serving autosave and the user.
 - **A PDF's ink is read or edited only from a clean, baselined buffer**: `ensureNativeAgentRuntime` pins

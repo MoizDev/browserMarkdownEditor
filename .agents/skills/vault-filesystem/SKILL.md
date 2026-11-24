@@ -1,6 +1,6 @@
 ---
 name: vault-filesystem
-description: How this app reads and writes the user's real files — the File System Access layer (FileSystemContext), create/rename/move/trash and the Trash bin, the overwrite rules (freeEntryName, the createFile hole), per-folder .Assets/.Garbage and asset retirement, board media and conversion backups, outside-change detection and versioned writes, hidden entries, and the recent-vaults list and vault switching. Load before changing anything that touches the user's disk, adds a caller of createFile, writes into .Assets/.Garbage, or moves/renames/deletes/switches anything.
+description: How this app reads and writes the user's real files — the File System Access layer (FileSystemContext), create/rename/move/trash and the Trash bin, the overwrite rules (freeEntryName, the createFile hole), per-folder .Assets/.Garbage and asset retirement, board media, old boards' editable copies and conversion backups, outside-change detection and versioned writes, hidden entries, and the recent-vaults list and vault switching. Load before changing anything that touches the user's disk, adds a caller of createFile, writes into .Assets/.Garbage, or moves/renames/deletes/switches anything.
 ---
 
 # The vault: reading and writing the user's real files
@@ -24,7 +24,7 @@ keeps a file beats a right one that cannot be undone.
   - Trash: `listTrash`/`restoreFromTrash`/`deleteFromTrash`/`emptyTrash`/`copyTrashFile`,
     `keepCopyInGarbage`, `keepConversionBackup`/`restoreConversionCopy`;
   - pictures: `getAssetUrl`/`saveAsset`/`retireAsset`/`restoreAsset`; board media `readBoardAsset`/
-    `putBoardAsset`/`readLegacyBoardAsset`; notebook export `inspectExportTarget`/`writeNotebookExport`;
+    `putBoardAsset`/`readLegacyBoardAsset`, an old board's copy `writeBoardCopy`; notebook export `inspectExportTarget`/`writeNotebookExport`;
   - vault: `pickDirectory`/`restoreVault`/`openRecentVault`/`openFolderAsVault`/`openLinkedVault`,
     `forgetRecentVault`/`pinRecentVault`, `ensureVaultId`, `getVaultActivation`, `registerBeforeRootChange`,
     `resolveVaultDir`/`resolveVaultFile`/`verifyVaultFileIdentity`/`vaultDirExists`.
@@ -211,9 +211,15 @@ both names; nothing else spells `'.Assets'`.**
   `freeEntryName`, one serialized queue, owner + activation re-checked at every step, only our own staging
   file removed). `readLegacyBoardAsset` resolves an old board's relative `src` with strict path checks
   (no scheme, no escape above the root, never `.VaultAgent`, ≤ 10 MiB).
-- **Conversion backups**: before a legacy board is converted, `keepConversionBackup` copies the verified
-  source bytes into its folder's `.Garbage`; `restoreConversionCopy` brings one back as a **separate copy**
-  beside the board, never over it. `keepCopyInGarbage` is the generic "preserve these bytes" path (a failure
+- **An old board's editable copy** (`writeBoardCopy`; old boards are never written, see `pdf-and-drawings`): in the
+  board-asset queue and one mutation, it stores the copy's pictures as `putBoardAsset` does, builds the bytes from
+  the stored names, takes the first free name from the caller's list (`entryExists`: files AND folders, as
+  `freeEntryName`), writes it with `getFileHandle({create:true})` on that proven-free name, then verifies the stat
+  and a read-back fingerprint. On ANY failure it removes only the file it created (`isSameEntry`) and RETIRES the
+  pictures it added (never `removeEntry` on a picture), so nothing half-written is left beside the original.
+- **Conversion backups** (old annotated PDFs; boards an EARLIER build converted in place): `keepConversionBackup`
+  copies the verified source bytes into the folder's `.Garbage` before a PDF conversion; `restoreConversionCopy`
+  brings one back as a **separate copy** beside the file, never over it. `keepCopyInGarbage` is the generic "preserve these bytes" path (a failure
   must stop the caller's rebuild).
 
 ## Recent vaults and switching (`context/recentVaults.ts`, `utils/recentVaults.ts`, `VaultMenu.tsx`)

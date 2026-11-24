@@ -124,6 +124,14 @@ export interface NativeViewLease extends BoardViewLease<object> {
     replaceBackdrop(backdrop: NativePdfBackdrop): void;
 }
 let serial = 0;
+const detached = (): never => { throw new Error('The board platform is not attached'); };
+/**
+ * The motion of a view with no platform pane: none runs, so cancelling it is done, while starting one still throws. Hiding the
+ * view detaches the pane before its tools dispose, and their camera commands cancel any glide as they go: thrown, it cut the
+ * select services' dispose short (the camera commands' own surface listeners and everything disposed after them) and put
+ * 'The board platform is not attached' on the board after every hide and show (measured: every run, on both backends).
+ */
+const DETACHED_MOTION = Object.freeze({ cancelMotion() {}, animateZoom: detached, animatePan: detached, glideTo: detached, startFling: detached });
 
 /** The viewer route owns only this view's camera, input and paint leases. Editing
  * remains a separate capability until the real tool/chrome host is attached. */
@@ -400,7 +408,7 @@ export function createNativeViewLease(options: {
                 candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
             editable: () => inputPermitted && parameters.mode === 'edit' && edit.canMutate() && !board.isReadOnly && host.canWrite(identity), visible: () => parameters.visible, focused: () => parameters.focused,
             interaction: { invalidate: hintFrom('interaction'), cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
-            platform: () => { if (!platformPane) throw new Error('The board platform is not attached'); return platformPane; },
+            platform: () => platformPane ?? DETACHED_MOTION,
             ui: edit.ui, commands: edit.commands }, invalidate: hintFrom('edit'), onError: options.onError }) : null;
         } catch (error) { viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; } })();
     const stopEditingReady = editing && edit ? editing.subscribeAttachment(edit.onAttachment) : undefined;

@@ -19,6 +19,7 @@ import { createNativeAcquisitionOptions } from './nativeAcquisitionOptions';
 import { useNativeBoardAcquisition } from './useNativeBoardAcquisition';
 import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
 import { createNativeCameraOperations } from './nativeCameraOperations';
+import { isCancellation } from '../../platform/workers/envelope';
 import { ReadOnlyBoardChrome } from './ReadOnlyBoardChrome';
 import { isEditableCopyRequested, requestEditableCopy, subscribeEditableCopyRequests, takeCopyNotice, takeEditableCopyRequest } from '../../utils/oldBoards';
 import ViewerHost from './ViewerHost';
@@ -288,10 +289,35 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
     useEffect(() => {
         if (editingChrome) return;
         const lifetime = new AbortController();
-        setViewCamera(createNativeCameraOperations({ runtime: lease.runtime, lease, current, signal: lifetime.signal,
-            minimapVisible: () => minimapOpenRef.current, setMinimapVisible: setMinimapOpen }));
-        return () => { lifetime.abort(); setViewCamera(null); };
-    }, [editingChrome, lease, current, setMinimapOpen]);
+        const camera = createNativeCameraOperations({ runtime: lease.runtime, lease, current, signal: lifetime.signal,
+            minimapVisible: () => minimapOpenRef.current, setMinimapVisible: setMinimapOpen });
+        setViewCamera(camera);
+        // The view's keys run the same operations as its zoom panel and Page menu (the guide promises zoom and sheets here).
+        const operation = (value: { state(): { enabled: boolean }; run(): void | Promise<void> }) => {
+            if (!value.state().enabled) return false;
+            void Promise.resolve().then(() => value.run()).catch(error => { if (!lifetime.signal.aborted && !isCancellation(error)) setNotice(error instanceof Error ? error.message : String(error)); });
+            return true;
+        };
+        const stepSheet = (direction: 1 | -1) => {
+            const order = lease.runtime.session.doc.sheetOrder, at = order.findIndex(item => item.id === lease.runtime.selection.getSnapshot().sheet);
+            const target = at < 0 ? undefined : order[at + direction];
+            if (!target || lease.runtime.session.doc.kind !== 'whiteboard') return false;
+            lease.runtime.selection.setSheet(target.id); return true;
+        };
+        lease.setViewCommands(id => {
+            switch (id) {
+                case 'camera.zoomIn': return operation(camera.zoomIn);
+                case 'camera.zoomOut': return operation(camera.zoomOut);
+                case 'camera.reset': return operation(camera.zoomTo100);
+                case 'camera.fit': return operation(camera.zoomToFit);
+                case 'camera.selection': return operation(camera.zoomToSelection);
+                case 'sheet.previous': return stepSheet(-1);
+                case 'sheet.next': return stepSheet(1);
+                default: return false;
+            }
+        });
+        return () => { lifetime.abort(); lease.setViewCommands(null); setViewCamera(null); };
+    }, [editingChrome, lease, current, setMinimapOpen, setNotice]);
     const pageCount = board.doc.kind === 'notebook' && board.doc.host.kind === 'notebook' ? board.doc.host.paper.pageCount : 0;
     // An old board's own read-only reason is written for the agent and the write seams; its strip says it to the person.
     const viewReason = oldBoard && view.reason === board.readOnlyReason ? null : view.reason;

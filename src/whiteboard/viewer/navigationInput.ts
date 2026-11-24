@@ -22,7 +22,9 @@ export interface BoardNavigationOptions {
     readonly mac: boolean;
     linkAt?(point: Point): (() => void) | null;
     contextMenu?(event: MouseEvent): void;
-    readonly keyboard?: { modalOpen?(): boolean; editing?(): boolean; shortcutsEnabled?(): boolean };
+    readonly keyboard?: { modalOpen?(): boolean; editing?(): boolean; shortcutsEnabled?(): boolean;
+        /** A view row this input does not move the camera for itself (zoom, fit, sheets): the host runs it as its chrome does. */
+        command?(id: string): boolean };
     /** Preferences: whether the mouse wheel's zoom turn is inverted. */
     readonly invertMouseZoom?: () => boolean;
     /** Preferences: the Input device choice (Mouse makes a plain wheel turn zoom). */
@@ -181,7 +183,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
             if (!active()) return false;
             if (id === 'pan.hold') { space = true; return true; }
             if (id === 'escape') { run(flush); return true; }
-            return false;
+            return options.keyboard?.command?.(id) ?? false;
         },
         clearLatches: () => run(flush),
     }, options.mac);

@@ -107,6 +107,8 @@ export interface NativeViewLease extends BoardViewLease<object> {
     zoomStep(direction: 1 | -1, anchor?: { x: number; y: number }): void;
     /** Zoom to 100%: on a paged host this toggles between natural 1 and fit-width (camera.md F-CAM-008). */
     resetZoom(): void;
+    /** The keys a view without editing runs through its own chrome (zoom, fit, sheets); null while it has none. */
+    setViewCommands(run: ((id: string) => boolean) | null): void;
     /** A camera glide to `target` over durationMs, in the pane's own motion; zero jumps. */
     glideTo(target: Camera, durationMs: number): void;
     cancelGlide(): void;
@@ -189,6 +191,10 @@ export function createNativeViewLease(options: {
         session: identity.session, bytesGeneration: identity.bytesGeneration });
     const viewLease = ++serial, listeners = new Set<(change?: string) => void>();
     let parameters = { ...options.parameters }, disposed = false, platformPane: PlatformPane | null = null;
+    // Without editing, the board's input is the navigation host, whose keyboard moves only the camera it holds (pan, pages); the
+    // zoom, fit and sheet rows it hands to the view's chrome, which runs them as its zoom panel does. Unbound, "=" and ⌘= did
+    // nothing on an old notebook or drawing (measured: camera unchanged for =, -, ⌘=, ⌘-, ⇧0, ⇧1 and ⌥→ on a two-sheet drawing).
+    let viewCommands: ((id: string) => boolean) | null = null;
     /** The read-only outline of the chosen object, while this view is attached to an input surface. */
     let readonlyOutline: ReturnType<typeof createSelectionHandles> | null = null;
     let inputPermitted = true;
@@ -417,7 +423,7 @@ export function createNativeViewLease(options: {
         visible: () => parameters.visible && !!platformPane, current,
         changed: () => cameraOwner.changed(), onUserNavigation: markUserNavigation, invalidate, onError: options.onError,
         mac: /Mac|iPhone|iPad/.test(navigator.platform), invertMouseZoom: mouseZoomInverted, mouseWheel: mouseInputChosen,
-        reducedMotion: () => getBoardPreferences().animationSpeed === 0 });
+        reducedMotion: () => getBoardPreferences().animationSpeed === 0, keyboard: { command: id => viewCommands?.(id) ?? false } });
     const withCapturer = <T,>(run: (capturer: ReturnType<typeof createPlatformCapturer>) => Promise<T>): Promise<T> => {
         if (!current()) return Promise.reject(new Error('Native view capture is unavailable'));
         const sheetId = runtime.selection.getSnapshot().sheet;
@@ -648,6 +654,7 @@ export function createNativeViewLease(options: {
             const point = anchor ?? { x: camera.viewport.width / 2, y: camera.viewport.height / 2 };
             lease.zoomAt(point, zoomStepTarget(camera.camera.z, direction, base) / camera.camera.z);
         },
+        setViewCommands(run) { viewCommands = disposed ? null : run; },
         resetZoom() {
             const stack = boardPageStack(board.doc.host);
             const base = stack ? fitWidthZ(camera.viewport, stack, insets) : 1;
@@ -711,7 +718,7 @@ export function createNativeViewLease(options: {
         dispose() {
             if (disposed) return;
             recordViewport(); disposed = true; unregisterView?.(); stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
-            navigation.dispose(); if (!cameraTransferred) cameraOwner.dispose(); viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
+            navigation.dispose(); if (!cameraTransferred) cameraOwner.dispose(); viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null; viewCommands = null;
         },
     };
     // A mounted board answers the agent from its own live camera, inversion and frame, under the path it shows; dispose withdraws it.

@@ -49,7 +49,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   no editing chrome: `ReadOnlyBoardChrome.tsx` draws the strip (☰ with Print… and Export to PDF from the document's
   clipboard service, sheets, page thumbnails, invert) and the zoom panel in the editing chrome's places, and nothing
   that edits, so nothing on screen silently does nothing. ⌘A/⌘C/⇧⌘C/⌘P stay on their keys (`useNativeClipboard.ts`
-  binds them on every view). An old board's strip adds its note and "Make an editable copy" (`pdf-and-drawings`).
+  binds them on every view); its view rows (zoom, fit, sheets) run the zoom panel's operations through the lease's
+  `setViewCommands`. An old board's strip adds its note and "Make an editable copy" (`pdf-and-drawings`).
 - The AI agent edits boards through the same transactions (`whiteboard/agent/`, `change/agentBatch.ts`;
   `vault-agent` skill).
 

@@ -15,9 +15,11 @@
 
 /** The largest legacy board the importer reads (the worker's LEGACY_SCAN_MAX_BYTES), refused at once rather than queued.
  * With the raster-pool reservation gone this is the load's only size gate, so its cost was measured (peak resident memory
- * of the page's process over its idle level, one board opened alone, production build): 23 MB with 6 inline photos +442 MB
- * in 4.6 s; 102 MB with 28 photos +858 MB in 19 s; 200 MB with 55 photos +1,285 MB in 37 s — about 6–8 × the file for
- * picture boards, and the largest admitted file opens without the tab failing. */
+ * of the page's process over its idle level, one board opened alone, production build, the import in a worker of its own):
+ * 23 MB with 6 inline photos +276 MB in 3.4 s; 102 MB with 28 photos +819 MB in 13 s; 200 MB with 55 photos +1,265 MB in
+ * 25 s (±300 MB run to run). What bounds a picture board is the import's own design — the file's whole text, its parsed records
+ * and the photos on their way to the browser exist at once — so the largest admitted file still costs ~5–6 × itself, opens
+ * without the tab failing, and one load at a time keeps it to one such peak. */
 export const LEGACY_LOAD_MAX_BYTES = 256 * 1024 * 1024;
 
 export type LegacyLoadPhase = 'waiting' | 'loading';
@@ -84,7 +86,7 @@ export async function admitLegacyLoad(options: { key: string; bytes?: number; si
     signal.throwIfAborted();
     if (options.bytes !== undefined && options.bytes > LEGACY_LOAD_MAX_BYTES) {
         const mb = (bytes: number) => Math.round(bytes / (1024 * 1024));
-        throw new RangeError(`This file is ${mb(options.bytes)} MB; tldraw-format files larger than ${mb(LEGACY_LOAD_MAX_BYTES)} MB cannot be opened.`);
+        throw new RangeError(`This file is ${mb(options.bytes)} MB; a file from an older version of the app opens only up to ${mb(LEGACY_LOAD_MAX_BYTES)} MB.`);
     }
     const token = {};
     setPhase(key, token, 'waiting');

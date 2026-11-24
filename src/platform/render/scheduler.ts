@@ -994,7 +994,11 @@ export class FrameScheduler {
             const quiet = work.every(item => !item.hadInput && item.entry.motion === null && !item.entry.pane.isInteracting());
             const backgroundCap = quiet ? this.intervalMs * QUIET_BACKGROUND_FRACTION : meter.sliceMs;
             const backgroundStart = performance.now();
-            const backgroundEnd = performance.now() + Math.min(backgroundCap, Math.max(0, started + this.intervalMs - presentReserve - performance.now()));
+            // The upload window is the background's floor, even in a frame the foreground and the presentation reserve have overrun: on a
+            // GPU slow enough that presenting takes longer than the interval, nothing was ever left, and background work (a dense board's
+            // tiles under their stand-ins or covers) never advanced, 'Updating…' for good (measured, the 5,642-stroke board zoomed to 1745%
+            // and back to fit with the GPU slowed: 1 s submits, every background claim refused at its deadline, 182 frames per 10 s).
+            const backgroundEnd = performance.now() + Math.min(backgroundCap, Math.max(meter.sliceMs, started + this.intervalMs - presentReserve - performance.now()));
             meter.deadline = backgroundEnd;
             const optionalOrder = this.focusFirst(this.rotate(work, this.optionalCursor++));
             const optionalMs = Math.max(0, backgroundEnd - performance.now()) / Math.max(1, work.length);

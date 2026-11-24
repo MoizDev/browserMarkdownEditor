@@ -363,7 +363,18 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         row?.focus();
     }, [flyout, rowIndex]);
 
+    /** Select all with the keyboard on a row would take the page behind the menu: nothing in a menu is text to select
+     *  (measured: 276 and 1,713 characters of the app's own text, with a board's zoom menu open — its rows keep it open). A
+     *  field inside the menu keeps its own. */
+    const swallowSelectAll = (e: React.KeyboardEvent<HTMLDivElement>): boolean => {
+        if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== 'a'
+            || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return false;
+        e.preventDefault();
+        return true;
+    };
+
     const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (swallowSelectAll(e)) return;
         switch (e.key) {
             case 'ArrowDown': e.preventDefault(); moveFocus('next'); break;
             case 'ArrowUp': e.preventDefault(); moveFocus('prev'); break;
@@ -383,6 +394,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
      *  reaches here is ArrowLeft at the grid's left edge, which means "back to
      *  the menu". */
     const onPanelKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (swallowSelectAll(e)) return;
         if (e.key === (request.dir === 'rtl' ? 'ArrowRight' : 'ArrowLeft')) {
             e.preventDefault();
             e.stopPropagation();

@@ -3,7 +3,7 @@ import LucideGlyph from '../../LucideGlyph';
 import { openContextMenu, type ContextMenuEntry } from '../../../utils/contextMenu';
 import { dismissOnEscape } from '../../../utils/escapeDismiss';
 import { actionCommands, type BoardCommand, type BoardCommandSource } from './boardCommands';
-import { focusBoardInteraction } from './boardFocus';
+import { boardInteractionRoot, focusBoardInteraction } from './boardFocus';
 import { actionIcons, headerCommandIcons, headerIcons } from './boardIcons';
 import './chrome.css';
 
@@ -61,7 +61,7 @@ export function BoardHeader({ commands, locale, direction, menuLabel, menuEntrie
                     const dark = anchor.closest('[data-board-theme="dark"]') !== null;
                     openContextMenu({ x: rect.left, y: rect.bottom,
                         entries: typeof menuEntries === 'function' ? menuEntries(anchor) : menuEntries,
-                        label: menuLabel, lang: locale, dir: direction, opener: anchor, anchor,
+                        label: menuLabel, lang: locale, dir: direction, opener: boardInteractionRoot(anchor) ?? anchor, anchor,
                         className: dark ? 'board-main-menu board-main-menu-dark' : 'board-main-menu' });
                 }}><LucideGlyph nodes={headerIcons.menu} size={16} /></button>
             <button type="button" className="board-chrome-sheet" onClick={event => openSheets(event.currentTarget)}>

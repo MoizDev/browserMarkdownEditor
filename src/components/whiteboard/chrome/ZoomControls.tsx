@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { boardInteractionRoot } from './boardFocus';
 import { getContextMenu, openContextMenu, replaceContextMenuEntries, type ContextMenuEntry } from '../../../utils/contextMenu';
 import LucideGlyph from '../../LucideGlyph';
 import type { MainAction, MainMenuSource } from './mainMenu';
@@ -58,8 +59,10 @@ export function ZoomControls({ zoom, locale, direction, zoomLabel, minimapLabel,
         onClick={event => {
             const element = event.currentTarget;
             const rect = element.getBoundingClientRect();
-            // The menu sits above the control with an 8px gap, as tldraw's zoom popover does.
-            openContextMenu({ x: rect.left, y: rect.top - 8, anchor: element, opener: element, label: zoomLabel, lang: locale,
+            // The menu sits above the control with an 8px gap, as tldraw's zoom popover does. Closed, it hands the keyboard to the
+            // board, not to this button, which is outside the board's keyboard root (measured: Escape or a chosen row left
+            // ⌘A selecting 192 and 252 characters of the app's own text).
+            openContextMenu({ x: rect.left, y: rect.top - 8, anchor: element, opener: boardInteractionRoot(element) ?? element, label: zoomLabel, lang: locale,
                 dir: direction, above: true, entries: zoomMenu() });
         }}>{percent}%</button>;
     // The minimap chevron stands at the outer end (left on RTL). Zoom out and in flank the percentage while the map is open.

@@ -43,7 +43,6 @@ export interface LegacyPrepareReply {
     readonly status: 'prepared' | 'read-only';
     readonly bytes: Blob | null;
     readonly report: ImportReport;
-    readonly media: readonly Readonly<{ entry: import('../model/media').MediaEntry; blob: Blob }>[];
     readonly previousFrames: readonly LegacyPageRect[];
     readonly nextFrames: readonly LegacyPageRect[];
     readonly savedView?: SavedView;
@@ -142,7 +141,7 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
         });
         check();
         if (!imported.board || imported.readOnly) return { status: 'read-only', bytes: null, report: imported.report,
-            media: [], previousFrames, nextFrames: [], conversionPending: true };
+            previousFrames, nextFrames: [], conversionPending: true };
         const doc = imported.board.doc;
         rendered = createBoardRenderServices({ doc, samples, media, fonts, token: request.token, cooperate: tick });
         const ids = Array.from(doc.nodes.keys());
@@ -172,8 +171,10 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
         const bytes = take(await lines.assembleAsync(lines.integrity(), doc.preserved.end, { signal: context.signal, cooperate: tick })).blob;
         check();
         const stack = boardPageStack(doc.host), nextFrames = stack?.rects.map(rect => ({ x: rect.x, y: rect.y, w: rect.width, h: rect.height })) ?? [];
-        const carried = imported.media.map(item => ({ entry: item.entry, blob: new Blob([new Uint8Array(item.bytes)], { type: item.entry.mime }) }));
-        return { status: 'prepared', bytes, report: imported.report, media: carried, previousFrames, nextFrames,
+        // The pictures are not sent back: their entries are in the native bytes, and the host keeps the blobs it inspected.
+        // Sent, each entry's `ext` (Maps of the tldraw asset's other props, present on every picture OLD saved) failed the
+        // reply's plain-data check, so every old board holding a picture failed to open ("forbidden platform object").
+        return { status: 'prepared', bytes, report: imported.report, previousFrames, nextFrames,
             ...(imported.savedView ? { savedView: imported.savedView } : {}), conversionPending: true };
     } finally {
         try { scope?.release(); } finally { try { rendered?.dispose(); } finally { draftGeometry.dispose(); imported?.dispose(); } }

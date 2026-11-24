@@ -155,7 +155,7 @@ export function assertPayload(value: unknown, seen = new Set<object>(), allowFil
     if (typeof Blob !== 'undefined' && value instanceof Blob && !(typeof File !== 'undefined' && value instanceof File)) return;
     const prototype = Object.getPrototypeOf(value);
     if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
-        throw new WorkerHostError('Protocol', 'Worker payload contains a forbidden platform object');
+        throw new WorkerHostError('Protocol', `Worker payload contains a forbidden platform object (${String(prototype?.constructor?.name ?? 'unknown')})`);
     }
     for (const key of Object.keys(value)) {
         const descriptor = Object.getOwnPropertyDescriptor(value, key)!;

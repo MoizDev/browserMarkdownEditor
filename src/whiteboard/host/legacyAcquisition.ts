@@ -152,7 +152,7 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
         if (!reply || typeof reply !== 'object' || Array.isArray(reply)) throw new TypeError('Invalid legacy preparation reply');
         const value = reply as LegacyPrepareReply;
         if ((value.status !== 'prepared' && value.status !== 'read-only') || value.conversionPending !== true || !report(value.report)
-            || !frames(value.previousFrames) || !frames(value.nextFrames) || !Array.isArray(value.media) || value.media.length > 100_000
+            || !frames(value.previousFrames) || !frames(value.nextFrames)
             || (value.status === 'prepared' ? !(value.bytes instanceof Blob) || value.bytes.size > 512 * 1024 * 1024 : value.bytes !== null)) {
             throw new TypeError('Invalid legacy preparation reply');
         }

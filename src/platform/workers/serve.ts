@@ -52,7 +52,7 @@ async function assertReply(value: unknown, context: WorkerContext): Promise<void
         if (typeof Blob !== 'undefined' && item instanceof Blob && !(typeof File !== 'undefined' && item instanceof File)) continue;
         const prototype = Object.getPrototypeOf(item);
         if (!Array.isArray(item) && prototype !== Object.prototype && prototype !== null) {
-            throw new WorkerHostError('Protocol', 'Worker payload contains a forbidden platform object');
+            throw new WorkerHostError('Protocol', `Worker payload contains a forbidden platform object (${String(prototype?.constructor?.name ?? 'unknown')})`);
         }
         pending.push((function* () {
             for (const key in item) {

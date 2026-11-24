@@ -92,7 +92,7 @@ export function readLegacyEnvelope(text: string, report: ReportBuilder): LegacyE
         return null;
     }
     let entries: readonly (readonly [string | null, unknown])[];
-    try { entries = tldr ? (root.records as unknown[]).map(value => [null, value] as const) : readStoreFields(text) ?? Object.entries(store!); }
+    try { entries = tldr ? (root.records as unknown[]).map(value => [null, value] as const) : readStoreFields(text, store!) ?? Object.entries(store!); }
     catch (error) { report.refuse(null, error instanceof Error ? error.message : 'Invalid record store'); return null; }
     if (entries.length > 200_000) { report.refuse(null, 'Drawing exceeds the record limit'); return null; }
     const records: LegacyObject[] = [];

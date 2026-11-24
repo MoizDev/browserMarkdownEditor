@@ -78,6 +78,17 @@ class Sha256 {
     }
 }
 
+/** The same digest as `hashMedia`, of bytes already in memory. */
+export async function hashMediaBytes(bytes: Uint8Array, signal?: AbortSignal, yieldWork?: () => Promise<void>): Promise<`sha256:${string}`> {
+    const hash = new Sha256();
+    for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {
+        signal?.throwIfAborted();
+        hash.update(bytes.subarray(offset, offset + 64 * 1024));
+        if (yieldWork) await yieldWork();
+    }
+    signal?.throwIfAborted();
+    return `sha256:${hash.finish()}`;
+}
 export async function hashMedia(blob: Blob, signal?: AbortSignal, yieldWork?: () => Promise<void>): Promise<`sha256:${string}`> {
     const hash = new Sha256();
     for (let start = 0; start < blob.size; start += 4 * 1024 * 1024) {

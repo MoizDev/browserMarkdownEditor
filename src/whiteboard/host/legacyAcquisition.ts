@@ -6,7 +6,7 @@ import type { ImportReport } from '../import/report';
 import type { LegacyPageRect } from '../import/pages';
 import { inspectMedia } from '../media/inspect';
 import type { InspectedMedia } from '../media/ingest';
-import { boardWorker, LEGACY_LOAD_DEADLINE_MS, importDeadline } from '../workers/client';
+import { boardWorker, dedicatedBoardWorker, LEGACY_LOAD_DEADLINE_MS, importDeadline } from '../workers/client';
 import type { BoardJobIdentity } from '../workers/protocol';
 import { validBoardIdentity } from '../workers/protocol';
 import type { NativeLoadReply } from '../workers/nativeLoad';
@@ -92,6 +92,8 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
     // Original text, legacy object graph, two admitted sample representations and native assembly coexist in the parse
     // worker's heap: one legacy load at a time holds that peak (legacyLoadQueue.ts), never the render raster pool.
     const release = await admitLegacyLoad({ key: options.loadKey ?? identity.session, bytes: original.size, signal, urgent: options.urgent });
+    // The scan and the import run in a worker of this load's own, ended with the load (client.ts, dedicatedBoardWorker).
+    const parser = dedicatedBoardWorker('parse'), keep = crypto.randomUUID();
     let owned: NativeBoardAcquisition | undefined;
     // Rejects with the signal's reason the moment it aborts, for the awaits below that cannot be cancelled themselves.
     const untilAborted = <T,>(work: Promise<T>): Promise<T> => new Promise<T>((resolve, reject) => {
@@ -103,7 +105,7 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
     try {
         check();
         const scanned = await scanLegacyBoard({ bytes: original, kind: options.kind, nativeReport: options.nativeReport,
-            identity, isCurrent: options.isCurrent, signal }); check();
+            identity, isCurrent: options.isCurrent, signal, worker: parser, keep }); check();
         if (scanned.status !== 'recognized') return { status: 'read-only', original, legacyReport: scanned.report, conversionPending: true, dispose() {} };
         const verified: InspectedMedia[] = [], verifiedById = new Map<MediaId, InspectedMedia>(), sourceBlobs = new Map<MediaId, Blob>();
         const relativeAssets: NonNullable<import('../workers/legacyPrepare').LegacyPrepareRequest['relativeAssets']>[number][] = [];
@@ -144,9 +146,11 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
             if (!info) { info = await untilAborted(inspectMedia(blob, { identity, memory, signal, isCurrent: options.isCurrent })); check(); inspected.set(blob, info); }
             verified.push(info); verifiedById.set(info.id, info); sourceBlobs.set(info.id, blob); await cooperate();
         }
-        const reply: unknown = await boardWorker('parse').request('legacyPrepare', { bytes: original, kind: options.kind,
-            host: options.host, token: options.token, zMax: options.zMax, media: verified, relativeAssets }, identity,
+        const reply: unknown = await parser.request('legacyPrepare', { bytes: original, kind: options.kind,
+            host: options.host, token: options.token, zMax: options.zMax, media: verified, relativeAssets, keep }, identity,
         { priority: 0, cpu: 'governed', deadlineMs: LEGACY_LOAD_DEADLINE_MS, signal }, options.isCurrent);
+        // Its work is done: what it replied with is held here, and its heap is returned now, not after admission.
+        parser.dispose();
         check();
         if (!reply || typeof reply !== 'object' || Array.isArray(reply)) throw new TypeError('Invalid legacy preparation reply');
         const value = reply as LegacyPrepareReply;
@@ -185,8 +189,8 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
             previousFrames: Object.freeze(value.previousFrames.map(rect => Object.freeze({ ...rect }))),
             nextFrames: Object.freeze(value.nextFrames.map(rect => Object.freeze({ ...rect }))), conversionPending: true });
     } finally {
-        // The native board retires (its builds settle) before the next legacy load is admitted.
-        try { await owned?.dispose(); } finally { release(); }
+        // The native board retires (its builds settle), and the import's worker has ended, before the next legacy load is admitted.
+        try { await owned?.dispose(); } finally { try { parser.dispose(); } finally { release(); } }
     }
 }
 

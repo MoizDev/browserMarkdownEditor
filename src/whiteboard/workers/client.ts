@@ -35,13 +35,26 @@ function defaultDeadline(kind: SharedBoardWorker): number {
 export function boardWorker(kind: SharedBoardWorker): BoardWorkerClient {
     const existing = clients.get(kind);
     if (existing) return existing;
+    const client = createBoardWorkerClient(kind, `whiteboard-${kind}`);
+    clients.set(kind, client);
+    return client;
+}
+let dedicatedSerial = 0;
+/** A board worker of its own for one job, whose `dispose` ends the worker and so returns its whole heap at once. An old board's
+ * import builds the file's text, its object graph and the board in the worker's heap, and the shared worker kept that garbage long
+ * after the load was done, since an isolate that stops allocating is seldom collected (measured, a 10,060-stroke board: 255 MB held
+ * from the end of its import until a collection happened to run 23 s later). */
+export function dedicatedBoardWorker(kind: SharedBoardWorker): BoardWorkerClient & { dispose(): void } {
+    return createBoardWorkerClient(kind, `whiteboard-${kind}-own-${++dedicatedSerial}`);
+}
+function createBoardWorkerClient(kind: SharedBoardWorker, name: string): BoardWorkerClient & { dispose(): void } {
     const host: WorkerClient = createWorkerClient({
-        name: `whiteboard-${kind}`, protocol: 1, spawn: () => spawn(kind),
+        name, protocol: 1, spawn: () => spawn(kind),
         events: ['pngPull', 'fontEpoch', 'memory'], eventLimit: 65_536, absoluteMs: 600_000,
         disposeResult: (_op, result) => closeWorkerResult(result),
     });
     const requests = new WeakMap<Promise<unknown>, { pending?: Promise<unknown>; retired: Promise<void> }>();
-    const client: BoardWorkerClient = {
+    const client: BoardWorkerClient & { dispose(): void } = {
         request<T>(op: string, payload: unknown, identity: BoardJobIdentity, options: RequestOptions,
             isCurrent: (identity: BoardJobIdentity) => boolean): Promise<T> {
             let pending: Promise<unknown> | undefined;
@@ -83,7 +96,7 @@ export function boardWorker(kind: SharedBoardWorker): BoardWorkerClient {
             host.cancelAll((_op, args) => boardEnvelope(args) && args.identity.session === session && args.identity.epoch === epoch);
         },
         recycle: reason => host.recycle(reason, { lazy: true }),
+        dispose: () => host.dispose(),
     };
-    clients.set(kind, client);
     return client;
 }

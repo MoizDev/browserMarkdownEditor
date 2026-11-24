@@ -1,6 +1,6 @@
 import type { BoardKind } from '../model/doc';
 import { SECURITY_LIMITS } from '../security/limits';
-import { boardWorker, LEGACY_LOAD_DEADLINE_MS } from '../workers/client';
+import { boardWorker, LEGACY_LOAD_DEADLINE_MS, type BoardWorkerClient } from '../workers/client';
 import type { NativeLoadReply } from '../workers/nativeLoad';
 import { closeWorkerResult, validBoardIdentity } from '../workers/protocol';
 import type { BoardJobIdentity } from '../workers/protocol';
@@ -61,6 +61,10 @@ export async function scanLegacyBoard(options: {
     readonly identity: BoardJobIdentity;
     isCurrent(identity: BoardJobIdentity): boolean;
     readonly signal?: AbortSignal;
+    /** The load's own parse worker (legacyAcquisition.ts); the shared one otherwise. */
+    readonly worker?: BoardWorkerClient;
+    /** With `worker`: the key under which that worker keeps the text it read for this load's import (workers/legacyScan.ts). */
+    readonly keep?: string;
 }): Promise<LegacyScanReply> {
     const { bytes, identity, nativeReport } = options;
     options.signal?.throwIfAborted();
@@ -70,7 +74,7 @@ export async function scanLegacyBoard(options: {
         || !validBoardIdentity(identity)) throw new TypeError('Legacy scan requires a copied, completely classified OTHER source');
     const pinned = Object.freeze({ ...identity });
     if (!options.isCurrent(pinned)) throw new DOMException('Legacy scan is stale', 'AbortError');
-    const value: unknown = await boardWorker('parse').request('legacyScan', { bytes, kind: options.kind }, pinned,
+    const value: unknown = await (options.worker ?? boardWorker('parse')).request('legacyScan', { bytes, kind: options.kind, ...(options.worker && options.keep ? { keep: options.keep } : {}) }, pinned,
         { priority: 0, cpu: 'governed', deadlineMs: LEGACY_LOAD_DEADLINE_MS, signal: options.signal }, options.isCurrent);
     try {
         options.signal?.throwIfAborted();

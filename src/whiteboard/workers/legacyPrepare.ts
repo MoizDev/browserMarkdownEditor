@@ -14,16 +14,16 @@ import { ReportBuilder, type ImportReport } from '../import/report';
 import { readLegacyEnvelope } from '../import/records/envelope';
 import { readShape } from '../import/records/common';
 import { legacyPdfPages, type LegacyPageRect } from '../import/pages';
-import { createLegacyDraftGeometry } from './legacyGeometry';
+import { atStableFontEpoch, createLegacyDraftGeometry, loadLegacyFaces } from './legacyGeometry';
 import { hasNativeMarkerIncremental } from '../format/jsonRead';
 import { encodeDocumentRecords, encodeHeader, type EncoderContext, type SavedView } from '../format/encode';
 import { LineTable } from '../format/lineTable';
 import type { WriteResult } from '../format/writeTypes';
 import { createBoardEncoderBounds } from '../host/encoderBounds';
 import { createBoardRenderServices } from '../render/services';
-import { LEGACY_SCAN_MAX_BYTES } from './legacyScan';
+import { LEGACY_SCAN_MAX_BYTES, takeScannedText } from './legacyScan';
 import { relativeLegacyAssetSource } from '../import/records/media';
-import { hashMedia } from '../media/sha256';
+import { hashMedia, hashMediaBytes } from '../media/sha256';
 import { SECURITY_LIMITS } from '../security/limits';
 
 // Provenance: the independent legacy mapping, actual canonical font/geometry,
@@ -38,6 +38,8 @@ export interface LegacyPrepareRequest {
     readonly media: readonly InspectedMedia[];
     /** Actual App-resolved copied bytes, bound to original source order and URI. */
     readonly relativeAssets?: readonly { readonly sourceOrdinal: number; readonly src: string; readonly blob: Blob }[];
+    /** The key this load's scan kept its text under, in this same worker (legacyScan.ts). */
+    readonly keep?: string;
 }
 export interface LegacyPrepareReply {
     readonly status: 'prepared' | 'read-only';
@@ -59,8 +61,9 @@ function validToken(token: RenderToken): boolean {
     return !!token && typeof token.documentId === 'string' && !!token.documentId
         && [token.vaultEpoch, token.session, token.bytesGeneration].every(value => Number.isSafeInteger(value) && value >= 0);
 }
-async function hash(blob: Blob, context: WorkerContext): Promise<string> {
-    return hashMedia(blob, context.signal, () => context.slice());
+async function hash(media: Blob | Uint8Array, context: WorkerContext): Promise<string> {
+    return media instanceof Uint8Array ? hashMediaBytes(media, context.signal, () => context.slice())
+        : hashMedia(media, context.signal, () => context.slice());
 }
 export async function legacyPrepare(value: unknown, context: WorkerContext): Promise<LegacyPrepareReply> {
     const request = value as LegacyPrepareRequest;
@@ -71,7 +74,7 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
         || request.relativeAssets !== undefined && (!Array.isArray(request.relativeAssets) || request.relativeAssets.length > 100_000))
         throw new TypeError('Invalid copied legacy preparation request');
     const check = () => context.signal.throwIfAborted(), tick = async () => { check(); await context.slice(); check(); };
-    const text = await request.bytes.text(); check();
+    const text = takeScannedText(request.keep, request.bytes.size) ?? await request.bytes.text(); check();
     if (await hasNativeMarkerIncremental(text, tick)) throw new Error('A native source cannot enter legacy conversion');
     const relativeAssets = new Map<number, { readonly src: string; readonly blob: Blob }>();
     let relativeBytes = 0;
@@ -94,7 +97,7 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
     if (!fontSet) throw new Error('Legacy geometry requires the actual worker FontFaceSet');
     const fonts = workerFonts ??= new BoardFonts(fontSet), draftGeometry = createLegacyDraftGeometry({ token: request.token,
         fonts, samples, media, current: () => !context.signal.aborted, cooperate: tick });
-    let rendered: ReturnType<typeof createBoardRenderServices> | undefined, scope: { release(): void } | undefined;
+    let rendered: ReturnType<typeof createBoardRenderServices> | undefined;
     let imported: Awaited<ReturnType<typeof importLegacy<RehydratedLoad>>> | undefined;
     const previousFrames: LegacyPageRect[] = [];
     try {
@@ -124,8 +127,8 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
                 if (relativeLegacyAssetSource(asset) !== resolved.src) throw new Error('Legacy relative media is not bound to this source record');
                 return resolved.blob;
             },
-            async admitMedia(blob) {
-                const id = await hash(blob, context), inspected = inspections.get(id); check();
+            async admitMedia(media) {
+                const id = await hash(media, context), inspected = inspections.get(id); check();
                 if (!inspected) throw new Error('Legacy asset has no matching actual host inspection');
                 return inspected;
             },
@@ -148,12 +151,17 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
         const doc = imported.board.doc;
         rendered = createBoardRenderServices({ doc, samples, media, fonts, token: request.token, cooperate: tick });
         const ids = Array.from(doc.nodes.keys());
-        scope = await rendered.pinChangeGeometry(ids, context.signal, doc, () => !context.signal.aborted); check();
+        // Each node's geometry is realized as its bounds are read and then left to the renderer's byte-bounded idle cache
+        // (a connector prepares its own targets): only the four numbers of each box outlive it. Pinned for the whole board
+        // first, every stroke's exact coverage was held at once only to be reduced to those boxes, and realized again for
+        // them past that cache, since a pin serves change geometry, not a pick (measured, 10,060 strokes in a 5 MB file:
+        // 373 MB of typed arrays and 180 MB of heap in this worker at that moment; the import now peaks at ~100 MB).
         const renderer = rendered;
         const bounds = await createBoardEncoderBounds({ doc, sources: [], local: () => undefined,
             realize: async (node, signal) => (await renderer.prepareForPick(node, signal, doc)).bounds,
             geometryEpoch: () => fonts.epoch, cooperate: tick });
-        await bounds.prepare(ids, context.signal); check();
+        await loadLegacyFaces(renderer.text, doc.nodes.values(), check, tick);
+        await atStableFontEpoch(fonts, () => bounds.prepare(ids, context.signal)); check();
         const encoder: EncoderContext = { bounds: bounds.bounds, zMax: request.zMax, readEncoded: node => samples.readEncoded(node.samples),
             stroke(node) {
                 const seq = samples.sequence(node.samples), xy = new Float64Array(seq.count * 2);
@@ -180,6 +188,6 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
         return { status: 'prepared', bytes, report: imported.report, previousFrames, nextFrames,
             ...(imported.savedView ? { savedView: imported.savedView } : {}), conversionPending: true };
     } finally {
-        try { scope?.release(); } finally { try { rendered?.dispose(); } finally { draftGeometry.dispose(); imported?.dispose(); } }
+        try { rendered?.dispose(); } finally { draftGeometry.dispose(); imported?.dispose(); }
     }
 }

@@ -5,16 +5,26 @@ import { object } from './envelope';
 import { preserveMetadata } from './sheets';
 
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
-export interface ImportedMedia { readonly entry: MediaEntry; readonly bytes: Uint8Array }
+// The entry only: the picture's bytes are the Blob the admission hashed. Kept here too, every picture of an old board stayed
+// decoded in the import worker's heap until the whole import was done.
+export interface ImportedMedia { readonly entry: MediaEntry }
 // SEC-W4 owns sniffing, bounded headers, isolated decode and streamed hashing.
-export type AdmitLegacyMedia = (blob: Blob, options: { readonly signal?: AbortSignal }) => Promise<{
+// A picture written inline is admitted from its decoded bytes, one kept beside the board from its file's Blob.
+export type AdmitLegacyMedia = (media: Blob | Uint8Array, options: { readonly signal?: AbortSignal }) => Promise<{
     readonly id: MediaId; readonly mime: MediaMime; readonly width: number; readonly height: number;
     readonly duration: number | null; readonly animated: boolean;
 }>;
 
-export interface DecodedLegacyAsset { readonly bytes: Uint8Array; readonly blob: Blob; readonly name: string; readonly mimeHint: string }
+export interface DecodedLegacyAsset { readonly bytes: Uint8Array<ArrayBuffer>; readonly blob: Blob; readonly name: string; readonly mimeHint: string }
 /** Pure extraction only: successful decoding does not authorize dimensions, type or identity. */
 export function decodeInlineAsset(asset: LegacyObject): DecodedLegacyAsset {
+    const decoded = decodeInlineBytes(asset);
+    return { ...decoded, blob: new Blob([decoded.bytes], { type: decoded.mimeHint }) };
+}
+/** `decodeInlineAsset` without its Blob: the import only hashes a picture's bytes (the host holds the scan's Blob), and a Blob made
+ * of each held its bytes in the worker, where no garbage collection sees them, until the browser took them (measured, 55 photos:
+ * the page's memory climbed ~370 MB over the import's last two seconds; without the Blobs it does not). */
+export function decodeInlineBytes(asset: LegacyObject): Omit<DecodedLegacyAsset, 'blob'> {
     const props = object(asset.props);
     if (asset.typeName !== 'asset' || !props || (asset.type !== 'image' && asset.type !== 'video')) {
         throw new Error('Unsupported media asset');
@@ -28,8 +38,10 @@ export function decodeInlineAsset(asset: LegacyObject): DecodedLegacyAsset {
     let binary: string;
     try { binary = atob(encoded); } catch { throw new Error('Invalid inline media encoding'); }
     if (binary.length > MAX_MEDIA_BYTES) throw new Error('Media exceeds the size limit');
-    const bytes = Uint8Array.from(binary, char => char.charCodeAt(0)), mimeHint = match[1].toLowerCase();
-    return { bytes, blob: new Blob([bytes], { type: mimeHint }), name: typeof props.name === 'string' ? props.name : '', mimeHint };
+    // A plain loop: Uint8Array.from with a mapping callback calls it once per byte (2.9 M calls for one photo).
+    const bytes = new Uint8Array(binary.length), mimeHint = match[1].toLowerCase();
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return { bytes, name: typeof props.name === 'string' ? props.name : '', mimeHint };
 }
 
 /** A source descriptor is not permission to fetch it; only App's scoped disk port resolves it. */
@@ -48,11 +60,10 @@ export async function readInlineAsset(asset: LegacyObject, admit: AdmitLegacyMed
     if (resolved && (!relativeLegacyAssetSource(asset) || !(resolved instanceof Blob) || resolved.size > MAX_MEDIA_BYTES))
         throw new Error('Invalid resolved legacy asset');
     signal?.throwIfAborted();
-    const decoded = resolved ? { bytes: new Uint8Array(await resolved.arrayBuffer()), blob: resolved,
-        name: typeof props.name === 'string' ? props.name : '', mimeHint: typeof props.mimeType === 'string' ? props.mimeType : '' } : decodeInlineAsset(asset);
+    const decoded = resolved ? { media: resolved, size: resolved.size, name: typeof props.name === 'string' ? props.name : '' }
+        : (inline => ({ media: inline.bytes, size: inline.bytes.length, name: inline.name }))(decodeInlineBytes(asset));
     signal?.throwIfAborted();
-    const { bytes, blob } = decoded;
-    const result = await admit(blob, { signal });
+    const result = await admit(decoded.media, { signal });
     if (!/^sha256:[0-9a-f]{64}$/.test(result.id)) throw new Error('Media admission returned an invalid identity');
     const metadata = object(asset.meta) ? preserveMetadata(object(asset.meta)!) : null;
     const fields = new Map(metadata?.fields ?? []);
@@ -65,7 +76,7 @@ export async function readInlineAsset(asset: LegacyObject, admit: AdmitLegacyMed
         if (!['id', 'typeName', 'type', 'props', 'meta'].includes(key)) extraRecord[key] = value;
     }
     if (Object.keys(extraRecord).length) fields.set('legacyAssetFields', parseJson(JSON.stringify(extraRecord)).raw());
-    return { bytes, entry: { id: result.id, mime: result.mime, bytes: bytes.length, w: result.width, h: result.height,
+    return { entry: { id: result.id, mime: result.mime, bytes: decoded.size, w: result.width, h: result.height,
         duration: result.duration, animated: result.animated, name: decoded.name,
         file: null, ext: fields.size ? { fields, raw: metadata?.raw ?? new Map() } : null } };
 }

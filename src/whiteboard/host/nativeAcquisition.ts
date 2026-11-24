@@ -54,6 +54,9 @@ export async function acquireNativeBoard(options: NativeAcquisitionOptions): Pro
         const result = await client.load(options.bytes, options.kind, options.pdfPages,
             { signal: options.signal, deadlineMs: options.deadlineMs });
         owned = result.load;
+        // The worker parsed once and has nothing more to do: ended now, its heap goes with it, rather than idling until the
+        // acquisition is disposed, which for an old board is after its whole preparation (two such workers per open).
+        client.dispose();
         options.signal?.throwIfAborted();
         if (!result.load) return { status: 'read-only', original: options.bytes, report: result.reply, dispose };
         return { status: 'editable', load: result.load, samples, report: result.reply, dispose };

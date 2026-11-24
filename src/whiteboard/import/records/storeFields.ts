@@ -52,16 +52,21 @@ function uniqueField(text: string, start: number, name: string): FieldSpan | und
     }
     return found;
 }
-export function readStoreFields(text: string): readonly (readonly [string, unknown])[] | null {
+/** `parsed` is the store object JSON.parse already made of this text: a key written once takes its value from there, and only a
+ * repeated key, whose earlier values that object erased, is parsed again from its own span. Parsed again whole, every record
+ * existed twice beside the text: with this and the pictures' bytes no longer kept (media.ts), a 200 MB board of 55 photos
+ * peaked at 239 MB of import-worker heap instead of 763 MB. */
+export function readStoreFields(text: string, parsed?: Readonly<Record<string, unknown>>): readonly (readonly [string, unknown])[] | null {
     const start = white(text, text.charCodeAt(0) === 0xfeff ? 1 : 0);
     const document = uniqueField(text, start, 'document');
     if (!document || text[document.start] !== '{') return null;
     const store = uniqueField(text, document.start, 'store');
     if (!store || text[store.start] !== '{') return null;
-    const out: (readonly [string, unknown])[] = [];
+    const spans: FieldSpan[] = [], written = new Map<string, number>();
     for (const field of fields(text, store.start)) {
-        if (out.length === 200_000) throw new Error('Drawing exceeds the record limit');
-        out.push([field.key, JSON.parse(text.slice(field.start, field.end))]);
+        if (spans.length === 200_000) throw new Error('Drawing exceeds the record limit');
+        spans.push(field); written.set(field.key, (written.get(field.key) ?? 0) + 1);
     }
-    return out;
+    return spans.map(field => [field.key, parsed && written.get(field.key) === 1 && Object.hasOwn(parsed, field.key)
+        ? parsed[field.key] : JSON.parse(text.slice(field.start, field.end))] as const);
 }

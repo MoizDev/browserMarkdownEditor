@@ -18,11 +18,13 @@ export class ReportBuilder {
     private readonly counts: Record<string, number> = Object.create(null) as Record<string, number>;
     private readonly repairs: ImportIssue[] = [];
     private readonly unrepresentable: ImportIssue[] = [];
+    private readonly named = new Set<string>();
     count(kind: string): void { this.counts[kind] = (this.counts[kind] ?? 0) + 1; }
     include(report: ImportReport): void {
         for (const [kind, count] of Object.entries(report.counts)) this.counts[kind] = (this.counts[kind] ?? 0) + count;
         this.repairs.push(...report.repairs);
         this.unrepresentable.push(...report.unrepresentable);
+        for (const issue of report.unrepresentable) if (issue.item && issue.id !== null) this.named.add(issue.id);
     }
     /** `notice` and `item` together put a repair in the board notice: "pressure lost on 2 strokes". */
     repair(id: string | null, reason: string, notice?: string, item = 'item'): void {
@@ -30,7 +32,10 @@ export class ReportBuilder {
     }
     refuse(id: string | null, reason: string, item?: string): void {
         this.unrepresentable.push(item ? { id, reason, item } : { id, reason });
+        if (item && id !== null) this.named.add(id);
     }
+    /** Whether this item is already named as one the board cannot show, so a second reason for leaving it out is not a second item. */
+    refused(id: string): boolean { return this.named.has(id); }
     finish(): ImportReport {
         return { counts: { ...this.counts }, repairs: [...this.repairs], unrepresentable: [...this.unrepresentable] };
     }

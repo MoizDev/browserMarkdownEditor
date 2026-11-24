@@ -272,7 +272,8 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         for (const node of deep) {
             const shape = shapeById.get(node.id);
             if (shape) preserve(shape.source, shape.id, 'shape');
-            report.refuse(node.id, 'Nested more than 64 levels deep', legacyItemName(shape?.type));
+            // Already named for another reason (a picture without its file, a text that cannot be shown): counted once, as that.
+            if (!report.refused(node.id)) report.refuse(node.id, 'Nested more than 64 levels deep', legacyItemName(shape?.type));
             if (byId.get(node.id) === node) byId.delete(node.id);
         }
         let kept = 0;

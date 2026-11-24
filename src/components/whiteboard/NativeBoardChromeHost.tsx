@@ -4,8 +4,8 @@ import type { BoardQuestion } from './useNativeBoardDialogs';
 import { NativeBoardChrome, type NativeBoardChromeProps } from './NativeBoardChrome';
 import type { NativeViewLease } from './nativeViewLease';
 import { boardPageStack } from '../../whiteboard/model/pages';
-import { NotebookControls } from './NotebookControls';
-import { PagedNavigation } from './PagedNavigation';
+import { NotebookControls, PagedBar } from './NotebookControls';
+import { PageNumberField, PageViewToggles } from './PagedNavigation';
 import NativeNotebookThumbnails from './NativeNotebookThumbnails';
 import { useNativeSheetControls } from './useNativeSheetControls';
 import './boardHost.css';
@@ -47,12 +47,11 @@ export function NativeBoardChromeHost({ lease, confirm, canWrite, capturePage, n
             addPage={sheets.controls.addPage} deleteLastPage={() => { void sheets.controls.deleteLastPage(); }} jump={jump}
             toggleInversion={() => notebook.setInverted(!notebook.inverted)}
             toggleThumbnails={() => notebook.setThumbnailsOpen(!notebook.thumbnailsOpen)} />
-            : <div className="board-paper-controls board-chrome-tool-row" role="toolbar" dir={lang.table.dir} aria-label={t('paper.name')}>
-                <PagedNavigation page={navigation.page} count={stack.rects.length} inverted={notebook.inverted}
-                    thumbnailsOpen={notebook.thumbnailsOpen} t={t} jump={jump}
+            : <PagedBar dir={lang.table.dir} t={t} settings={null}
+                toggles={<PageViewToggles inverted={notebook.inverted} thumbnailsOpen={notebook.thumbnailsOpen} t={t}
                     toggleInversion={() => notebook.setInverted(!notebook.inverted)}
-                    toggleThumbnails={() => notebook.setThumbnailsOpen(!notebook.thumbnailsOpen)} />
-            </div>}
+                    toggleThumbnails={() => notebook.setThumbnailsOpen(!notebook.thumbnailsOpen)} />}
+                page={<PageNumberField page={navigation.page} count={stack.rects.length} t={t} jump={jump} />} />}
         <NativeNotebookThumbnails pages={stack.rects} revision={getRevision()} page={navigation.page} isVisible={props.isVisible}
             current={props.currentOwner} currentRevision={getRevision} capturePage={capturePage} jump={jump} onError={props.reportError}
             open={notebook.thumbnailsOpen} onOpenChange={notebook.setThumbnailsOpen}

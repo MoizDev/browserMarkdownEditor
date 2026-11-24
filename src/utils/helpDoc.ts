@@ -448,6 +448,8 @@ The bar across the top of a notebook is its paper:
 - **Invert page colours** turns the paper black and the writing light, for working at night. It only changes how the notebook looks on screen; a PDF exported from it is still printed on white.
 - The **page box** shows the page you are on; type a number and press \`Enter\` to jump.
 
+The bar always stays one row. In a narrow pane (several panes side by side, say) the paper settings move behind the **⋯** button at the bar's end, then the thumbnails and invert buttons too; the page box always stays on the bar. Click **⋯** to open them; \`Escape\` or a click elsewhere closes it. A PDF you are writing on does the same with its thumbnails and invert buttons.
+
 #### Exporting a notebook to PDF
 Choose **⋯ → Export to PDF** in the notebook's pane header to write a PDF beside the notebook — \`Assignment 3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and the pages are ordinary PDF pages that anything can open. Every sheet is included, in order. If some content cannot be drawn faithfully, the export stops rather than silently leaving that artwork out.
 

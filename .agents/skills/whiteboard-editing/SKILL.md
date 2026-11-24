@@ -215,6 +215,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   `stylePanelStore.ts`; its row model is `src/whiteboard/chrome/stylePanel.ts`), `CommandPalette.tsx` (+
   `commandPaletteModel.ts`, `commandPaletteGroups.ts`; `commandPalette.open` opens it; it lays over the chrome's middle row (`.board-chrome-middle`), so the docked style panel never moves under it), `ZoomControls.tsx`,
   `BoardHeader.tsx`, menus (`mainMenu.ts`, `preferencesMenu.ts`, `themeMenu.ts`, `languageMenu.ts`), `boardCommands.ts`.
+- The paged bar under the header (`NotebookControls.tsx` `PagedBar`, for notebooks and PDF ink) never wraps: what a narrow pane
+  cannot show moves into its ⋯ popover, the paper settings first, then the view toggles; the page box stays. Each level's width
+  is measured when shown, so it steps back only when the wider level fits (wrapped, a 339 px pane's bar was four rows over the page).
 - The minimap is `components/whiteboard/NativeMinimap.tsx`; its open state is `boardPreferences.minimapOpen`.
 - Context menus are the app's own (`nativeBoardContextMenu.ts`; `app-context-menu`).
   Dialogs and notices are the app's own UI; no native confirm/alert/prompt/tooltip. A board's notices (the render

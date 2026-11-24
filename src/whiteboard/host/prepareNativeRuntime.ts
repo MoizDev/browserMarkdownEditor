@@ -230,7 +230,11 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                     baseline: prime, doc, encoder, records: initialRecords(), representation: options.representation,
                     mediaPath(id) {
                         const current = host.identity(identity.documentId), entry = doc.media.get(id);
-                        const filename = store.currentFile(id) ?? entry?.file;
+                        // A picture read from a tldraw-format file has no file of its own yet (`file: null`, the content-addressed
+                        // name its first save writes). Without that default the first stroke on any old board holding a picture
+                        // failed its recovery capture, and the pane fell to "Could not open canvas: Recovery media path unavailable".
+                        const filename = store.currentFile(id) ?? entry?.file
+                            ?? (entry && (MEDIA_MIMES as readonly string[]).includes(entry.mime) ? `${id.slice(7)}.${mediaExtension(entry.mime as MediaMime)}` : null);
                         if (!current || !host.isCurrent(identity) || !filename) return null;
                         return joinVaultPath(joinVaultPath(parentVaultPath(current.path), '.Assets'), filename);
                     },

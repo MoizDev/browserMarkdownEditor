@@ -228,6 +228,8 @@ const initialIntervalMs = 16.67;
 const frameGapMs = 250;
 /** Share of the frame target preparation always gets, however long the last presentation took. */
 const PREPARE_FLOOR_FRACTION = 0.25;
+/** A quiet frame's background window, as a fraction of the interval (see the background pass). */
+const QUIET_BACKGROUND_FRACTION = 0.5;
 /** Submitted frames of one pane that may still be unfinished on the GPU. A frame past the limit waits (its prepare still ran, its damage
  * stays pending) until the oldest one completes, so the picture on screen is never more than this many frames behind the input.
  * Measured: the GPU ran up to five or six frames behind the CPU on a notebook zoom, and each queued frame is input latency. */
@@ -985,8 +987,14 @@ export class FrameScheduler {
             }
             // Background runs only in what foreground and the presentation reserve left of this frame's interval, and never longer
             // than the upload window (min(1 ms, 0.12 interval)): the window keeps background work from causing jank.
+            // A quiet frame (no input in it, no gesture or camera motion on any pane) has no jank to cause: its background work takes
+            // what the frame has left, up to half the interval. Held to the upload window at rest too, a dense board's tiles, which its
+            // live picture covers so they are background work, composed in about 1 ms a frame with the main thread 88% idle, and
+            // "Updating…" stayed 20-50 s after the first picture (measured, Strokes-3, 5,640 strokes, WebGL2).
+            const quiet = work.every(item => !item.hadInput && item.entry.motion === null && !item.entry.pane.isInteracting());
+            const backgroundCap = quiet ? this.intervalMs * QUIET_BACKGROUND_FRACTION : meter.sliceMs;
             const backgroundStart = performance.now();
-            const backgroundEnd = performance.now() + Math.min(meter.sliceMs, Math.max(0, started + this.intervalMs - presentReserve - performance.now()));
+            const backgroundEnd = performance.now() + Math.min(backgroundCap, Math.max(0, started + this.intervalMs - presentReserve - performance.now()));
             meter.deadline = backgroundEnd;
             const optionalOrder = this.focusFirst(this.rotate(work, this.optionalCursor++));
             const optionalMs = Math.max(0, backgroundEnd - performance.now()) / Math.max(1, work.length);

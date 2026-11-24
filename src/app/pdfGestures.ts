@@ -24,7 +24,7 @@ import { bindRecoveryAdapter } from '../utils/recoveryAdapters';
 import { hasHostedNativeOwner, RECOVERY_SESSION_BINDING } from './nativeOwners';
 import type { UsePdfActionsDeps } from './usePdfActions';
 import { loadChunk } from '../platform/chunkLoad';
-import { isFileReadTimeout } from '../utils/fileReadDeadline';
+import { isFileReadTimeout, withinFileDeadline } from '../utils/fileReadDeadline';
 
 /**
  * The PDF gestures that only ever run on a PDF the reader is looking at:
@@ -352,8 +352,19 @@ async function writeTurns(deps: RotateDeps, path: string, id: string, turns: Pen
     check();
     const [{ rotatePdfIncrementally }] = await Promise.all([loadChunk(() => import('../pdf/writing/rotationClient'))]);
     check();
-    const result = await rotatePdfIncrementally({ source: snapshot.blob.slice(0, snapshot.blob.size, 'application/pdf'),
-      turns: { all: turns.all % 4, pages: [...turns.pages].map(([page, amount]) => [page, amount % 4] as [number, number]) }, signal: controller.signal });
+    const taken = snapshot;
+    const result = await rotatePdfIncrementally({ source: taken.blob.slice(0, taken.blob.size, 'application/pdf'),
+      turns: { all: turns.all % 4, pages: [...turns.pages].map(([page, amount]) => [page, amount % 4] as [number, number]) }, signal: controller.signal })
+      .catch(async (err: unknown) => {
+        // A snapshot stops reading once its file changes on disk, failing with Chromium's NotReadableError about
+        // "permission problems" here or in the writer (measured: an outside write during a turn showed exactly that).
+        // A fresh stat tells the person what really happened; nothing was written either way.
+        const now = await withinFileDeadline((handle as FileSystemFileHandle).getFile(), path).catch(() => undefined);
+        if (now && !sameStat({ lastModified: now.lastModified, size: now.size }, taken.stat)) {
+          throw new DOMException('The PDF rotation source changed', 'AbortError');
+        }
+        throw err;
+      });
     check();
     if (result.kind === 'refused') {
       // Classic annotations this session has already converted (its native owner is hosted) are only unsaved, not refused.

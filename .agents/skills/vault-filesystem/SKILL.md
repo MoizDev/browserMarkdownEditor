@@ -178,7 +178,9 @@ autosave). So:
 - `readFileVersioned` hashes raw bytes then decodes (one retry on `NotReadableError`); `statFile` is null
   only for NotFound/TypeMismatch (a lock throws — it is not a deletion). **`writeFileVersioned(handle, data,
   expected)`**: missing → `deleted` (never recreates); stat equal → write; stat moved → hash equal writes,
-  different → `changed` with the disk bytes. A check-to-write window remains; no API closes it.
+  different → `changed` with the disk bytes; after the write, a file of another size than the one written is
+  hashed and reported `changed` too (another write landed between ours and its stat). A check-to-write window remains
+  (a write under ours, or one of the same size just after it); no API closes it.
 - `writeConflictCopy(path, data, vaultRoot?)` → `stem (conflict).ext`, `(conflict 2)`…, name proven free
   (files and folders), deleted parents recreated (`ensureDirChain`); `vaultRoot` because a switch's closing
   flushes run after `rootHandleRef` names the next vault (measured: copy landed in the wrong vault).

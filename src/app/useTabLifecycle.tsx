@@ -391,14 +391,11 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     const tab = tabsRef.current.find(t => t.file.path === path);
     if (!tab || !canChangeTabMode(tab)) return;
     const mode = requestedMode ?? (tab.mode === 'edit' ? 'read' : 'edit');
-    // A PDF whose DiskBar is up answers that first. Switched under it, Annotate refused with "The PDF source is not
-    // eligible for editing", and leaving Annotate with unsaved ink left the pane on "Applying annotations…" behind
-    // "The board is read-only" (review runs): neither names the bar, which is the only thing that can be done.
-    const held = tab.representation.loadedKind === 'pdf' && mode !== tab.mode ? diskStateRef.current.get(tab.id) : undefined;
-    if (held) {
-      notifyRef.current(`This PDF ${held === 'deleted' ? 'was deleted' : 'changed'} on disk. Choose in the bar above it first, then switch.`);
-      return;
-    }
+    // A PDF whose DiskBar is up stays as it is until the bar is answered, and nothing else is said: the bar is the
+    // message. Switched under it, Annotate refused with "The PDF source is not eligible for editing", and leaving Annotate
+    // with unsaved ink left the pane on "Applying annotations…" behind "The board is read-only"; a refusal in a dialog
+    // ("Could not continue") then covered the bar's own buttons (measured: Keep mine not reachable until it was dismissed).
+    if (tab.representation.loadedKind === 'pdf' && mode !== tab.mode && diskStateRef.current.has(tab.id)) return;
     // A page turn being written: Annotate waits for it and opens on the turned pages (utils/pdfTurnHold.ts), so the
     // tab's mode stays what is on screen meanwhile; the same toggle again takes the request back.
     if (tab.representation.loadedKind === 'pdf' && pdfTurnHeld(tab.id)) {
@@ -426,9 +423,15 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
       void Promise.resolve(view?.flushPending?.()).then(async () => {
         const needsSave = documentBuffers.isDirty(tab.id) || !nativePdf && tabsRef.current.find(t => t.id === tab.id)?.dirty;
         const outcome = await flushTab(path, !!needsSave);
-        if (outcome === 'failed' || outcome === 'skipped' && (documentBuffers.isDirty(tab.id) || !nativePdf && tabsRef.current.find(t => t.id === tab.id)?.dirty)) return;
+        // Leaving Annotate goes ahead only once its ink is on disk (or there was none to write). A flush that met the other
+        // program's write ('changed'), a deleted file, or a write that failed abandons the switch: the board stays up with
+        // the ink, and the bar or the save notice says what happened. Committed regardless, the pane went to Original with
+        // the ink unwritten and sat blank on "Applying annotations…" under the bar (measured: 4 of 4 timings).
+        const unsaved = documentBuffers.isDirty(tab.id) || !nativePdf && !!tabsRef.current.find(t => t.id === tab.id)?.dirty;
+        if (outcome === 'failed' || outcome === 'changed' || outcome === 'deleted' || outcome === 'skipped' && unsaved
+          || diskStateRef.current.has(tab.id)) return;
         setTabs(prev => prev.map(t => t.id === tab.id && t.file.path === path && t.representation.generation === tab.representation.generation && t.mode === tab.mode ? {...t,mode} : t));
-      }).catch(error => notifyRef.current(`Could not finish saving PDF annotations: ${String(error)}`)).finally(() => pendingPdfMode.current.delete(tab.id));
+      }).catch(error => notifyRef.current(`The PDF annotations could not be saved, so Annotate stays open: ${describeReadError(error)}`)).finally(() => pendingPdfMode.current.delete(tab.id));
       return;
     }
     const surface = getReadingSurface({vaultId:currentVaultIdRef.current ?? '',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation});

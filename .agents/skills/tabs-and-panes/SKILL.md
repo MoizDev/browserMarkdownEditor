@@ -122,6 +122,10 @@ are copy-only (`recoveryCopy`), never applied to the live file.
   moved again re-raises it, and a write that did not happen puts the bar back). Deleted: **Save again** (`recreateFile`) /
   **Close** (asks when unsaved). A conflict can be raised with nothing unsaved (a save or a PDF turn met the other
   write): the bar words it from `unsaved` (the buffer's dirty bit), never assumes edits.
+- **A PDF's mode never moves under the bar.** `changeTabMode` refuses a switch while the bar is up (silently: the bar
+  is the message, and a dialog there covered its buttons), and leaving Annotate commits only if its flush wrote, or had
+  nothing to write, with no bar raised meanwhile; `changed`/`deleted`/`failed` abandon it, the board keeps the ink.
+  Original's "Applying annotations…" waits only for a write that can still land (no bar, no failed save).
 - **A PDF's "mine"** is its Annotate session's build (pristine + ink) when one is live; otherwise the bytes Original
   shows — the reader's memory-backed copy (`pdf/session/sourceFactory.ts` `pdfReaderBytes`), used only while its hash is
   the baseline's. Neither → `OpenTab.diskMineLost`, and the bar offers only Reload. (`pdfRenderCache` is the pre-native

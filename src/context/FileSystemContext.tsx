@@ -2811,7 +2811,20 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             if (isGone(err)) return { status: 'deleted' };
             throw err;
         }
-        return { status: 'written', version: await versionAfterWrite(fileHandle, bytes) };
+        const version = await versionAfterWrite(fileHandle, bytes);
+        // The version is our bytes' hash with the disk's stat after the write. Another program's write landing in between
+        // gave the baseline its stat and our hash, so every later check took its file for our own echo: the ink it replaced
+        // was gone with no bar, and the board's rebind refused the file in a "Could not continue" dialog (measured: the
+        // outside write timed just after ours). A size that is not what we wrote proves it; the file is then compared as any
+        // changed file is. (The same size cannot be told apart without reading the file back — the window no API closes.)
+        if (version.size !== (bytes instanceof Blob ? bytes.size : bytes.byteLength)) {
+            try {
+                const { file, buf } = await readSnapshot(fileHandle);
+                const disk = await versionOfSnapshot(file, buf);
+                if (disk.hash !== version.hash) return { status: 'changed', disk: { bytes: new Uint8Array(buf), version: disk } };
+            } catch (err) { if (isGone(err)) return { status: 'deleted' }; throw err; }
+        }
+        return { status: 'written', version };
     }, []);
 
     const inspectExportTarget = useCallback(async (dir: FileSystemDirectoryHandle, name: string): Promise<DiskVersion | null> => {

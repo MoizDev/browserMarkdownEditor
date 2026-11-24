@@ -18,6 +18,7 @@ import { peekPdfFindMemory, retainPdfFindMemory } from '../utils/pdfFindHighligh
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
+import { saveFailed, subscribeSaveNotices } from '../utils/saveNotices';
 import { pdfTurnHeld, pdfTurnQueued, subscribePdfTurnHolds } from '../utils/pdfTurnHold';
 import type { ActiveFile, DiskAction, EditorMode, PdfRebuildNotice } from '../types';
 import type { LocationCause, PdfReadingBinding, ReaderCapabilities, ReaderIdentity, ReaderToken } from '../types/reading';
@@ -300,6 +301,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     [mode, file.handle, file.path, roleRetry, readerIdentity, appSession?.serial, appSession?.bytesGeneration]);
     const [legacyConversionEntry, setLegacyConversionEntry] = useState<typeof annotateEntry | null>(null);
     const [flushing, setFlushing] = useState(false);
+    const lastSaveFailed = useSyncExternalStore(subscribeSaveNotices, () => saveFailed(documentId), () => false);
     const currentEntry = useRef(annotateEntry);
     useLayoutEffect(() => { currentEntry.current = annotateEntry; }, [annotateEntry]);
     const [loadedSource, setSource] = useState<PdfSource | null>(null);
@@ -790,10 +792,13 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                         onViewOriginal={() => { if (mode === 'edit') onToggleMode(file.path); }} />
             ) : <div className="pdf-pane-message" role="status">Preparing PDF annotations…</div>;
 
-        } else if (isDirty || flushing) {
+        } else if ((isDirty || flushing) && !disk && !lastSaveFailed) {
             // Between leaving the canvas and the write landing (a few hundred ms)
             // the file on disk still predates the last strokes. Say so rather than
             // render a PDF that's missing the annotations the user just drew.
+            // Only while that write can still land: under a DiskBar nothing is written until the bar is answered, and a
+            // failed save is told by its own notice. Either way the pane shows the PDF, never this line for good: a failed
+            // save leaves the tab dirty, and the 15 s net below clears `flushing` only, so Original stayed behind it.
             body = <div className="pdf-pane-message">Applying annotations…</div>;
         } else if (!pdfRoute) {
             body = <div className="pdf-pane-message is-waiting" role="status">Loading PDF…</div>;

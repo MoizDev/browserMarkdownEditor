@@ -151,6 +151,10 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
         historyLimitReached: options.onHistoryLimit,
     });
     const stopTools = tools.subscribe(() => {
+        // A read-only board keeps its tool as UI state only. Queued anyway, the write was refused at the queue's door
+        // ("The board is read-only") and reported as a board failure: a PDF whose DiskBar came up as the ink was being
+        // left showed it as a "Could not continue" dialog over the bar's own buttons (measured: 4 of 4 timings).
+        if (disposed || session.isReadOnly) return;
         const captured = tools.getSnapshot();
         // Single-use completion happens at pointer-up, before asynchronous text
         // and shape preflight commits. Persisting UI earlier would invalidate it.

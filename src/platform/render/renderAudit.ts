@@ -99,6 +99,9 @@ export interface PresentInfo {
     readonly frame: number;
     readonly rawTick: number;
     readonly backend: 'webgl2' | 'canvas2d';
+    /** The camera and viewport the frame was drawn at (the frame's view): a kit that scores each present against the scene's own
+     * geometry needs the exact camera of that present, which no other record carries. */
+    readonly view: PresentView;
     /** Every layer reported complete, and the frame is exact. */
     readonly complete: boolean;
     readonly canvas: HTMLCanvasElement | null;
@@ -118,6 +121,13 @@ export interface PresentInfo {
      * counted since the scheduler started this frame. Phase counters cannot attribute a redundant present or a stand-in to its frame:
      * measured, 41 of 123 zoom presents redundant with every layer's reason summed over the phase (gpu-h2, gpu-h13). */
     readonly why: readonly string[];
+}
+
+/** A present's camera (world units at the pane origin, `z` its scale) and viewport (CSS pixels, `dpr`). */
+export interface PresentView { readonly x: number; readonly y: number; readonly z: number; readonly width: number; readonly height: number; readonly dpr: number }
+/** The present view of a frame's view, copied: the record must not hold the frame's objects. */
+export function presentView(view: { readonly camera: { readonly x: number; readonly y: number; readonly z: number }; readonly viewport: { readonly width: number; readonly height: number; readonly dpr: number } }): PresentView {
+    return { x: view.camera.x, y: view.camera.y, z: view.camera.z, width: view.viewport.width, height: view.viewport.height, dpr: view.viewport.dpr };
 }
 
 /** What a compositor passes to auditPresent. It states the layers' own verdict; auditPresent derives `exact` and `complete`
@@ -196,7 +206,7 @@ export function auditPresent(input: PresentInput): void {
     const exact = input.standIns === 0 && input.standInsRaster === 0 && input.holes === 0;
     // The gate's rule (gpu): no hole and no geometry stand-in; a raster stand-in is complete only while a zoom is live.
     const complete = input.layersComplete && input.holes === 0 && input.standIns === 0 && (input.standInsRaster === 0 || input.zooming);
-    const record: PresentRecord = { pane: input.pane, frame: input.frame, rawTick: input.rawTick, backend: input.backend,
+    const record: PresentRecord = { pane: input.pane, frame: input.frame, rawTick: input.rawTick, view: input.view, backend: input.backend,
         complete, standIns: input.standIns, standInsRaster: input.standInsRaster, holes: input.holes,
         zooming: input.zooming, exact, refusal: input.refusal, why: [...tape] };
     presentRing[presentTotal % PRESENT_CAPACITY] = record;

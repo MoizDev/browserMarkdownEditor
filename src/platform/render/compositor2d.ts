@@ -1,4 +1,4 @@
-import { auditCount, auditDrawnStart, auditDrawnTake, auditPresent, renderAuditEnabled } from './renderAudit';
+import { auditCount, auditDrawnStart, auditDrawnTake, auditPresent, presentView, renderAuditEnabled } from './renderAudit';
 import type { Rect, ViewState } from '../types';
 import { deviceContext, imageExtent, paintCanvasIsolation, registerCanvasIsolation } from './canvas2dContext';
 import { createColourGroup2d } from './colourGroup2d';
@@ -480,7 +480,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const availability = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
         const zooming = renderAuditEnabled() && this.zoomStep(frame.view.camera.z);
         if (availability.some(item => !item.complete)) {
-            if (renderAuditEnabled()) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
+            if (renderAuditEnabled()) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, view: presentView(frame.view), backend: 'canvas2d',
                 layersComplete: false, canvas: null, standIns: 0, standInsRaster: 0, holes: 0, zooming, refusal: 'availability' });
             return null;
         }
@@ -530,7 +530,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                         complete: true, layersComplete: availability.every(item => item.complete),
                         sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
                         staleVersion: availability.some(item => item.staleVersion), qualityScale: snapshot.metrics!.qualityScale });
-                    if (tally) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
+                    if (tally) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, view: presentView(frame.view), backend: 'canvas2d',
                         layersComplete: availability.every(item => item.complete), canvas: this.surface, standIns: tally.standIns,
                         standInsRaster: tally.standInsRaster, holes: tally.holes, zooming, refusal: null });
                     return { drawn: frame.layers.map(item => ({ layer: item.layer, sceneRevision: item.sceneRevision })),

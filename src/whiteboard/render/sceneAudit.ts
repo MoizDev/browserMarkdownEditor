@@ -42,6 +42,8 @@ function describe(item: PaintItem): unknown {
         });
         return { ...base, box: { w: box.w, h: box.h }, ink: { x: ink.x, y: ink.y, width: ink.width, height: ink.height }, lines };
     }
+    // A picture's rect in its own units: a kit scores whether the picture is shown, and whatever it covers is hidden under it.
+    if (item.kind === 'image') return { ...base, rect: { x: item.rect.x, y: item.rect.y, width: item.rect.width, height: item.rect.height }, opacity: item.opacity };
     return base;
 }
 

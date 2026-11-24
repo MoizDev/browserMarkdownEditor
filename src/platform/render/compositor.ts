@@ -1,4 +1,4 @@
-import { auditCount, auditDrawnStart, auditDrawnTake, auditGpuError, auditPresent, auditStage, renderAuditEnabled } from './renderAudit';
+import { auditCount, auditDrawnStart, auditDrawnTake, auditGpuError, auditPresent, presentView, auditStage, renderAuditEnabled } from './renderAudit';
 import type { Rect, ViewState } from '../types';
 import type {
     CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions,
@@ -442,7 +442,7 @@ export class GpuCompositor implements PaneCompositor {
                 const refused = this.#encodeRefused(snapshot, frame);
                 if (timed) {
                     const tally = auditDrawnTake();
-                    auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp, backend: this.backend,
+                    auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp, view: presentView(frame.view), backend: this.backend,
                         layersComplete: false, canvas: null, standIns: tally.standIns, standInsRaster: tally.standInsRaster, holes: tally.holes,
                         zooming, refusal: 'coverage' });
                 }
@@ -562,7 +562,7 @@ export class GpuCompositor implements PaneCompositor {
                             complete: true, sharp: snapshot.metrics!.qualityScale === 1 && allSharp,
                             staleVersion: anyStale, layersComplete,
                             qualityScale: snapshot.metrics!.qualityScale });
-                        if (tally) auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp,
+                        if (tally) auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp, view: presentView(frame.view),
                             backend: this.backend, layersComplete, canvas: this.surface,
                             standIns: tally.standIns, standInsRaster: tally.standInsRaster, holes: tally.holes, zooming, refusal: null });
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))

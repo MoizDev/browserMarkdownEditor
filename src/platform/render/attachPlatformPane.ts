@@ -1,4 +1,4 @@
-import { auditCount, auditFrame, auditPresent, renderAuditEnabled } from './renderAudit';
+import { auditCount, auditFrame, auditPresent, presentView, renderAuditEnabled } from './renderAudit';
 import type { ViewState } from '../types';
 const benchmarkMemory = __BME_BENCH__ ? await import('./benchmarkMemory') : null;
 import type { DamageRecord } from './damage';
@@ -683,7 +683,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     const scale = frame.view.camera.z;
                                     const zooming = lastMirroredScale !== null && scale !== lastMirroredScale;
                                     lastMirroredScale = scale;
-                                    auditPresent({ pane: options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
+                                    auditPresent({ pane: options.paneId, frame: frame.frameId, rawTick: frame.timestamp, view: presentView(frame.view), backend: 'canvas2d',
                                         layersComplete: complete, canvas: null, standIns: 0, standInsRaster: 0, holes: 0, zooming,
                                         refusal: null });
                                 }

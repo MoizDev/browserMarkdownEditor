@@ -73,7 +73,7 @@ async function admitLegacyEnvelope(content: Blob, options: ExternalClipboardAdmi
     const nativeReport = { format: probe.report.format, complete: probe.report.complete, bytesRead: probe.report.bytesRead };
     probe.dispose();
     const legacy = await acquireLegacyBoard({ bytes: content, kind: 'whiteboard', host: { kind: 'whiteboard' }, token: options.token,
-        zMax: options.zMax, memory: options.memory, nativeReport, identity, isCurrent: options.isCurrent, signal: context.signal, cooperate,
+        zMax: options.zMax, memory: options.memory, nativeReport, identity, isCurrent: options.isCurrent, signal: context.signal, cooperate, urgent: true,
         ...(options.readAsset ? { readAsset: options.readAsset } : {}) });
     if (legacy.status !== 'editable') {
         legacy.dispose();

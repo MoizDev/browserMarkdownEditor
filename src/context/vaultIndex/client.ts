@@ -64,6 +64,13 @@ export class VaultIndexClient {
                 if (this.mediaAssets) await bootstrap.request('mediaAssets', { session, entries: this.mediaAssets }, control);
                 for (const [path, value] of this.overlays) await bootstrap.request('overlay', { session, path, rev: value.rev, text: value.text }, control);
                 queueMicrotask(() => { if (!this.disposed) { void this.sweep('open').catch(() => {}); void this.refreshMedia(this.mediaEpoch); } });
+                // A worker that failed and was revived by a later request (platform/workers/client.ts) is working again:
+                // unsaid, the sidebar kept "Search index unavailable. Retry" over a search that answered, and a second
+                // failure was never reported at all.
+                if (this.failedReported) {
+                    this.failedReported = false;
+                    this.onProblem({ session, kind: 'available' });
+                }
             },
         });
         this.worker.on('graph', value => {

@@ -62,7 +62,13 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         worker.request<T>(op, payload, options.identity, { priority: 1, deadlineMs, signal }, options.isCurrent);
     signal.throwIfAborted();
     if (!checkMediaBytes(blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
-    const prefix = new Uint8Array(await blob.slice(0, 64).arrayBuffer());
+    // Raced against the signal (which carries the 10 s limit above): a Blob backed by a file that never arrives does
+    // not settle this read, and nothing else here would ever look at the signal again.
+    const prefix = new Uint8Array(await new Promise<ArrayBuffer>((resolve, reject) => {
+        const abort = () => reject(signal.reason ?? new DOMException('Media inspection timed out', 'TimeoutError'));
+        signal.addEventListener('abort', abort, { once: true });
+        blob.slice(0, 64).arrayBuffer().then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    }));
     signal.throwIfAborted();
     if (sniffMedia(prefix) === 'image/svg+xml') {
         if (!checkMediaBytes(blob.size, 'svg').ok) throw new RangeError('SVG files must be at most 5 MiB');

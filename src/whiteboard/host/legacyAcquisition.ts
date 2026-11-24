@@ -18,6 +18,7 @@ import { FORMAT_LIMITS } from '../format/schema';
 import { parseJsonIncremental } from '../format/jsonRead';
 import { admitLegacyLoad } from './legacyLoadQueue';
 import { yieldToHost } from '../../platform/yieldToHost';
+import { withinFileDeadline } from '../../utils/fileReadDeadline';
 
 // Provenance: copied original -> governed legacy mapping -> real native C5.
 // Native R0 is a conversion-pending source, never an invented user edit or disk baseline.
@@ -32,6 +33,8 @@ export interface LegacyAcquisitionOptions {
     readonly identity: BoardJobIdentity;
     /** The document this loads, so a pane showing it is admitted first and can say it is opening (legacyLoadQueue.ts). */
     readonly loadKey?: string;
+    /** A load the person is waiting on that no pane marks as shown (legacyLoadQueue.ts). */
+    readonly urgent?: boolean;
     /** App alone resolves local relative paths against this source document's folder. */
     readAsset?(src: string, signal: AbortSignal): Promise<Blob | null>;
     isCurrent(identity: BoardJobIdentity): boolean;
@@ -88,8 +91,15 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
     check();
     // Original text, legacy object graph, two admitted sample representations and native assembly coexist in the parse
     // worker's heap: one legacy load at a time holds that peak (legacyLoadQueue.ts), never the render raster pool.
-    const release = await admitLegacyLoad({ key: options.loadKey ?? identity.session, bytes: original.size, signal });
+    const release = await admitLegacyLoad({ key: options.loadKey ?? identity.session, bytes: original.size, signal, urgent: options.urgent });
     let owned: NativeBoardAcquisition | undefined;
+    // Rejects with the signal's reason the moment it aborts, for the awaits below that cannot be cancelled themselves.
+    const untilAborted = <T,>(work: Promise<T>): Promise<T> => new Promise<T>((resolve, reject) => {
+        const abort = () => reject(signal.reason ?? new DOMException('Legacy load cancelled', 'AbortError'));
+        if (signal.aborted) { abort(); return; }
+        signal.addEventListener('abort', abort, { once: true });
+        work.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    });
     try {
         check();
         const scanned = await scanLegacyBoard({ bytes: original, kind: options.kind, nativeReport: options.nativeReport,
@@ -106,7 +116,9 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
                 const cached = resolved.get(asset.src);
                 if (cached) blob = cached;
                 else {
-                    const read = await options.readAsset?.(asset.src, signal); check();
+                    // A picture kept beside the board is a vault file like any other: on a cloud folder that has not
+                    // downloaded it, its read never settles and ignores the signal. Bounded here, inside the slot.
+                    const read = await untilAborted(withinFileDeadline(Promise.resolve(options.readAsset?.(asset.src, signal)), asset.src)); check();
                     if (!(read instanceof Blob)) throw new Error(`Relative legacy media is unavailable: ${asset.src}`);
                     blob = new Blob([read], { type: read.type }); resolved.set(asset.src, blob);
                 }
@@ -115,7 +127,7 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
                 relativeAssets.push({ sourceOrdinal: asset.sourceOrdinal, src: asset.src, blob });
             } else blob = new Blob([asset.blob], { type: asset.blob.type });
             let info = inspected.get(blob);
-            if (!info) { info = await inspectMedia(blob, { identity, memory, signal, isCurrent: options.isCurrent }); check(); inspected.set(blob, info); }
+            if (!info) { info = await untilAborted(inspectMedia(blob, { identity, memory, signal, isCurrent: options.isCurrent })); check(); inspected.set(blob, info); }
             verified.push(info); verifiedById.set(info.id, info); sourceBlobs.set(info.id, blob); await cooperate();
         }
         const reply: unknown = await boardWorker('parse').request('legacyPrepare', { bytes: original, kind: options.kind,

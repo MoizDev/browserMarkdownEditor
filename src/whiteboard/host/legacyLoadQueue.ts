@@ -7,15 +7,22 @@
 // waited 60 s and failed with "Close another board" while nothing else held memory (measured: a 1.6 MB board, 60.4 s), and
 // two or three ordinary boards restored together starved each other the same way. Serializing bounds that heap to one load's
 // peak instead, and nothing about a legacy load trims another pane or steps display quality down.
-// Every load waiting here ends: the one running is bounded by its worker's progress watchdog, and each released slot starts
-// the next waiter at once.
+// Every load waiting here ends, because the one running always gives the slot back: its worker steps are bounded by the
+// worker's progress watchdog, its file reads by a deadline (legacyAcquisition.ts), and an abort releases the slot at once
+// instead of waiting for the abandoned load to notice. Without the last two, one picture file that never arrived (a cloud
+// placeholder) held the only slot for the page: that board said "Opening drawing…" and every other old board, notebook and
+// annotated PDF "waiting for another document to finish opening…", for good, with no error and so no Try again.
 
-/** The largest legacy board the importer reads (the worker's LEGACY_SCAN_MAX_BYTES), refused at once rather than queued. */
+/** The largest legacy board the importer reads (the worker's LEGACY_SCAN_MAX_BYTES), refused at once rather than queued.
+ * With the raster-pool reservation gone this is the load's only size gate, so its cost was measured (peak resident memory
+ * of the page's process over its idle level, one board opened alone, production build): 23 MB with 6 inline photos +442 MB
+ * in 4.6 s; 102 MB with 28 photos +858 MB in 19 s; 200 MB with 55 photos +1,285 MB in 37 s — about 6–8 × the file for
+ * picture boards, and the largest admitted file opens without the tab failing. */
 export const LEGACY_LOAD_MAX_BYTES = 256 * 1024 * 1024;
 
 export type LegacyLoadPhase = 'waiting' | 'loading';
 
-interface Waiter { readonly key: string; readonly order: number; start(): void }
+interface Waiter { readonly key: string; readonly order: number; readonly urgent: boolean; start(): void }
 
 const waiting = new Set<Waiter>();
 /** Each admission's phase by document; two panes, or a paste, can each hold one for the same document. */
@@ -32,7 +39,7 @@ function setPhase(key: string, token: object, phase: LegacyLoadPhase | null): vo
 }
 
 function pump(): void {
-    const rank = (waiter: Waiter) => (shown.get(waiter.key) ?? 0) > 0 ? 0 : 1;
+    const rank = (waiter: Waiter) => waiter.urgent || (shown.get(waiter.key) ?? 0) > 0 ? 0 : 1;
     while (running < 1 && waiting.size) {
         let next: Waiter | undefined;
         for (const waiter of waiting) {
@@ -69,8 +76,10 @@ export function subscribeLegacyLoadPhase(listener: () => void): () => void {
     return () => { listeners.delete(listener); };
 }
 
-/** Waits for this legacy load's turn and returns its release. Refuses at once a size the importer can never read. */
-export async function admitLegacyLoad(options: { key: string; bytes?: number; signal: AbortSignal }): Promise<() => void> {
+/** Waits for this legacy load's turn and returns its release. Refuses at once a size the importer can never read.
+ * `urgent` is a load the person is waiting on that no pane marks as shown (a paste into the board in front of them):
+ * keyed by its own job, it ranked behind every old board still loading in a hidden pane and ran out its deadline. */
+export async function admitLegacyLoad(options: { key: string; bytes?: number; signal: AbortSignal; urgent?: boolean }): Promise<() => void> {
     const { key, signal } = options;
     signal.throwIfAborted();
     if (options.bytes !== undefined && options.bytes > LEGACY_LOAD_MAX_BYTES) {
@@ -81,7 +90,7 @@ export async function admitLegacyLoad(options: { key: string; bytes?: number; si
     setPhase(key, token, 'waiting');
     try {
         await new Promise<void>((resolve, reject) => {
-            const waiter: Waiter = { key, order: ++serial, start: () => { signal.removeEventListener('abort', abort); resolve(); } };
+            const waiter: Waiter = { key, order: ++serial, urgent: options.urgent === true, start: () => { signal.removeEventListener('abort', abort); resolve(); } };
             function abort() { waiting.delete(waiter); reject(signal.reason ?? new DOMException('Legacy load cancelled', 'AbortError')); }
             signal.addEventListener('abort', abort, { once: true });
             waiting.add(waiter);
@@ -90,11 +99,16 @@ export async function admitLegacyLoad(options: { key: string; bytes?: number; si
     } catch (error) { setPhase(key, token, null); throw error; }
     setPhase(key, token, 'loading');
     let released = false;
-    return () => {
+    const release = () => {
         if (released) return;
         released = true;
+        signal.removeEventListener('abort', release);
         running--;
         setPhase(key, token, null);
         pump();
     };
+    // The abandoned load's worker job is cancelled by the same signal and stops at its next slice, so the overlap with
+    // the next load is one slice of one job, not two whole peaks.
+    signal.addEventListener('abort', release, { once: true });
+    return release;
 }

@@ -103,6 +103,12 @@ export function useVaultIndex(deps: UseVaultIndexDeps) {
   const reportIndexProblem = useCallback((value: unknown) => {
     const problem = value as { kind?: string } | null;
     const kind = problem?.kind ?? 'unavailable';
+    // The index client's word that its worker came back by itself: the same clearing as the sidebar's Retry.
+    if (kind === 'available') {
+      setIndexUnavailable(false);
+      setIndexProblem(previous => previous?.kind === 'unavailable' ? null : previous);
+      return;
+    }
     if (kind === 'unavailable') setIndexUnavailable(true);
     setIndexProblem({ activation: getVaultActivation(), kind });
   }, [getVaultActivation]);

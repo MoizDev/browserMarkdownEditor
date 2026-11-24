@@ -95,6 +95,7 @@ export default function ConfirmDialog({ questionId = 0, title, children, confirm
     const titleId = useId();
     const inputId = useId();
     const confirmRef = useRef<HTMLButtonElement | null>(null);
+    const dialogRef = useRef<HTMLDivElement | null>(null);
     const inputRef = useRef<HTMLInputElement | null>(null);
 
     // Initialised from the spec of the dialog that is on screen, and RESET when
@@ -130,6 +131,21 @@ export default function ConfirmDialog({ questionId = 0, title, children, confirm
     // divider drag, for the same reason.
     useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
+            // The dialog is modal, so the keyboard stays in it: Tab from its last control (or from anywhere outside it)
+            // goes to its first, Shift+Tab the other way. Tab walked out of it into the tab strip and the note behind,
+            // where a keypress acted on a document the question was still holding up.
+            if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && !e.metaKey) {
+                const controls = [...dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])') ?? []];
+                if (!controls.length) return;
+                const at = controls.indexOf(document.activeElement as HTMLElement);
+                const next = at < 0 ? (e.shiftKey ? controls.length - 1 : 0)
+                    : e.shiftKey ? (at === 0 ? controls.length - 1 : -1) : (at === controls.length - 1 ? 0 : -1);
+                if (next < 0) return;
+                e.preventDefault();
+                e.stopPropagation();
+                controls[next].focus();
+                return;
+            }
             if (e.key !== 'Escape') return;
             e.preventDefault();
             e.stopPropagation();
@@ -165,6 +181,7 @@ export default function ConfirmDialog({ questionId = 0, title, children, confirm
     return (
         <div className="confirm-overlay" onMouseDown={() => dismissRef.current()}>
             <div
+                ref={dialogRef}
                 className="confirm-dialog"
                 role="dialog"
                 aria-modal="true"

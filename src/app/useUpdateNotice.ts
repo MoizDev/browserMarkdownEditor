@@ -52,9 +52,13 @@ export function useUpdateNotice(deps: UseUpdateNoticeDeps) {
   // `dirty`, `disk` and the buffer's own revision are asked too: a document held in a disk conflict (its autosave is
   // skipped until the DiskBar is answered), one whose file is gone, and one whose last save failed have no timer, no
   // write in flight and no pending edit, so `hasUnsaved` alone called them saved and the reload dropped the only copy.
+  // A PDF's tab keeps its own `dirty` rule (an annotation snapshot stays dirty until rebuilt; useSaveFunnel's
+  // settleCleanTabs and closing a tab both leave it out): asked here, Reload refused after any stroke on a PDF with that
+  // stroke on disk (measured: written 213 ms after the press, refused at once, on the build before this change too).
+  // Its buffer is asked instead, which stays dirty until a save of it succeeds.
   const unsaved = useCallback(() => flushingRef.current.size > 0 || anyPending()
     || tabsRef.current.some(tab => hasUnsaved(tab) || documentSessions.hasPendingEdits(tab.id)
-      || tab.dirty || !!tab.disk || documentBuffers.isDirty(tab.id)), [documentBuffers, documentSessions, flushingRef, hasUnsaved, tabsRef]);
+      || (tab.dirty && tab.representation.loadedKind !== 'pdf') || !!tab.disk || documentBuffers.isDirty(tab.id)), [documentBuffers, documentSessions, flushingRef, hasUnsaved, tabsRef]);
   const saveAll = useCallback(async () => {
     if (!unsaved()) return true;
     const deadline = Date.now() + SAVE_BEFORE_RELOAD_MS;

@@ -1,0 +1,2429 @@
+import { decodeDocumentText } from '../utils/diskVersion';
+import { fingerprintSnapshot } from '../utils/snapshotFingerprint';
+import type { ReadOnlyFileSnapshot } from '../types/reading';
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import type { ReactNode } from 'react';
+import { get, set } from 'idb-keyval';
+import { forgetVault, labelVaults, loadRecentVaults, rememberVault, setVaultPinned, withVaultPaths } from '../utils/recentVaults';
+import { requestPersistentStorage } from '../utils/storagePersistence';
+import { findLinkedVault, readLocation } from '../utils/appUrl';
+import { ASSETS_DIR, TRASH_DIR, isAssetName } from '../utils/assets';
+import { joinVaultPath, parentVaultPath } from '../utils/paths';
+import { sortTrashChildren, sortTrashRoot } from '../utils/trash';
+import { ENTRY_STYLE_FILE } from '../utils/entryStyle';
+import { Limiter } from '../utils/pool';
+import { isGitName, isHiddenEntryName } from '../utils/vaultEntries';
+import { findDirNode, shareTree, spliceDir } from '../utils/treeShare';
+import { hashBytes, sameStat } from '../utils/diskVersion';
+import type { DiskStat, DiskVersion } from '../utils/diskVersion';
+import {
+    MAX_DIRTY_DIRS, createBatchCoalescer, dirtyDirs, mergeInto, normalizeRecords, rescanBatch, touchedPaths,
+} from '../utils/vaultChanges';
+import type { VaultChangeBatch } from '../utils/vaultChanges';
+import type {
+    FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult,
+    TrashItem, TrashRestoreMode, TrashRestoreResult, VersionedWriteResult,
+} from '../types';
+
+const FileSystemContext = createContext<FileSystemContextValue | null>(null);
+
+const IDB_KEY = 'vault-directory-handle';
+
+/**
+ * Whether `dir` already holds an entry called `name` — of EITHER kind.
+ *
+ * Two positive lookups rather than one lookup and a reading of the failure:
+ * `getFileHandle` does reject with TypeMismatchError when the name belongs to a
+ * directory, but keying "this name is taken" on an exact DOMException name is a
+ * more brittle thing to rest a delete on than simply asking both questions.
+ */
+async function entryExists(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
+    try { await dir.getFileHandle(name); return true; } catch { /* not a file here */ }
+    try { await dir.getDirectoryHandle(name); return true; } catch { /* nor a directory */ }
+    return false;
+}
+
+/**
+ * WHAT `name` is in `dir` — its kind and its handle — or null if it is nothing.
+ *
+ * `entryExists` answers whether, not which, and the two calls that displace an
+ * entry standing in a put-back's way need both: the kind decides whether the
+ * copy is recursive, and getting it wrong means a `removeEntry` that throws
+ * and a duplicate left behind.
+ */
+async function liveEntry(
+    dir: FileSystemDirectoryHandle,
+    name: string,
+): Promise<{ name: string; kind: 'file' | 'directory'; handle: FileSystemFileHandle | FileSystemDirectoryHandle } | null> {
+    try { return { name, kind: 'directory', handle: await dir.getDirectoryHandle(name) }; } catch { /* not a directory */ }
+    try { return { name, kind: 'file', handle: await dir.getFileHandle(name) }; } catch { /* nor a file */ }
+    return null;
+}
+
+/**
+ * A name that is free in `dir`: "note.md", then "note (1).md", "note (2).md", …
+ *
+ * Every write that could land on an existing entry goes through here. Silently
+ * overwriting somebody's file is not a recoverable mistake — and for the trash
+ * in particular, deleting the same name twice would otherwise destroy the first
+ * copy at the exact moment the user was counting on it being kept.
+ *
+ * A folder and a file cannot share a name, so BOTH kinds count as taken whatever
+ * kind is being written. Asking only about files reported a name free while a
+ * folder of that name sat there, and the write that followed threw outright —
+ * which for the trash meant a deletion that simply failed. That is reachable the
+ * moment folders can be deleted: trash the folder "notes", then the file
+ * "notes" beside it.
+ *
+ * `kind` decides only where the number goes: a folder has no extension, so
+ * "my.notes" numbers as "my.notes (1)" rather than "my (1).notes".
+ */
+async function freeEntryName(
+    dir: FileSystemDirectoryHandle,
+    name: string,
+    kind: 'file' | 'directory' = 'file',
+): Promise<string> {
+    const dot = kind === 'file' ? name.lastIndexOf('.') : -1;
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : '';
+
+    let candidate = name;
+    for (let n = 1; ; n++) {
+        if (!(await entryExists(dir, candidate))) return candidate;
+        candidate = `${stem} (${n})${ext}`;
+    }
+}
+
+/** Copy one file's bytes into `dir` under `name`. */
+async function copyFileInto(dir: FileSystemDirectoryHandle, name: string, file: File): Promise<void> {
+    const handle = await dir.getFileHandle(name, { create: true });
+    const writable = await handle.createWritable();
+    await writable.write(file);
+    await writable.close();
+}
+
+/**
+ * Where a folder parks assets whose last reference went away:
+ * `<folder>/.Garbage/.Assets`, mirroring where they came from.
+ *
+ * Deliberately NOT alongside the trashed files in `.Garbage` itself. A retired
+ * asset can be brought straight back when its reference returns (an undo, a
+ * cut-and-paste), and that round trip has to be exact — parked under the same
+ * name a user-trashed file could also hold, restoring one would resurrect the
+ * other's bytes into `.Assets`.
+ */
+async function retiredAssetsDir(dir: FileSystemDirectoryHandle, create: boolean): Promise<FileSystemDirectoryHandle> {
+    const trash = await dir.getDirectoryHandle(TRASH_DIR, { create });
+    return trash.getDirectoryHandle(ASSETS_DIR, { create });
+}
+
+/**
+ * Recursively copies all entries from srcDir to destDir.
+ */
+async function copyDirRecursive(srcDir: FileSystemDirectoryHandle, destDir: FileSystemDirectoryHandle): Promise<void> {
+    for await (const [name, handle] of srcDir.entries()) {
+        if (handle.kind === 'file') {
+            const file = await handle.getFile();
+            const newFile = await destDir.getFileHandle(name, { create: true });
+            const writable = await newFile.createWritable();
+            await writable.write(file);
+            await writable.close();
+        } else {
+            const newSub = await destDir.getDirectoryHandle(name, { create: true });
+            await copyDirRecursive(handle, newSub);
+        }
+    }
+}
+
+/**
+ * Move `entry` out of `dir` and into `bucket` — a `.Garbage`, or the
+ * `.Garbage/.Assets` retired pictures are parked in — under a name free there.
+ * Returns the name it was filed under.
+ *
+ * IT EITHER HAPPENED OR IT DIDN'T. Anything that throws — a copy that dies
+ * partway, or a `removeEntry` refused because a file inside is still being
+ * written — takes the copy back out again before rethrowing. Without that, the
+ * realistic failure (the copy SUCCEEDS and the removal is refused) left a
+ * complete second copy of the folder in `.Garbage`, and every retry added
+ * another numbered one: megabytes to gigabytes of trash indexed under names
+ * indistinguishable, in Finder, from a good backup. Removing it is safe
+ * precisely because it is ours — `freeEntryName` certified the name free a
+ * moment earlier and nothing else may be copying at the same time (App
+ * serializes every one of these through one in-flight ref) — so this can only
+ * unmake what it just made. It is not a licence to prune `.Garbage`, which
+ * nothing here does.
+ *
+ * Shared by `moveToTrash` and by the bin's "Replace", which displaces the live
+ * entry a put-back would land on instead of overwriting it: one rollback,
+ * written once, for both.
+ */
+async function displaceInto(
+    bucket: FileSystemDirectoryHandle,
+    dir: FileSystemDirectoryHandle,
+    entry: { name: string; kind: 'file' | 'directory'; handle: FileSystemFileHandle | FileSystemDirectoryHandle },
+): Promise<string> {
+    // What this call has written, so a failure can take it back out. Recorded
+    // before a single byte, so a copy that dies on its first file is unmade
+    // just as surely as one that dies on its last.
+    let wrote: { dir: FileSystemDirectoryHandle; name: string } | null = null;
+    try {
+        // Deleting the same name twice must not destroy the first copy.
+        const name = await freeEntryName(bucket, entry.name, entry.kind);
+        wrote = { dir: bucket, name };
+
+        if (entry.kind === 'file') {
+            await copyFileInto(bucket, name, await (entry.handle as FileSystemFileHandle).getFile());
+        } else {
+            const grave = await bucket.getDirectoryHandle(name, { create: true });
+            await copyDirRecursive(entry.handle as FileSystemDirectoryHandle, grave);
+        }
+
+        // Remove the original. Recursively for a folder — it still holds
+        // everything that was just copied out of it.
+        await dir.removeEntry(entry.name, { recursive: entry.kind === 'directory' });
+        return name;
+    } catch (err) {
+        if (wrote) {
+            try {
+                await wrote.dir.removeEntry(wrote.name, { recursive: entry.kind === 'directory' });
+            } catch (undoErr) {
+                // Nothing is lost — the original is still there — so say so and
+                // leave it rather than trying harder at a failing disk.
+                console.error('Could not remove the abandoned copy:', undoErr);
+            }
+        }
+        throw err;
+    }
+}
+
+/**
+ * Recursively traverses a FileSystemDirectoryHandle and returns a nested tree.
+ *
+ * What is hidden is `isHiddenEntryName`'s (utils/vaultEntries.ts) — the same
+ * predicate the outside-change filter uses, so the tree and the watcher cannot
+ * disagree about what exists. `.git` is therefore never walked: a repository's
+ * object store is thousands of entries that are nobody's notes.
+ *
+ * `reuse` lets a RE-LIST of one directory (the watcher's patch) keep the subtree
+ * of every child folder it names instead of walking it again: one level deep
+ * only, and only for folders the caller knows were untouched.
+ */
+async function buildFileTree(
+    dirHandle: FileSystemDirectoryHandle,
+    path = '',
+    reuse?: ReadonlyMap<string, FileTreeNode>,
+): Promise<FileTreeNode[]> {
+    return (await listDir(dirHandle, path, reuse)).children;
+}
+
+/**
+ * `buildFileTree` for one directory, plus the one thing about the directory
+ * ITSELF that the walk is the cheap place to learn: whether it holds an
+ * `.appearance.json`, and its handle if it does.
+ *
+ * App reads a folder's icons out of that handle (utils/entryStyle.ts — a look
+ * is stored beside the thing it describes, so it survives that folder being
+ * opened as a vault of its own). Noticed HERE because this loop already has
+ * every entry of every folder in its hand: the alternative is a speculative
+ * `getFileHandle` per folder at every vault open, nearly all of them rejections.
+ * A folder with no custom looks costs nothing at all.
+ */
+async function listDir(
+    dirHandle: FileSystemDirectoryHandle,
+    path = '',
+    reuse?: ReadonlyMap<string, FileTreeNode>,
+    limiter: Limiter = new Limiter(WALK_CONCURRENCY),
+): Promise<{ children: FileTreeNode[]; styleFile?: FileSystemFileHandle }> {
+    const children: FileTreeNode[] = [];
+    let styleFile: FileSystemFileHandle | undefined;
+    // Subfolders are listed AFTER this directory's own entries, several at a
+    // time (below). Walking them inline made the whole vault one long chain:
+    // every folder's round trip waited for the previous folder's entire
+    // subtree, so opening a vault took the SUM of every directory read on the
+    // disk, and the sidebar showed "Loading vault…" for all of it.
+    const subdirs: { index: number; name: string; handle: FileSystemDirectoryHandle; path: string }[] = [];
+
+    for await (const [name, handle] of dirHandle.entries()) {
+        if (name === ENTRY_STYLE_FILE && handle.kind === 'file') styleFile = handle;
+        if (isHiddenEntryName(name, !path, handle.kind)) continue;
+
+        const entryPath = path ? `${path}/${name}` : name;
+
+        if (handle.kind === 'directory') {
+            const kept = reuse?.get(name);
+            if (kept && kept.kind === 'directory') {
+                children.push(kept);
+                continue;
+            }
+            // A placeholder keeps this child's place in the list while its own
+            // walk runs; the sort below is by name and kind, so the slot is
+            // filled before anything reads it.
+            subdirs.push({ index: children.length, name, handle, path: entryPath });
+            children.push(null as unknown as FileTreeNode);
+        } else {
+            children.push({
+                name,
+                kind: 'file',
+                path: entryPath,
+                handle,
+                parentHandle: dirHandle,
+            });
+        }
+    }
+
+    await Promise.all(subdirs.map(dir => limiter.run(async () => {
+        const sub = await listDir(dir.handle, dir.path, undefined, limiter);
+        children[dir.index] = {
+            name: dir.name,
+            kind: 'directory',
+            path: dir.path,
+            handle: dir.handle,
+            parentHandle: dirHandle,
+            children: sub.children,
+            styleFile: sub.styleFile,
+        };
+    })));
+
+    // Sort: directories first, then files. Alphabetical within each group.
+    children.sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+
+    return { children, styleFile };
+}
+
+/* ── The trash bin's crawl ───────────────────────────────────────────────────
+ * Everything trashed anywhere in the vault, gathered into ONE flat list, on
+ * demand. A deletion leaves no record but the copy itself sitting in the
+ * `.Garbage` beside where it came from, so finding them all means walking the
+ * whole vault — and this is the only place in the app that walks INTO those
+ * folders (buildFileTree hides them, and nothing else looks).
+ *
+ * DELIBERATELY UNCACHED, unlike the other two whole-vault walks
+ * (utils/graph.ts, utils/vaultSearch.ts, both `(lastModified, size)`-validated
+ * per AGENTS.md): those run after EVERY save, where an uncached walk would be a
+ * full vault read per keystroke-triggered autosave. This one runs when the
+ * reader clicks the bin and at no other time — it must not subscribe to
+ * `saveEpoch` — and the wait was chosen over a second vault-sized index in a
+ * tab that already holds one. It reads metadata only: a name, a size and an
+ * mtime per entry, never a file's bytes.
+ *
+ * THE ONE RULE, applied at every depth: an item belongs to the parent of the
+ * OUTERMOST `.Garbage` on its path — carried down these functions as
+ * `ownerDir`/`ownerPath` from the first `.Garbage` entered and never
+ * recomputed, which is the whole of the definition. A trashed folder keeps its own
+ * `.Garbage` inside it, so `math/.Garbage/homework/.Garbage/old.md` is a real
+ * path and means "old.md was deleted from homework, and then homework itself
+ * was deleted". It is listed at the bin's ROOT and goes back to `math/`, flat —
+ * never into a recreated `homework`, which is not a folder the reader has.
+ *
+ * A directory that cannot be read is logged and skipped rather than thrown
+ * from: one locked folder must not cost the reader the rest of their trash.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/** A file's metadata, tolerant of a read that fails mid-crawl — a file being
+ *  written as the walk passes it must not take the whole bin down. */
+async function statForTrash(handle: FileSystemFileHandle): Promise<{ mtime: number; size: number }> {
+    try {
+        const file = await handle.getFile();
+        return { mtime: file.lastModified, size: file.size };
+    } catch {
+        return { mtime: 0, size: 0 };
+    }
+}
+
+/** Retired pictures — `<owner>/.Garbage/.Assets/*`, parked there by retireAsset
+ *  when the last note stopped embedding them. Listed one by one rather than as
+ *  a folder (that folder is the app's bookkeeping, not something the reader
+ *  deleted), and each goes back into `<owner>/.Assets`: an embed resolves from
+ *  nowhere else, so a picture put back beside the notes would be one nothing
+ *  could display. */
+async function collectRetired(
+    assetsDir: FileSystemDirectoryHandle,
+    assetsPath: string,
+    ownerDir: FileSystemDirectoryHandle,
+    ownerPath: string,
+    out: TrashItem[],
+): Promise<void> {
+    try {
+        for await (const [name, handle] of assetsDir.entries()) {
+            if (handle.kind !== 'file' || name === '.DS_Store' || !isAssetName(name)) continue;
+            const { mtime, size } = await statForTrash(handle);
+            const sourcePath = joinVaultPath(assetsPath, name);
+            out.push({
+                id: sourcePath, name, kind: 'file', origin: 'retired', sourcePath,
+                handle, parentHandle: assetsDir,
+                restorePath: ownerPath, restoreDirHandle: ownerDir,
+                deletedAt: mtime, size,
+            });
+        }
+    } catch (err) {
+        console.warn('Could not read the retired pictures in', assetsPath, err);
+    }
+}
+
+/** Everything one `.Garbage` holds, as rows of the bin's root list. */
+async function collectGarbage(
+    garbageDir: FileSystemDirectoryHandle,
+    garbagePath: string,
+    ownerDir: FileSystemDirectoryHandle,
+    ownerPath: string,
+    out: TrashItem[],
+): Promise<void> {
+    try {
+        for await (const [name, handle] of garbageDir.entries()) {
+            if (name === '.DS_Store' || !isAssetName(name)) continue;
+            const sourcePath = joinVaultPath(garbagePath, name);
+
+            if (handle.kind === 'directory') {
+                if (name === ASSETS_DIR) {
+                    await collectRetired(handle, sourcePath, ownerDir, ownerPath, out);
+                    continue;
+                }
+                // A `.Garbage` directly inside a `.Garbage` is unreachable today
+                // — moveToTrash refuses to trash either hidden folder — so this
+                // is defensive. Treated as more of the same bucket rather than
+                // as a folder somebody deleted, because drawing it as one would
+                // invite a put-back that recreated a `.Garbage` in the vault.
+                if (name === TRASH_DIR) {
+                    await collectGarbage(handle, sourcePath, ownerDir, ownerPath, out);
+                    continue;
+                }
+                out.push(await buildTrashedDir(handle, sourcePath, garbageDir, ownerDir, ownerPath, out));
+                continue;
+            }
+
+            const { mtime, size } = await statForTrash(handle);
+            out.push({
+                id: sourcePath, name, kind: 'file', origin: 'trashed', sourcePath,
+                handle, parentHandle: garbageDir,
+                restorePath: ownerPath, restoreDirHandle: ownerDir,
+                deletedAt: mtime, size,
+            });
+        }
+    } catch (err) {
+        console.warn('Could not read the trash at', garbagePath, err);
+    }
+}
+
+/** What a trashed folder's own `.Assets` adds to its weight and its age. Not
+ *  listed: those pictures are the folder's, and they travel back with it. */
+async function measureLiveAssets(assetsDir: FileSystemDirectoryHandle): Promise<{ newest: number; size: number }> {
+    let newest = 0;
+    let size = 0;
+    try {
+        for await (const [name, handle] of assetsDir.entries()) {
+            // .DS_Store skipped the way every other walker here skips it: it is
+            // Finder's, not the reader's, and weighing it would put a folder's
+            // deletion time at whenever macOS last touched that file.
+            if (handle.kind !== 'file' || name === '.DS_Store') continue;
+            const stat = await statForTrash(handle);
+            newest = Math.max(newest, stat.mtime);
+            size += stat.size;
+        }
+    } catch (err) {
+        console.warn('Could not measure a trashed folder’s pictures:', err);
+    }
+    return { newest, size };
+}
+
+/** One trashed folder, and what drilling into it shows. Its deletion time is
+ *  the newest mtime anywhere inside it, which is when the copy was made. */
+async function buildTrashedDir(
+    dir: FileSystemDirectoryHandle,
+    path: string,
+    parentHandle: FileSystemDirectoryHandle,
+    ownerDir: FileSystemDirectoryHandle,
+    ownerPath: string,
+    out: TrashItem[],
+): Promise<TrashItem> {
+    const children: TrashItem[] = [];
+    let newest = 0;
+    let size = 0;
+
+    try {
+        for await (const [name, handle] of dir.entries()) {
+            if (name === '.DS_Store' || !isAssetName(name)) continue;
+            const childPath = joinVaultPath(path, name);
+
+            if (handle.kind === 'directory') {
+                if (name === TRASH_DIR) {
+                    // Deleted from this folder BEFORE the folder itself was, so
+                    // it was never part of what the reader threw away here.
+                    // Hoisted to the bin's root, where it reads as the
+                    // standalone deletion it was — and goes back to the owner,
+                    // not into this folder.
+                    await collectGarbage(handle, childPath, ownerDir, ownerPath, out);
+                    continue;
+                }
+                if (name === ASSETS_DIR) {
+                    const measured = await measureLiveAssets(handle);
+                    newest = Math.max(newest, measured.newest);
+                    size += measured.size;
+                    continue;
+                }
+                const sub = await buildTrashedDir(handle, childPath, dir, ownerDir, ownerPath, out);
+                newest = Math.max(newest, sub.deletedAt);
+                size += sub.size;
+                children.push(sub);
+                continue;
+            }
+
+            const stat = await statForTrash(handle);
+            newest = Math.max(newest, stat.mtime);
+            size += stat.size;
+            children.push({
+                id: childPath, name, kind: 'file', origin: 'trashed', sourcePath: childPath,
+                handle, parentHandle: dir,
+                restorePath: ownerPath, restoreDirHandle: ownerDir,
+                deletedAt: stat.mtime, size: stat.size,
+            });
+        }
+    } catch (err) {
+        console.warn('Could not read the trashed folder at', path, err);
+    }
+
+    return {
+        id: path, name: dir.name, kind: 'directory', origin: 'trashed', sourcePath: path,
+        handle: dir, parentHandle,
+        restorePath: ownerPath, restoreDirHandle: ownerDir,
+        deletedAt: newest, size,
+        children: sortTrashChildren(children),
+    };
+}
+
+/**
+ * The bin row for an entry a "Replace" has just displaced into `bucket`.
+ *
+ * Read back off disk rather than assembled from what was displaced: the copy
+ * is what the bin now holds, and its name is whatever `freeEntryName` settled
+ * on. Returns undefined if it cannot be read — the put-back itself succeeded,
+ * and the row will be there the next time the bin is opened (which re-crawls
+ * from scratch anyway).
+ */
+async function describeDisplaced(
+    bucket: FileSystemDirectoryHandle,
+    bucketPath: string,
+    name: string,
+    kind: 'file' | 'directory',
+    origin: TrashItem['origin'],
+    ownerDir: FileSystemDirectoryHandle,
+    ownerPath: string,
+): Promise<TrashItem | undefined> {
+    const sourcePath = joinVaultPath(bucketPath, name);
+    try {
+        if (kind === 'file') {
+            const handle = await bucket.getFileHandle(name);
+            const { mtime, size } = await statForTrash(handle);
+            return {
+                id: sourcePath, name, kind: 'file', origin, sourcePath,
+                handle, parentHandle: bucket,
+                restorePath: ownerPath, restoreDirHandle: ownerDir,
+                deletedAt: mtime || Date.now(), size,
+            };
+        }
+        const handle = await bucket.getDirectoryHandle(name);
+        // Any nested `.Garbage` this folder carries would be hoisted rows of
+        // their own; they are dropped rather than guessed at, and turn up on
+        // the bin's next open.
+        const hoisted: TrashItem[] = [];
+        return await buildTrashedDir(handle, sourcePath, bucket, ownerDir, ownerPath, hoisted);
+    } catch (err) {
+        console.warn('Could not describe the displaced entry at', sourcePath, err);
+        return undefined;
+    }
+}
+
+/** The live tree, looking for `.Garbage` folders. Never descends into one (that
+ *  is collectGarbage's job) and never into a live `.Assets`. */
+async function walkForTrash(dir: FileSystemDirectoryHandle, path: string, out: TrashItem[]): Promise<void> {
+    try {
+        for await (const [name, handle] of dir.entries()) {
+            if (handle.kind !== 'directory' || !isAssetName(name)) continue;
+            if (name === ASSETS_DIR) continue;             // live pictures, not trash
+            // A repository's object store: never holds a `.Garbage` the user
+            // made, and is thousands of directories to read for nothing.
+            if (isGitName(name)) continue;
+            const childPath = joinVaultPath(path, name);
+            if (name === TRASH_DIR) {
+                await collectGarbage(handle, childPath, dir, path, out);
+                continue;
+            }
+            await walkForTrash(handle, childPath, out);
+        }
+    } catch (err) {
+        console.warn('Could not walk', path || 'the vault root', 'for trash:', err);
+    }
+}
+
+/**
+ * A stored list as the vault menu shows it: labelled, and pathed against `root`.
+ *
+ * Labelling is never optional and never cacheable: `label` is qualified to
+ * "parent/name" only while two listed vaults share a folder name, so any change
+ * to the list can free — or take — a survivor's bare name. Building every
+ * published list here is what stops a future writer from setting the state
+ * directly and shipping stale labels. The root is passed in rather than read
+ * from state: every caller has just decided what it is, and the one on mount
+ * runs before the state it would read has settled.
+ */
+async function menuVaults(list: StoredVault[], root?: FileSystemDirectoryHandle | null): Promise<RecentVault[]> {
+    const labelled = await labelVaults(list);
+    return root ? withVaultPaths(labelled, root) : labelled;
+}
+
+/* ── Versioned document IO ───────────────────────────────────────────────────
+ * What the app last knew a document's file to be on disk (utils/diskVersion.ts)
+ * is checked before every document write and compared with by every outside-
+ * change check. These are the primitives; App owns the baselines.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+function isNotFound(err: unknown): boolean {
+    return (err as DOMException | undefined)?.name === 'NotFoundError';
+}
+
+/** The entry is not there AS A FILE any more: gone, or replaced by a folder. */
+function isGone(err: unknown): boolean {
+    const name = (err as DOMException | undefined)?.name;
+    return name === 'NotFoundError' || name === 'TypeMismatchError';
+}
+
+/** One consistent snapshot of a file: its metadata and exactly the bytes that
+ *  metadata describes. `getFile()` returns a snapshot, and reading it after the
+ *  file changed rejects with NotReadableError rather than returning a mix — so
+ *  one retry (re-snapshot, re-read) is the right answer to a write landing
+ *  between the two calls. */
+async function readSnapshot(handle: FileSystemFileHandle): Promise<{ file: File; buf: ArrayBuffer }> {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            const file = await handle.getFile();
+            return { file, buf: await file.arrayBuffer() };
+        } catch (err) {
+            if (attempt === 0 && (err as DOMException | undefined)?.name === 'NotReadableError') continue;
+            throw err;
+        }
+    }
+}
+
+async function versionOfSnapshot(file: File, buf: ArrayBuffer): Promise<DiskVersion> {
+    return { lastModified: file.lastModified, size: file.size, hash: await hashBytes(buf) };
+}
+
+/** `{lastModified, size}` from a metadata-only `getFile()`; null when the file
+ *  is gone. Any other failure (a lock, a permission lapse) is NOT "deleted" and
+ *  is thrown: calling a locked file deleted would tell the user their note was
+ *  removed. */
+async function statOf(handle: FileSystemFileHandle): Promise<DiskStat | null> {
+    try {
+        const file = await handle.getFile();
+        return { lastModified: file.lastModified, size: file.size };
+    } catch (err) {
+        if (isGone(err)) return null;
+        throw err;
+    }
+}
+
+function toBytes(data: string | Uint8Array): Uint8Array {
+    return typeof data === 'string' ? new TextEncoder().encode(data) : data;
+}
+
+/** Replace a file's bytes. Hands over the VIEW, not `.buffer` — see
+ *  writeFileBytes for why. */
+async function writeAllBytes(handle: FileSystemFileHandle, bytes: Uint8Array): Promise<void> {
+    const writable = await handle.createWritable();
+    await writable.write(bytes as Uint8Array<ArrayBuffer>);
+    await writable.close();
+}
+
+/** The version of `bytes` the app has just written to `handle`: the HASH is of
+ *  the bytes written (never re-read — re-reading would hash someone else's
+ *  write that landed in between and call it ours), the stat is re-read from
+ *  disk. A stat that cannot be re-read becomes lastModified 0, which equals no
+ *  real stat and so makes the next check hash instead of trusting it. */
+async function versionAfterWrite(handle: FileSystemFileHandle, bytes: Uint8Array): Promise<DiskVersion> {
+    const hash = await hashBytes(bytes);
+    let stat: DiskStat | null = null;
+    try { stat = await statOf(handle); } catch { /* fall through to the forced-recheck stat */ }
+    return { lastModified: stat?.lastModified ?? 0, size: stat?.size ?? bytes.byteLength, hash };
+}
+
+/** `name` with " (conflict)" before its extension; a name with no extension
+ *  (a dotfile like `.env` included — its only dot is the first character) gets
+ *  it appended. */
+function conflictName(name: string, n: number): string {
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : '';
+    return `${stem} (conflict${n === 1 ? '' : ` ${n}`})${ext}`;
+}
+
+/**
+ * Walk down from `root` to the folder at `path`, creating whichever folders on
+ * the way are missing. `patchFrom` is where the tree must be re-listed from: the
+ * deepest folder that already existed, whose re-list picks the new chain up as
+ * one new folder (null when nothing was created).
+ */
+async function ensureDirChain(root: FileSystemDirectoryHandle, path: string): Promise<{ dir: FileSystemDirectoryHandle; patchFrom: string | null }> {
+    let dir = root;
+    let dirPath = '';
+    let patchFrom: string | null = null;
+    if (path) for (const name of path.split('/')) {
+        try {
+            dir = await dir.getDirectoryHandle(name);
+        } catch (err) {
+            if (!isNotFound(err)) throw err;
+            if (patchFrom === null) patchFrom = dirPath;
+            dir = await dir.getDirectoryHandle(name, { create: true });
+        }
+        dirPath = joinVaultPath(dirPath, name);
+    }
+    return { dir, patchFrom };
+}
+
+/**
+ * Re-list the directories in `dirs` (vault paths; '' = the root) into a copy of
+ * `base` — the watcher's patch, which costs one directory listing per dirty
+ * directory instead of a walk of the vault. Shallow first, so a folder that is
+ * NEW is walked once by its parent's re-list and its own entry is skipped.
+ *
+ * A child folder keeps its old subtree (no I/O for it) unless the batch said it
+ * was touched (`touched`): `mv other a` is one record, and `a`'s old subtree is
+ * then stale. Returns null if any listing failed, and the caller falls back to
+ * one full walk — a half-patched tree is worse than a slow correct one.
+ */
+async function relistDirs(
+    base: FileTreeNode[],
+    root: FileSystemDirectoryHandle,
+    dirs: Iterable<string>,
+    touched: ReadonlySet<string>,
+): Promise<FileTreeNode[] | null> {
+    const depth = (d: string) => (d ? d.split('/').length : 0);
+    const ordered = [...dirs].sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : 1));
+    const walkedAfresh: string[] = [];
+    let tree = base;
+
+    for (const dir of ordered) {
+        if (walkedAfresh.some(f => dir === f || dir.startsWith(`${f}/`))) continue;
+        const node = dir ? findDirNode(tree, dir) : null;
+        // Not in the tree: it is gone, or no parent re-list produced it. Either
+        // way there is nothing here to patch.
+        if (dir && !node) continue;
+
+        const old = node ? node.children : tree;
+        const keep = new Map<string, FileTreeNode>();
+        for (const c of old) if (c.kind === 'directory' && !touched.has(c.path)) keep.set(c.name, c);
+
+        let children: FileTreeNode[];
+        try {
+            children = await buildFileTree(node ? node.handle : root, dir, keep);
+        } catch {
+            return null;
+        }
+        for (const c of children) if (c.kind === 'directory' && keep.get(c.name) !== c) walkedAfresh.push(c.path);
+        tree = spliceDir(tree, dir, children);
+    }
+    return tree;
+}
+
+/* How many directories the tree walk reads at once, counted across the WHOLE
+   walk however deep it recurses (utils/pool.ts explains why that matters). The
+   walk is pure IO — the browser's file thread does the work — so this is a
+   queue depth rather than parallelism; serial, it was a chain as long as the
+   vault has folders, and the sidebar said "Loading vault…" for the sum of it. */
+const WALK_CONCURRENCY = 12;
+
+/** The watcher's polling cadence — see FileSystemProvider's watcher effect. */
+const POLL_THROTTLE_MS = 3000;
+const POLL_INTERVAL_MS = 15000;
+const REOBSERVE_DELAY_MS = 1000;
+
+export function FileSystemProvider({ children }: { children: ReactNode }) {
+    const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(null);
+    const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [previousVault, setPreviousVault] = useState<FileSystemDirectoryHandle | null>(null);
+    /** What the address bar asked for and could not be given silently — the
+     *  handle is known but its permission has lapsed, and `requestPermission`
+     *  needs a click. App renders a one-button screen naming this vault. */
+    const [linkedVault, setLinkedVault] = useState<RecentVault | null>(null);
+    const [recentVaults, setRecentVaults] = useState<RecentVault[]>([]);
+    const [currentVaultId, setCurrentVaultId] = useState<string | null>(null);
+
+    // The open vault, readable from the stable callbacks below without making
+    // them depend on it (they are props of the memoized FileExplorer). Written
+    // ONLY by `commitRoot`, synchronously with the state: an effect-driven copy
+    // lags a render, and the stale-walk guards below compare against it in the
+    // very tick a switch commits.
+    const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
+    const commitRoot = useCallback((handle: FileSystemDirectoryHandle | null) => {
+        rootHandleRef.current = handle;
+        setRootHandle(handle);
+    }, []);
+
+    // The tree the app is showing, readable without a render, and the vault it
+    // describes. The watcher patches the tree it finds here; a walk's result is
+    // only ever shared with a tree of the SAME vault (two vaults share paths
+    // freely, and their handles must never be mixed).
+    const fileTreeRef = useRef<FileTreeNode[]>([]);
+    const treeOwnerRef = useRef<FileSystemDirectoryHandle | null>(null);
+    const commitTree = useCallback((tree: FileTreeNode[], owner: FileSystemDirectoryHandle) => {
+        fileTreeRef.current = tree;
+        treeOwnerRef.current = owner;
+        setFileTree(tree);
+    }, []);
+
+    // Tree computations are TICKETED in start order. A computation publishes
+    // only if no later-started one already has: refreshTree and the watcher both
+    // read the disk and replace the tree, and whichever FINISHES last used to
+    // win — so a slow walk that began before a change could repaint over the
+    // newer tree that change produced. A later start saw the disk at least as
+    // new, so dropping the earlier finisher loses nothing.
+    const treeTicketRef = useRef(0);
+    const treePublishedRef = useRef(0);
+
+    // How many of the app's OWN mutations (copy-then-delete moves, trashing,
+    // imports, …) are in flight, and the watcher's hook to resume when the last
+    // one ends. Their intermediate states ("item in both places", "item
+    // nowhere") are real, observable on disk, and must never be drawn: the
+    // watcher holds its batches until this is 0 — see FileSystemProvider's
+    // watcher effect.
+    const mutationBusyRef = useRef(0);
+    const resumeWatcherRef = useRef<(() => void) | null>(null);
+    const withMutation = useCallback(async <T,>(run: () => Promise<T>): Promise<T> => {
+        mutationBusyRef.current++;
+        try {
+            return await run();
+        } finally {
+            if (--mutationBusyRef.current === 0) resumeWatcherRef.current?.();
+        }
+    }, []);
+
+    const vaultChangeListenersRef = useRef(new Set<(batch: VaultChangeBatch) => void>());
+    const subscribeVaultChanges = useCallback((listener: (batch: VaultChangeBatch) => void) => {
+        vaultChangeListenersRef.current.add(listener);
+        return () => { vaultChangeListenersRef.current.delete(listener); };
+    }, []);
+    const [liveDetection, setLiveDetection] = useState<'observer' | 'polling' | 'off'>('off');
+
+    // True while a native folder picker is up (see pickDirectory).
+    const pickerOpenRef = useRef(false);
+
+    /**
+     * True while a vault switch is underway — for the picker from the moment it
+     * opens (a folder chosen there has to be able to commit, so the gate cannot
+     * wait for the pick), for the others from the call — until its tree walk has
+     * finished. ONE switch at a time, across every raiser.
+     *
+     * Each raiser used to guard only itself — VaultMenu's `opening`, the tree
+     * row's `openAsVaultInFlightRef`, `pickerOpenRef` — which stops nobody from
+     * starting a switch while a DIFFERENT raiser's walk is running. Measured:
+     * "Open as Vault" on a 40-file folder (walk ~4.5s), then a recent-vault row
+     * clicked 260ms in, left the sidebar listing the first vault's 40 files
+     * while the header, the IndexedDB handle and the menu's current-vault check
+     * all read the second. A row clicked in that state opens one vault's handle
+     * under the other's path — a write into the wrong vault. The gate belongs
+     * here, at the one funnel all three raisers pass through, not in any of them.
+     */
+    const switchInFlightRef = useRef(false);
+
+    /**
+     * True when `handle` names the folder that is already open, whatever object
+     * it happens to be.
+     *
+     * Re-opening the CURRENT vault must not look like a switch: App.tsx compares
+     * root handles by object identity and empties the workspace when they
+     * differ, while the picker mints a fresh handle for the same folder every
+     * time — so picking the folder you already have open would otherwise close
+     * every tab. `isSameEntry` is the only identity test the platform offers
+     * (see utils/recentVaults.ts).
+     */
+    const isCurrentVault = useCallback(async (handle: FileSystemDirectoryHandle) => {
+        const current = rootHandleRef.current;
+        if (!current) return false;
+        try {
+            return await current.isSameEntry(handle);
+        } catch {
+            return false;
+        }
+    }, []);
+
+    /**
+     * Walk a vault into a tree, or null if the walk failed.
+     *
+     * Split out of `refreshTree` because a vault SWITCH has to know whether the
+     * walk worked BEFORE it commits anything — see openVaultHandle. Swallowing
+     * the failure is right for a refresh and wrong for a switch: a switch that
+     * kept the old tree standing would have already moved `rootHandle`.
+     */
+    const loadTree = useCallback(async (handle: FileSystemDirectoryHandle): Promise<FileTreeNode[] | null> => {
+        try {
+            return await buildFileTree(handle);
+        } catch (err) {
+            console.error('Failed to build file tree:', err);
+            return null;
+        }
+    }, []);
+
+    /**
+     * Put a freshly computed tree on screen — if it is still wanted: `handle` is
+     * still the open vault, and no later-started computation has landed. It is
+     * SHARED with the tree on screen first (utils/treeShare.ts), so a refresh
+     * that changed nothing sets no state at all and one that changed a file
+     * re-renders that file's rows alone. Returns whether it was taken.
+     */
+    const publishTree = useCallback((ticket: number, handle: FileSystemDirectoryHandle, tree: FileTreeNode[]) => {
+        if (handle !== rootHandleRef.current) return false;     // a different vault is open now
+        if (ticket < treePublishedRef.current) return false;    // a later walk already landed
+        treePublishedRef.current = ticket;
+        const shown = treeOwnerRef.current === handle ? fileTreeRef.current : null;
+        const next = shown ? shareTree(shown, tree) : tree;
+        if (next !== shown) commitTree(next, handle);
+        return true;
+    }, [commitTree]);
+
+    /**
+     * Refresh the file tree from the current root handle. A failed walk leaves
+     * the tree that is up standing: it still describes the vault the app is on,
+     * which is more use than an empty sidebar. A walk for a vault that is no
+     * longer the open one is dropped — it used to repaint the new vault with the
+     * old one's rows when a slow walk finished after a switch.
+     */
+    const refreshTree = useCallback(async (handle: FileSystemDirectoryHandle | null | undefined) => {
+        if (!handle) return;
+        const ticket = ++treeTicketRef.current;
+        const tree = await loadTree(handle);
+        if (tree) publishTree(ticket, handle, tree);
+    }, [loadTree, publishTree]);
+
+    /** Patch the tree after a write the context made itself (a conflict copy, a
+     *  recreated file): re-list just those directories, or walk if that fails. */
+    const patchTreeDirs = useCallback(async (root: FileSystemDirectoryHandle, dirs: string[]) => {
+        const ticket = ++treeTicketRef.current;
+        const next = await relistDirs(fileTreeRef.current, root, dirs, new Set());
+        if (next) publishTree(ticket, root, next);
+        else await refreshTree(root);
+    }, [publishTree, refreshTree]);
+
+    /**
+     * Publish a stored list to the menu. Every write to `recentVaults` goes
+     * through here or, in `recordVault` alone, through `menuVaults` directly —
+     * only so that it can set the list in the same batch as the current id.
+     */
+    const publishVaults = useCallback(async (list: StoredVault[], root?: FileSystemDirectoryHandle | null) => {
+        setRecentVaults(await menuVaults(list, root));
+    }, []);
+
+    /**
+     * Note a vault as just-opened: it moves to the head of the recent list and
+     * becomes the one the vault menu marks as current. Every path that changes
+     * `rootHandle` goes through here, including the silent restore on mount —
+     * the list would otherwise be missing the vault the user is looking at.
+     *
+     * The list is built BEFORE the id is set, and the two setters sit with no
+     * await between them, so React commits them in one render: no commit ever
+     * carries this vault's id with a list that does not hold it yet. App's
+     * restore pass resolves the address bar's link against `recentVaults` at
+     * the very render it claims the vault, and with the id set first a folder
+     * opened for the first time was not in the list yet — the link's note was
+     * dropped, unless the labelling round trips happened to beat React to the
+     * render (issue #6). The id lands those round trips later instead, which
+     * everything already tolerates: it lags `rootHandle` on every open anyway.
+     */
+    const recordVault = useCallback(async (handle: FileSystemDirectoryHandle) => {
+        try {
+            const { list, id } = await rememberVault(handle);
+            const vaults = await menuVaults(list, handle);
+            setCurrentVaultId(id);
+            setRecentVaults(vaults);
+        } catch (err) {
+            console.warn('Could not record the opened vault:', err);
+        }
+    }, []);
+
+    /**
+     * On mount, try to restore the previously saved directory handle from IndexedDB.
+     */
+    useEffect(() => {
+        (async () => {
+            // The address bar wins over the last-used vault: a link is an
+            // instruction, and a stored handle is only a default. Both are read
+            // before either is acted on, so a link naming a vault this browser
+            // has never opened falls back to the default rather than to nothing.
+            const linked = readLocation().vault;
+            let stored: StoredVault[] = [];
+            try {
+                stored = await loadRecentVaults();
+            } catch (err) {
+                console.warn('Could not load the recent vault list:', err);
+            }
+            const target = findLinkedVault(linked, stored);
+
+            try {
+                if (target) {
+                    // queryPermission needs no user gesture; requestPermission
+                    // does, and there has been none — this is a page load. So a
+                    // lapsed grant is handed to App to ask for with a button.
+                    const permission = await target.handle.queryPermission({ mode: 'readwrite' });
+                    if (permission === 'granted') {
+                        commitRoot(target.handle);
+                        await recordVault(target.handle);
+                        await refreshTree(target.handle);
+                        setIsLoading(false);
+                        return;
+                    }
+                    setLinkedVault((await labelVaults([target]))[0]);
+                    await publishVaults(stored, target.handle);
+                    setIsLoading(false);
+                    return;
+                }
+
+                const storedHandle = await get<FileSystemDirectoryHandle>(IDB_KEY);
+                if (storedHandle) {
+                    // queryPermission does not require a user gesture, unlike requestPermission
+                    const permission = await storedHandle.queryPermission({ mode: 'readwrite' });
+                    if (permission === 'granted') {
+                        commitRoot(storedHandle);
+                        // Before the tree walk, so the vault menu is already
+                        // right on the first render that has a vault to show.
+                        await recordVault(storedHandle);
+                        await refreshTree(storedHandle);
+                        setIsLoading(false); // Fix: Ensure loading state is turned off
+                        return;
+                    } else if (permission === 'prompt') {
+                        // Store it so we can show a "Restore Previous Vault" button
+                        setPreviousVault(storedHandle);
+                    }
+                }
+            } catch (err) {
+                console.warn('Could not restore directory handle:', err);
+            }
+            // No vault restored — the list still loads, so whatever the user
+            // opens next lands on top of a complete history.
+            await publishVaults(stored, null);
+            setIsLoading(false);
+        })();
+    }, [refreshTree, recordVault, publishVaults, commitRoot]);
+
+
+    /**
+     * Prompt the user to pick a directory, store its handle, and scan it.
+     *
+     * Reports its outcome the way `openVaultHandle` does, and for the same
+     * reason: "Open folder…" is a menu row, and the menu closes on the result.
+     * A picker refused because another switch is walking has to come back
+     * 'busy' and say so — returning void, the row closed the menu, opened no
+     * picker and said nothing, which is the dead click messageFor rules out.
+     */
+    const pickDirectory = useCallback(async (): Promise<VaultOpenResult> => {
+        if (!window.showDirectoryPicker) {
+            alert(
+                "Your browser doesn't support the local File System Access API.\n\n" +
+                "This feature is currently only supported in Chromium-based browsers (Chrome, Edge, Opera) on desktop."
+            );
+            return 'error';
+        }
+        // One picker at a time: browsing for a vault is a DOUBLE-click on the
+        // sidebar's vault switcher, and with nothing in the recent list the first
+        // of those two clicks already opens the picker. A second call while one
+        // is up rejects with NotAllowedError ("File picker already active").
+        if (pickerOpenRef.current || switchInFlightRef.current) return 'busy';
+        pickerOpenRef.current = true;
+        switchInFlightRef.current = true;
+
+        try {
+            const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+            // Picking the folder already open is a no-op, not a vault switch —
+            // keep the handle the app (and every open tab) is already using.
+            if (await isCurrentVault(handle)) {
+                await refreshTree(rootHandleRef.current);
+                return 'ok';
+            }
+            // Walk before committing, exactly as openVaultHandle does — see the
+            // reasoning there. The picker reached that split state the least
+            // often (its own dialog is tab-modal, so the tree is unclickable
+            // until it closes), but the window it opened afterwards was the
+            // same one, and it is the same three lines that close it.
+            const tree = await loadTree(handle);
+            if (!tree) return 'error';
+
+            await set(IDB_KEY, handle);
+            setPreviousVault(null);
+            commitRoot(handle);
+            commitTree(tree, handle);
+            await recordVault(handle);
+            // Opening a vault is the moment this app has something worth
+            // keeping — the handle just stored is the only way back into that
+            // folder without the picker. Chrome never prompts for this; it
+            // decides from engagement, so asking on each open is how a refusal
+            // early on turns into a grant later (utils/storagePersistence.ts).
+            void requestPersistentStorage();
+            return 'ok';
+        } catch (err) {
+            // Cancelling the picker is not a failure — nothing was asked for and
+            // nothing went wrong — so it reports 'ok' and the menu closes on it,
+            // which is what "Open folder…" has always done.
+            if ((err as DOMException).name === 'AbortError') return 'ok';
+            console.error('Error picking directory:', err);
+            return 'error';
+        } finally {
+            pickerOpenRef.current = false;
+            switchInFlightRef.current = false;
+        }
+    }, [refreshTree, loadTree, recordVault, isCurrentVault, commitRoot, commitTree]);
+
+    /**
+     * Take one vault off the recent list. Nothing on disk is touched: the list
+     * only records what has been opened, so the folder stays where it is and
+     * the row returns the next time that folder is opened as a vault.
+     *
+     * Reports whether the list was actually rewritten. An IndexedDB write can
+     * fail (blocked storage, a corrupt store), and the row then stays put — the
+     * menu has to be able to say so rather than leave a dead click behind.
+     */
+    const forgetRecentVault = useCallback(async (id: string) => {
+        try {
+            await publishVaults(await forgetVault(id), rootHandleRef.current);
+            return true;
+        } catch (err) {
+            console.warn('Could not drop the vault from the recent list:', err);
+            return false;
+        }
+    }, [publishVaults]);
+
+    /**
+     * Pin or unpin a vault, so the menu keeps it at the top and the stored cap
+     * never trims it away (utils/recentVaults.ts). Reports like
+     * `forgetRecentVault`: an IndexedDB write can fail, and a pin that silently
+     * did not take would be worse than one that says so.
+     */
+    const pinRecentVault = useCallback(async (id: string, pinned: boolean) => {
+        try {
+            await publishVaults(await setVaultPinned(id, pinned), rootHandleRef.current);
+            return true;
+        } catch (err) {
+            console.warn('Could not change the vault pin:', err);
+            return false;
+        }
+    }, [publishVaults]);
+
+    /**
+     * Commit the app to `handle` as its vault, from a handle we already hold —
+     * no picker, because the point of both callers (the recent list, and "Open
+     * as Vault" on a folder in the tree) is not having to find the folder again.
+     *
+     * Permission is re-requested when Chrome has let the grant lapse (a new
+     * session, usually); that call is legal here only because opening a vault
+     * is always a click. A folder taken out of the tree is inside a vault whose
+     * grant is live, so it answers 'granted' without prompting — asking is what
+     * makes the one code path safe for a handle deserialized out of IndexedDB
+     * too. Returns why it didn't happen when it didn't, so the caller can say so
+     * instead of appearing to do nothing.
+     */
+    const openVaultHandle = useCallback(async (handle: FileSystemDirectoryHandle): Promise<VaultOpenResult> => {
+        if (switchInFlightRef.current) return 'busy';
+        switchInFlightRef.current = true;
+        try {
+            let permission = await handle.queryPermission({ mode: 'readwrite' });
+            if (permission !== 'granted') {
+                permission = await handle.requestPermission({ mode: 'readwrite' });
+            }
+            if (permission !== 'granted') return 'denied';
+
+            // Already here. The menu marks the current vault and makes its row
+            // inert, but that guard is by id and the id is absent whenever
+            // recording the vault failed — and a stored handle is a different
+            // OBJECT from the open one for the same folder, so letting it
+            // through would read as a switch and close every tab.
+            if (await isCurrentVault(handle)) return 'ok';
+
+            // Touch the folder before committing the app to it: one that has
+            // been deleted or moved since throws here, whereas swapping the
+            // tree first would just blank the sidebar with no explanation. A
+            // tree row can be that stale too — the folder may have gone on disk
+            // since the last refreshTree.
+            await handle.entries().next();
+
+            // Walk the new vault BEFORE committing the app to it. Setting
+            // `rootHandle` first and awaiting the walk after left the app split
+            // for the whole walk — seconds on a big vault — with `rootHandle`,
+            // IndexedDB and the header on the new vault while the sidebar still
+            // listed the OLD one's rows. Nothing covers the tree in that window
+            // (VaultMenu draws no overlay either), so a row clicked then opened
+            // the old vault's handle under the new vault's path: autosave writes
+            // through one vault while every path-keyed lookup resolves in the
+            // other. It also means a failed walk has committed nothing at all —
+            // it used to leave that same split state behind and report 'ok'.
+            const tree = await loadTree(handle);
+            if (!tree) return 'error';
+
+            // The three setters are synchronous and in one task, so React
+            // batches them into a single render: `rootHandle` and `fileTree`
+            // cannot be observed describing different vaults.
+            await set(IDB_KEY, handle);
+            setPreviousVault(null);
+            commitRoot(handle);
+            commitTree(tree, handle);
+            await recordVault(handle);
+            // Opening a vault is the moment this app has something worth
+            // keeping — the handle just stored is the only way back into that
+            // folder without the picker. Chrome never prompts for this; it
+            // decides from engagement, so asking on each open is how a refusal
+            // early on turns into a grant later (utils/storagePersistence.ts).
+            void requestPersistentStorage();
+            return 'ok';
+        } catch (err) {
+            if ((err as DOMException)?.name === 'NotFoundError') return 'missing';
+            console.error('Could not open the vault:', err);
+            return 'error';
+        } finally {
+            switchInFlightRef.current = false;
+        }
+    }, [loadTree, recordVault, isCurrentVault, commitRoot, commitTree]);
+
+    /**
+     * Take the grant a linked vault still needs.
+     *
+     * Separate from `openRecentVault` only in that it clears the prompt: a link
+     * whose vault has been opened is no longer pending. Called from a click,
+     * which is the only context `requestPermission` is allowed to ask in.
+     */
+    const openLinkedVault = useCallback(async (): Promise<VaultOpenResult> => {
+        if (!linkedVault) return 'denied';
+        const result = await openVaultHandle(linkedVault.handle);
+        if (result === 'ok') setLinkedVault(null);
+        return result;
+    }, [linkedVault, openVaultHandle]);
+
+    /**
+     * Switch to a vault the user has opened before, straight from its stored
+     * handle. Everything but the recent list's own bookkeeping is
+     * `openVaultHandle`.
+     */
+    const openRecentVault = useCallback(async (vault: RecentVault): Promise<VaultOpenResult> => {
+        const result = await openVaultHandle(vault.handle);
+        if (result === 'missing') {
+            // The folder is gone; keeping a row that can never open again would
+            // just be a trap.
+            await forgetRecentVault(vault.id);
+        }
+        return result;
+    }, [openVaultHandle, forgetRecentVault]);
+
+    /**
+     * Read the text content of a file handle. Line endings are normalized to
+     * \n — CodeMirror normalizes its document the same way, so this keeps tab
+     * buffers, saved output, and vault-search match offsets all in agreement
+     * even for CRLF-authored files.
+     */
+    const readFile = useCallback(async (fileHandle: FileSystemFileHandle) => {
+        const file = await fileHandle.getFile();
+        return decodeDocumentText(await file.arrayBuffer()).replace(/\r\n?/g, '\n');
+    }, []);
+
+    /**
+     * Write text content to a file handle.
+     */
+    const writeFile = useCallback(async (fileHandle: FileSystemFileHandle, content: string) => {
+        const writable = await fileHandle.createWritable();
+        await writable.write(content);
+        await writable.close();
+    }, []);
+
+    /**
+     * Read a file's raw bytes. Binary formats (PDFs) can't ride readFile():
+     * decoding arbitrary bytes as UTF-8 and normalizing line endings corrupts
+     * them irreversibly.
+     */
+    const readFileBytes = useCallback(async (fileHandle: FileSystemFileHandle) => {
+        const file = await fileHandle.getFile();
+        return new Uint8Array(await file.arrayBuffer());
+    }, []);
+
+    /** Write raw bytes to a file handle. */
+    const writeFileBytes = useCallback(async (fileHandle: FileSystemFileHandle, bytes: Uint8Array) => {
+        const writable = await fileHandle.createWritable();
+        // Hand over the VIEW, not `.buffer`. write() takes a BufferSource and
+        // honours a typed array's byteOffset/byteLength, so the view already
+        // denotes exactly the right range — it is `.buffer` that would ignore
+        // the view and write the whole underlying buffer. The defensive
+        // .slice() this replaces copied the entire document (tens of MB for a
+        // large annotated PDF) on every single save.
+        //
+        // The cast only rules out a SharedArrayBuffer-backed view, which write()
+        // does not accept. Nothing in this app allocates one (the PDF bytes come
+        // from a File read or a transferred worker buffer), and cross-origin
+        // isolation — required before SharedArrayBuffer even exists — is off.
+        await writable.write(bytes as Uint8Array<ArrayBuffer>);
+        await writable.close();
+    }, []);
+
+    /**
+     * Copy files dragged in from the OS into the vault, as-is.
+     *
+     * Writes the Blob straight through rather than going via text, so binaries
+     * (PDFs, images) survive. Never overwrites: a colliding name gets " (1)",
+     * " (2)", … appended, because a silent overwrite of someone's PDF is not a
+     * recoverable mistake.
+     *
+     * Returns the names actually written.
+     */
+    const importFiles = useCallback((files: FileList | File[], targetDir: FileSystemDirectoryHandle) => withMutation(async () => {
+        const written: string[] = [];
+        for (const file of Array.from(files)) {
+            // A dropped directory arrives as a File with no type and no size;
+            // reading it throws. Skip rather than write a 0-byte stub.
+            if (!file.size && !file.type) {
+                try { await file.slice(0, 1).arrayBuffer(); } catch { continue; }
+            }
+
+            try {
+                const name = await freeEntryName(targetDir, file.name);
+                await copyFileInto(targetDir, name, file);
+                written.push(name);
+            } catch (err) {
+                console.error(`Could not import "${file.name}":`, err);
+            }
+        }
+        if (written.length) await refreshTree(rootHandle);
+        return written;
+    }), [rootHandle, refreshTree, withMutation]);
+
+    /**
+     * Create a new file inside a directory handle.
+     * Returns the new file handle.
+     */
+    const createFile = useCallback((parentDirHandle: FileSystemDirectoryHandle, fileName: string) => withMutation(async () => {
+        const fileHandle = await parentDirHandle.getFileHandle(fileName, { create: true });
+        // Write empty content to initialize
+        const writable = await fileHandle.createWritable();
+        await writable.write('');
+        await writable.close();
+        // Refresh the tree to reflect the new file
+        await refreshTree(rootHandle);
+        return fileHandle;
+    }), [rootHandle, refreshTree, withMutation]);
+
+    /**
+     * Create a new folder inside a directory handle.
+     * Returns the new directory handle.
+     */
+    const createFolder = useCallback((parentDirHandle: FileSystemDirectoryHandle, folderName: string) => withMutation(async () => {
+        const dirHandle = await parentDirHandle.getDirectoryHandle(folderName, { create: true });
+        // Refresh the tree to reflect the new folder
+        await refreshTree(rootHandle);
+        return dirHandle;
+    }), [rootHandle, refreshTree, withMutation]);
+
+    /**
+     * Object URLs handed out by getAssetUrl, keyed by "<scope> <fileName>" and
+     * validated by the file's (lastModified, size) — the same staleness signal
+     * the vault-search index already trusts.
+     *
+     * Without this, every call minted a BRAND-NEW url and nothing ever revoked
+     * one: an image re-resolved on every scroll-past and every widget rebuild,
+     * so the blob registry grew without bound for the session. Worse, a fresh
+     * URL is a fresh cache key, so Chrome could not reuse the decoded bitmap
+     * and re-decoded the picture every time (and the widget visibly flashed
+     * back through its "Loading …" placeholder).
+     *
+     * Reusing one URL per file VERSION makes growth bounded by the number of
+     * distinct assets displayed, keeps the image cache warm, and still picks up
+     * an externally-edited image because the (mtime, size) check replaces the
+     * entry — revoking the old URL as it goes.
+     */
+    const assetUrlsRef = useRef<Map<string, { url: string; mtime: number; size: number }>>(new Map());
+
+    /**
+     * Vault-relative path of a directory handle, memoized per handle object.
+     *
+     * The cache key has to distinguish two folders that share a NAME but not a
+     * location, or an asset in one could be served for the other. resolve() is
+     * the only thing that answers that; the WeakMap keeps it to one call per
+     * handle, and because it yields a stable PATH the url cache still hits
+     * after refreshTree hands out fresh handle objects for the same folders.
+     */
+    const dirPathsRef = useRef<WeakMap<FileSystemDirectoryHandle, Promise<string>>>(new WeakMap());
+
+    const dirPath = useCallback(async (dir: FileSystemDirectoryHandle) => {
+        let p = dirPathsRef.current.get(dir);
+        if (!p) {
+            p = (rootHandle
+                ? rootHandle.resolve(dir).then(segs => segs?.join('/') ?? `?${dir.name}`)
+                : Promise.resolve(`?${dir.name}`)
+            ).catch(() => `?${dir.name}`);
+            dirPathsRef.current.set(dir, p);
+        }
+        return p;
+    }, [rootHandle]);
+
+    const assetUrlFor = useCallback(async (key: string, fileHandle: FileSystemFileHandle) => {
+        const file = await fileHandle.getFile();       // a stat + handle, not a read
+        const cached = assetUrlsRef.current.get(key);
+        if (cached && cached.mtime === file.lastModified && cached.size === file.size) {
+            return cached.url;
+        }
+        if (cached) URL.revokeObjectURL(cached.url);   // the file changed on disk
+        const url = URL.createObjectURL(file);
+        assetUrlsRef.current.set(key, { url, mtime: file.lastModified, size: file.size });
+        return url;
+    }, []);
+
+    /**
+     * Let go of every object URL minted for an asset under `path`.
+     *
+     * The cache is keyed by the asset's vault path (see assetUrlIn), so a
+     * folder's own `.Assets` and every descendant's share its prefix. Called
+     * when a folder is trashed, for the reason retireAsset revokes when a single
+     * asset is: an entry that can never be served again is a pinned blob and a
+     * cache key nothing will ever match.
+     */
+    const revokeAssetUrlsUnder = useCallback((path: string) => {
+        const prefix = `${path}/`;
+        for (const [key, cached] of assetUrlsRef.current) {
+            if (!key.startsWith(prefix)) continue;
+            URL.revokeObjectURL(cached.url);
+            assetUrlsRef.current.delete(key);
+        }
+    }, []);
+
+    // A different vault can reuse the same asset names — never serve the old
+    // vault's bytes, and let its URLs go rather than pinning them for the session.
+    useEffect(() => {
+        const urls = assetUrlsRef.current;
+        return () => {
+            for (const { url } of urls.values()) URL.revokeObjectURL(url);
+            urls.clear();
+        };
+    }, [rootHandle]);
+
+    /** The url for `fileName` in THIS folder's .Assets, or null if it isn't there. */
+    const assetUrlIn = useCallback(async (dir: FileSystemDirectoryHandle, fileName: string) => {
+        try {
+            const assetsDir = await dir.getDirectoryHandle(ASSETS_DIR);
+            const fileHandle = await assetsDir.getFileHandle(fileName);
+            // Scoped by the folder's vault path, so two folders holding an
+            // identically-named asset never collide in the cache.
+            return await assetUrlFor(`${joinVaultPath(await dirPath(dir), ASSETS_DIR)}/${fileName}`, fileHandle);
+        } catch {
+            return null;
+        }
+    }, [assetUrlFor, dirPath]);
+
+    /**
+     * Every folder between the vault root and `dir`, root first — derived by
+     * descending from the root, because a handle knows its own name and nothing
+     * above it. `dir` itself is excluded, as is everything when `dir` IS the
+     * root or isn't inside it at all.
+     */
+    const ancestorsOf = useCallback(async (dir: FileSystemDirectoryHandle) => {
+        if (!rootHandle) return [];
+        let segs: string[] | null = null;
+        try {
+            segs = await rootHandle.resolve(dir);
+        } catch {
+            return [];
+        }
+        if (!segs || segs.length === 0) return [];
+
+        const chain: FileSystemDirectoryHandle[] = [rootHandle];
+        let cur = rootHandle;
+        for (const seg of segs.slice(0, -1)) {       // stop short of `dir` itself
+            try {
+                cur = await cur.getDirectoryHandle(seg);
+            } catch {
+                break;
+            }
+            chain.push(cur);
+        }
+        return chain;
+    }, [rootHandle]);
+
+    /**
+     * Resolve an embedded asset NAME to a displayable url.
+     *
+     * A note owns the `.Assets` folder beside it and no other, so that folder
+     * is the only one the hot path consults: one directory lookup whatever the
+     * vault's depth, and an image is never served out of a folder the note has
+     * nothing to do with.
+     *
+     * The walk up the ancestors runs ONLY when that misses, and exists purely
+     * for backwards compatibility. Assets landed in the VAULT ROOT's `.Assets`
+     * before local ones existed, and still do for a document with no folder of
+     * its own (the Help guide), so a vault carried forward can have pictures
+     * sitting one or more folders above the note that shows them. Walking up
+     * from the note is exact for that: an asset can only have been misplaced
+     * ABOVE where it belongs — nothing ever wrote one sideways — so this
+     * reaches every one of them without ever searching the vault.
+     */
+    const getAssetUrl = useCallback(async (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => {
+        if (!isAssetName(fileName)) return null;
+        const home = parentDirHandle || rootHandle;
+        if (!home) return null;
+
+        const local = await assetUrlIn(home, fileName);
+        if (local) return local;
+
+        // Nearest ancestor first: the closest copy is the one that note was
+        // most likely written against.
+        const ancestors = await ancestorsOf(home);
+        for (let i = ancestors.length - 1; i >= 0; i--) {
+            const url = await assetUrlIn(ancestors[i], fileName);
+            if (url) return url;
+        }
+        return null;
+    }, [rootHandle, assetUrlIn, ancestorsOf]);
+
+    /**
+     * Save a Blob into the `.Assets` folder BESIDE the note being edited,
+     * creating it if this is the folder's first asset. Only a document with no
+     * folder of its own (the Help guide) falls back to the vault root.
+     */
+    const saveAsset = useCallback((fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => withMutation(async () => {
+        const targetDir = parentDirHandle || rootHandle;
+        if (!targetDir) throw new Error('No vault open');
+
+        let assetsDir;
+        try {
+            assetsDir = await targetDir.getDirectoryHandle(ASSETS_DIR, { create: true });
+        } catch (err) {
+            console.error('Could not create/access Assets folder:', err);
+            throw err;
+        }
+
+        const fileHandle = await assetsDir.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+
+        // NO tree refresh. `.Assets` is hidden from the tree at every depth
+        // (utils/vaultEntries.ts), so nothing that just happened can appear in
+        // it — and the refresh was a walk of every folder in the vault, run
+        // while the reader waited for a pasted image to land. Same trap, same
+        // answer as App.writeEntryStyles.
+    }), [rootHandle, withMutation]);
+
+    /**
+     * Move an asset out of a folder's `.Assets` and into its `.Garbage` — what
+     * happens once the last note in that folder stops referring to it (see
+     * App.reconcileAssets). Returns whether anything moved.
+     *
+     * Retired rather than erased, because unlike deleting a file this is not
+     * something the user asked for in so many words: it follows from an edit,
+     * with no confirmation between the two. The same folder's `.Garbage` is
+     * where a deleted file goes, so recovering one by hand is the same motion
+     * as recovering the other — and restoreAsset undoes it automatically when
+     * the reference comes back.
+     */
+    const retireAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle) => withMutation(async () => {
+        if (!isAssetName(fileName)) return false;
+        try {
+            const assetsDir = await dirHandle.getDirectoryHandle(ASSETS_DIR);
+            const source = await assetsDir.getFileHandle(fileName);   // throws => nothing to retire
+            const file = await source.getFile();
+
+            // Under its own name, not a free one: a retired asset has to be
+            // findable again by the name the note used. Two assets that share a
+            // name in one folder are the same picture (the second write replaced
+            // the first in .Assets), so the newest bytes winning is right.
+            const graveyard = await retiredAssetsDir(dirHandle, true);
+            await copyFileInto(graveyard, fileName, file);
+            await assetsDir.removeEntry(fileName);
+
+            // The url cache pins a blob per file version; this one can't be
+            // served again until the asset comes back (which re-mints it).
+            const key = `${joinVaultPath(await dirPath(dirHandle), ASSETS_DIR)}/${fileName}`;
+            const cached = assetUrlsRef.current.get(key);
+            if (cached) {
+                URL.revokeObjectURL(cached.url);
+                assetUrlsRef.current.delete(key);
+            }
+            return true;
+        } catch {
+            return false;
+        }
+    }), [dirPath, withMutation]);
+
+    /**
+     * Put a retired asset back into `.Assets` — the exact inverse of
+     * retireAsset, for when the reference returns (an undo, or the same embed
+     * pasted into a sibling note). Returns whether anything moved.
+     *
+     * Everything here is a miss in the ordinary case, so it opens with the
+     * cheapest one: a folder that has never retired an asset has no
+     * `.Garbage/.Assets` at all, and the lookup fails at the first step.
+     */
+    const restoreAsset = useCallback((fileName: string, dirHandle: FileSystemDirectoryHandle) => withMutation(async () => {
+        if (!isAssetName(fileName)) return false;
+        try {
+            const graveyard = await retiredAssetsDir(dirHandle, false);
+            const source = await graveyard.getFileHandle(fileName);   // throws => never retired
+            const file = await source.getFile();
+
+            // Only now is there anything to restore — and only now is creating
+            // the folder's .Assets warranted.
+            const assetsDir = await dirHandle.getDirectoryHandle(ASSETS_DIR, { create: true });
+            try {
+                await assetsDir.getFileHandle(fileName);
+                return false;    // a live asset already holds the name; leave both alone
+            } catch { /* free — take it back */ }
+
+            await copyFileInto(assetsDir, fileName, file);
+            await graveyard.removeEntry(fileName);
+            return true;
+        } catch {
+            return false;
+        }
+    }), [withMutation]);
+
+    /**
+     * Restore the previous vault by requesting permission with a user gesture
+     */
+    const restoreVault = useCallback(async () => {
+        if (!previousVault) return;
+        try {
+            const permission = await previousVault.requestPermission({ mode: 'readwrite' });
+            if (permission === 'granted') {
+                commitRoot(previousVault);
+                setIsLoading(true);
+                await recordVault(previousVault);
+                await refreshTree(previousVault);
+                setPreviousVault(null);
+                setIsLoading(false);
+            }
+        } catch (err) {
+            console.error('Error restoring vault permission:', err);
+        }
+    }, [previousVault, refreshTree, recordVault, commitRoot]);
+
+    /**
+     * Move a file — or a whole folder — into the Trash: the `.Garbage` folder
+     * BESIDE it, not the vault's. A note deleted from `math/units` lands in
+     * `math/units/.Garbage`; the folder `math/units` itself lands in
+     * `math/.Garbage/units`, and only an entry at the vault root lands in the
+     * root's.
+     *
+     * Where a deletion is recoverable from should follow the thing deleted, the
+     * same way its `.Assets` do: the trash stays next to what it came out of, so
+     * moving (or sharing, or archiving) a folder carries its history with it,
+     * and two folders each holding a "notes.md" no longer pile their deletions
+     * into one bucket at the top of the vault.
+     *
+     * A FOLDER GOES WHOLESALE, with everything under it — its notes, its
+     * sub-folders, and its own `.Assets` and `.Garbage`. That last part is the
+     * point rather than an oversight: the trashed copy is as self-contained as
+     * the folder was, so recovering it by hand restores its pictures and its own
+     * history along with its notes. There is no native move, so this is
+     * copy-then-delete like every other move here (copyDirRecursive), which
+     * means the copy is only ever as current as the DISK — App.handleTrash
+     * flushes every affected buffer before calling this, precisely so that what
+     * lands in the trash is what the reader last had rather than what was last
+     * autosaved.
+     *
+     * IT EITHER HAPPENED OR IT DIDN'T — the copy is taken back out again on any
+     * failure, which is `displaceInto`'s doing and documented there. Its
+     * rollback can never run once the original is gone: `refreshTree` handles
+     * its own errors, so `removeEntry` succeeding is the last thing that can
+     * fail.
+     */
+    const moveToTrash = useCallback((node: FileTreeNode) => withMutation(async () => {
+        if (!rootHandle || !node.parentHandle) return false;
+        // The trash must never be nested inside itself, and a folder must never
+        // be trashed into the bucket retired ASSETS are parked in — restoreAsset
+        // would then be able to resurrect its bytes into a live `.Assets`.
+        // Neither hidden folder is in the file tree, so nothing can ask for this
+        // today; the guard is here because the failure if anything ever did is
+        // copyDirRecursive walking into the copy it is making, without bound.
+        if (node.kind === 'directory' && (node.name === TRASH_DIR || node.name === ASSETS_DIR)) return false;
+
+        try {
+            const trashDir = await node.parentHandle.getDirectoryHandle(TRASH_DIR, { create: true });
+            await displaceInto(trashDir, node.parentHandle, node);
+            // The pictures that folder held can only have been shown by notes
+            // inside it (resolution never looks sideways or down), and those are
+            // closed. A url that can never be displayed again is a pinned blob —
+            // the same reason retireAsset revokes.
+            if (node.kind === 'directory') revokeAssetUrlsUnder(node.path);
+            await refreshTree(rootHandle);
+            return true;
+        } catch (err) {
+            console.error('Failed to move item to trash:', err);
+            return false;
+        }
+    }), [rootHandle, refreshTree, revokeAssetUrlsUnder, withMutation]);
+
+    /**
+     * Everything trashed anywhere in this vault, newest deletion first — the
+     * bin's root list. Built fresh on every call; see the crawl above for why
+     * there is deliberately no cache and what the flattening rules are.
+     */
+    const listTrash = useCallback(async (): Promise<TrashItem[]> => {
+        if (!rootHandle) return [];
+        const out: TrashItem[] = [];
+        await walkForTrash(rootHandle, '', out);
+        return sortTrashRoot(out);
+    }, [rootHandle]);
+
+    /**
+     * Put one item back where the `.Garbage` holding it sits — `item.restorePath`,
+     * which the crawl set to the parent of the OUTERMOST `.Garbage` on its path.
+     * A file three folders deep inside something that was deleted as a unit
+     * therefore comes back flat, beside that `.Garbage`, rather than under a
+     * recreation of an ancestry the reader no longer has.
+     *
+     * Structurally `moveToTrash` in reverse, and deliberately NOT `moveFile` /
+     * `renameFile`: those are the documented `freeEntryName` exceptions, so a
+     * file put back onto a taken name would silently truncate the live file and
+     * a folder would silently merge into the live one — neither with a rollback.
+     * Here a taken name is reported ('collision') with nothing touched, and
+     * answered by the caller.
+     *
+     * 'replace' DISPLACES rather than erases: the entry standing in the way is
+     * moved into that folder's own `.Garbage` first (a retired picture into its
+     * `.Garbage/.Assets`, which is where a retired picture lives) and handed
+     * back, so the bin can list it. Nothing the user made is destroyed outright
+     * — deleteFromTrash is the one call in here that does that, and only when
+     * asked in so many words.
+     */
+    const restoreFromTrash = useCallback((item: TrashItem, mode: TrashRestoreMode): Promise<TrashRestoreResult> => withMutation(async () => {
+        if (!rootHandle) return { status: 'error' };
+        // Mirrors moveToTrash's guard, and is unreachable for the same reason:
+        // the crawl lists neither hidden folder as an item. If it ever were
+        // reached, the failure is copyDirRecursive walking into its own copy.
+        if (!isAssetName(item.name)) return { status: 'error' };
+        if (item.kind === 'directory' && (item.name === TRASH_DIR || item.name === ASSETS_DIR)) return { status: 'error' };
+
+        // What this call has written at the destination, so a failure can take
+        // it back out — the same record-before-the-first-byte rule displaceInto
+        // keeps, for the same reason.
+        let wrote: { dir: FileSystemDirectoryHandle; name: string } | null = null;
+
+        try {
+            const home = item.restoreDirHandle;
+            // A retired picture goes back into `.Assets`. Probed rather than
+            // created, cheapest miss first (restoreAsset's shape): a folder with
+            // no `.Assets` at all cannot have a colliding name, and creating one
+            // here would leave an empty folder behind if the reader then
+            // cancelled at the collision question.
+            let destDir: FileSystemDirectoryHandle | null = home;
+            if (item.origin === 'retired') {
+                try {
+                    destDir = await home.getDirectoryHandle(ASSETS_DIR);
+                } catch {
+                    destDir = null;
+                }
+            }
+
+            const taken = destDir ? await entryExists(destDir, item.name) : false;
+            if (taken && mode === 'auto') return { status: 'collision' };
+
+            let displaced: TrashItem | undefined;
+            if (taken && destDir && mode === 'replace') {
+                const live = await liveEntry(destDir, item.name);
+                if (!live) return { status: 'error' };
+                // A displaced picture is a RETIRED picture: it belongs in the
+                // bucket retireAsset uses, not beside the trashed notes, or
+                // putting it back later would land it outside `.Assets`.
+                const bucket = item.origin === 'retired'
+                    ? await retiredAssetsDir(home, true)
+                    : await destDir.getDirectoryHandle(TRASH_DIR, { create: true });
+                const bucketPath = item.origin === 'retired'
+                    ? joinVaultPath(joinVaultPath(item.restorePath, TRASH_DIR), ASSETS_DIR)
+                    : joinVaultPath(item.restorePath, TRASH_DIR);
+                const filedAs = await displaceInto(bucket, destDir, live);
+                // Same reason moveToTrash revokes: the pictures a displaced
+                // FOLDER held can only have been shown by notes inside it, and
+                // App has just closed those — a url nothing can display again is
+                // a pinned blob.
+                if (live.kind === 'directory') revokeAssetUrlsUnder(joinVaultPath(item.restorePath, item.name));
+                displaced = await describeDisplaced(
+                    bucket, bucketPath, filedAs, live.kind, item.origin, home, item.restorePath);
+            }
+
+            const finalName = taken && destDir && mode === 'keep-both'
+                ? await freeEntryName(destDir, item.name, item.kind)
+                : item.name;
+
+            // Only now is there anything to restore, and only now is creating
+            // the folder's `.Assets` warranted.
+            if (!destDir) {
+                destDir = await home.getDirectoryHandle(ASSETS_DIR, { create: true });
+                // The probe above read a MISSING `.Assets` as "no collision is
+                // possible", which is the one path here where a name was never
+                // certified free — and if the create-lookup hands back a folder
+                // that does exist after all (the no-create read failed for some
+                // other reason, or something outside this tab made it in the
+                // meantime), copyFileInto's `getFileHandle(create: true)` would
+                // open-or-TRUNCATE whatever is standing there. Ask again now
+                // that the real directory is in hand.
+                if (await entryExists(destDir, finalName)) return { status: 'collision' };
+            }
+
+            wrote = { dir: destDir, name: finalName };
+            if (item.kind === 'file') {
+                await copyFileInto(destDir, finalName, await (item.handle as FileSystemFileHandle).getFile());
+            } else {
+                const copy = await destDir.getDirectoryHandle(finalName, { create: true });
+                await copyDirRecursive(item.handle as FileSystemDirectoryHandle, copy);
+            }
+
+            await item.parentHandle.removeEntry(item.name, { recursive: item.kind === 'directory' });
+            await refreshTree(rootHandle);
+            return { status: 'ok', name: finalName, displaced };
+        } catch (err) {
+            console.error('Failed to put the item back:', err);
+            if (wrote) {
+                try {
+                    await wrote.dir.removeEntry(wrote.name, { recursive: item.kind === 'directory' });
+                } catch (undoErr) {
+                    console.error('Could not remove the abandoned restored copy:', undoErr);
+                }
+            }
+            // A 'replace' that displaced something and THEN failed to copy
+            // leaves that entry in the trash rather than putting it back: it is
+            // one more row in the bin, one click from home, which is a better
+            // failure than a second copy-and-delete run to undo the first while
+            // the disk is already refusing writes. Nothing is lost either way.
+            return { status: 'error' };
+        }
+    }), [rootHandle, refreshTree, revokeAssetUrlsUnder, withMutation]);
+
+    /**
+     * Erase one item from the trash for good. With `emptyTrash`, the only thing
+     * in this app that destroys something the user made with no copy left
+     * anywhere — which is why both are behind a question App words plainly.
+     *
+     * No `refreshTree`: nothing inside a `.Garbage` is in the file tree.
+     */
+    const deleteFromTrash = useCallback(async (item: TrashItem) => {
+        if (!isAssetName(item.name)) return false;
+        // The same refusal restoreFromTrash keeps, and it belongs here more than
+        // there: this one is `removeEntry(..., { recursive: true })`, so an item
+        // that ever leaked a `.Garbage`/`.Assets` name would erase a whole
+        // bucket rather than the thing the reader pointed at. Unreachable today
+        // — the crawl diverts both names before it builds an item.
+        if (item.kind === 'directory' && (item.name === TRASH_DIR || item.name === ASSETS_DIR)) return false;
+        try {
+            await item.parentHandle.removeEntry(item.name, { recursive: item.kind === 'directory' });
+            return true;
+        } catch (err) {
+            console.error('Failed to delete the item for good:', err);
+            return false;
+        }
+    }, []);
+
+    /**
+     * Remove every `.Garbage` in the vault, retired pictures and all. Returns
+     * how many folders were removed AND how many refused.
+     *
+     * Each removal is its own try/catch, so one folder held open by something
+     * else does not cost the reader the rest of the emptying — and the names
+     * are collected before anything is removed, because removing entries while
+     * an `entries()` iterator is walking them is not something the API
+     * promises anything about. `failed` is what keeps that tolerance honest: a
+     * caller that saw only the count would empty the panel's list and say the
+     * bin was emptied while the folders that refused still held their files.
+     */
+    const emptyTrash = useCallback(() => withMutation(async () => {
+        if (!rootHandle) return { removed: 0, failed: 0 };
+        let removed = 0;
+        let failed = 0;
+
+        const sweep = async (dir: FileSystemDirectoryHandle): Promise<void> => {
+            const live: FileSystemDirectoryHandle[] = [];
+            let hasTrash = false;
+            try {
+                for await (const [name, handle] of dir.entries()) {
+                    if (handle.kind !== 'directory' || !isAssetName(name)) continue;
+                    if (name === ASSETS_DIR) continue;
+                    if (isGitName(name)) continue;        // same reason as walkForTrash
+                    if (name === TRASH_DIR) { hasTrash = true; continue; }
+                    live.push(handle);
+                }
+            } catch (err) {
+                console.warn('Could not read a folder while emptying the trash:', err);
+                // Unread, so unknown: counted as a failure rather than passed
+                // over, since a `.Garbage` it holds is still on disk either way.
+                failed++;
+                return;
+            }
+
+            if (hasTrash) {
+                try {
+                    await dir.removeEntry(TRASH_DIR, { recursive: true });
+                    removed++;
+                } catch (err) {
+                    console.error('Could not empty the trash in', dir.name, err);
+                    failed++;
+                }
+            }
+            for (const sub of live) await sweep(sub);
+        };
+
+        await sweep(rootHandle);
+        return { removed, failed };
+    }), [rootHandle, withMutation]);
+
+    /**
+     * Move a file from its current parent to a target directory handle.
+     */
+    const moveFile = useCallback((sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => withMutation(async () => {
+        if (!sourceNode.parentHandle || !targetDirHandle) return false;
+        // Don't move into the same folder. By isSameEntry as well as identity: a
+        // copy-then-delete "move" of a file onto its own folder copies it onto
+        // itself and then removes it, so this test must not depend on two
+        // handles for one folder being the same OBJECT (the tree's sharing pass
+        // keeps them so, but a handle can reach here from anywhere).
+        if (sourceNode.parentHandle === targetDirHandle) return false;
+        try {
+            if (await sourceNode.parentHandle.isSameEntry(targetDirHandle)) return false;
+        } catch { /* cannot tell: proceed as before */ }
+
+        try {
+            if (sourceNode.kind === 'file') {
+                // Copy file content to target
+                const file = await sourceNode.handle.getFile();
+                const newHandle = await targetDirHandle.getFileHandle(sourceNode.name, { create: true });
+                const writable = await newHandle.createWritable();
+                await writable.write(file);
+                await writable.close();
+            } else {
+                // For folders: create in target and recursively copy contents
+                const newDir = await targetDirHandle.getDirectoryHandle(sourceNode.name, { create: true });
+                await copyDirRecursive(sourceNode.handle, newDir);
+            }
+
+            // Remove original
+            await sourceNode.parentHandle.removeEntry(sourceNode.name, { recursive: sourceNode.kind === 'directory' });
+            await refreshTree(rootHandle);
+            return true;
+        } catch (err) {
+            console.error('Failed to move item:', err);
+            return false;
+        }
+    }), [rootHandle, refreshTree, withMutation]);
+
+    /**
+     * Rename a file or folder within its parent directory.
+     */
+    const renameFile = useCallback((sourceNode: FileTreeNode, newName: string) => withMutation(async () => {
+        if (!sourceNode.parentHandle || !newName) return false;
+        if (sourceNode.name === newName) return true; // No change
+
+        try {
+            if (sourceNode.kind === 'file') {
+                // Copy file content to a new file with the new name
+                const file = await sourceNode.handle.getFile();
+                const newHandle = await sourceNode.parentHandle.getFileHandle(newName, { create: true });
+                const writable = await newHandle.createWritable();
+                await writable.write(file);
+                await writable.close();
+            } else {
+                // For folders: create a new folder and recursively copy contents
+                const newDir = await sourceNode.parentHandle.getDirectoryHandle(newName, { create: true });
+                await copyDirRecursive(sourceNode.handle, newDir);
+            }
+
+            // Remove original
+            await sourceNode.parentHandle.removeEntry(sourceNode.name, { recursive: sourceNode.kind === 'directory' });
+            await refreshTree(rootHandle);
+            return true;
+        } catch (err) {
+            console.error('Failed to rename item:', err);
+            return false;
+        }
+    }), [rootHandle, refreshTree, withMutation]);
+
+    /* ── Versioned document IO ─────────────────────────────────────────────────
+     * The contracts are in types/index.ts (FileSystemContextValue). Documents go
+     * through these so that a save can never overwrite a file that changed on
+     * disk since the app last read or wrote it; `readFile`/`writeFile` stay as
+     * they were for everything that is not an open document.
+     * ─────────────────────────────────────────────────────────────────────── */
+
+    /** readFile, plus the version of exactly the bytes it decoded. The hash is
+     *  over the RAW bytes (CRLF and all) — hashing the normalized text would make
+     *  a text document and a PDF disagree about what "unchanged" means. */
+    const readFileVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
+        const { file, buf } = await readSnapshot(fileHandle);
+        const version = await versionOfSnapshot(file, buf);
+        return { text: decodeDocumentText(buf).replace(/\r\n?/g, '\n'), version };
+    }, []);
+
+    const readFileSnapshot = useCallback(async (handle: FileSystemFileHandle, signal?: AbortSignal): Promise<ReadOnlyFileSnapshot> => {
+        signal?.throwIfAborted();
+        let blob: File;
+        try { blob = await handle.getFile(); } catch (error) {
+            if (!(error instanceof DOMException) || error.name !== 'NotReadableError') throw error;
+            blob = await handle.getFile();
+        }
+        signal?.throwIfAborted();
+        const lifetime = new AbortController();
+        const abort = () => lifetime.abort();
+        signal?.addEventListener('abort', abort, { once: true });
+        const stat = { lastModified: blob.lastModified, size: blob.size };
+        let version: DiskVersion | undefined;
+        return { snapshotId: crypto.randomUUID(), blob, stat,
+            fingerprint(requestSignal) {
+                requestSignal?.throwIfAborted(); lifetime.signal.throwIfAborted();
+                if (version) return Promise.resolve(version);
+                // StrictMode replays a reader session against the SAME snapshot.
+                // Cancelling that consumer terminates its hash worker, not the
+                // immutable snapshot which the next session still owns.
+                const taskSignal = requestSignal ? AbortSignal.any([requestSignal, lifetime.signal]) : lifetime.signal;
+                return fingerprintSnapshot(blob, taskSignal).then(hash => {
+                    taskSignal.throwIfAborted();
+                    return version = { ...stat, hash };
+                });
+            },
+            dispose() { lifetime.abort(); signal?.removeEventListener('abort', abort); },
+        };
+    }, []);
+
+    const readBytesVersioned = useCallback(async (fileHandle: FileSystemFileHandle) => {
+        const { file, buf } = await readSnapshot(fileHandle);
+        return { bytes: new Uint8Array(buf), version: await versionOfSnapshot(file, buf) };
+    }, []);
+
+    /**
+     * THE document write. Writes only if the file still is what the app last
+     * knew (`expected`): the stat is the cheap check, and when only the stat
+     * moved (a `touch`, a checkout of identical bytes, a sync tool re-stamping)
+     * the content hash decides — equal content is no conflict.
+     *
+     * A file that is MISSING is `deleted` and nothing is written, because
+     * `createWritable` on a vanished handle would silently recreate it — a note
+     * the user deleted outside the app coming back on the next keystroke.
+     *
+     * A TOCTOU WINDOW REMAINS and cannot be closed with this API: the File System
+     * Access API has no compare-and-swap, so a change landing between the stat
+     * here and the swap-file rename inside `close()` is still overwritten (and a
+     * same-size, same-mtime change is indistinguishable by stat alone). It is
+     * milliseconds wide, versus "whenever the user next typed" before; the live
+     * detection (the watcher, App.checkOpenDocs) is what makes it rare.
+     *
+     * Not wrapped in the mutation counter on purpose: this is the autosave, and
+     * it must cost the tree nothing (its `.crswap` swap is filtered, and the
+     * resulting `modified` never touches the tree).
+     */
+    const writeFileVersioned = useCallback(async (
+        fileHandle: FileSystemFileHandle,
+        data: string | Uint8Array,
+        expected: DiskVersion | null,
+    ): Promise<VersionedWriteResult> => {
+        const bytes = toBytes(data);
+        try {
+            const stat = await statOf(fileHandle);
+            if (!stat) return { status: 'deleted' };
+
+            if (expected && !sameStat(stat, expected)) {
+                const { file, buf } = await readSnapshot(fileHandle);
+                const disk = await versionOfSnapshot(file, buf);
+                if (disk.hash !== expected.hash) {
+                    return { status: 'changed', disk: { bytes: new Uint8Array(buf), version: disk } };
+                }
+            }
+
+            await writeAllBytes(fileHandle, bytes);
+        } catch (err) {
+            // Vanished between the stat and the swap (or mid-read): still not ours
+            // to recreate.
+            if (isGone(err)) return { status: 'deleted' };
+            throw err;
+        }
+        return { status: 'written', version: await versionAfterWrite(fileHandle, bytes) };
+    }, []);
+
+    /**
+     * Park `data` beside `filePath` as `stem (conflict).ext`, then
+     * `stem (conflict 2).ext`, … — never over anything: the name is verified free
+     * against files AND folders (entryExists) and only then created, with
+     * `getFileHandle({create:true})` rather than `createFile` (which opens-or-
+     * truncates). The verify-then-create gap is the same one every name check in
+     * this file has; nothing else is writing conflict copies. Resolves to the
+     * copy's vault path.
+     *
+     * `vaultRoot`: the vault the document belongs to, when that may no longer be
+     * the open one — a vault switch flushes its closing documents only AFTER
+     * rootHandleRef names the next vault (measured: the copy landed in the new
+     * vault, at the same relative path). Folders on the way that were deleted
+     * along with the file are made again: the copy holds edits that exist
+     * nowhere else (measured: closing such a tab lost them).
+     */
+    const writeConflictCopy = useCallback((filePath: string, data: string | Uint8Array, vaultRoot?: FileSystemDirectoryHandle | null) => withMutation(async () => {
+        const root = vaultRoot ?? rootHandleRef.current;
+        if (!root) throw new Error('No vault open');
+        const parentPath = parentVaultPath(filePath);
+        const { dir, patchFrom } = await ensureDirChain(root, parentPath);
+        const name = filePath.slice(parentPath ? parentPath.length + 1 : 0);
+
+        let copyName = '';
+        for (let n = 1; ; n++) {
+            copyName = conflictName(name, n);
+            if (!(await entryExists(dir, copyName))) break;
+        }
+        const handle = await dir.getFileHandle(copyName, { create: true });
+        await writeAllBytes(handle, toBytes(data));
+        // Only the tree on screen is patched: a copy left in the vault being
+        // switched away from is found there the next time it is opened.
+        if (root === rootHandleRef.current) await patchTreeDirs(root, [patchFrom ?? parentPath]);
+        return joinVaultPath(parentPath, copyName);
+    }), [withMutation, patchTreeDirs]);
+
+    /**
+     * Put back a file that was deleted outside the app ("Save again"): create any
+     * missing parent folders and the file — only if NOTHING is at `filePath`
+     * now. Whatever is there (the user, or a `git checkout`, got there first) is
+     * `exists`, and the caller turns that into a conflict instead of a write.
+     */
+    const recreateFile = useCallback((filePath: string, data: string | Uint8Array) => withMutation(async () => {
+        const root = rootHandleRef.current;
+        if (!root) throw new Error('No vault open');
+        const parentPath = parentVaultPath(filePath);
+        const fileName = filePath.slice(parentPath ? parentPath.length + 1 : 0);
+        const { dir, patchFrom } = await ensureDirChain(root, parentPath);
+        if (await entryExists(dir, fileName)) return { status: 'exists' as const };
+
+        const handle = await dir.getFileHandle(fileName, { create: true });
+        const bytes = toBytes(data);
+        await writeAllBytes(handle, bytes);
+        const version = await versionAfterWrite(handle, bytes);
+        await patchTreeDirs(root, [patchFrom ?? parentPath]);
+        return { status: 'written' as const, version, handle };
+    }), [withMutation, patchTreeDirs]);
+
+    /** A fresh handle for a vault path, walked down from the root: what a tab's
+     *  stored handle is checked against, since that one may be stale. Null if any
+     *  component is missing (or is the wrong kind). */
+    const resolveFileHandle = useCallback(async (filePath: string) => {
+        const root = rootHandleRef.current;
+        if (!root || !filePath) return null;
+        const names = filePath.split('/');
+        const fileName = names.pop() as string;
+        try {
+            let dir = root;
+            for (const name of names) dir = await dir.getDirectoryHandle(name);
+            return await dir.getFileHandle(fileName);
+        } catch (err) {
+            if (isGone(err)) return null;
+            throw err;
+        }
+    }, []);
+
+    /* ── The watcher: outside changes → the tree, then the open documents ─────
+     * One FileSystemObserver on the vault root (Chrome 133+ desktop; works on
+     * OPFS), `recursive`. Its records are HINTS (utils/vaultChanges.ts): they pick
+     * which directories to re-list and which open documents to re-verify; the
+     * disk, not the record, is what the app then believes.
+     *
+     * UNVERIFIED against a real disk (only OPFS can be driven in tests): that
+     * local-disk records carry the same shapes as OPFS's, that an autosave shows
+     * up as one `modified` for the file with its `.crswap` swap swallowed or
+     * filtered (either way it is filtered here), and that Windows reports no
+     * cross-directory `moved` (so a move there is disappeared + appeared). Each
+     * of those degrades to a re-list that shares back to an identical tree.
+     *
+     * The pipeline: records → normalizeRecords → a 100 ms trailing debounce
+     * (500 ms ceiling) → ONE serialized processing step at a time:
+     *   - it WAITS while the app's own mutations are in flight (`mutationBusyRef`),
+     *     and again after its reads if one began meanwhile, because a copy-then-
+     *     delete move is, in between, an item in both places;
+     *   - it re-lists only the dirty directories (or walks the vault once when
+     *     there are more than MAX_DIRTY_DIRS, or the batch says rescan);
+     *   - shares the result with the tree on screen and sets state ONLY if
+     *     something changed;
+     *   - and only then tells the subscribers, tree-patched-first, so App's
+     *     open-document logic sees a tree that already matches the disk.
+     * A batch is emitted even when it changed no listing — `modified` is exactly
+     * that case, and App needs it.
+     * ─────────────────────────────────────────────────────────────────────── */
+
+    const emitVaultChanges = useCallback((batch: VaultChangeBatch) => {
+        for (const listener of [...vaultChangeListenersRef.current]) {
+            try { listener(batch); } catch (err) { console.error('A vault-change listener threw:', err); }
+        }
+    }, []);
+
+    /** One batch, start to finish. Resolves false when it must be redone (a
+     *  mutation began, or the tree moved under it), true when it is finished or
+     *  moot (another vault is open). */
+    const processVaultBatch = useCallback(async (
+        root: FileSystemDirectoryHandle,
+        batch: VaultChangeBatch,
+        isCurrent: () => boolean,
+    ): Promise<boolean> => {
+        const dirs = batch.rescan ? null : dirtyDirs(batch);
+        if (dirs === null || dirs.size > 0) {
+            const ticket = ++treeTicketRef.current;
+            const base = fileTreeRef.current;
+            let next: FileTreeNode[] | null = null;
+            if (dirs && dirs.size <= MAX_DIRTY_DIRS) next = await relistDirs(base, root, dirs, touchedPaths(batch));
+            // A rescan, a burst past the dirty-directory cap, or a failed re-list
+            // (a folder vanished mid-listing): one full walk, still shared.
+            if (!next) next = await loadTree(root);
+
+            if (!isCurrent()) return true;
+            if (mutationBusyRef.current > 0) return false;
+            // Someone else published while we read (a context write that patches
+            // the tree itself): our result was computed from a tree that is gone.
+            if (fileTreeRef.current !== base) return false;
+            if (next) publishTree(ticket, root, next);
+        }
+        if (!isCurrent()) return true;
+        emitVaultChanges(batch);
+        return true;
+    }, [loadTree, publishTree, emitVaultChanges]);
+
+    useEffect(() => {
+        if (!rootHandle) {
+            setLiveDetection('off');
+            return;
+        }
+        const root = rootHandle;
+        let cancelled = false;
+        const isCurrent = () => !cancelled && rootHandleRef.current === root;
+
+        // ── the serialized queue ──
+        let queued: VaultChangeBatch | null = null;
+        let running = false;
+        const pump = async () => {
+            if (running) return;
+            running = true;
+            try {
+                while (queued && isCurrent()) {
+                    // Resumed by the mutation counter reaching 0 (resumeWatcherRef).
+                    if (mutationBusyRef.current > 0) break;
+                    const batch: VaultChangeBatch = queued;
+                    queued = null;
+                    let finished = true;
+                    try {
+                        finished = await processVaultBatch(root, batch, isCurrent);
+                    } catch (err) {
+                        console.error('Could not process outside changes:', err);
+                    }
+                    if (!finished) queued = queued ? mergeInto(batch, queued) : batch;
+                }
+            } finally {
+                running = false;
+            }
+        };
+        const enqueue = (batch: VaultChangeBatch) => {
+            queued = queued ? mergeInto(queued, batch) : batch;
+            void pump();
+        };
+        const coalescer = createBatchCoalescer(enqueue);
+
+        // A macrotask later, not synchronously from the mutation's `finally`: the
+        // caller's own continuation (App's retargetTabs after `await moveFile`)
+        // runs in a microtask right after, and the batch must land after it.
+        const resume = () => { setTimeout(() => { if (isCurrent()) void pump(); }, 0); };
+        resumeWatcherRef.current = resume;
+
+        // ── polling: the fallback, and the answer to a dead observer ──
+        let polling = false;
+        let stopPolling: (() => void) | null = null;
+        const startPolling = () => {
+            if (polling || cancelled) return;
+            polling = true;
+            setLiveDetection('polling');
+            let last = 0;
+            // Throttled, and only while visible: a full walk is real work, and a
+            // hidden tab has nobody to show it to. The sharing pass means a tick
+            // that finds nothing sets no state at all.
+            const tick = () => {
+                if (document.visibilityState !== 'visible') return;
+                const now = Date.now();
+                if (now - last < POLL_THROTTLE_MS) return;
+                last = now;
+                enqueue(rescanBatch());
+            };
+            window.addEventListener('focus', tick);
+            document.addEventListener('visibilitychange', tick);
+            const timer = setInterval(tick, POLL_INTERVAL_MS);
+            stopPolling = () => {
+                window.removeEventListener('focus', tick);
+                document.removeEventListener('visibilitychange', tick);
+                clearInterval(timer);
+            };
+            tick();   // whatever was missed while there was no watching at all
+        };
+
+        // ── the observer ──
+        let observer: FileSystemObserver | null = null;
+        let reobserving = false;
+
+        const observe = async (): Promise<boolean> => {
+            // Absent outside Chromium 133+ (and the app is Chromium-only by design,
+            // but a Chromium older than that is a real install).
+            if (typeof FileSystemObserver !== 'function') return false;
+            let obs: FileSystemObserver | null = null;
+            try {
+                obs = new FileSystemObserver((records, source) => {
+                    // A superseded observer (disconnected, or replaced after an
+                    // error) can still have a callback in flight.
+                    if (cancelled || source !== observer) return;
+                    coalescer.push(normalizeRecords(records));
+                    if (records.some(r => r.type === 'errored')) void reobserve();
+                });
+                observer = obs;
+                await obs.observe(root, { recursive: true });
+            } catch (err) {
+                console.warn('Could not watch the vault for outside changes; falling back to polling:', err);
+                obs?.disconnect();
+                if (observer === obs) observer = null;
+                return false;
+            }
+            if (cancelled) obs.disconnect();
+            return true;
+        };
+
+        // 'errored' means the platform lost its watch (a volume went away, the
+        // watch limit was hit). One more try after a pause; if that fails too,
+        // polling takes over for good — and either way a rescan, since whatever
+        // happened in the gap was not seen.
+        const reobserve = async () => {
+            if (reobserving || cancelled) return;
+            reobserving = true;
+            await new Promise(resolve => setTimeout(resolve, REOBSERVE_DELAY_MS));
+            const stale = observer;
+            observer = null;
+            stale?.disconnect();
+            const ok = cancelled ? false : await observe();
+            reobserving = false;
+            if (cancelled) return;
+            if (ok) enqueue(rescanBatch());
+            else startPolling();
+        };
+
+        setLiveDetection('off');
+        void (async () => {
+            const ok = await observe();
+            if (cancelled) return;
+            if (ok) setLiveDetection('observer');
+            else startPolling();
+        })();
+
+        return () => {
+            cancelled = true;
+            coalescer.cancel();
+            queued = null;
+            observer?.disconnect();
+            observer = null;
+            stopPolling?.();
+            if (resumeWatcherRef.current === resume) resumeWatcherRef.current = null;
+        };
+    }, [rootHandle, processVaultBatch]);
+
+    /* MEMOIZED, and every value in it is a `useCallback` or a piece of state.
+       Without this the provider handed out a new object on every one of its own
+       renders — a tree publish, a watcher tick, a `recentVaults` update — and a
+       context value's identity goes STRAIGHT THROUGH `React.memo`. DocumentPane
+       and PdfPane, both memoized precisely so they do not re-render while the
+       reader types, re-rendered anyway. */
+    const value: FileSystemContextValue = useMemo(() => ({
+        rootHandle,
+        fileTree,
+        isLoading,
+        previousVault,
+        linkedVault,
+        recentVaults,
+        currentVaultId,
+        pickDirectory,
+        openRecentVault,
+        // Open a folder that is already inside the open vault as a vault of its
+        // own — the file tree's "Open as Vault" row. A vault is just a folder,
+        // so this is exactly what picking that folder in the OS picker does,
+        // minus the picker: the handle is in hand, so showing one would only ask
+        // the user to find the folder they have just right-clicked. It lands in
+        // the recent list like any other opened vault (recordVault, inside).
+        openFolderAsVault: openVaultHandle,
+        openLinkedVault,
+        forgetRecentVault,
+        pinRecentVault,
+        readFile,
+        readFileSnapshot,
+        writeFile,
+        readFileBytes,
+        writeFileBytes,
+        importFiles,
+        createFile,
+        createFolder,
+        getAssetUrl,
+        saveAsset,
+        retireAsset,
+        restoreAsset,
+        restoreVault,
+        moveToTrash,
+        listTrash,
+        restoreFromTrash,
+        deleteFromTrash,
+        emptyTrash,
+        moveFile,
+        renameFile,
+        readFileVersioned,
+        readBytesVersioned,
+        statFile: statOf,
+        writeFileVersioned,
+        writeConflictCopy,
+        recreateFile,
+        resolveFileHandle,
+        subscribeVaultChanges,
+        liveDetection,
+    }), [
+        rootHandle,
+        fileTree,
+        isLoading,
+        previousVault,
+        linkedVault,
+        recentVaults,
+        currentVaultId,
+        pickDirectory,
+        openRecentVault,
+        openVaultHandle,
+        openLinkedVault,
+        forgetRecentVault,
+        pinRecentVault,
+        readFile,
+        readFileSnapshot,
+        writeFile,
+        readFileBytes,
+        writeFileBytes,
+        importFiles,
+        createFile,
+        createFolder,
+        getAssetUrl,
+        saveAsset,
+        retireAsset,
+        restoreAsset,
+        restoreVault,
+        moveToTrash,
+        listTrash,
+        restoreFromTrash,
+        deleteFromTrash,
+        emptyTrash,
+        moveFile,
+        renameFile,
+        readFileVersioned,
+        readBytesVersioned,
+        writeFileVersioned,
+        writeConflictCopy,
+        recreateFile,
+        resolveFileHandle,
+        subscribeVaultChanges,
+        liveDetection,
+    ]);
+
+    return (
+        <FileSystemContext.Provider value={value}>
+            {children}
+        </FileSystemContext.Provider>
+    );
+}
+
+export function useFileSystem(): FileSystemContextValue {
+    const context = useContext(FileSystemContext);
+    if (!context) {
+        throw new Error('useFileSystem must be used within a FileSystemProvider');
+    }
+    return context;
+}

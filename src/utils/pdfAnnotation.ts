@@ -1,0 +1,283 @@
+// The on-disk format for "<name> (annotated).pdf", and the reading/writing of it.
+//
+// An annotated PDF is a GENUINE PDF, not a container with a .pdf name:
+//
+//   <name> (annotated).pdf
+//   ├── the original pages, intact          ← text stays selectable
+//   ├── a transparent stroke overlay/page   ← the annotations, stamped in
+//   └── two embedded attachments:
+//       ├── original.pdf                    ← pristine, no strokes
+//       └── tldraw-snapshot.json            ← so strokes stay editable
+//
+// It therefore opens correctly in Chrome/Preview/Obsidian *and* reopens here
+// as live, editable tldraw shapes.
+//
+// THE LOAD-BEARING RULE: every save rebuilds from the embedded pristine
+// original, never from the currently-stamped pages. Rebuilding from stamped
+// pages would re-stamp strokes on top of already-stamped strokes, so each save
+// would darken and duplicate the annotations and inflate the file. Verified: 4
+// save cycles leave the embedded original byte-identical and the size flat.
+
+import { bindPdfNativeEmphasis } from './pdfNativeEmphasis';
+import type { PdfNativeEmphasisResult } from './pdfNativeEmphasis';
+import * as pdfjs from 'pdfjs-dist';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { pdfWorker } from './pdfWorker';
+
+// Writing lives in utils/pdfBuild.ts (pdf-lib only, so a worker can load it).
+// The shared names come from pdfFormat.ts rather than from pdfBuild directly —
+// importing pdfBuild here would pull pdf-lib into this main-thread module.
+import { NOTEBOOK_SOURCE_ATTACHMENT, ORIGINAL_ATTACHMENT, SNAPSHOT_ATTACHMENT, type NotebookSource } from './pdfFormat';
+
+// Page stacking lives in paper.ts, which imports nothing — the notebook canvas
+// lays its pages out with the same function and must not pull pdf.js in to do it.
+export { PAGE_GAP, pageLayout } from './paper';
+
+/**
+ * The scale every page is first rasterized at, and the floor it falls back to.
+ *
+ * This only affects what you see WHILE annotating. The saved PDF is built by
+ * drawing annotations onto the original pages, which are never rasterized — so
+ * this number trades render speed and memory against on-screen sharpness and
+ * nothing else.
+ *
+ * Every page of the document is held at this scale for as long as the canvas is
+ * open, so raising it is paid for by the whole document at once. Zooming in is
+ * served by re-rendering the few VISIBLE pages instead — see
+ * PdfAnnotateCanvas's refinement pass.
+ */
+export const PAGE_RENDER_SCALE = 2;
+
+/**
+ * Backdrops are encoded as JPEG, not PNG.
+ *
+ * PNG encoding a ~1200x1600 canvas is one of the slowest steps in opening a
+ * document, and lossless fidelity buys nothing here: this is a backdrop to draw
+ * on, and it never reaches the saved file. Transparency isn't needed either —
+ * pages are opaque. The overlays, which DO reach the file, stay PNG.
+ */
+const PAGE_IMAGE_TYPE = 'image/jpeg';
+const PAGE_IMAGE_QUALITY = 0.82;
+
+export interface AnnotatedPdfContents {
+    /** The pristine original, with no strokes stamped in. */
+    original: Uint8Array;
+    /** Serialized tldraw snapshot, or '' for an annotated file with no strokes yet. */
+    snapshot: string;
+}
+
+/**
+ * Open `bytes`, hand the document to `read`, and always tear the worker down
+ * afterwards. destroy() lives on the loading task, not the document, and
+ * skipping it leaks a worker per PDF opened.
+ */
+async function withPdf<T>(bytes: Uint8Array, read: (doc: PDFDocumentProxy) => Promise<T>): Promise<T> {
+    // pdf.js takes ownership of (and detaches) the buffer it is handed, which
+    // would corrupt a caller still holding the same bytes. Always give it a copy.
+    const task = pdfjs.getDocument({ data: bytes.slice(), worker: pdfWorker() });
+    try {
+        return await read(await task.promise);
+    } finally {
+        await task.destroy();
+    }
+}
+
+/**
+ * Pull the pristine original and the tldraw snapshot back out of an annotated
+ * PDF. Returns null if this file wasn't produced by us (no attachments), which
+ * is how a plain PDF is distinguished from one of ours regardless of its name.
+ */
+export async function readAnnotatedPdf(bytes: Uint8Array): Promise<AnnotatedPdfContents | null> {
+    return withPdf(bytes, async doc => {
+        const attachments = await doc.getAttachments();
+        // NB: a Map, not a plain object — Object.keys() on it is always empty.
+        if (!attachments?.has(ORIGINAL_ATTACHMENT)) return null;
+
+        // pdf.js 6 lists attachments without their bytes; content is a 2nd call,
+        // and it yields null if the attachment is present but unreadable.
+        const original = await doc.getAttachmentContent(ORIGINAL_ATTACHMENT);
+        if (!original) return null;
+
+        let snapshot = '';
+        if (attachments.has(SNAPSHOT_ATTACHMENT)) {
+            const raw = await doc.getAttachmentContent(SNAPSHOT_ATTACHMENT);
+            if (raw) snapshot = new TextDecoder().decode(raw);
+        }
+        // getAttachmentContent already hands back a fresh array, structured-cloned
+        // out of the worker — copying it again duplicated the whole document for
+        // nothing. Only re-wrap in the case the copy actually guards against: a
+        // view onto a larger buffer, where the extra bytes would travel with it.
+        const tight = original.byteOffset === 0 && original.byteLength === original.buffer.byteLength;
+        return { original: tight ? original : new Uint8Array(original), snapshot };
+    });
+}
+
+/** Everything the app needs to know about a PDF it is about to let you edit. */
+export interface PdfRole {
+    /**
+     * The pristine pages to draw on and rebuild from.
+     *
+     * For a file already annotated by this app, the embedded `original.pdf`.
+     * For any other PDF, ITS OWN BYTES — which is what makes annotating happen
+     * in the file you opened rather than in a copy beside it. Either way the
+     * load-bearing rule holds: every save stamps onto these, never onto pages
+     * that already carry strokes.
+     */
+    original: Uint8Array;
+    /** Strokes already in the file, or '' for a PDF being annotated first time. */
+    snapshot: string;
+    /** Set when this PDF is a notebook's export — see pdfFormat.ts. */
+    notebookSource: NotebookSource | null;
+    /** False the first time: the file has no embedded original yet, so the next
+     *  save is what converts it into one of ours. */
+    alreadyAnnotated: boolean;
+}
+
+/**
+ * Read a PDF's role in ONE pdf.js open.
+ *
+ * Told by CONTENT, never by filename — the rule this format has always run on.
+ * A file called "… (annotated).pdf" that this app did not write has no
+ * attachments and is treated as the plain PDF it is; a renamed one of ours is
+ * still ours.
+ */
+export async function readPdfRole(bytes: Uint8Array): Promise<PdfRole> {
+    return withPdf(bytes, async doc => {
+        const attachments = await doc.getAttachments();
+        // NB: a Map, not a plain object — Object.keys() on it is always empty.
+        const has = (name: string) => !!attachments?.has(name);
+
+        let notebookSource: NotebookSource | null = null;
+        if (has(NOTEBOOK_SOURCE_ATTACHMENT)) {
+            const raw = await doc.getAttachmentContent(NOTEBOOK_SOURCE_ATTACHMENT);
+            if (raw) {
+                try {
+                    const parsed = JSON.parse(new TextDecoder().decode(raw)) as Partial<NotebookSource>;
+                    // The path is the whole point; without one there is nothing
+                    // to follow, so treat it as absent rather than as broken.
+                    if (typeof parsed.path === 'string' && parsed.path) {
+                        notebookSource = { path: parsed.path, exportedAt: Number(parsed.exportedAt) || 0 };
+                    }
+                } catch { /* hand-edited, or a shape an older build wrote */ }
+            }
+        }
+
+        // pdf.js 6 lists attachments without their bytes; content is a 2nd call,
+        // and it yields null if the attachment is present but unreadable.
+        const embedded = has(ORIGINAL_ATTACHMENT)
+            ? await doc.getAttachmentContent(ORIGINAL_ATTACHMENT)
+            : null;
+
+        let snapshot = '';
+        if (embedded && has(SNAPSHOT_ATTACHMENT)) {
+            const raw = await doc.getAttachmentContent(SNAPSHOT_ATTACHMENT);
+            if (raw) snapshot = new TextDecoder().decode(raw);
+        }
+
+        // getAttachmentContent already hands back a fresh array, structured-cloned
+        // out of the worker — copying it again duplicated the whole document for
+        // nothing. Only re-wrap in the case the copy actually guards against: a
+        // view onto a larger buffer, where the extra bytes would travel with it.
+        const tight = embedded
+            && embedded.byteOffset === 0
+            && embedded.byteLength === embedded.buffer.byteLength;
+
+        return {
+            // No embedded original means this PDF has never been annotated here,
+            // so the file itself IS the pristine copy. `bytes` is the caller's
+            // array and pdf.js was handed a slice, so it is intact.
+            original: embedded ? (tight ? embedded : new Uint8Array(embedded)) : bytes,
+            snapshot,
+            notebookSource,
+            alreadyAnnotated: !!embedded,
+        };
+    });
+}
+
+export interface PdfPageSize {
+    /** Page size in PDF points — the coordinate space annotations live in. */
+    width: number;
+    height: number;
+}
+
+export interface PdfPageSource {
+    /** Every page's geometry, known without rasterizing anything. */
+    sizes: PdfPageSize[];
+    /**
+     * Rasterize one page (0-based) to an object URL. Caller owns the URL.
+     *
+     * `scale` defaults to PAGE_RENDER_SCALE; a higher one is how a zoomed-in
+     * page is re-rendered sharp.
+     */
+    renderPage(index: number, scale?: number, emphasisEnabled?: boolean, onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal): Promise<string>;
+    /** Tear down the pdf.js worker. */
+    close(): Promise<void>;
+}
+
+/**
+ * Open a PDF for display on the annotate canvas.
+ *
+ * Streams rather than returning everything at once. Page GEOMETRY is cheap —
+ * pdf.js gives it without touching a pixel — while rasterizing is the expensive
+ * part, and a reader only ever looks at one page at a time. Handing back sizes
+ * immediately lets the canvas lay out and appear at once, with pages filling in
+ * behind it, instead of blocking on a full render of a document you haven't
+ * scrolled to yet.
+ *
+ * Always feed this the PRISTINE original — rendering the stamped pages would
+ * show strokes baked into the backdrop while the editable copies of those same
+ * strokes load on top, i.e. everything doubled.
+ */
+export async function openPdfPages(original: Uint8Array): Promise<PdfPageSource> {
+    // Not withPdf(): the document must outlive this call so pages can be
+    // rasterized on demand. close() is the caller's responsibility.
+    const task = pdfjs.getDocument({ data: original.slice(), worker: pdfWorker() });
+    const doc = await task.promise;
+
+    const sizes: PdfPageSize[] = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+        const page = await doc.getPage(i);
+        const { width, height } = page.getViewport({ scale: 1 });
+        sizes.push({ width, height });
+    }
+
+    return {
+        sizes,
+        async renderPage(index: number, scale = PAGE_RENDER_SCALE, emphasisEnabled = false, onEmphasisResult?: (result: PdfNativeEmphasisResult) => void, signal?: AbortSignal) {
+            const page = await doc.getPage(index + 1);
+            const viewport = page.getViewport({ scale });
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.ceil(viewport.width);
+            canvas.height = Math.ceil(viewport.height);
+            const context = canvas.getContext('2d');
+            if (!context) throw new Error('Could not get a 2D canvas context to render the PDF');
+            const emphasis = emphasisEnabled || onEmphasisResult ? await bindPdfNativeEmphasis(page, context, emphasisEnabled) : undefined;
+            let rendering: import('pdfjs-dist').RenderTask | undefined;
+            const cancel = () => rendering?.cancel();
+            const current = () => !signal?.aborted;
+            signal?.addEventListener('abort', cancel);
+            try {
+                signal?.throwIfAborted();
+                rendering = page.render({ canvas, canvasContext: context, viewport, operationsFilter: emphasis?.operationsFilter });
+                await rendering.promise;
+                await emphasis?.verify({ viewport }, task => { rendering = task; }, current);
+                signal?.throwIfAborted();
+                if (emphasis) onEmphasisResult?.({ ...emphasis.result });
+                const blob = await new Promise<Blob | null>(res =>
+                    canvas.toBlob(res, PAGE_IMAGE_TYPE, PAGE_IMAGE_QUALITY));
+                signal?.throwIfAborted();
+                if (!blob) throw new Error(`Could not rasterize page ${index + 1}`);
+                return URL.createObjectURL(blob);
+            } finally {
+                signal?.removeEventListener('abort', cancel);
+                emphasis?.dispose();
+                canvas.width = canvas.height = 0;
+                page.cleanup();
+            }
+        },
+        close: () => task.destroy(),
+    };
+}
+
+// The canvas↔save handoff lives in utils/pdfRenderCache.ts — importable without
+// pulling this module (and pdf-lib/pdf.js) into the main bundle.

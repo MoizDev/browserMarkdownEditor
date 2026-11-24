@@ -1,0 +1,152 @@
+---
+name: verify-in-browser
+description: How to actually verify a change in this repo — there is no test suite, so verification means Playwright driving the running app in headless Chromium against an OPFS-stubbed vault. Load before writing any verification script, before driving the app, and before claiming a change works.
+---
+
+# Verifying a change
+
+**There are no code-based tests in this repo** — no unit tests, no suites, no test script.
+`npm run typecheck` and `npm run lint` are the static gates; everything behavioural, the helper
+included, is verified by Playwright driving the running app in headless Chromium. A change is not
+verified because it typechecks.
+
+**Playwright is not a repo dependency.** Nothing in `package.json` pulls it and there is no
+`node_modules/playwright`; it resolves out of the npx cache
+(`~/.npm/_npx/*/node_modules/playwright`), and the harness hard-filters that cache on **1.63**.
+`channel: 'chrome'` (step 7) additionally needs Google Chrome installed, or the launch fails outright.
+
+## The harness, step by step
+
+Each step below exists because skipping it produces a *working change that looks broken*.
+
+1. **Run the dev server on a port of your own:** `npm run dev -- --port <PORT> --strictPort`.
+   Not Vite's default 5173, and not 5199 — the developer may already be on either.
+
+2. **Stub `window.showDirectoryPicker` with OPFS**, in an `addInitScript` *before* the page loads.
+   The native picker cannot open headless.
+
+3. **Patch `queryPermission` / `requestPermission` to return `'granted'`** — on the handle you
+   return *and* on the result of `FileSystemDirectoryHandle.prototype.getDirectoryHandle`.
+   Otherwise a restored vault asks for a user gesture that never comes.
+
+4. **Seed fixture notes into OPFS after `page.goto` has landed on the real origin**, with
+   `getFileHandle` + `createWritable`. `navigator.storage.getDirectory` is `undefined` on
+   `about:blank`, which has no storage bucket. Re-seed every run — OPFS is per browser context.
+
+5. **Press `⌘E` before testing anything about the caret, typing, or cell editing.** Files open in
+   Reading mode by default, where nothing is editable.
+
+6. **Selectors:** the editor is `.cm-content` inside `.cm-scroller`. Chromium only, by design. The
+   welcome screen carries up to **two** `.welcome-btn`s, and the second one opens a *different*
+   vault: `Open Vault` (always — the picker) plus either `Open '<linked vault>'` (a hash naming a
+   known vault whose grant has lapsed) or `Restore '<previous vault>'` (a stored handle whose grant
+   has lapsed). Never both — the linked branch returns before the stored one is reached. Match
+   `{ name: 'Open Vault', exact: true }`; a loose `{ name: 'Open' }` is ambiguous on the linked
+   screen. The vault switcher (`.vault-switcher`, `aria-label="Switch vault — <name>"`, bottom of the
+   sidebar) exists only once a vault is open, and `.vault-menu-row` only inside its menu. Stub the
+   picker with a NAMED OPFS subfolder, not the OPFS root: the root's `name` is `''`, so the switcher
+   shows no name and Trash (keyed on it) is disabled. Tooltips are `.tooltip` (≈400ms hover delay).
+
+7. **A reload with a vault open CRASHES Playwright's BUNDLED Chromium** (both `chromium` and
+   `chrome-headless-shell`, 153.0.8010.12 under Playwright 1.63): reading the OPFS handle back out of
+   IndexedDB kills the renderer *and* the browser with no crash log. The trigger is narrower than
+   "a reload": it is any READ of a stored handle, so the **second** vault you open dies inside
+   `rememberVault`'s `isSameEntry` sweep over the list (the first is fine — `readList` returns `[]`,
+   so nothing is deserialized). It tracks the **browser build**, not headedness and not the app:
+   on identical app code the *installed Chrome* channel survives it, headless.
+
+   So, two ways to test reload / restore-on-load / two vaults — say which you took:
+   - **`chromium.launch({ headless: true, channel: 'chrome' })`, no shim.** Still headless, but the
+     installed Google Chrome instead of the bundled build, so the real structured-clone path is the
+     one under test (`indexedDB.databases()` → `keyval-store`, no `__h_idb:` keys). Measured: Chrome
+     151.0.7922.138 survived **14 of 14** reloads that deserialize the stored handle, across 4
+     sessions (dev server and `vite preview`), plus both second-vault opens — while the bundled 153
+     died on the first such reload in both controls. Prefer this. It is not permanent, though: the
+     surviving build is whichever Chrome is installed, and the crashing one is the *newer* of the
+     two, so a Chrome update can inherit the bug — if this arm starts dying too, fall back to the
+     shim rather than reading it as an app regression. **That has now happened on this machine:**
+     installed Chrome updated to 153.0.8010.53 and dies on the same reload, so until a Chrome build
+     survives again the shim below is the arm that works.
+   - **`page.route`-intercept the `idb-keyval` module** with a localStorage shim storing
+     `{__handle: name}`, re-resolved from the OPFS root — **pack/unpack recursively**, because
+     `recent-vaults` is an array of objects each holding a handle, not a bare handle. Works on the
+     bundled build, but the real structured-clone path then goes unexercised. (Deleting the
+     `keyval-store` database before the reload and re-opening through the picker dodges the read
+     instead — and dodges what you were testing, if that was the restore.)
+
+   **A `goto` that differs only in the `#hash` does not reload** — it navigates in-page, the restore
+   effect never re-runs, and a link-opens-a-note probe silently proves nothing. Force it
+   (`page.reload()`), and assert you did: set a `window` marker before, check it is gone after.
+
+8. **`await document.fonts.ready` before asserting a column width.** Two fonts re-trigger the table
+   fit when they land, and only one of them is a request you could watch for. The app reaches **two**
+   Google hosts: `index.html` links a `fonts.googleapis.com` stylesheet (Fira Code) and preconnects
+   `fonts.gstatic.com`, and a chosen text font adds a second stylesheet at runtime (`App.tsx`'s
+   `google-font-link`) — but the request that moves layout is the **gstatic woff2**, fetched only for
+   a face something actually renders, so a default load makes no font request at all. **KaTeX's faces
+   are bundled locally** and a table holding maths re-fits when they arrive too (`tableFit`'s
+   `mathProbe`). Offline is not an exemption.
+
+9. **Suppressed browser menus are asserted, not screenshotted.** To check the app's own context menu
+   replaced the browser's, assert `defaultPrevented` on the `contextmenu` event — the OS menu never
+   appears in a screenshot either way.
+
+10. **Outside changes are simulated in OPFS, from OUTSIDE the app's code path** — a separate
+    `page.evaluate` (or a Worker) opening fresh `navigator.storage.getDirectory()` handles and writing
+    with `createWritable`, deleting with `removeEntry`, renaming with `handle.move()` (which gives real
+    `moved` records) or copy + delete (which does not — the hash-pairing path). First assert
+    `typeof FileSystemObserver === 'function'` in this Chromium; `delete window.FileSystemObserver` in an
+    init script forces the polling fallback (`liveDetection === 'polling'`) and the save-time check
+    alone. Count the app's own writes with an init-script wrapper on `createWritable`, and tree work
+    with one on `FileSystemDirectoryHandle.prototype.entries` plus a MutationObserver on `.tree-item`s.
+    Real-disk FSEvents (records, `.crswap` handling) differ from OPFS and cannot be driven headless —
+    the native picker is the wall; say so rather than claim them.
+
+11. **The terminal needs the real helper:** `npm run helper:dev` (a source run: dev origins allowed,
+    the in-process PTY backend, never the installed macOS PTY host) beside the dev server — loopback to
+    loopback raises no Local Network Access prompt. Set `VAULTAGENT_TERMINAL_SHELL=/bin/sh` for a
+    deterministic shell (test-only; the user's real login shell runs otherwise). Type into
+    `.xterm-helper-textarea`. The WebGL renderer draws to a canvas, so assert through the shell's own
+    side effects (`echo marker > $TMPDIR/x`, read it back from Node) or screenshots; `.xterm-rows` holds
+    text only under the DOM renderer fallback. Kill stray helpers you started; never stop the user's
+    installed one.
+
+## Sketch
+
+```js
+await page.addInitScript(() => {
+  const grant = (h) => {
+    h.queryPermission = async () => 'granted'
+    h.requestPermission = async () => 'granted'
+    return h
+  }
+  const getDir = FileSystemDirectoryHandle.prototype.getDirectoryHandle
+  FileSystemDirectoryHandle.prototype.getDirectoryHandle = async function (...a) {
+    return grant(await getDir.apply(this, a))
+  }
+  window.showDirectoryPicker = async () => grant(await navigator.storage.getDirectory())
+})
+await page.goto(`http://localhost:${PORT}/`)   // seed OPFS only AFTER this line
+```
+
+## Read the colour off the element the TEXT NODE hangs off
+
+`getComputedStyle(el).color` on a wrapper says what that wrapper would paint, not what you see: a
+CodeMirror mark decoration wraps the highlighter's own span, so the inner one wins. Three rounds of
+"measured, it works" missed a bug a screenshot showed in one second. When a check is about what the
+user SEES, walk to the text node's parent — or take the screenshot and look at it.
+
+## What to check beyond the change itself
+
+Per the repo's standing instruction: be picky about the UI. If something on screen is visibly
+wrong — misaligned, flickering, mis-sized — fix it even if it is not what you were sent to do.
+
+Reading integration additionally needs zero EPUB writes/hash equality, disguised-binary refusal, rename/retry/reload/vault identity, fresh/adopt/live/IME emphasis, native PDF/EPUB shared-toggle paint, reversible layout/anchor preservation, inactive-page capability, independent manual PDF Text and lazy-network checks. Isolated worker proofs are not integrated acceptance.
+
+EPUB opaque-frame runs must omit Playwright's `serviceWorkers:'block'`: its injected service-worker
+blocker reads navigator.serviceWorker in a sandboxed realm and throws SecurityError. Use a fresh
+context with no service worker instead; this does not loosen the frame CSP. Select file rows using
+the displayed name (`.md` hidden), scope shared emphasis to `.editor-slot-header`, and compare
+whole canonical words across prefix text nodes. Wait for reader navigation/restore to settle,
+not merely the first `.chapter` attach. Explicit Cmd+S on a clean NOTE intentionally writes it;
+separate that gesture from zero-write display-only tests. EPUB Cmd+S remains a required no-write probe.

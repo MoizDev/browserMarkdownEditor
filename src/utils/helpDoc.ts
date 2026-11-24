@@ -1,0 +1,725 @@
+export const HELP_DOC_CONTENT = `# Browser Markdown Editor User Guide
+
+Welcome to your Browser Markdown Editor. This application is a fully offline, local-first markdown editor that operates entirely within your web browser using the native File System Access API. 
+
+Because it operates locally, you retain complete ownership and privacy over your data. There are no servers, no databases, and no cloud syncing happening in the background. Your files remain exclusively on your device. The one optional exception is **VaultAgent**, a small helper you can install on your computer: it runs the **AI agent** (section 9), which sends your questions — and what you are looking at — to its own AI service, exactly as it would from your terminal, and the built-in **Terminal** (section 10).
+
+Here is everything you need to know about using the application.
+
+---
+
+## 1. Vault Management
+
+### What is a Vault?
+A "Vault" is simply any folder on your computer that you choose to open with this application. When you click "Open local folder (Vault)", the browser asks for your permission to read and write to that specific directory.
+
+### Switching Vaults
+The vault switcher at the bottom of the sidebar — the open vault's name, with a small up-and-down arrow beside it — remembers every folder you have opened as a vault. Hover it to see the vault's name and how many files and folders it holds.
+- **Click** it to open your recent vaults above it and pick one — no file dialog involved. Click it again (or anywhere else) to close the list.
+- **Double-click** it to browse for a folder instead (or choose "Open folder…" at the bottom of that list). Anything you open this way joins the list.
+- Vaults are listed newest first, by folder name alone; two vaults whose folders share a name show the parent folder too. Settings → Vault controls how many are listed.
+- The browser tab is titled with the name of the vault you have open, so tabs on different vaults are easy to tell apart. Turn **Vault name as tab title** off in Settings → Vault and the tab keeps the title "Markdown Editor" instead.
+- The **pin** at the right of a row keeps that vault at the top of the list and lists it however short you set "Recent vaults shown" — the two or three folders you actually live in, above the ones you opened once. A pinned vault is also never dropped when the stored list reaches its limit. Click the pin again to unpin it.
+- The **minus** at the left of a row takes that vault off the list, so the folders you actually switch between are not buried under ones you opened once. It forgets the row only — the folder and everything in it stays exactly where it is, and opening it again puts the row back. There is no minus beside the vault you have open, because the app re-lists that one every time it loads. (From the keyboard: **Delete** on the highlighted row does the same thing.)
+
+Any folder can be a vault, including one inside another vault: opening \`Notes/Maths\` gives you a vault of its own, separate from \`Notes\`. You do not need the file dialog for that — right-click the folder in the file tree and choose **Open as Vault**, and it opens as the vault straight away and joins the recent list, so the vault switcher is the way back out.
+
+Switching vaults puts away the notes you had open (saving anything unsaved first), since those files belong to the vault you just left — but it does not forget them. Each vault remembers its own, so switching back brings that vault's panes, the tabs in each of them, the pane widths and the note you were reading straight back, without your reopening a thing — and so does reloading the page. A note you deleted from disk in the meantime is simply not among them; one that is there but can't be read at that moment still comes back, as a tab that says so (see **Tabs** below). That memory lives in this browser, beside the recent-vaults list, which is why taking a vault off that list forgets its tabs along with the row. **The chat you had open in the AI panel comes back the same way**, with everything that was said in it — reloading the tab no longer drops you into a blank new chat — and so does a message you had typed but not sent.
+
+Because all of that lives in this browser rather than on a server, a browser short of space is allowed to clear it: your vault list (the permission to reach those folders, which is the part you cannot simply retype), your open tabs and your settings. **Settings → Vault → "Keep this data on this device"** says which footing you are on and asks the browser to keep it. Browsers grant that to sites you use often rather than on request, so if it says no, it is worth asking again after a few more visits, or installing this app from the address bar. Your folders themselves are never at risk — they are files on your disk, and the worst case is finding them in the folder picker again.
+
+### Security & Permissions
+Modern browsers require you to explicitly grant permission every time you open a vault or sometimes when returning to the application after a session. This is a deliberate security feature of the File System Access API to ensure websites cannot silently access your hard drive.
+
+---
+
+## 2. File Organization & Navigation
+
+### The Sidebar
+Along the top of the sidebar sit two tabs — **Files** (the folder) shows the file tree and **Search** (the magnifying glass) searches the vault — with the button that hides the sidebar at the right-hand end (\`Cmd + \\\` / \`Ctrl + \\\` does the same; the button left behind on the thin strip brings it back).
+
+Under the tabs, while the file tree is showing, is a row of buttons for the tree itself: **New note**, **New folder**, the **pencil** (its menu holds **New Drawing** and **New Notebook**), **Change sort order**, **Auto-reveal current file** and **Expand all** / **Collapse all** (see *Sorting and Finding Your Place* below).
+
+At the bottom, a row of five icons: **Neural Brain** (the graph view of how your notes link — press it again to get back to the editor), the **AI agent** (the sparkles — see section 9), the **Terminal** (see section 10), the **Trash** bin (see *The Trash Bin*) and the **light/dark mode** switch. Under them is the vault switcher (see *Switching Vaults*), with **Help** (the question mark, which opens this guide) and **Settings** (the gear) on its right. Hover any of these buttons for a moment and a label says what it does.
+
+### File Tree
+The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
+
+### Sorting and Finding Your Place
+**Change sort order** (the arrow beside the lines) lists the tree by **File name (A to Z)**, **File name (Z to A)**, **Modified time (new to old)**, **Modified time (old to new)** or **Custom**; the tick shows the one in use, and the app remembers it. Under all but Custom, folders stay at the top, in name order. Under a modified-time order a note moves to the top the moment it saves. Moving or renaming a file counts as modifying it, since the app copies it to its new place. There is no "created time" order: browsers do not tell a web page when a file was created.
+
+**Custom** is your own order: drag files and folders into whatever arrangement you like, folders mixed in among the files if you want (see *Drag and Drop*). Until you move something, a folder looks just as it does under File name (A to Z). Anything added later — a new note, something put back from the Trash — appears at the end of its folder until you place it. The order is kept in the hidden \`.appearance.json\` inside each folder you have arranged, so it travels with the vault and with the folder; choosing another sort order leaves it untouched, and choosing **Custom** again brings it straight back.
+
+**Auto-reveal current file** is an on/off switch, off to begin with. While it is on (its button stays shaded), whatever you switch to in the editor is found in the tree for you: the folders it is in open, and its row scrolls into view. It acts when you change notes (and when you turn it on, or come back to Files from Search) — never on its own after that, so a folder you close yourself stays closed.
+
+**Expand all** opens every folder in the vault, at every depth. Once any folder is open the same button becomes **Collapse all**, which closes them all again.
+
+Notes are listed under the name you gave them, without the \`.md\` — \`Recipes.md\` on disk reads **Recipes** here, and in its tab. Everything else keeps its extension, so a PDF, a whiteboard and a notebook still say what they are. Hover a row to see its full path, extension and all. Renaming a note shows you the full \`.md\` name again, with just the part before the dot selected, so the extension is there to keep or change deliberately.
+
+### Links to a Note
+The address bar tracks what is open — \`#vault=Notes&file=Math/HW1.md\` — so you
+can copy it at any moment and get back to exactly that note. Paste one into a new
+tab, bookmark it, or put it in another note.
+
+Opening a link never costs you your tabs. The vault comes back with every pane and
+every tab you had open in it, sized the way you left them, and the note the link
+names is brought to the front — added as one more tab if it was not open already.
+Reloading the page is the same thing, since the address bar is a link to what you
+were reading. The note half of a link only counts in the vault the link names: if
+that vault cannot be found and another one opens instead, it opens just as you
+left it, and opening the vault the link names afterwards — without reloading the
+page — still brings its note to the front.
+
+A link works on the machine and browser you opened the vault in. Browsers do not
+let a page open a folder just because it can name one, so what a link carries is
+not a location on your disk: it is the name of a vault this browser has already
+been given access to. Opening a link to a vault whose permission has lapsed shows
+a single **Open '<vault>'** button, because only a click can ask for that access
+back. On a machine that has never opened the vault, the link cannot find it yet:
+open that folder — **Open Vault**, or **Open folder…** in the vault menu — and the
+note the link names opens with it. From then on the link finds the vault by itself.
+
+### Giving a File or Folder an Icon and a Colour
+Right-click anything in the sidebar — a folder, a note, a notebook, a drawing —
+and choose **Choose icon / colour**. A panel opens beside the menu with eight
+colours and a search box over all 1,818 Lucide icons; it opens on the ones people
+usually want (folders, books, flasks, code, work), and typing a word finds the
+rest. Picking is live: the row in the sidebar changes as you click, so you can
+judge it against the real tree before dismissing the menu.
+
+Clicking the icon something already has removes it, and **Reset to default** puts
+the row back to normal. The colour tints the icon only — the name keeps the
+normal text colour, so the tree still reads as a list.
+
+On a file, the colour is usually the part you want: a file's icon already says
+what it is (a note, a notebook, a drawing), so replacing it is offered but never
+the default.
+
+This is remembered in a hidden \`.appearance.json\` inside the folder the thing
+sits in, so the icons travel with the vault rather than living in one browser.
+Because a look is kept beside what it describes, opening a folder on its own —
+from Finder, or with **Open as Vault** — shows exactly the icons it showed from
+the whole vault, and anything you change in there is there when you go back out.
+Renaming or moving something takes its icon along — a folder's carries everything
+inside it — and trashing it forgets it. Icons set in an older version of the app
+move across by themselves the first time you open the vault.
+
+A folder you have also opened as a vault shows the same icon in the vault menu,
+so the list you switch vaults with looks like the tree you set up.
+
+### Searching the Vault
+The **Search** tab at the top of the sidebar looks through every note in the
+vault — file names *and* the text inside them — and replaces the file tree while
+it is open; the **Files** tab beside it brings the tree back. Picking a result
+opens that note and scrolls to the line it matched, then puts the tree back. EPUBs, notebooks, drawings and PDFs match on their names only, since what is in
+them is not text.
+
+### Drag and Drop
+You can drag and drop files and folders within the file tree to reorganize your vault:
+- Drag any item and drop it onto a folder to move it inside that folder.
+- Drag any item and drop it onto the empty space in the sidebar (the root level) to move it back to the main vault directory.
+- Folders highlight with a purple dashed outline when you hover over them while dragging.
+
+Under the **Custom** sort order, dragging also rearranges the tree, and a line shows where the item will land before you let go:
+- Over the top or bottom half of a row, the line appears above or below it — drop to put the item there.
+- Over the middle of a folder, the folder gets the purple outline instead — drop to put the item at the end of that folder.
+- Over the bottom of an open folder, the line appears indented under its name — drop to make the item the first thing inside it.
+- Below the last row, the whole tree is outlined — drop to put the item at the end of the vault's top level.
+- Dropping between rows of another folder moves the item into that folder, at that spot. Where no line or outline appears, the drop would change nothing, and does nothing.
+
+Renaming or moving a folder takes the notes you have open from it along: they stay open, keep their place, and go on saving to the right file under its new name.
+
+### Creating New Items
+Use the buttons under the tabs at the top of the sidebar: **New note**, **New folder**, and the **pencil**, whose menu offers **New Drawing** and **New Notebook** (click the pencil again, or anywhere else, to close that menu). When creating a new file:
+- It will be created in the root vault folder if nothing is selected.
+- If you have a file or folder selected, it will be created in the same directory as that selection.
+- New files will automatically open and place you in **Edit Mode**.
+
+To create something *inside* a particular folder, right-click that folder (or use the small icons that appear on its row) and choose **New note** or **New folder**. Either way you type the name into a small input row inside the folder itself, and a name that folder already uses is refused rather than overwriting what is there. See **Right-click** below.
+
+---
+
+## 3. Tabs and Panes
+
+### Tabs
+Every file you open gets a tab along the top of the editor. A note's tab shows its name without the \`.md\`, like the file tree does; hover a tab to see the file's full path. Tabs can be dragged along the strip to reorder them, closed with the × (or a middle-click), and they come back where you left them the next time you open the app — and, because every vault keeps its own set, whenever you come back to that vault. A dot on a tab means it has changes that haven't been written to disk yet — they will be, a second after you stop typing.
+
+At the right of the strip sit two small buttons. **+** starts a new note — it asks for the name in the app's own box, the same one \`Cmd + N\` / \`Ctrl + N\` opens — and puts it in front of you. **⌄** lists everything open in the strip, so you can jump to a tab whose name has scrolled out of sight. Like every drop-down menu in the app, pressing its button again closes it, and so does clicking anywhere else.
+
+Tabs keep a comfortable width while there is room for it, however short their names are. Open enough of them and they share the strip out between themselves, getting narrower so more stay in sight; past that the strip scrolls, and its left edge fades rather than cutting a name off mid-letter. That sharing happens per pane, so splitting the editor squeezes a pane's tabs straight away, and they widen again as the pane does.
+
+You can move between tabs without the mouse. \`Option + Tab\` (\`Alt + Tab\` on Windows) goes to the next open document and \`Option + Shift + Tab\` to the previous one, walking every pane's tabs in the order they are drawn, left column first, and wrapping round at the end. \`Option + Shift + W\` closes the document in front of you, and \`Option + Shift + T\` puts the last one you closed back; press it again for the one before that. Reopened documents are read from disk again, and a file that has since been renamed or trashed is skipped rather than coming back empty.
+
+Clicking a tab puts the keyboard on that note, so \`Space\`, \`Page Down\` and the arrow keys scroll it straight away, in Read Mode and while editing. To type, click in the text — or, in Edit Mode, press \`Tab\`, which puts the cursor at the end of the first line of text on screen (or leaves it where it is, if it is already on screen; with only a table or picture on screen, scroll a little first).
+
+If a note can't be read when your tabs come back — another program is writing it, a synced file isn't downloaded yet, or it's locked — its tab still comes back, marked with a warning sign, and says so instead of showing the note. Nothing in the file is changed. Press **Try again** once it is readable, or click the note in the file tree, which tries again too. It stays among your saved tabs either way; only a note that is really gone from the vault is dropped.
+
+### Putting Two Notes Side by Side
+The editor can be split into columns — **panes** — side by side, and each pane keeps a strip of tabs of its own:
+
+1. Drag a tab down out of its strip and over the page.
+2. A purple outline shows which half of the page it will take — drop it there.
+
+That document leaves the strip it was in and opens a pane of its own, with its own tab strip above it. Keep going and you can have up to **five** panes at once; each new one is slotted wherever you drop it, and the columns start out sharing the width evenly.
+
+Anything can go in a pane: two notes, a note beside a PDF you are reading, a whiteboard beside the notes you are taking from it.
+
+### Moving Tabs Between Panes
+Each pane's tabs are its own, and you switch between them by clicking, exactly as with one pane. To move a document from one pane to another, drag its tab into the other pane's strip and drop it where you want it to sit. Dragging a tab **within** its own strip just reorders it.
+
+A pane's **+** opens its new note in that pane, and its **⌄** lists that pane's tabs.
+
+Closing a tab with its × closes just that document. Closing a pane's **last** tab closes the pane too, and the columns beside it share out the room it was using.
+
+### The Pane Header
+Under each pane's tabs is a row belonging to that pane: its file's name in the middle, a note's without the \`.md\` as in the tab strip.
+
+- **←** and **→** walk that pane back and forward through the documents it has shown, the way a browser's do. Each pane remembers its own, and only for as long as the app is open — after a reload both arrows start out greyed, because there is nowhere yet to go back to.
+- The **eye** button switches that pane between Read Mode and Edit Mode (\`Cmd + E\` / \`Ctrl + E\` does the same to the pane you last clicked in). On a PDF you can annotate, it switches between reading and drawing on it instead. A whiteboard, a notebook, this guide and a note that could not be read have no such button.
+- **⋯** holds what is left: **Insert table…** in a note, **Export to PDF** on a notebook, and **Close this pane**, which closes the pane and everything open in it.
+
+With more than one pane, the pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F and ⌘S act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
+
+### The Status Bar
+A small bar sits at the bottom right, over the page, and describes the pane you last clicked in: how many notes link to it (click it for the list), how many words and characters it holds, and whether your changes have been written to disk. It never takes a click meant for the note underneath it. A PDF, drawing, notebook or code file has no words worth counting, so there the bar shows only briefly, to say something was saved or moved to the Trash — and when a PDF or notebook is open in the right-most pane, the bar sits just above its page and zoom buttons rather than over them.
+
+### Giving One Pane More Room
+The line between two panes can be dragged. Pull it left or right and those two panes share the width between them — everything else stays exactly where you put it. A pane won't shrink past being readable, so you can always find the line again.
+
+**Double-click** a line to put every pane back to equal widths. You can also click a line and nudge it with the **←** and **→** arrow keys, holding Shift to move it further at a time.
+
+The widths you set are remembered along with the panes, and come back the next time you open the app.
+
+---
+
+## 4. Editing Modes & Auto-Save
+
+### Edit Mode vs. Read Mode
+The application features two distinct viewing modes:
+- **Read Mode (Default):** Files open in this mode by default. Markdown syntax is fully rendered and hidden, and the document is locked from accidental edits. You can still select, copy and search it with \`Cmd + F\` / \`Ctrl + F\` (see *Finding Text in a Note*).
+- **Edit Mode:** Clicking the toggle button (or pressing \`Cmd + E\` / \`Ctrl + E\`) switches the editor to Edit Mode. You can now type and edit.
+
+Reading is the mode in which a link is a link: in Read Mode a web address is clickable, and in Edit Mode it is text you can edit. See *Links*.
+
+**Dropping a Markdown file onto a note.** Drag a \`.md\` file from your computer onto a note in Edit Mode and the note's text is replaced by the file's; \`Cmd + Z\` / \`Ctrl + Z\` in the note brings the old text back. A note in Read Mode is never replaced this way — the application tells you so instead, and \`Cmd + E\` / \`Ctrl + E\` switches to editing.
+
+### Live Preview
+Even in Edit Mode, the editor uses a "Live Preview" system. Markdown syntax (like bold asterisks or heading hashes) is hidden on lines you are not actively editing. When your cursor moves to a line, the raw syntax is revealed so you can modify it.
+
+Two things are deliberately never revealed that way, because they are objects rather than text: an **embedded image** and a **table**. Putting the cursor on either one does not turn it back into markdown for you to retype — you work on the thing itself, and the file goes on holding ordinary Markdown. See *Working With an Image* and *Tables*.
+
+### Code Files
+A source file — \`.py\`, \`.c\`, \`.rkt\`, \`.js\`, \`.rs\`, a shell script, JSON, YAML and about sixty others — opens in a **code pane** instead of the note editor, and opens ready to type in.
+
+It is the same window you are used to, with only the text itself different: line numbers down the side, your syntax colours (the **One Dark Darker** and **One Light** palettes from your own editor), **Fira Code with its ligatures**, and no line wrapping — a long line scrolls sideways, as it should.
+
+What the pane gives you:
+- **Several cursors.** Hold \`Option\` and click to put a cursor on another line; hold \`Option + Shift\` and drag to select a column. Everything you type then lands at every cursor.
+- **Completion** as you type, from the names already in the file and the language's own keywords. \`Enter\` takes the highlighted one, \`Escape\` dismisses the list.
+- **Brackets are coloured by how deeply they nest**, six colours before the cycle repeats, so the shape of a nested expression is readable at a glance — and a bracket with nothing to close is underlined in red. **Settings → Colour brackets by depth** turns this off and on, and takes effect in files you already have open. They are also typed in pairs, the partner of the one beside the cursor lights up, and brackets inside strings and comments are left out of the counting.
+- **Folding**: the arrow beside a function or a block folds it away; click it again to bring it back.
+- \`Tab\` indents and \`Shift + Tab\` outdents, by the width in **Settings → Tab size**. **Settings → Code font size** sets how big code is, separately from your notes.
+- \`Cmd + F\` searches the file, \`Cmd + Z\` undoes, and your edits save exactly as a note's do, a second after you stop typing.
+
+\`Cmd + E\` switches the pane to read-only, which is useful when you are reading rather than editing and do not want a stray keystroke in the file.
+
+**Racket** (\`.rkt\`) gets extra care, since it is a teaching language the stock grammar reads poorly: special forms (\`define\`, \`cond\`, \`else\`, \`check-expect\`, \`local\`…) are coloured as keywords, the name at the head of every form is coloured as the function it is, quoted symbols read as values, and the numbers in \`[…]\` answers are numbers.
+
+**The AI agent reads code files too**, and it is told which language it is looking at and where your cursor is. It can edit them with the same rules it edits notes with: changes land in the open pane and \`Cmd + Z\` takes them back.
+
+There is no compiler here, and no way to run the code — this is a notes app that can hold your code beside your notes, not a terminal.
+
+### LaTeX (\`.tex\`) Files
+A \`.tex\` file opens **typeset rather than raw**: sections become headings, \`$…$\` and \`align\` blocks are set as maths, \`itemize\` and \`enumerate\` become lists, a \`tabular\` becomes a table, and a \`verbatim\` or \`lstlisting\` block keeps its exact spacing. The preamble sits at the bottom, folded away, since it is instructions to the compiler rather than part of the paper.
+
+Nothing is hidden from you: a command this app does not know is shown as itself, greyed, with whatever it wrapped still readable beside it. This is a reader, not a LaTeX compiler: it does not run packages, number equations or follow \`\\input\`.
+
+\`Cmd + E\` switches to the **source**, exactly as it stands in the file. Markdown's live preview is deliberately switched off there: in a file that has to compile, \`_\` is a subscript and \`$\` opens maths, so the text stays literal and safe to edit.
+
+### Collapsing a Section
+In Read Mode, point at a heading — or at the margin just to its left — and a small arrow appears beside it. Click the arrow to collapse everything under that heading, up to the next heading of the same or a higher level: a \`##\` section takes its \`###\` sub-sections with it and ends at the next \`##\` or \`#\`. Click it again to bring the section back.
+
+A collapsed heading keeps its arrow on show, pointing right, and has a small **…** after its title; clicking either one expands the section. Each sub-section remembers its own state, so a \`###\` you collapsed is still collapsed when you expand the \`##\` around it.
+
+Collapsing only changes what you see — the file itself is never touched. A note remembers which of its sections are collapsed when you switch tabs or reload. Edit Mode always shows the whole note, and switching back to Read Mode collapses the same sections again; a heading you delete while editing is simply forgotten. Jumping to a search result inside a collapsed section opens it, and so does a match found with \`Cmd + F\` / \`Ctrl + F\`.
+
+Only \`#\`-style headings at the top level of a note collapse — not ones inside a quote or a list — and a heading with nothing under it has no arrow.
+
+### Finding Text in a Note
+Press \`Cmd + F\` / \`Ctrl + F\` with a note in front of you — in Read Mode or Edit Mode — and a search bar opens along the bottom of that note. It searches the whole note, not just the part on screen, including sections you have collapsed: a match inside one opens it.
+- Type what you are looking for and press \`Enter\` (or **next**) for the next match, \`Shift + Enter\` (or **previous**) for the one before. \`Cmd + G\` / \`Ctrl + G\` and \`Shift + Cmd + G\` / \`Shift + Ctrl + G\` do the same, whether you are in the bar or back in the note.
+- **all** selects every match. **match case**, **regexp** and **by word** narrow what counts.
+- **Replace** is only there in Edit Mode, because Read Mode never changes the note. Switch modes with the bar open and it appears or disappears; what you typed is kept.
+- \`Escape\` closes the bar while you are in it, and so does its **×**. The keys then work on the note again: in Read Mode \`Space\` and \`Page Down\` scroll it, and in Edit Mode you are back typing where you were. Each press closes one thing: with the **Linked mentions** list open too, the first \`Escape\` closes the bar and a second closes the list.
+
+With more than one pane open, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; PDF Original keeps the browser's own find, while PDF Text searches its extracted text (see *PDFs*).
+
+### Room Below the Last Line
+A note scrolls on past its last line by about half the height of its pane, so the end of what you are reading or writing can sit in the middle of the screen instead of against the bottom edge. A note shorter than that doesn't scroll at all. In Edit Mode, clicking in that space puts the cursor at the end of the note.
+
+### Auto-Save
+You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`.
+
+### When Files Change Outside the App
+Your notes are ordinary files, so other programs can change them too — a \`git pull\` in the terminal, a formatter, a sync service like iCloud or Dropbox, another editor, or this app open in a second browser tab. The editor notices, and never saves over a change it has not seen:
+- **A note you have open updates by itself** when its file changes and you have nothing unsaved in it. Your cursor and scroll position stay where they were, and \`Cmd + Z\` / \`Ctrl + Z\` steps back to the text you had before. Drawings, notebooks and PDFs reload the same way.
+- **If you were in the middle of editing it**, neither version wins silently. A bar appears at the top of the note — "*changed on disk while you had unsaved edits*" — with two buttons. **Reload** shows the version on disk and keeps yours beside it as \`name (conflict).md\`; **Keep mine** saves your version and keeps the one from disk beside it as \`name (conflict).md\`. (If that name is taken, the copy is called \`name (conflict 2).md\`, and so on.) Until you choose, the note is not saved, but you can keep reading and editing it; its tab carries a warning sign meanwhile, so a note waiting on you is easy to spot behind other tabs.
+- **Even when a change could not be noticed as it happened**, every save first checks that the file is still the one you opened. If it is not, nothing is written and the same bar appears. A change that only touched the file's date (\`touch\`, or a checkout that wrote the very same text) is not counted as a change.
+- **If the file is deleted**, the bar says so, and typing does not quietly bring the file back: **Save again** writes your note back where it was (folders included), and **Close** closes the tab — asking first if it holds edits that exist nowhere else. Closing a note whose file changed or vanished in any other way (the × on its tab, say) keeps your unsaved edits beside it as a \`(conflict)\` copy rather than dropping them.
+- **Changing a document’s kind by renaming its extension** first preserves pending source edits. Edits made during the move are kept in a \`(conflict)\` copy with the original extension before the destination is reopened. A failed preservation keeps the original editor open.
+- **If the file is renamed or moved**, its tab follows it to the new name, and a renamed folder keeps its icon, colour, custom order and whether it was expanded — when your system reports the change as a rename. A sync service that copies and then deletes, or a folder renamed on Windows, looks like a new folder: open notes inside are followed when their contents match, but the folder's look starts fresh. When the app cannot be sure where a file went, the tab shows it as deleted rather than guess.
+- **The file tree updates by itself** as files and folders are created, deleted, moved or renamed outside the app, and so do search, the graph and the *Modified* sort. A \`.git\` folder is never shown.
+
+### Scroll Persistence
+The application remembers where you were reading in every note: the line at the top of the editor, and how far into it you had scrolled. Switch to another tab and back, close the note and open it again, or reload the app, and that line comes back to the top of the editor — whether you were in Reading mode or editing when you left. If that line is now inside a section you have collapsed, the note opens at that section's heading instead, and the section stays collapsed; if Reading mode draws it as part of a table or maths block, the note opens at the top of that block.
+
+### Right-click
+Right-clicking in a note, or anywhere in the file tree, opens the application's own menu instead of the browser's. Escape closes it, and so does clicking somewhere else or scrolling.
+
+**In a note** the menu offers **Cut**, **Copy**, **Paste**, **Select all** and **Insert table…**. A row that cannot do anything just now stays on the menu and says why when you hover it — Cut with nothing selected, or anything that writes while you are in Read Mode (\`Cmd + E\` / \`Ctrl + E\` switches out of it). Right-clicking *outside* your selection moves the cursor there first, so **Insert table…** lands where you aimed; right-clicking *inside* a selection leaves it alone, so **Copy** means what it looks like.
+
+**Paste** is the one row that can refuse. Browsers guard reading the clipboard, and by the time you click a menu row the right-click that opened it no longer counts as your permission — so the browser may say no. The application tells you when that happens: \`Cmd + V\` / \`Ctrl + V\` always works and needs no permission at all. Inside a table cell, \`Cmd + X\` / \`Cmd + C\` / \`Cmd + V\` are the browser's own and never refuse either.
+
+**In a table cell** the menu is the table's own — rows, columns, and the cell's own clipboard. See *Tables*.
+
+**In the file tree**:
+- On a **file**: *Rename*, and *Move to Trash*.
+- On a **folder**: *New note*, *New folder*, *Open as Vault*, *Rename*, and *Move to Trash*. *Open as Vault* narrows the app down to that folder — see *Switching Vaults*. New note and New folder open a small input row inside that folder, and open the folder so you can see what lands in it.
+- On the **empty space** below the tree: *New note* and *New folder*, at the vault root.
+- *Move to Trash* asks first and names where the item is going, exactly as the row's own trash button does.
+- A row you are in the middle of renaming keeps the browser's menu, because what you want there is its Paste.
+
+A **drawing** keeps tldraw's own menu and a **PDF** keeps the browser's, since both of those already have menus that fit what they are.
+
+---
+
+## 5. Notebooks, Drawings, and PDFs
+
+Three kinds of file open on a canvas instead of in the text editor. All three
+are drawn with the same tools — pen, highlighter, shapes, text — and all three
+save themselves as you work, a second after you stop.
+
+### Notebooks
+A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing
+here to a paper pad, and what to reach for when you are doing an assignment by
+hand rather than taking notes in Markdown. Make one with **New Notebook**, in
+the pencil button's menu at the top of the sidebar.
+
+A notebook has the same dark pages a PDF does: the button beside the thumbnails
+one turns the paper black and the writing light, for working at night. It only
+changes how the notebook looks on screen, and a PDF exported from it is still
+printed on white paper.
+
+A notebook scrolls like a PDF: swipe up and down to move through the pages, and
+pinch to zoom. At full width the page fills the screen edge to edge, and the
+pages can never be swiped off screen. The page box at the bottom right jumps to
+a page, and the button beside it opens a **strip of page thumbnails** down the
+left, showing what is written on each one.
+
+The bar across the top of a notebook is its paper:
+
+- **Lined / Grid / Dotted / Blank** — the ruling. Changing it re-papers what you
+  have already written; nothing you have drawn moves.
+- **Letter / A4 / Legal** and **Portrait / Landscape** — the page size.
+- **+ Page** adds a page at the bottom. You rarely need it: writing near the
+  bottom of the last page adds the next one for you, before you run out of room.
+- **− Page** removes the last one. An empty page just goes; one with writing on
+  it asks first and says how much, because that writing goes with it.
+
+### Exporting a notebook to PDF
+The download icon in the top bar writes a PDF beside the notebook — \`Assignment
+3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both
+drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
+the pages are ordinary PDF pages that anything can open.
+
+The notebook stays the original you keep writing in. Exporting again overwrites
+the same PDF rather than leaving a pile of copies, and asks first if a PDF of
+that name is there that this notebook did not put there.
+
+The exported PDF remembers which notebook it came from, so pressing the pen on
+it **opens that notebook** instead of annotating the PDF as if it were someone
+else's. That is what you want: annotating the export would make a third file
+holding marks the notebook knew nothing about, and your next export would
+neither include them nor replace it. The link survives renaming the PDF, and if
+the notebook itself is gone the app says so rather than quietly forking.
+
+### The pen
+Colour and thickness live in the panel at the top right, and it is the same
+panel in a notebook, a drawing and an annotated PDF.
+
+The **slider is the pen's width**, and it is continuous rather than a set of
+sizes — it starts at a normal writing width and goes down to a hairline, which is
+what small handwriting on ruled paper needs. Double-click it to come back to the
+default. The dot beside it is the actual width, in the actual colour, so you can
+see what you are about to draw with. Drag the slider or pick a colour with
+something selected and it re-inks that instead of only the next stroke.
+
+**The pen panel hides.** The arrow at its top folds it down to a single swatch in your current colour; click the swatch to open it again. **Every file keeps its own pen.** A notebook you annotate in fine red stays fine
+and red; the PDF you were marking up in thick blue is still thick and blue when
+you come back to it, however many other things you drew in between. A brand new
+file starts at the width you were last using, since that is usually the one you
+want again.
+
+### Drawings
+A **drawing** (\`.tldraw\`) is the same canvas with no pages at all — an endless
+sheet in every direction, for diagrams and thinking rather than for a page you
+intend to hand in.
+
+Drawings and notebooks **reopen where you left them** — the same spot on a
+drawing, the same page and zoom in a notebook — just as a PDF does, whether you
+switch tabs, close the file or reload the app.
+
+### Inverting a Picture You Brought Over
+Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`i\` to invert it, so it sits on the page like everything else drawn there, and press \`i\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.
+
+### EPUB books
+
+Open an imported \`.epub\` from the file tree, a file-name search result, a restored tab or a vault URL. Books are read-only: reading, Find and appearance never change their bytes. To add a book, drag its original file into the vault. There is no New EPUB command.
+
+**Contents** opens the reading order and any publisher-supplied **Print pages** and **Landmarks**; print labels are shown only when the book provides them. **Find** searches canonical book text and reports incomplete sections. **Aa** changes local fallback fonts, default size and line spacing, line width, margins and reader theme. Explicit publisher typography and colors take precedence; fixed pages retain publisher geometry. **Scroll** follows the reading order; **Pages** uses reading screens. Previous/Next move through the book and **Return** goes back after a jump. Select text to copy it; visually hidden publisher prose is omitted from Copy while canonical Find positions stay stable. The app's book menu offers Copy and Find. A book link outside the publication asks before opening a website.
+
+The pane header’s **⋯** also offers Contents, Find, Reading appearance and Scroll/Pages. **Cmd/Ctrl+F** searches the focused book from its header or content.
+
+Static fixed-layout sections preserve their page geometry: Aa offers fit, zoom and facing pages. Word emphasis paints eligible original XHTML text in both fixed and reflowable sections, including mixed-layout books. Image/SVG-only pages remain original and show why emphasis is inactive. Unsupported/protected or unreadable content reports why and offers Retry; this reader does not unlock DRM, run publisher scripts, fetch remote book assets or provide OCR. ZIP64 archives and animated/GIF/AVIF illustrations are unsupported; unavailable images are reported while prose remains readable. Exceptionally large Contents can exceed the metadata limit. Very large sections keep their text but may report Word emphasis unavailable. Complex author styles and reading order may differ from a publisher's reader.
+
+Position and reading layout live only in this browser, separately for each vault and file. Closing a pane releases its book frame. Switching vaults, moving a book or returning from Graph keeps a browser-local position; a changed edition restores the matching section occurrence and passage when available, otherwise it opens a valid section with an approximate-position notice. This is local reading in an already loaded app, not an offline installation guarantee.
+
+### Word emphasis
+
+The **Word emphasis** button in a reading header, its **⋯** row, and **Settings → Reading** share one preference, initially Off, across supported reading views. There are no per-file overrides. It visually emphasizes prefixes of eligible Latin prose, including rendered table body prose. In Markdown and EPUB, authored bold, code, math, URLs and unsupported scripts remain ordinary. PDF emphasis follows its original glyph mappings and supported painting routes. This optional visual heuristic makes no reading-speed or accessibility claim.
+
+It leaves the source, save state, undo history and copied text intact. PDF and EPUB emphasis paints eligible glyphs in the same document view, preserving original layout, artwork and reading position. Switching it Off restores the original paint. Image-only pages and unsupported text profiles remain unchanged and show why the control is inactive, while retaining your preference. Source editing and code/TeX keep their existing presentation. Notes, TXT and extensionless files keep their existing Markdown presentation and editor typography. Toggle with Enter/Space or a pointer; no new global shortcut is added. Reading preferences are stored in your browser, never in the vault.
+
+### PDFs
+The pane header’s **Word emphasis** toggle paints supported glyphs directly on the original PDF page, including while annotating. It keeps the same tab, page layout, camera, links and annotations; switching Off restores the original paint. It never opens extracted text or performs OCR. Image-only scans, hidden OCR, fully clipped or covered text, missing font mappings and unsupported painting routes stay original. The header reports availability for the current page. **Aa** does not replace the native PDF’s fonts or geometry.
+
+The **⋯ → Read extracted text** action is a separate, manual reading choice with physical page labels, Find, Copy and shared Aa controls. Word emphasis is inactive there; choose **Original PDF** to use the native toggle. Copy across Text pages contains extracted prose with a page separator, excluding page controls and quality notices. Text is extracted by pdf.js, with no new OCR: scans may have no text, existing OCR may differ from the pixels, and columns/tables/math may have imperfect ordering. Find reports coverage and stops at 500 hits. **Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically. **Cmd/Ctrl+F** searches extracted text while Text is focused; Original keeps the browser’s find. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
+
+A PDF opens in a reader: scroll it, select its text, search it with the browser's
+own \`Cmd + F\`, follow its links, and jump to a page with the box at the bottom.
+Pinch or hold \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button
+beside the page box opens a **strip of page thumbnails** down the left; click one
+to go to that page. The button next to it **inverts the pages** so they are easy on the
+eyes in the dark, while reading and while writing on them. It only changes how
+they look: the file, and any PDF made from it, keeps its real colours.
+
+**Turning a sideways scan the right way up.** The two curved arrows beside the
+invert button turn the pages a quarter at a time — \`]\` turns right, \`[\` turns
+left. It turns the whole document; hold \`Alt\` (\`Option\`) while clicking an
+arrow to turn only the page you are reading, which is what a single crooked page
+in an otherwise straight scan wants. Unlike inverting, this is a real change to
+the file: the PDF is saved the way round you left it, and it opens that way
+here, in your browser and in anything else you open it with. Four turns bring it
+back where it started.
+
+A PDF you have already written on is left alone, with a note saying so. Your
+marks are drawn against the pages as they are, and turning the paper would move
+every one of them — so straighten a scan before you start annotating it.
+
+\`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
+**writing on it** — the same toggle every other file has. Draw on it as you would
+on a notebook. It opens **on the page you were reading**, with the same page box
+and thumbnail strip, and switching back to reading returns you to wherever you
+stopped writing. Swiping scrolls the page up and down like a PDF, and pinching
+zooms — at full width the page fills the screen edge to edge, and you can zoom in
+past that. The page can never be swiped off screen.
+
+**The marks go into that PDF, not into a copy.** There is no second
+"(annotated)" file to keep track of, and nothing to remember to open next time:
+the file you annotated is the file you annotate again. It is still a real PDF
+that opens anywhere, with your marks drawn in as vector artwork and the
+document's own text still selectable underneath.
+
+Your original is not lost. The file quietly carries a pristine copy of the PDF
+as it was before you touched it, alongside the editable form of your strokes —
+which is what lets you come back days later and move, recolour or erase a mark
+rather than being stuck with it. It is also why annotating never builds up:
+every save redraws from that pristine copy, so the marks never thicken or
+double no matter how many times you edit.
+
+Everything around a page — the toolbars, the pen panel, the space the pages sit
+on — follows the app's theme, so a notebook or a PDF is dark at night like the
+rest of the app. The **pages themselves stay white** in either theme, because
+that is paper: it is what the exported PDF prints on, and ink that changed colour
+with the theme would come out invisible in the file. A drawing has no pages, so
+it is dark all over.
+
+---
+
+## 6. Images, Assets, and Trash
+
+### Managing Images
+You can seamlessly add images to your markdown notes:
+- **Paste:** Simply copy an image to your clipboard and paste it (\`Cmd + V\` / \`Ctrl + V\`) directly into the editor. This is how you get a picture *into a note* — see below.
+- **Drag and Drop:** Drag an image file from your computer onto a folder in the file tree (or onto the empty space below it, for the vault root) to copy it into your vault as an ordinary file. A name already in use gets numbered rather than overwritten.
+
+### Working With an Image
+An image in a note behaves like an image in a word processor, not like a piece of text. It stays a picture at all times — clicking it never turns it back into markdown for you to retype — and in **Edit Mode** clicking it selects it and puts three small buttons on it:
+- **+ and −** (top right) resize it, a step at a time.
+- **The bin** (top left) removes it. So does pressing \`Backspace\` while it is selected. Either way you are asked first.
+
+In Reading Mode a picture is simply a picture, and clicking it does nothing.
+
+### The \`.Assets\` Folder
+When you paste an image, the application does the following in the background:
+1. It automatically creates a hidden folder named \`.Assets\` in the same directory as your active markdown file.
+2. It generates a uniquely named image file (e.g., \`Pasted image 20240101120000.png\`).
+3. It saves that image into the \`.Assets\` folder.
+4. It inserts a reference to that file into your note, which renders as the image itself.
+
+Every folder gets its own \`.Assets\`, and a note only ever shows pictures from the one beside it. That means a folder is self-contained: move it, copy it onto another machine, or share it, and its notes still render. (Pictures from an older version of the app, saved higher up the vault, are still found — the app looks up through the parent folders when a note's own \`.Assets\` doesn't have them.)
+
+Your notes are still ordinary Markdown: what is actually written in the file is \`![[filename.png]]\`, and a resized picture records its width as \`![[filename.png|320]]\`. Anything else that reads Markdown sees exactly that. The editor simply spares you from typing it.
+
+### Removing an Image
+Deleting a picture — with the bin, with \`Backspace\`, or just by deleting the text around it — also retires the image file: a second later it moves out of \`.Assets\` and into that folder's \`.Garbage\`, so your folders don't slowly fill up with pictures nothing shows any more.
+
+Nothing is lost by this:
+- An image another note **in the same folder** still shows is left exactly where it is.
+- Undo (\`Cmd + Z\` / \`Ctrl + Z\`) brings the picture back — the image file comes back out of \`.Garbage\` with it.
+- And anything that was retired is still sitting in \`.Garbage\`: it is listed in the Trash bin like anything else, and putting it back returns it to \`.Assets\`, where your notes can show it again.
+
+### Opening Media
+If you click on \`.pdf\`, \`.jpg\`, \`.jpeg\`, or \`.png\` files directly within the file tree, they will automatically open in a new browser tab for viewing rather than attempting to load as text.
+
+### The Trash System
+To prevent accidental permanent data loss, deleting a file does not erase it from your hard drive. Instead, it moves the item into a hidden \`.Garbage\` folder located in the same directory as the file — deleting \`Maths/Calculus/notes.md\` puts it in \`Maths/Calculus/.Garbage\`, so a deletion stays next to the notes it came from. Deleting the same name twice keeps both copies (the second becomes \`notes (1).md\`).
+
+Deleting a **folder** works exactly the same way, and takes everything inside it along: deleting \`Maths/Calculus\` puts the whole folder in \`Maths/.Garbage/Calculus\`, with its notes, its sub-folders and the pictures from its own \`.Assets\` still in place — so a recovered folder works again just as it did. (A picture stored higher up the vault, from an older version of the app, stays where it is and is not copied along.) Any notes from that folder you had open are saved first and then closed, so nothing you had just typed is left behind. A large folder takes a moment to copy; the top bar says so while it does.
+
+### The Trash Bin
+The **bin icon** in the row of icons at the bottom of the sidebar shows everything you have deleted in the vault you have open — without your going near Finder or Windows Explorer.
+
+Opening it looks through every \`.Garbage\` folder in the vault, from the root down. Nothing about your trash is written down or remembered between openings, so what you see is always what is actually on disk — and a big vault takes a moment to look through. The window says so while it works.
+
+**What you see.** One list of everything trashed anywhere in the vault, newest deletion first, each row naming the folder it came out of (which is where it goes back to) and when it went. A deleted **folder** is a single row: click it to look inside, and use the trail at the top to come back out. Anything you deleted from that folder *before* you deleted the folder itself is listed on its own at the top level instead of inside it — it was a separate deletion, so it is offered back separately. Clicking a note shows it read-only beside the list, which is how you tell \`notes.md\` from \`notes (1).md\` before putting either back. Notebooks, drawings and PDFs are listed with their size and date but not drawn.
+
+**Put back** (the arrow on a row) returns an item to the folder holding the \`.Garbage\` it was found in. It does not rebuild the folders it used to live in: a note from four levels inside a folder you deleted comes back beside that folder's old home, not under a recreation of an ancestry you no longer have. Put back a single note out of a deleted folder and only that note leaves the bin — the rest of the folder stays there. A picture the app retired for you goes back into \`.Assets\`, where your notes can show it again.
+
+If something of that name is already there, you are asked: **Replace**, **Keep both**, or leave it. Replacing does not erase what is there now — it moves it into that folder's own \`.Garbage\`, where it appears at the top of this list. Keeping both puts yours back under a numbered name, and the top bar tells you which.
+
+One thing does not come back: an icon or colour you had given a file or folder is forgotten when you delete it, so a restored item looks like any other.
+
+**Delete permanently** (the bin on a row) and **Empty bin** (bottom left) are the only two things in this application that actually erase anything. Empty bin removes every \`.Garbage\` folder in the vault at once, retired pictures included. Both ask first, and neither can be undone.
+
+**Escape** closes the window, and so does clicking the dimmed area around it. If you would rather dig a file out by hand, you still can: every \`.Garbage\` is an ordinary folder sitting beside what it holds, so Finder or Windows Explorer reaches it too.
+
+---
+
+## 7. Markdown Syntax Reference
+
+The editor supports standard Markdown and advanced formatting.
+
+### Headers
+# Header 1
+## Header 2
+### Header 3
+
+### Text Styling
+Wrap the text in the marker on both sides. What you type, and what you get:
+- \`**Bold Text**\` gives **Bold Text** — double asterisks.
+- \`*Italic Text*\` gives *Italic Text* — single asterisks.
+- \`~~Strikethrough~~\` gives ~~Strikethrough~~ — double tildes.
+- \`==Highlighted Text==\` gives ==Highlighted Text== — double equals signs.
+
+Note how each marker above shows as itself when it is wrapped in backticks: anything inside \`code\` is text being quoted rather than formatting being applied, which is how this guide can print the syntax it is describing.
+
+### Links
+Three ways of writing one, all of them ordinary Markdown:
+- \`[Anthropic](https://www.anthropic.com)\` — a label, and the address behind it. Only the label shows.
+- \`<https://www.anthropic.com>\` — the address as its own label. The angle brackets are syntax and hide like any other.
+- \`https://www.anthropic.com\` on its own — just paste it in. \`www.anthropic.com\` and a plain email address are picked up the same way.
+
+A link's label is ordinary text, so the formatting above works inside it — \`[the **important** part](https://www.anthropic.com)\` gives you [the **important** part](https://www.anthropic.com), and the whole of it is one link.
+
+**In Read Mode a link is clickable, and opens in a new browser tab** so the note you were reading is still there behind it. It is a real link, so hovering over it shows the browser where it leads. In Edit Mode it stays text, so that clicking it puts the cursor in it — press \`Cmd + E\` / \`Ctrl + E\` to read, then click.
+
+Only addresses that lead somewhere outside the app are made clickable — \`https:\`, \`http:\`, \`mailto:\` and \`tel:\`. A link to a path inside your vault, or to a heading (\`[see below](#chapter-two)\`), is styled but does nothing; use \`[[Note Name]]\` for those (see *Wiki Links*). The same goes for a \`javascript:\` or \`data:\` address, the two a note from someone else could use to attack your vault: it still looks like a link, but clicking it does nothing at all.
+
+An address written *inside* a label — \`[read this https://example.com now](https://www.anthropic.com)\` — is part of the label and nothing more: the whole label leads to the one address in the brackets after it, so there is never a second, different destination hiding inside a link you are about to click.
+
+### Wiki Links
+\`[[Note Name]]\` links to another note in the vault by its name, and \`[[Note Name|what to call it]]\` shows different text. Type \`[[\` and the editor offers the notes you have. Clicking one **opens that note in a new tab inside the app** — it never leaves the browser page you are on. This works in both modes.
+
+### Lists
+Unordered Lists:
+- Item 1
+- Item 2
+  - Sub-item A
+
+Ordered Lists:
+1. First step
+2. Second step
+
+### Blockquotes
+> This is a blockquote. It spans multiple lines if necessary and visually groups quoted text.
+
+### Code
+Inline code: \`const example = true;\`
+
+Code blocks:
+\`\`\`javascript
+function helloWorld() {
+  console.log("Hello");
+}
+\`\`\`
+
+### Tables
+| Syntax | Description |
+| ----------- | ----------- |
+| Header | Title |
+| Paragraph | Text |
+
+A table stays a table. Click a cell and type in it; arrow up into it from the line below and the cursor lands in a cell. It never turns back into markdown under your hands. What the file holds is still the ordinary pipe-and-dash table above — the grid is simply an easier way to work on it, exactly as an embedded picture is an easier way to work on \`![[picture.png]]\`.
+
+Getting around, and editing:
+- **Tab** and **Shift + Tab** step to the next and previous cell, wrapping onto the next row; from the very last cell, Tab adds a row and lands in it. **Enter** moves down a row, and from the last row it adds one too. **Escape** leaves the table, with the cursor just after it.
+- **Shift + Enter** breaks a line inside a cell. It writes \`<br>\`, which is the only way Markdown has of doing that.
+- The two small **+** buttons at the corners, top right and bottom left, add a column and a row at the end. Each appears when the pointer comes near its edge.
+- **Hover a row or a column** and a small grip appears beside it: left of the row, above the column. Click it to insert, **move** or delete that row or column, and on a column to **align** it left, centre or right. The alignment is written into the file as GFM's \`:---\`, \`:---:\` and \`---:\`.
+- **Alt + ↑** and **Alt + ↓** move the row you are typing in up and down.
+- **Right-click a cell** for everything else: *Cut*, *Copy* and *Paste* within that cell, *Insert row above* / *below*, *Insert column left* / *right*, *Delete row*, *Delete column*, *Delete table*. None of them asks you to confirm, because a single \`Cmd + Z\` / \`Ctrl + Z\` undoes any of them.
+- The cell you are in shows its **raw text**, just as the file has it: a cell holding \`**bold**\` shows the asterisks while you are in it and the bold word again once you leave. That is the same thing the editor does when you put the cursor on a bold word anywhere else.
+- **Maths renders in a cell.** Write \`$x^2$\` and the cell shows the formula, exactly as it would in the body of a note; step into the cell and the \`$…$\` comes back, like any other markup. A \`$$…$$\` inside a cell is drawn inline rather than as a centred block, because a cell is one line.
+- \`Cmd + B\` and \`Cmd + I\` do not reach inside a cell. Type \`**bold**\` and \`*italic*\` there yourself.
+- A pipe inside a cell is written \`\\|\`, and the editor writes that for you — type a \`|\` into a cell and the file gets \`\\|\`, so the row keeps the number of columns you can see.
+- The colons in the second row are honoured: \`| :--- |\` is left-aligned, \`| :---: |\` centred, \`| ---: |\` right-aligned. Editing a cell never disturbs them.
+- Nothing you did not edit is rewritten. Change one cell and every other row comes back byte for byte, spacing included — a table you have lined up by hand stays lined up.
+
+To make a new one, choose **Insert table…** from the pane's **⋯** menu, or right-click in a note and choose it there, then sweep across the grid to the size you want and click (the first row is the header, so the smallest table is two rows). If you already know your columns, type the header row, such as \`| Name | Grade |\`, and press **Enter**: the \`| --- |\` row and an empty row appear, with the cursor in the first cell. Or just start typing one: the moment the header row, the \`| --- |\` row and one body row are all there it renders, and you carry on typing in the last cell. Pasting a Markdown table in does the same.
+
+A table written inside a code fence stays as text — it is being quoted, not tabulated:
+
+\`\`\`markdown
+| Syntax | Description |
+| ------ | ----------- |
+| Header | Title |
+\`\`\`
+
+---
+
+## 8. LaTeX Math Expressions
+
+The application natively supports advanced LaTeX mathematical typesetting.
+
+### Inline Math
+Surround your expression with single dollar signs:
+The quadratic formula is $x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$
+
+### Block Math
+Surround your expression with double dollar signs on their own lines:
+$$
+E = mc^2
+$$
+
+$$
+\\int_0^\\infty e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}
+$$
+
+### Math in a Table
+Both forms work inside a table cell too — see section 7. Two things to watch. A cell resolves \`\\\\\` down to a single backslash on the way in, so LaTeX that needs a real \`\\\\\` — the row separator inside \`\\begin{matrix}\`, say — has to be written \`\\\\\\\\\` there; those environments then lay out their rows normally. A \`\\\\\` on its own, though, does nothing at all in a cell: a cell is one line, so the break is dropped rather than splitting the formula and growing the row. Everything else carries across unchanged.
+
+---
+
+## 9. The AI Agent
+
+The sparkles button at the bottom of the sidebar (or \`Cmd + Shift + X\` / \`Ctrl + Shift + X\`) opens a chat panel on the right of the window. In it you talk to an AI coding agent you already use — **Claude Code**, **Codex** or **OpenCode** — about the vault you have open. Drag the panel's left edge to make it wider or narrower.
+
+### What it needs
+- **The agent itself, installed and logged in on this computer.** Log in once in a terminal, the way you normally would: run \`claude\` and type \`/login\`; or \`codex login\`; or \`opencode auth login\`. The panel warns you when the agent you picked is not installed or not logged in, and shows the command to run.
+- **VaultAgent**, a small helper that runs quietly in the background (no window, no Dock or menu-bar icon) and starts when you log in. A browser page cannot start programs, so the helper is what runs the agent for you. The panel's guide has the download for your system:
+  - **macOS:** open \`VaultAgent.pkg\`. The first time, macOS blocks it because it is not from the App Store: open **System Settings → Privacy & Security**, click **Open Anyway**, and follow the installer. macOS then says "Background Items Added".
+  - **Windows:** run \`VaultAgent-Setup.exe\`. If SmartScreen stops it, click **More info → Run anyway**.
+  - **Linux:** make the downloaded file executable and run it once (\`chmod +x vaultagent-linux-x64 && ./vaultagent-linux-x64\`); it installs itself as a background service for your user.
+- Then click **Connect** in the panel. Chrome asks once whether this site may talk to apps on your computer — choose **Allow**. Until you click Connect the page never tries to reach the helper. If you chose Block by mistake, click the icon at the left of the address bar, open **Site settings**, and set **Local network access** to **Allow**; the panel reconnects by itself.
+
+### Chatting
+Opening the panel puts you straight in the box at the bottom, and closing it puts you back where you were. Type there and press **Enter** to send (**Shift + Enter** for a new line). Paste images straight from the clipboard, drop them onto the box, or use the attach button. Right-click the box to **Paste**, or selected text anywhere in the panel to **Copy** it. Pick the agent in the panel's **⋯** menu, which also shows whether each one is installed and logged in, and the model and how hard it should think (effort) beside the message box — the model list opens with the few worth choosing between, and **Show all** has the rest — each chat remembers its own choice, and a new chat starts with the last one you used. Switching the agent starts a new chat. **Stop** ends a reply early.
+
+### How it answers, and Learning Mode
+Answers are meant to be short: the agent is told to lead with the answer, keep to a few sentences unless you ask for more, skip the preamble and the recap, and never paste back a diff the panel already shows you. Maths comes back as real maths, typeset the way your notes do it — it is told to write LaTeX (\`$x^2$\`, or \`$$…$$\` on its own line) and never to fake a formula with symbols like ∑ and √.
+
+When you are trying to **learn** something rather than get something done, that is the wrong shape, so the panel has a **learning mode** — the graduation cap beside the model chip. In learning mode the agent gives you **one idea at a time**: a short explanation with a concrete example, often built from your own notes, then one question back to check it landed, and then it waits for you. Say you follow and it takes the next step; say you're lost and it goes smaller.
+
+The cap has three settings, and clicking it moves to the next:
+- **Automatic** (the default): the panel decides per message. Ask it to explain something, say you don't understand, or ask why something works, and it teaches; ask it to add a table or fix a typo and it just does it. The cap **lights up** while a lesson is under way, so you can always see which one you are getting.
+- **On**: every answer is taught step by step.
+- **Off**: it always answers directly.
+
+The setting is yours, not the chat's: it stays as you left it. A lesson in progress is remembered until you start a new chat or reload the page.
+
+### Changing something you already sent
+Point at one of your own messages and a **pencil** appears. Click it, change the words, press **Enter** (or **Send**), and the agent answers the new version.
+
+The old one is not thrown away. Your message now has **two versions**, and a small **‹ 1/2 ›** under it switches between them — along with everything that followed each one. Edit again and you get a third, and so on. It works on any message in the chat, not just the last, and a chat you started before this update can be edited the same way.
+
+Each version is a separate conversation from that point on: the agent answering your edited message does not know about the version you replaced, which is the point of editing it. It is told what came **before** the message you changed, so it still has the thread.
+
+Each chat keeps its own conversation. The chat list at the top lets you go back to an earlier one or start a new one, and deleting a chat removes it for good (after asking), including the agent's own record of it.
+
+### What the agent can see
+You never need to tell it what you are looking at. With **every** message it is told, fresh, which tabs and panes you have open, which one you are in, and exactly where you are in each: the lines on screen and your selection in a note (unsaved edits included), the page, zoom and selected text in a PDF, and what is in view on a drawing or notebook page. When the tab you are in is a drawing, notebook or PDF, a picture of what is on screen goes along too — but only when it changed since your last message. Scroll, switch tabs or keep writing between messages and the next message knows.
+
+It can also look things up on the web.
+
+### What the agent can change
+It can read and search every file in the vault, edit notes, create notes and folders, rename and move things, and delete them — to the Trash, never for good. On drawings, notebooks and PDFs it can add text, sticky notes, shapes, arrows and freehand strokes, and move, restyle or remove shapes. Every change happens straight away and shows in the chat as a card (with the lines it changed); the card's **Open** takes you to the file. A change made in a note you have open appears in it live, and \`Cmd + Z\` undoes it like your own typing. A drawing, notebook or PDF it works on opens **beside** what you are doing, without taking you away from it.
+
+**It has the same access to your computer as in your terminal.** It can run programs and read and change files anywhere your account can, and it does so without asking first, because nobody could answer a permission prompt in the panel. It is told to make every change to the vault through this app, which is what puts its edits in your editor live and lets \`Cmd + Z\` undo them.
+
+Your own MCP servers are left out of the panel's runs, and so are your hooks and plugins for Claude Code and OpenCode. Codex has no single switch for its hooks, plugins and apps (including the MCP servers a plugin brings), so those still run there.
+
+### Where chats are kept
+The vault holds only a small list of its chats, in a hidden \`.VaultAgent\` folder (hidden from the file tree, search and the graph, as are \`.claude\`, \`.agents\`, \`.codex\` and \`.opencode\` folders at the top of the vault). The conversations themselves are kept by the agent in its own place, the way it keeps your terminal sessions; the agent works from a folder of its own for this vault, under \`~/.bme-agent-sessions\` in your home folder. A \`CLAUDE.md\` or \`AGENTS.md\` at the top of the vault, and skills in \`.claude/skills\` or \`.agents/skills\`, are passed on to the agent as instructions.
+
+### Keeping it up to date
+Each time you load the page (once you have connected before, and Chrome still allows the connection), the editor asks VaultAgent whether a newer version has been released. When one has, a small dot appears on the sparkles button (and on the expand-sidebar button while the sidebar is hidden), and the panel says "**VaultAgent X** is available" with an **Update** button. The panel's **⋯** menu also has **Update VaultAgent**, which you can use any time; it is greyed out when you already have the latest version. The version you have is shown at the top of that menu.
+
+One click is all it takes: VaultAgent downloads the new version, checks that it runs on this computer, replaces the old copy and restarts. The panel shows the progress, reconnects by itself and says "Updated to VaultAgent X". Your chats are kept. If a reply is being written, the panel asks first, because updating stops it.
+
+If anything goes wrong, the version you have keeps running and the panel says what happened, with **Try again** and a **Download installer** link: opening the installer replaces the old copy just as well.
+
+VaultAgent versions older than 0.1.3 cannot update themselves. For those, the **⋯** menu keeps **Download installer**: download it and open it once, and later versions update from the panel.
+
+### Turning it off
+The panel's **⋯** menu always has **Uninstall VaultAgent** (it works while VaultAgent is connected, even an outdated one, and waits while an update runs): it stops the helper, removes it from your login items and deletes it. Your chats stay. To use the agent again, download the installer from the panel and open it.
+
+If any terminals are open (section 10), updating or uninstalling VaultAgent asks first, because restarting the helper ends their shells.
+
+---
+
+## 10. The Terminal
+
+The terminal button at the bottom of the sidebar — right of the sparkles — or \`\`Ctrl + \` \`\` (Control and the backquote key, on every system, as in VS Code) opens a terminal along the bottom of the editor. It is a real terminal, like the one built into VS Code: everything you can do in your own terminal app works here — running commands, scripts and programs, editors like \`vim\`, \`htop\`, Python and other REPLs, \`ssh\`, \`git\` with its pager, colours, \`Ctrl + C\` and the other control keys.
+
+It is **your own shell, with your own settings**: the same login shell your terminal app opens (zsh, bash, fish, …), with everything your profile sets up — your PATH (Homebrew, nvm, pyenv, conda…), aliases, functions and your prompt theme (oh-my-zsh, Powerlevel10k, Starship…). It **starts in the folder of the file you are looking at** — open \`CS145/a3/sum.rkt\` and the shell is already in \`CS145/a3\`. A new tab (**+**) starts wherever you are *then*, so moving to a file in another folder and pressing **+** gives you a shell there; the tabs you already have stay where they are, since a running shell has its own place. With no file open you get the top of the vault, and if VaultAgent cannot work out where the vault is on disk, your home folder, as before. It is not limited in any way: it can do anything your user account can.
+
+VaultAgent finds the vault by itself — the browser is not allowed to tell it where your folders are, so it looks for the vault's own marker file. If it cannot find it (a vault outside your home folder, or on a network drive), **Settings → Terminal → Vault folder on disk** takes the full path; it checks the folder really is that vault before using it.
+
+It needs **VaultAgent** (see section 9), version 0.2.0 or newer — the same helper the agent uses, with nothing to set up or switch on. If VaultAgent is not installed, or is too old, the terminal shows the same install, connect or update screen as the agent panel. The first click on the terminal button may make Chrome ask whether this site may talk to apps on your computer; choose **Allow**.
+
+### Several terminals
+The strip at the top of the terminal holds a tab per shell (\`zsh\`, \`zsh 2\`, …). **+** starts another one (up to ten), clicking a tab switches to it, and the **×** on a tab ends that shell. Hiding the terminal — the **⌄** button, the sidebar button again, or \`\`Ctrl + \` \`\` — keeps every shell running exactly as it was; so does switching vaults, the graph view, or reloading the page, which reconnects to the shells it had (a shell left with no page attached is ended after 30 minutes). Ending the last shell hides the terminal. When a shell exits on its own, its tab says so; press **Enter** to start a new one in its place. If you open the same shell in another browser window, this one's tab says it moved there.
+
+### Size, copy and paste
+Drag the terminal's top edge to make it taller or shorter (the editor always keeps some room); double-click the edge to put it back, or focus it and use the up and down arrow keys (with **Shift** for bigger steps). The terminal remembers its height and fits itself to whatever room it has.
+
+- **macOS:** select text and \`Cmd + C\` copies; \`Cmd + V\` pastes; \`Cmd + K\` clears; \`Option + ←/→\` jump by word and \`Cmd + ←/→\` to the start or end of the line. \`Option\` types characters as usual (it is not Meta). Programs that copy to the clipboard themselves (over \`ssh\` or in \`tmux\`, say) reach your real clipboard.
+- **Windows and Linux:** \`Ctrl + C\` copies when text is selected (otherwise it interrupts the program, as usual); \`Ctrl + Shift + C\` copies, \`Ctrl + Shift + V\` pastes. \`Ctrl + W\` would close the browser tab, so while you are in the terminal Chrome asks before leaving the page.
+- **Right-click** for **Copy**, **Paste**, **Select All**, **Clear**, **New Terminal** and **Kill Terminal** — unless the program running wants the mouse itself (like \`htop\` or \`vim\` with the mouse on); hold **Shift** to get the menu anyway.
+- Links in the output open in a new browser tab with \`Cmd\`-click (\`Ctrl\`-click on Windows and Linux).
+
+Inside the terminal, keys belong to the shell: \`Cmd + E\` and the \`Option\`/\`Alt\` tab shortcuts do not reach the editor. \`Cmd + S\`, \`Cmd + N\` and \`\`Ctrl + \` \`\` still work on a Mac.
+
+### Fonts and icons
+The terminal uses the font your terminal app is set to — it looks in Ghostty, iTerm2, kitty, Alacritty, WezTerm, Windows Terminal, Terminal and VS Code — when that font is installed. Settings → Terminal lets you choose a font and size instead. The icons that prompt themes draw (Nerd Font symbols) always show, because the editor carries a font of just those symbols for when yours lacks them. The colours follow the editor's light or dark theme.
+
+### macOS: Documents, Desktop and iCloud Drive
+macOS protects some folders. The first time a command in the terminal reaches into one of them, macOS asks whether **vaultagent-pty** — the small part of VaultAgent that runs your shells — may access it; choose **Allow**. These permissions are separate from the ones your own terminal app has, and they are kept across VaultAgent updates. To never be asked, give **vaultagent-pty** Full Disk Access once: the terminal offers **Open Settings** and **Show in Finder** for that (drag it into the list, or switch it on), and you can dismiss the offer. If you uninstall VaultAgent and install it again, your permissions still match.
+
+### The agent and the terminal
+They are separate: the agent never sees, reads or types into your terminal, and nothing you do in the terminal is sent to it.
+
+---
+
+*End of Guide.*`;

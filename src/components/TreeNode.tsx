@@ -1,0 +1,608 @@
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { BookOpen, ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool, Notebook } from './icons';
+import { isDrawingFile, isEpubFile, isNotebookFile, noteDisplayName } from '../utils/fileTypes';
+import {
+    clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor, requestCreate,
+    subscribeCreateRequest, type CreateKind,
+} from '../utils/createRequest';
+import {
+    getTreeDropPosition, isTreeReorderMode, peekDraggedNode, setDraggedNode, setTreeDropTarget,
+    subscribeTreeDropTarget, takeDraggedNode,
+} from '../utils/treeDrag';
+import { isTabDrag } from '../utils/tabDrag';
+import { openContextMenu } from '../utils/contextMenu';
+import { isActiveFilePath, subscribeActiveFile } from '../utils/activeFile';
+import { isExpanded, subscribeExpanded } from '../utils/expandedPaths';
+import LucideGlyph from './LucideGlyph';
+import { getEntryStyle, getEntryStyles, subscribeEntryStyles } from '../utils/entryStyleStore';
+import { entryColorVar, type IconNode } from '../utils/entryStyle';
+import type { ContextMenuEntry } from '../utils/contextMenu';
+import type { FileTreeNode } from '../types';
+
+interface TreeNodeProps {
+    node: FileTreeNode;
+    onFileClick: (node: FileTreeNode) => void;
+    /** Create a file called `name` inside `handle`, which sits at `path`.
+     *  THREE arguments, matching App.handleCreateFile: it opens the new file
+     *  afterwards and needs the vault-root-relative path to key the tab the way
+     *  buildFileTree keys the row. */
+    onCreateFile: (handle: FileSystemDirectoryHandle, name: string, path: string) => void | Promise<void>;
+    /** Create a folder called `name` inside `handle`. TWO arguments,
+     *  deliberately unlike onCreateFile above: App.handleCreateFolder takes no
+     *  path because it opens nothing afterwards and so has nothing to key. The
+     *  asymmetry is the call surface App actually exposes — do not tidy the two
+     *  into one shape. */
+    onCreateFolder: (handle: FileSystemDirectoryHandle, name: string) => void | Promise<void>;
+    onTrash: (node: FileTreeNode) => void;
+    /** Open this folder as the vault (directories only). App owns the switch —
+     *  the FS layer is reached through it, never from here. */
+    onOpenAsVault: (node: FileTreeNode) => void | Promise<void>;
+    /** Give a folder an icon and a colour, or clear them. Stable for the app's
+     *  life — TreeNode is memoized, and a fresh closure would defeat that. */
+    onStyleEntry: (path: string, icon: string | undefined, color: string | undefined, nodes?: IconNode[]) => void;
+    /** Toggle one folder open or shut. The ANSWER is read from the store (see
+     *  utils/expandedPaths.ts), per row and as a boolean, so one chevron does
+     *  not re-render every row in the tree. */
+    onToggleExpand: (path: string) => void;
+    onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
+    onRenameFile: (node: FileTreeNode, newName: string) => unknown;
+    /** Copy files dragged in from the OS into `targetDir`. */
+    onImportFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
+    depth?: number;
+}
+
+
+function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, onOpenAsVault, onStyleEntry, onToggleExpand, onMoveFile, onRenameFile, onImportFiles, depth = 0 }: TreeNodeProps) {
+    /* This row's own icon and colour, read from the store rather than taken as
+       a prop — see utils/folderStyleStore.ts. The snapshot is the STORED object,
+       so a row whose folder was not the one that changed sees an unchanged
+       reference and does not re-render. */
+    const style = useSyncExternalStore(
+        subscribeEntryStyles,
+        useCallback(() => getEntryStyle(node.path), [node.path]),
+    );
+    /* Read at render rather than subscribed to: the icons map changes identity
+       on every pick, so subscribing to it would re-render every row in the tree
+       for one folder's change. This row already re-renders when its OWN style
+       does, which is the only time the artwork it needs can have arrived. */
+    const customIconNodes = style?.icon ? getEntryStyles().icons[style.icon] : undefined;
+    /* Subscribed as a BOOLEAN, not taken as a prop. `activeFilePath` used to
+       travel the whole recursion, so switching tabs changed a prop on every row
+       and re-rendered all of them to move one highlight. See utils/activeFile.ts. */
+    const isActive = useSyncExternalStore(
+        subscribeActiveFile,
+        useCallback(() => node.kind === 'file' && isActiveFilePath(node.path), [node.kind, node.path]),
+    );
+    /* Where a Custom-order drop would land relative to THIS row, if anywhere —
+       a per-path primitive from the store, so a drag re-renders only the rows
+       it passes (utils/treeDrag.ts). FileExplorer decides it; the row draws it. */
+    const dropPosition = useSyncExternalStore(
+        subscribeTreeDropTarget,
+        useCallback(() => getTreeDropPosition(node.path), [node.path]),
+    );
+    /* 20px per level — also the inline create row below and index.css's
+       .drop-first-child line: change all three together. */
+    const paddingLeft = 12 + depth * 20;
+    /* The indent as a variable too, for the insertion line: it starts where the
+       row's content does, so its left end says what depth the drop lands at. */
+    const rowStyle = { paddingLeft, ['--tree-indent' as string]: `${paddingLeft}px` };
+    const dropClass = dropPosition === 'before' ? ' drop-before'
+        : dropPosition === 'after' ? ' drop-after'
+            : dropPosition === 'first-child' ? ' drop-first-child' : '';
+    // This row's own disclosure, from the store: a primitive snapshot, so the
+    // rows that did not move see no change at all (utils/expandedPaths.ts).
+    const expanded = useSyncExternalStore(
+        useCallback(listener => subscribeExpanded(node.path, listener), [node.path]),
+        useCallback(() => isExpanded(node.path), [node.path]),
+    );
+    const [dragOver, setDragOver] = useState(false);
+    const [isRenaming, setIsRenaming] = useState(false);
+    const [renameValue, setRenameValue] = useState(node.name);
+    const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+    // "The right-click menu is on me" — LOCAL row state, and deliberately not a
+    // prop threaded down from FileExplorer. This component is memoized (bottom
+    // of the file) precisely so the tree stops re-rendering while the user types
+    // in a note; a `contextTargetPath` prop would have to travel the whole
+    // recursion and would re-render every visible row TWICE per menu — once when
+    // it opens and once when it closes — for a value exactly one row cares
+    // about. That is the same trap `saveEpoch` was moved out of the prop tree to
+    // escape (AGENTS.md § Conventions). Local state re-renders this one row, and
+    // the request carries an `onClose` that clears it however the menu was
+    // dismissed.
+    const [marked, setMarked] = useState(false);
+
+    /* The inline "new thing" name box, driven by the module store rather than
+       by local state — see utils/createRequest.ts. The explorer's toolbar has to
+       be able to open this box in a folder several levels down the recursion,
+       which a prop could only do by travelling every level. */
+    const creating = useSyncExternalStore(
+        subscribeCreateRequest,
+        useCallback(() => getCreateKindFor(node.path), [node.path]),
+    );
+    const createInputRef = useRef<HTMLInputElement | null>(null);
+
+    useEffect(() => {
+        if (creating) createInputRef.current?.focus();
+    }, [creating]);
+
+    // A folder asked to create something has to be open, or the box it is about
+    // to render is inside a subtree nobody can see. Its ANCESTORS are opened by
+    // whoever raised the request: this row is not rendered until they are.
+    useEffect(() => {
+        if (creating && !expanded) onToggleExpand(node.path);
+    }, [creating, expanded, node.path, onToggleExpand]);
+
+    useEffect(() => {
+        if (isRenaming && renameInputRef.current) {
+            renameInputRef.current.focus();
+            // Select text excluding extension if it's a file
+            if (node.kind === 'file') {
+                const lastDotIdx = node.name.lastIndexOf('.');
+                if (lastDotIdx > 0) {
+                    renameInputRef.current.setSelectionRange(0, lastDotIdx);
+                } else {
+                    renameInputRef.current.select();
+                }
+            } else {
+                renameInputRef.current.select();
+            }
+        }
+    }, [isRenaming, node.kind, node.name]);
+
+    const handleRenameSubmit = async () => {
+        const newName = renameValue.trim();
+        if (newName && newName !== node.name) {
+            await onRenameFile(node, newName);
+        } else {
+            setRenameValue(node.name); // Revert if empty or unchanged
+        }
+        setIsRenaming(false);
+    };
+
+    const handleRenameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter') {
+            handleRenameSubmit();
+        } else if (e.key === 'Escape') {
+            // Handled: `dismissOnEscape` surfaces skip a prevented Escape, so
+            // one press closes only this (#36).
+            e.preventDefault();
+            setRenameValue(node.name);
+            setIsRenaming(false);
+        }
+    };
+
+    const handleRenameBlur = () => {
+        handleRenameSubmit();
+    };
+
+    // ── Creating inside a folder ──
+    /**
+     * Open the inline input row inside this folder.
+     *
+     * Expanding first is not cosmetic: the row renders as the first child of
+     * `.tree-children`, so a collapsed folder would take the name and show
+     * nothing — neither the field being typed into nor the file that lands in
+     * it. Going through `onToggleExpand` rather than a local flag keeps the one
+     * description of what is open (App's `expandedPaths`, which is persisted and
+     * which a rename carries across) telling the truth.
+     */
+    const startCreate = (kind: CreateKind) => requestCreate(node.path, kind);
+
+    const handleCreateKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter') {
+            const name = (e.target as HTMLInputElement).value.trim();
+            const kind = creating;
+            clearCreateRequest();
+            if (!name) return;
+            // Narrowing only: the input row is rendered on the folder branch
+            // alone, so `node` is a directory whenever this runs.
+            if (node.kind !== 'directory') return;
+            // A name already taken in this folder is refused by
+            // App.handleCreateFile / handleCreateFolder, which say so in the
+            // app's own dialog and create nothing. The tree deliberately does
+            // not second-guess that check: one place decides, so there is one
+            // wording and no way for the two to disagree about what "taken"
+            // means (a file and a folder cannot share a name — freeEntryName's
+            // rule, FileSystemContext.tsx:21-25).
+            if (kind === 'folder') await onCreateFolder(node.handle, name);
+            else await onCreateFile(node.handle, nameForKind(kind, name), node.path);
+        } else if (e.key === 'Escape') {
+            e.preventDefault(); // handled — see handleRenameKeyDown
+            clearCreateRequest();
+        }
+    };
+
+    /**
+     * Raise the app's own menu for this row.
+     *
+     * `openContextMenu` is imported straight from the module store rather than
+     * arriving as a prop, which is what keeps TreeNodeProps — and so the memo —
+     * exactly as it was (see `marked` above).
+     *
+     * `preventDefault` suppresses the browser's own menu; `stopPropagation`
+     * keeps FileExplorer's root-container handler from raising a second menu
+     * behind this one. Nothing in the tree stopped bubbling before this handler
+     * existed, and the container independently checks `closest('.tree-item')` —
+     * belt and braces, because either one alone is a refactor away from
+     * silently producing two menus.
+     *
+     * A row being RENAMED is the one case that gets neither: the row is a text
+     * field then, and a text field wants the browser's own menu — its Paste is
+     * the whole point of the gesture. The sharper reason is that raising ours
+     * COMMITS the rename: ContextMenu focuses its first enabled row on mount
+     * (ContextMenu.tsx:208-210), the field blurs, and `handleRenameBlur` writes
+     * the half-typed name to disk through `renameFile`, which is copy-then-
+     * delete and the deliberate overwrite exception. So a right-click meant to
+     * paste renamed the file instead, and opened "File actions" over a row
+     * whose name had already changed. Returning WITHOUT preventing is what
+     * hands the field its native menu — the same rule, and the same reason,
+     * FileExplorer's container handler states for `.tree-item`. It is also why
+     * the row hides its own action buttons while it is being named.
+     */
+    const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (isRenaming) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // Read off the event synchronously: React clears `currentTarget` once
+        // the handler returns, and the request outlives this call.
+        const row = e.currentTarget;
+
+        const rename: ContextMenuEntry = {
+            kind: 'command',
+            id: 'rename',
+            label: 'Rename',
+            // The row's existing inline rename — the same thing its pencil
+            // button opens, so there is one rename UI and not two.
+            run: () => setIsRenaming(true),
+        };
+        // Move to Trash goes through `onTrash`, which is App.handleTrash, and
+        // never through the moveToTrash primitive. handleTrash owns five things
+        // the primitive has none of: the app's own confirmation naming the file
+        // and `.Garbage`, the in-flight guard that covers the QUESTION as well
+        // as the copy, a flush of every doomed tab, a drain of the reconcile
+        // queue, and the closing of every tab the deletion took. The menu closes
+        // before `run` fires, so a second right-click cannot stack a second
+        // question behind the first.
+        const trash: ContextMenuEntry[] = [
+            { kind: 'separator', id: 'sep-trash' },
+            { kind: 'command', id: 'trash', label: 'Move to Trash', danger: true, run: () => onTrash(node) },
+        ];
+
+        /* The same row on both kinds. A file's icon says what it is — a
+           notebook, a drawing, a note — so overriding it is a deliberate choice
+           and not the default; the colour is the part most people want. */
+        const styleRow: ContextMenuEntry = {
+            // A flyout rather than a command, like Insert table…: there are two
+            // choices to make (icon and colour) and picking one should not shut
+            // the menu before the other is made.
+            kind: 'entry-style', id: 'entry-style', label: 'Choose icon / colour',
+            icon: style?.icon,
+            color: style?.color,
+            pick: (icon, color, nodes) =>
+                onStyleEntry(node.path, icon, color, nodes as IconNode[] | undefined),
+        };
+
+        const entries: ContextMenuEntry[] = node.kind === 'file'
+            ? [rename, { kind: 'separator', id: 'sep-style' }, styleRow, ...trash]
+            : [
+                { kind: 'command', id: 'new-note', label: 'New note', run: () => startCreate('file') },
+                { kind: 'command', id: 'new-folder', label: 'New folder', run: () => startCreate('folder') },
+                {
+                    // A vault is just a folder, so a folder inside one can be
+                    // opened as a vault of its own — the same switch "Open
+                    // folder…" performs, minus the picker, since the handle is
+                    // already here. It lands in the recent-vaults list like any
+                    // other opened vault, so the way back is that menu.
+                    kind: 'command', id: 'open-as-vault', label: 'Open as Vault',
+                    run: () => { void onOpenAsVault(node); },
+                },
+                { kind: 'separator', id: 'sep-style' },
+                styleRow,
+                { kind: 'separator', id: 'sep-rename' },
+                rename,
+                ...trash,
+            ];
+
+        openContextMenu({
+            x: e.clientX,
+            y: e.clientY,
+            entries,
+            label: node.kind === 'file' ? 'File actions' : 'Folder actions',
+            opener: row,
+            onClose: () => setMarked(false),
+        });
+        // Marked AFTER the request is raised, not before, and the order is
+        // load-bearing: openContextMenu closes whatever menu it replaces, which
+        // runs that raiser's `onClose`. Right-clicking THIS row twice in a row
+        // makes the two calls this row's own — `setMarked(false)` from the
+        // outgoing request and `setMarked(true)` from this one — and React
+        // batches both into one render, so raising the mark first would leave
+        // the row unmarked underneath its own open menu.
+        setMarked(true);
+    };
+
+    // ── Drag handlers ──
+    const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
+        e.stopPropagation();
+        e.dataTransfer.setData('text/plain', node.path);
+        e.dataTransfer.effectAllowed = 'move';
+        // Store the node in a module-level variable since dataTransfer can't hold objects
+        setDraggedNode(node);
+    };
+
+    /** Under Custom, a tree node's drop is FileExplorer's to place — before,
+     *  after, into — from one delegated handler on the container. Returning
+     *  without preventing or stopping anything lets the event reach it. OS
+     *  files and editor tabs carry no dragged node and keep the paths below. */
+    const reorderOwnsDrag = () => isTreeReorderMode() && peekDraggedNode() !== null;
+
+    const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+        if (node.kind !== 'directory') return;
+        if (reorderOwnsDrag()) return;
+        // An editor tab being carried to the split view passes right over the
+        // tree. Not preventing the default is what refuses the drop, so the row
+        // never lights up offering something it could not do with it.
+        if (isTabDrag(e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // OS files are copied in; a tree node is moved. `types` is the only
+        // readable signal here — `files` is empty during dragover by design.
+        e.dataTransfer.dropEffect = Array.from(e.dataTransfer.types).includes('Files') ? 'copy' : 'move';
+        setDragOver(true);
+    };
+
+    const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+        if (reorderOwnsDrag()) return;
+        e.stopPropagation();
+        setDragOver(false);
+    };
+
+    const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+        if (reorderOwnsDrag()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(false);
+
+        // Dropped in from the OS — copy into this folder.
+        if (node.kind === 'directory' && e.dataTransfer.files?.length) {
+            await onImportFiles(e.dataTransfer.files, node.handle);
+            if (!expanded) onToggleExpand(node.path);   // reveal what just landed
+            return;
+        }
+
+        const draggedNode = takeDraggedNode();
+        if (!draggedNode) return;
+
+        // Don't drop into itself or its own parent
+        if (draggedNode.path === node.path) return;
+        // Don't drop a folder into its own descendant
+        if (node.path.startsWith(draggedNode.path + '/')) return;
+
+        if (onMoveFile) {
+            await onMoveFile(draggedNode, node.handle as FileSystemDirectoryHandle, node.path);
+        }
+    };
+
+    const handleDragEnd = () => {
+        setDraggedNode(null);
+        setTreeDropTarget(null);
+    };
+
+    if (node.kind === 'file') {
+        return (
+            <div
+                className={`tree-item tree-file${isActive ? ' is-active' : ''}${marked ? ' is-context-target' : ''}${dropClass}`}
+                data-path={node.path}
+                style={rowStyle}
+                onClick={() => { if (!isRenaming) onFileClick(node); }}
+                onContextMenu={handleContextMenu}
+                draggable={!isRenaming}
+                onDragStart={!isRenaming ? handleDragStart : undefined}
+                onDragEnd={!isRenaming ? handleDragEnd : undefined}
+            >
+                <span
+                    className="tree-item-icon file-icon"
+                    style={style?.color ? { ['--entry-color' as string]: entryColorVar(style.color) } : undefined}
+                >
+                    {/* A chosen icon replaces the TYPE icon, which is the one
+                        thing a file row says on its own — so it is opt-in and
+                        never the default. */}
+                    {style?.icon && customIconNodes ? <LucideGlyph nodes={customIconNodes} size={14} />
+                        : isEpubFile(node.name) ? <BookOpen size={14} />
+                            : isNotebookFile(node.name) ? <Notebook size={14} />
+                            : isDrawingFile(node.name) ? <PenTool size={14} />
+                                : <FileText size={14} />}
+                </span>
+                {isRenaming ? (
+                    <div className="tree-inline-input" style={{ flex: 1, paddingRight: 0 }}>
+                        <input
+                            ref={renameInputRef}
+                            className="inline-rename-input"
+                            type="text"
+                            // `renameValue` reaches FileSystemContext.renameFile
+                            // VERBATIM, and that is one of the documented
+                            // freeEntryName exceptions: it overwrites. So the box
+                            // shows the real name, extension and all — a display
+                            // name here would rename "A.md" to an extensionless
+                            // "A" and removeEntry the original. The extension is
+                            // already hidden presentationally: the effect above
+                            // pre-selects everything before the last dot.
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={handleRenameKeyDown}
+                            onBlur={handleRenameBlur}
+                            onClick={(e) => e.stopPropagation()}
+                        />
+                    </div>
+                ) : (
+                    <span
+                        className="tree-item-label"
+                        // For the same reason a tab and a pane header carry one:
+                        // this row hides the `.md`, and the tree is where names
+                        // are given and changed, so the real one has to stay a
+                        // hover away. The path rather than the name — it also
+                        // rescues a row the sidebar's width has ellipsised.
+                        data-tooltip={node.path}
+                    >{noteDisplayName(node.name)}</span>
+                )}
+                {!isRenaming && (
+                    <span className="tree-item-actions">
+                        <button
+                            className="tree-action-btn"
+                            data-tooltip="Rename"
+                            aria-label="Rename"
+                            onClick={(e) => { e.stopPropagation(); setIsRenaming(true); }}
+                        >
+                            <Edit2 size={13} />
+                        </button>
+                        <button
+                            className="tree-action-btn trash-btn"
+                            data-tooltip="Move to Trash"
+                            aria-label="Move to Trash"
+                            onClick={(e) => { e.stopPropagation(); onTrash(node); }}
+                        >
+                            <Trash2 size={13} />
+                        </button>
+                    </span>
+                )}
+            </div>
+        );
+    }
+
+    return (
+        <div className="tree-item-container">
+            <div
+                className={`tree-item tree-folder${dragOver || dropPosition === 'into' ? ' drag-over' : ''}${marked ? ' is-context-target' : ''}${dropClass}`}
+                data-path={node.path}
+                style={rowStyle}
+                onClick={() => { if (!isRenaming) onToggleExpand(node.path); }}
+                onContextMenu={handleContextMenu}
+                draggable={!isRenaming}
+                onDragStart={!isRenaming ? handleDragStart : undefined}
+                onDragEnd={!isRenaming ? handleDragEnd : undefined}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+            >
+                <span className="tree-item-chevron">
+                    {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </span>
+                <span
+                    className="tree-item-icon folder-icon"
+                    style={style?.color
+                        ? { ['--entry-color' as string]: entryColorVar(style.color) }
+                        : undefined}
+                >
+                    {/* The artwork comes from `.folders.json`, not from the icon
+                        library — which is why a customized tree draws instantly
+                        with none of Lucide in the bundle. */}
+                    {style?.icon && customIconNodes
+                        ? <LucideGlyph nodes={customIconNodes} size={14} />
+                        : <FolderIcon size={14} />}
+                </span>
+                {isRenaming ? (
+                    <div className="tree-inline-input" style={{ flex: 1, paddingRight: 0 }}>
+                        <input
+                            ref={renameInputRef}
+                            className="inline-rename-input"
+                            type="text"
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={handleRenameKeyDown}
+                            onBlur={handleRenameBlur}
+                            onClick={(e) => e.stopPropagation()}
+                        />
+                    </div>
+                ) : (
+                    <span className="tree-item-label">{node.name}</span>
+                )}
+                {!isRenaming && (
+                    <span className="tree-item-actions">
+                        <button
+                            className="tree-action-btn"
+                            data-tooltip="Rename folder"
+                            aria-label="Rename folder"
+                            onClick={(e) => { e.stopPropagation(); setIsRenaming(true); }}
+                        >
+                            <Edit2 size={13} />
+                        </button>
+                        <button
+                            className="tree-action-btn"
+                            data-tooltip="New file"
+                            aria-label="New file"
+                            onClick={(e) => { e.stopPropagation(); startCreate('file'); }}
+                        >
+                            <FilePlus size={14} />
+                        </button>
+                        <button
+                            className="tree-action-btn"
+                            data-tooltip="New folder"
+                            aria-label="New folder"
+                            onClick={(e) => { e.stopPropagation(); startCreate('folder'); }}
+                        >
+                            <FolderPlus size={14} />
+                        </button>
+                        <button
+                            className="tree-action-btn trash-btn"
+                            data-tooltip="Move to Trash"
+                            aria-label="Move to Trash"
+                            onClick={(e) => { e.stopPropagation(); onTrash(node); }}
+                        >
+                            <Trash2 size={13} />
+                        </button>
+                    </span>
+                )}
+            </div>
+            {(expanded || creating) && (
+                <div className="tree-children">
+                    {creating && (
+                        // The app's own input row, exactly the markup and the
+                        // classes the explorer's root create flow already uses
+                        // (FileExplorer's `creatingInRoot` row) — one indent
+                        // level deeper, because what is being named lands inside
+                        // this folder. It replaces a window.prompt(), which is
+                        // the direction 89824e7 took the app: the question is
+                        // asked where the answer will appear.
+                        <div className="tree-item tree-inline-input" style={{ paddingLeft: 12 + (depth + 1) * 20 }}>
+                            <input
+                                ref={createInputRef}
+                                className="inline-rename-input"
+                                type="text"
+                                placeholder={placeholderFor(creating)}
+                                onKeyDown={handleCreateKeyDown}
+                                onBlur={() => clearCreateRequest()}
+                                onClick={(e) => e.stopPropagation()}
+                            />
+                        </div>
+                    )}
+                    {expanded && node.children.map((child) => (
+                        // The MEMO wrapper, not the bare function — otherwise
+                        // recursion would re-render the whole subtree anyway.
+                        <MemoTreeNode
+                            key={child.path}
+                            node={child}
+                            onFileClick={onFileClick}
+                            onCreateFile={onCreateFile}
+                            onCreateFolder={onCreateFolder}
+                            onTrash={onTrash}
+                            onOpenAsVault={onOpenAsVault}
+                            onStyleEntry={onStyleEntry}
+                            onToggleExpand={onToggleExpand}
+                            onMoveFile={onMoveFile}
+                            onRenameFile={onRenameFile}
+                            onImportFiles={onImportFiles}
+                            depth={depth + 1}
+                        />
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// Memoized: a save (or any other re-render of the explorer) used to reconcile
+// every visible row recursively, since all its props are already stable and
+// only the parent's identity churned. Local rename state is untouched by this.
+const MemoTreeNode = React.memo(TreeNode);
+export default MemoTreeNode;

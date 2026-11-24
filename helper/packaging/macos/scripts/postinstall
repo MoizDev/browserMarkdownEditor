@@ -1,0 +1,58 @@
+#!/bin/bash
+# VaultAgent.pkg postinstall — runs as root after the payload lands in the stage.
+#
+# The helper is per-user: it lives in the console user's home and runs as a
+# LaunchAgent in their GUI session, so the panel can uninstall it later without
+# a password. Root is only needed for two things: running the user's install
+# step as that user, and bootstrapping into their GUI domain (`launchctl
+# bootstrap gui/<uid>` from `sudo -u` fails outside the user's audit session).
+
+set -u
+
+APP_SUPPORT="/Library/Application Support/VaultAgent"
+STAGE="$APP_SUPPORT/stage"
+BIN="$STAGE/vaultagent"
+LABEL="dev.bme.vaultagent"
+
+cleanup() {
+    rm -rf "$STAGE"
+    rmdir "$APP_SUPPORT" 2>/dev/null
+}
+trap cleanup EXIT
+
+user="$(stat -f%Su /dev/console)"
+if [ -z "$user" ] || [ "$user" = "root" ] || [ "$user" = "loginwindow" ]; then
+    echo "VaultAgent: no user is logged in at the console; nothing to install for." >&2
+    exit 1
+fi
+uid="$(id -u "$user")"
+home="$(dscl . -read "/Users/$user" NFSHomeDirectory | awk '{print $2}')"
+if [ -z "$uid" ] || [ -z "$home" ] || [ ! -d "$home" ]; then
+    echo "VaultAgent: could not resolve $user's uid or home folder." >&2
+    exit 1
+fi
+
+# Copies the binary to ~/Library/Application Support/VaultAgent/ and writes
+# ~/Library/LaunchAgents/$LABEL.plist, as the user, so both are theirs.
+if ! sudo -u "$user" -H "$BIN" install --no-launchctl; then
+    echo "VaultAgent: install step failed." >&2
+    exit 1
+fi
+
+plist="$home/Library/LaunchAgents/$LABEL.plist"
+# A reinstall replaces the running old version. Wait for launchd to finish
+# tearing it down: a bootstrap right behind a bootout can fail with
+# "5: Input/output error", so it is also retried.
+launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
+for _ in $(seq 1 25); do
+    launchctl print "gui/$uid/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.2
+done
+for attempt in 1 2 3 4 5; do
+    if launchctl bootstrap "gui/$uid" "$plist"; then
+        exit 0
+    fi
+    sleep 1
+done
+echo "VaultAgent: launchctl bootstrap failed." >&2
+exit 1

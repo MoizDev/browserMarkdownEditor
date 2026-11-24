@@ -1,0 +1,11 @@
+<!-- The app icon: a standalone duplicate of the PenTool icon that the "New
+     drawing" button uses (src/components/icons.tsx). Deliberately a copy, not
+     a shared asset: the favicon must stand alone in public/. The stroke is the
+     app's accent purple (the dark-theme interactive-accent value) because
+     currentColor has no meaning outside the app's CSS cascade. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="hsl(254, 80%, 68%)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="m12 19 7-7 3 3-7 7-3-3z" />
+  <path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+  <path d="m2 2 7.586 7.586" />
+  <circle cx="11" cy="11" r="2" />
+</svg>

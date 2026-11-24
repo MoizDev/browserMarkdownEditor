@@ -1,0 +1,105 @@
+{
+  "foliate": [
+    {
+      "url": "https://raw.githubusercontent.com/johnfactotum/foliate-js/78914aef4466eb960965702401634c2cb348e9b1/epub.js",
+      "sha256": "dfe347495039e9b5991478986ec6b7713cf9efbcd8f475a77ef7b967c5176298",
+      "file": "epub.js"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/johnfactotum/foliate-js/78914aef4466eb960965702401634c2cb348e9b1/epubcfi.js",
+      "sha256": "e1a688ad5c84bf31f33cef467f92c7a6d060a0f17ec37c1d3c048e9c7b1cf645",
+      "file": "epubcfi.js"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/johnfactotum/foliate-js/78914aef4466eb960965702401634c2cb348e9b1/LICENSE",
+      "sha256": "b621ffc351fe263bc9b09dd0bc1c9332fda9c462a3904c1e4f0b4d3236b9c28c",
+      "file": "LICENSE"
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "dompurify",
+      "version": "3.4.17",
+      "license": "(MPL-2.0 OR Apache-2.0)",
+      "url": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz",
+      "integrity": "sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w==",
+      "gitHead": "a77a3e78b59f72fa4d1c83f22e121ad9cc7d3575"
+    },
+    {
+      "name": "css-tree",
+      "version": "3.2.1",
+      "license": "MIT",
+      "url": "https://registry.npmjs.org/css-tree/-/css-tree-3.2.1.tgz",
+      "integrity": "sha512-X7sjQzceUhu1u7Y/ylrRZFU2FS6LRiFVp6rKLPg23y3x3c3DOKAwuXGDp+PAGjh6CSnCjYeAul8pcT8bAl+lSA==",
+      "gitHead": "8a6caba481be4cae4b0e8690af643ff8e59271f2"
+    },
+    {
+      "name": "saxes",
+      "version": "6.0.0",
+      "license": "ISC",
+      "url": "https://registry.npmjs.org/saxes/-/saxes-6.0.0.tgz",
+      "integrity": "sha512-xAg7SOnEhrm5zI3puOOKyy1OMcMlIJZYNJY7xLBwSze0UjhPLnWfj2GF2EpT0jmzaJKIWKHLsaSSajf35bcYnA==",
+      "gitHead": "211fa0ebec9b628affc09219199639887174bfc3"
+    },
+    {
+      "name": "xmlchars",
+      "version": "2.2.0",
+      "license": "MIT",
+      "url": "https://registry.npmjs.org/xmlchars/-/xmlchars-2.2.0.tgz",
+      "integrity": "sha512-JZnDKK8B0RCDw84FNdDAIpZK+JuJw+s7Lz8nksI7SIuU3UXJJslUthsi+uWBUYOwPFwW7W7PRLRfUKpxjtjFCw==",
+      "gitHead": null
+    },
+    {
+      "name": "pako",
+      "version": "2.1.0",
+      "license": "(MIT AND Zlib)",
+      "url": "https://registry.npmjs.org/pako/-/pako-2.1.0.tgz",
+      "integrity": "sha512-w+eufiZ1WuJYgPXbV/PO3NCMEc3xqylkKHzp8bxp1uW4qaSNQUkwmLLEc3kKsfz8lpV1F8Ht3U1Cm+9Srog2ug==",
+      "gitHead": "3c06216518c259b569a5168dee867e6dabbe5160"
+    },
+    {
+      "name": "mdn-data",
+      "version": "2.27.1",
+      "license": "CC0-1.0",
+      "url": "https://registry.npmjs.org/mdn-data/-/mdn-data-2.27.1.tgz",
+      "integrity": "sha512-9Yubnt3e8A0OKwxYSXyhLymGW4sCufcLG6VdiDdUGVkPhpqLxlvP5vl1983gQjJl3tqbrM731mjaZaP68AgosQ==",
+      "gitHead": "8b1079528c02bd3eb6f180e47011cf2075849961"
+    },
+    {
+      "name": "source-map-js",
+      "version": "1.2.2",
+      "license": "BSD-3-Clause",
+      "url": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.2.tgz",
+      "integrity": "sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==",
+      "gitHead": "0a1d334fd1e55a47df97fcd60a7915d46df3b08a"
+    },
+    {
+      "name": "esbuild",
+      "version": "0.25.12",
+      "license": "MIT",
+      "url": "https://registry.npmjs.org/esbuild/-/esbuild-0.25.12.tgz",
+      "integrity": "sha512-bbPBYYrtZbkt6Os6FiTLCTFxvq4tt3JKall1vRwshA3fdVztsLAatFaZobhkBC8/BrPetoa0oksYoKXoG4ryJg==",
+      "gitHead": "208f539945b145e7c9d6d844290f81c3fe5af320"
+    }
+  ],
+  "bundles": {
+    "archive.js": {
+      "sha256": "a4147ca3ab8d12d588333b551090667ac8421f9a9bf1c8fef5c4b0a5de12630a",
+      "format": "esm",
+      "platform": "browser",
+      "minify": true,
+      "legalComments": "inline",
+      "buildTool": "esbuild 0.25.12",
+      "entry": "export { SaxesParser } from \"saxes\"; export { Inflate } from \"pako\";"
+    },
+    "renderer.js": {
+      "sha256": "74735155b8054d32394a2222e106fbc085170989accc1fb664903dcbe20f1a59",
+      "format": "esm",
+      "platform": "browser",
+      "minify": true,
+      "legalComments": "inline",
+      "buildTool": "esbuild 0.25.12",
+      "entry": "import DOMPurify from \"dompurify\"; import * as CSS from \"css-tree\"; export { DOMPurify, CSS };"
+    }
+  }
+}

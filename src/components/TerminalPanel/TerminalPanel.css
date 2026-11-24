@@ -1,0 +1,262 @@
+/* =============================================================
+   The terminal dock's content. Loaded with the terminal's lazy chunk
+   (index.tsx), never from index.css. The dock's container and its resize handle
+   are main-chunk CSS (index.css, "Terminal dock").
+
+   The header is the tab strip's own language — --tab-container-background, the
+   same bottom rule, the active tab flowing into the page below — at the
+   pane header's height. Both themes come from the app's variables; nothing here
+   is themed by hand.
+   ============================================================= */
+
+.terminal-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+/* ── Header ── */
+.terminal-header {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  gap: 2px;
+  height: var(--pane-header-height);
+  padding: 0 4px 0 0;
+  background: var(--tab-container-background);
+  /* The strip's rule, as an inset shadow: the active tab's own background
+     paints over it and flows into the terminal, as the editor's tabs do. */
+  box-shadow: inset 0 -1px 0 var(--tab-rule-color);
+  user-select: none;
+}
+
+.terminal-tabs {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.terminal-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.terminal-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  max-width: 180px;
+  color: var(--text-muted);
+  transition: background 0.15s, color 0.15s;
+}
+
+.terminal-tab:hover {
+  background: var(--tab-background-hover);
+  color: var(--text-normal);
+}
+
+.terminal-tab.is-active {
+  background: var(--tab-background-active);
+  color: var(--text-normal);
+}
+
+/* A shell that ended or moved away keeps its tab (its scrollback is still
+   there to read), quieter. */
+.terminal-tab.is-gone .terminal-tab-title {
+  opacity: 0.6;
+}
+
+.terminal-tab-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.terminal-tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+
+.terminal-tab:hover .terminal-tab-close,
+.terminal-tab.is-active .terminal-tab-close,
+.terminal-tab-close:focus-visible {
+  opacity: 1;
+}
+
+.terminal-tab-close:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.terminal-tab-main:focus-visible,
+.terminal-tab-close:focus-visible,
+.terminal-icon-btn:focus-visible,
+.terminal-notice-btn:focus-visible {
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+.terminal-header-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.terminal-status {
+  align-self: center;
+  margin-right: 6px;
+  color: var(--text-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.terminal-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  flex: none;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.terminal-icon-btn:hover:not(:disabled) {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.terminal-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── Notices (clipboard refused, Full Disk Access) ── */
+.terminal-notice {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 6px 12px;
+  background: var(--background-secondary);
+  box-shadow: inset 0 -1px 0 var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.terminal-notice-text {
+  flex: 1 1 24em;
+  min-width: 0;
+}
+
+.terminal-notice-text b {
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+.terminal-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.terminal-notice-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.terminal-notice-btn:hover {
+  text-decoration: underline;
+}
+
+/* ── Body ── */
+.terminal-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--background-primary);
+}
+
+.terminal-surface {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* One persistent host per shell, adopted into the surface. xterm's FitAddon
+   reads this element's padding when it counts rows and columns. */
+.terminal-host {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  padding: 6px 4px 4px 12px;
+}
+
+/* xterm paints its own background; the host's must match it while it loads. */
+.terminal-host .xterm {
+  height: 100%;
+}
+
+/* The rows rarely fill the host exactly, and the remainder below the last row
+   is the viewport's: xterm.css paints it #000 (measured: a 3 px black strip under
+   the last row, in both themes). The dock behind it already is the theme's
+   background, which is the terminal's. */
+.terminal-host .xterm .xterm-viewport {
+  background-color: transparent;
+}
+
+/* The connection screens (HelperGate) on the setup surface the agent panel uses. */
+.terminal-gate {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 16px 24px;
+  background: var(--background-secondary);
+}

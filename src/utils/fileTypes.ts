@@ -1,0 +1,166 @@
+// Which editor a file opens in: `.tldraw` and `.notebook` files render as a
+// tldraw canvas, everything else textual goes to CodeMirror.
+//
+// Deliberately separate from vaultSearch's isTextFile(): both canvas kinds ARE
+// text on disk (they're JSON snapshots), so they must keep flowing through the
+// normal readFile/writeFile/autosave path. They just must not be *shown* as
+// text, nor content-indexed by search.
+
+export const DRAWING_EXT = '.tldraw';
+
+/** A notebook is a drawing on ruled pages, with an export to PDF. Its own
+ *  extension rather than a flag inside a `.tldraw`, so the file tree can say
+ *  which is which and "New notebook" makes something unambiguous. */
+export const NOTEBOOK_EXT = '.notebook';
+
+export function isDrawingFile(name: string): boolean {
+    return name.toLowerCase().endsWith(DRAWING_EXT);
+}
+
+export function isNotebookFile(name: string): boolean {
+    return name.toLowerCase().endsWith(NOTEBOOK_EXT);
+}
+
+/** Either kind of tldraw-backed document: a canvas rather than a text editor. */
+export function isCanvasFile(name: string): boolean {
+    return isDrawingFile(name) || isNotebookFile(name);
+}
+
+/** Append `.tldraw` unless the user already typed it. */
+export function ensureDrawingExt(name: string): string {
+    return isDrawingFile(name) ? name : `${name}${DRAWING_EXT}`;
+}
+
+/** Append `.notebook` unless the user already typed it. */
+export function ensureNotebookExt(name: string): string {
+    return isNotebookFile(name) ? name : `${name}${NOTEBOOK_EXT}`;
+}
+
+export const MD_EXT = '.md';
+
+export function isMarkdownFile(name: string): boolean {
+    return name.toLowerCase().endsWith(MD_EXT);
+}
+
+/* ── Code ───────────────────────────────────────────────────────── */
+
+/**
+ * Source files, which open in a code pane rather than the markdown editor
+ * (editor/codeEditor.ts): line numbers, the user's syntax colours, brackets,
+ * folds and several cursors.
+ *
+ * A LIST, not a call into `@codemirror/language-data`'s filename matcher, even
+ * though that is what resolves the grammar later: this module is imported by
+ * nearly everything (tabs, the tree, the agent host), and a grammar table in
+ * here would ship in every chunk that touches a path. The two can disagree only
+ * in the harmless direction — an extension listed here with no grammar opens as
+ * plain, uncoloured code.
+ */
+const CODE_EXTENSIONS = new Set([
+    // the course's languages first: Racket, C, Python
+    'rkt', 'racket', 'rktl', 'rktd', 'scrbl', 'scm', 'ss', 'lisp', 'el', 'clj', 'cljs', 'cljc', 'edn',
+    'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'hh', 'hxx', 'ipp', 'm', 'mm', 'cs',
+    'py', 'pyw', 'pyi', 'rb', 'pl', 'pm', 'lua', 'r', 'jl', 'php',
+    'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'vue', 'svelte',
+    'go', 'rs', 'java', 'kt', 'kts', 'swift', 'scala', 'dart', 'ex', 'exs', 'erl',
+    'hs', 'ml', 'mli', 'fs', 'fsx', 'nim', 'zig', 'v', 'sv', 'vhd', 'asm', 's',
+    'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd', 'vim',
+    'sql', 'graphql', 'gql', 'proto', 'tf', 'hcl', 'gradle', 'groovy', 'cmake', 'mk',
+    'html', 'htm', 'css', 'scss', 'sass', 'less', 'xml', 'svg', 'json', 'jsonc',
+    'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'env', 'diff', 'patch',
+]);
+
+/** Files whose NAME is the type: no extension to go on. */
+const CODE_NAMES = new Set([
+    'makefile', 'dockerfile', 'containerfile', 'rakefile', 'gemfile', 'brewfile',
+    'justfile', 'procfile', 'cmakelists.txt', '.gitignore', '.gitattributes',
+    '.editorconfig', '.env', '.npmrc', '.prettierrc', '.eslintrc',
+]);
+
+export function isCodeFile(name: string): boolean {
+    const lower = name.toLowerCase();
+    if (CODE_NAMES.has(lower)) return true;
+    const dot = lower.lastIndexOf('.');
+    return dot > 0 && CODE_EXTENSIONS.has(lower.slice(dot + 1));
+}
+
+/* ── LaTeX ───────────────────────────────────────────────────────── */
+
+/**
+ * A LaTeX source file: ordinary text on disk like any note, but markdown is the
+ * wrong reading of every line in it, so reading mode typesets it instead
+ * (components/TexView.tsx) and edit mode leaves the source alone.
+ *
+ * `.tex` only. A `.sty` or `.cls` is a package, not a document, and a `.bib` is
+ * a database — all three are better read as the plain text they are.
+ */
+export function isTexFile(name: string): boolean {
+    return name.toLowerCase().endsWith('.tex');
+}
+
+/**
+ * What a note is CALLED, as opposed to what its file is named: "Notes.md" -> "Notes".
+ * Display only — never pass the result to anything that writes to disk.
+ *
+ * Anchored on `.md` and on nothing else, deliberately: the Help guide's tab is a bare
+ * name ("Help Guide"), and a vault may hold extensionless or .txt files that open in the
+ * editor just the same (utils/vaultSearch.ts's isTextFile is a deny-list, not an .md
+ * allow-list). A lastIndexOf('.') strip turns "Help Guide" into "Help Guid".
+ */
+export function noteDisplayName(name: string): string {
+    // A file named exactly ".md" strips to nothing, and nothing is an unclickable
+    // tab and a blank tree row. buildFileTree hides no dotfile but its own, so such
+    // a file does reach the UI; showing it whole is the only reading that is legible.
+    return name.replace(/\.md$/i, '') || name;
+}
+
+/**
+ * An image a plain `<img>` can show — what the trash bin previews inline.
+ *
+ * Deliberately narrower than "not text": a PDF is not text either, and
+ * previewing one would mean pulling pdf.js into the main bundle (see
+ * components/prefetchPanes.ts for why that split is load-bearing).
+ */
+export function isImageFile(name: string): boolean {
+    return /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(name);
+}
+
+/* ── PDFs ────────────────────────────────────────────────────────────────
+ * A PDF opens in a pane with two modes: View (the real PDF — scrollable,
+ * text selectable) and Annotate (a tldraw canvas over rasterized pages).
+ * Annotating writes into THAT FILE: it stays a genuine PDF, strokes stamped
+ * onto its pages, and gains the pristine original and the tldraw snapshot as
+ * embedded attachments — so it opens in any viewer AND the strokes stay
+ * editable here. See utils/pdfAnnotation.ts.
+ *
+ * There is deliberately NO name test for "is this annotated". A PDF's role is
+ * read from its attachments, so a renamed one of ours is still ours and a file
+ * someone else called "… (annotated).pdf" is not. Files this app made under
+ * the old spawn-a-sibling behaviour keep working for exactly that reason.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+export const PDF_EXT = '.pdf';
+
+export function isPdfFile(name: string): boolean {
+    return name.toLowerCase().endsWith(PDF_EXT);
+}
+
+function stripExt(name: string): string {
+    return name.slice(0, -PDF_EXT.length);
+}
+
+/** "Assignment.pdf" -> "Assignment". Exported so the notebook a PDF came from
+ *  can be looked for beside it by name, when the stored path has gone stale. */
+export function stripPdfExt(name: string): string {
+    return isPdfFile(name) ? stripExt(name) : name;
+}
+
+/** "Assignment 3.notebook" -> "Assignment 3.pdf", the file Export writes. */
+export function notebookPdfName(name: string): string {
+    return `${isNotebookFile(name) ? name.slice(0, -NOTEBOOK_EXT.length) : name}${PDF_EXT}`;
+}
+
+
+
+/** Native binary, always read-only. Keep separate from vault text eligibility. */
+export function isEpubFile(name: string): boolean { return /\.epub$/i.test(name); }

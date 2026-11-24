@@ -1,0 +1,613 @@
+// src/types/index.ts
+// Single source of truth for cross-cutting domain types.
+// Derived from the real runtime shapes; see the Conversion Bible for citations.
+//
+// NOTE on File System Access API types: FileSystemDirectoryHandle and
+// FileSystemFileHandle are provided by lib.dom.d.ts. The picker/permission
+// methods (showDirectoryPicker / queryPermission / requestPermission) are NOT
+// in stock lib.dom and are augmented at the bottom of this file via
+// `declare global`. Because this module is part of the `tsconfig` `include`,
+// that augmentation is loaded globally for every other module.
+
+import type { DiskStat, DiskVersion } from '../utils/diskVersion';
+import type { VaultChangeBatch } from '../utils/vaultChanges';
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * FILE TREE
+ * Produced by buildFileTree() in FileSystemContext (FileSystemContext.jsx:29-67).
+ * A discriminated union on `kind`. Directories carry `children`; files do not.
+ * Both carry `handle` + `parentHandle`. The union is consumed by
+ * FileExplorer, TreeNode, App (findNode/handleFileClick), and graph.js.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export interface FileTreeFileNode {
+  name: string;                            // FileSystemContext.jsx:51
+  kind: 'file';                            // FileSystemContext.jsx:52  (discriminant)
+  path: string;                            // FileSystemContext.jsx:53  e.g. "folder/note.md"
+  handle: FileSystemFileHandle;            // FileSystemContext.jsx:54
+  parentHandle: FileSystemDirectoryHandle; // FileSystemContext.jsx:55
+}
+
+export interface FileTreeDirNode {
+  name: string;                            // FileSystemContext.jsx:42
+  kind: 'directory';                       // FileSystemContext.jsx:43  (discriminant)
+  path: string;                            // FileSystemContext.jsx:44
+  handle: FileSystemDirectoryHandle;       // FileSystemContext.jsx:45
+  parentHandle: FileSystemDirectoryHandle; // FileSystemContext.jsx:46
+  children: FileTreeNode[];                // FileSystemContext.jsx:47 (recursive)
+  /** This folder's own `.appearance.json`, when it has one — the icons and
+   *  colours of the things INSIDE it (utils/entryStyle.ts). Noticed by the tree
+   *  walk, which is already holding every entry of every folder, and read by
+   *  App once per vault open. Undefined for a folder nothing was ever given a
+   *  look in, which is nearly all of them. */
+  styleFile?: FileSystemFileHandle;
+}
+
+/** The recursive file/folder tree node union. */
+export type FileTreeNode = FileTreeFileNode | FileTreeDirNode;
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * ACTIVE FILE
+ * App.activeFile (App.jsx:29) holds one of THREE differently-shaped values:
+ *   (a) a real file node from the tree           (handleFileClick, App.jsx:199)
+ *   (b) a synthetic node built on file creation   (App.jsx:294-300) — same shape as a file node
+ *   (c) the Help pseudo-file: { name, isHelp:true, path } NO handle/parentHandle
+ *       (handleHelpClick, App.jsx:271)
+ * Code guards on `activeFile.isHelp` (App.jsx:278,313,373,384,388) and on
+ * `activeFile.handle`/`activeFile.parentHandle` (App.jsx:280,339; EditorPane.jsx:112,177).
+ * Model it as: a file-node-like shape with handles OPTIONAL and an isHelp flag,
+ * so every existing guard/property read type-checks WITHOUT a runtime change.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/**
+ * What App's `activeFile` state can hold over time. A union-friendly superset:
+ * every field a real/synthetic file node has, plus the optional `isHelp` flag,
+ * with handle-bearing fields optional so the Help node satisfies it too.
+ */
+export interface ActiveFile {
+  name: string;
+  path: string;
+  kind?: 'file' | 'directory';              // present for real/synthetic file nodes; absent for help
+  handle?: FileSystemFileHandle | FileSystemDirectoryHandle; // absent for the Help doc
+  parentHandle?: FileSystemDirectoryHandle;  // absent for the Help doc
+  children?: FileTreeNode[];                 // only on directory nodes
+  isHelp?: boolean;                          // App.jsx:271 — true only for the Help pseudo-file
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * OPEN TAB
+ * One entry in App's `tabs` array — a single open document. Generalizes the
+ * former single (activeFile + fileContent + editorMode) trio into a list, one
+ * per open file, identified by `file.path`. Content lives per tab in memory so
+ * switching tabs never re-reads disk or loses unsaved edits; `dirty` tracks
+ * unsaved changes (cleared once autosave flushes) and drives the tab's dot.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export interface OpenTab {
+  readerStatus?: import('./reading').ReaderStatus;
+  readerCapabilities?: import('./reading').ReaderCapabilities;
+  representation: import('./reading').DocumentRepresentation;
+  /**
+   * Identifies the DOCUMENT rather than the file, for the lifetime of this
+   * session. A rename carries it (the same document under a new name); the file
+   * a rename OVERWRITES has a different one, and takes it with it when it goes.
+   *
+   * That distinction is the whole reason this exists, because a path cannot
+   * make it. renameFile/moveFile deliberately overwrite an existing name, so
+   * for one commit two different documents answer to the same path — and
+   * everything keyed by path then hands the survivor the loser's belongings:
+   * React reuses the pane the overwritten file was drawn in, and the editor's
+   * per-document EditorState cache hands over its text and its undo history.
+   * The renamed file's first keystroke would then save the dead document's
+   * bytes straight over it, which is the loss App.releaseOverwritten exists to
+   * prevent and could not, holding only a path.
+   *
+   * Session-only, like a TabPane's id: the stored session records paths, and
+   * these are re-minted on restore.
+   */
+  id: string;
+  file: ActiveFile;        // the open doc's metadata (name, path, handle, isHelp…)
+  content: string;         // in-memory text, edited live
+  mode: EditorMode;        // 'read' | 'edit', remembered per tab
+  dirty: boolean;          // has unsaved edits since the last disk write
+  /**
+   * Set only when the session restore (or a retry of it) could not read a file
+   * that is still in the vault — a sync client or another editor mid-write, a
+   * cloud file not downloaded, a lock. The tab is kept, rather than skipped, so
+   * the path survives in the stored session: skipping it once used to drop it
+   * from the vault's saved tabs for good (issue #8).
+   *
+   * While it is set, `content` is '' and is NOT the file's text. Nothing may
+   * write it, search it, diff it for assets, or build an editor or canvas from
+   * it — ⌘S force-flushes the focused tab, and would put '' over the note.
+   *
+   * Session-only, like `id`: the stored session records only paths.
+   */
+  readError?: string;
+  /**
+   * The file on disk parted ways with this tab: 'conflict' = it changed while
+   * the tab held unsaved edits (or a save found it changed); 'deleted' = it is
+   * gone. While set, nothing autosaves the tab — the DiskBar asks the user.
+   * Session-only, like `readError`.
+   */
+  disk?: 'conflict' | 'deleted';
+  /**
+   * Bumped each time a canvas document (drawing, notebook, annotated PDF) is
+   * reloaded from disk in place. Part of those panes' React keys, so they
+   * remount on the new bytes; text documents reload by transaction instead.
+   */
+  diskRev?: number;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * PANES AND THEIR TABS (the split editor)
+ * The editor is a row of PANES — vertical columns, all drawn at once, whose
+ * widths the reader sets by dragging the divider between two of them. Each
+ * pane owns its own set of tabs and shows one of them. Most workspaces hold
+ * exactly one pane, which is the ordinary tab strip. `tabs` above stays a FLAT
+ * list of every open document — saving, asset tracking and search all key off
+ * it and are untouched by the split — while these describe only how the
+ * documents are arranged. See utils/tabPanes.ts for the operations and the
+ * invariants that keep the two in step.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export interface TabPane {
+  /** Stable for the pane's life; the React key and the divider's abandon check. */
+  id: string;
+  /** ≥1 open-document paths — this pane's tabs, in strip order. */
+  paths: string[];
+  /** The tab this pane is showing. Always one of `paths`. */
+  activePath: string;
+  /**
+   * Where this pane has been, oldest first, repeats included — what the pane
+   * header's back and forward arrows walk.
+   *
+   * Session-only, like `OpenTab.id`: the stored session records only the tabs,
+   * so a restored pane starts at `[activePath]` and both arrows read as
+   * disabled. Persisting it would mean storing paths no tab holds any more.
+   *
+   * THE INVARIANT: `history[historyIndex] === activePath`. Every transition
+   * that changes `activePath` goes through tabPanes.ts's `showInPane`, which
+   * maintains both together; `canGoBack`/`canGoForward` check it and answer
+   * false if it has somehow come apart, so the failure mode is two dead
+   * buttons rather than a jump to a document the pane is not holding.
+   */
+  history: string[];
+  /** Index into `history` of what is showing. */
+  historyIndex: number;
+}
+
+/** The whole editor: its panes, which one has focus, and how wide they are.
+ *  Held as ONE piece of state so a transition can never leave the active id
+ *  naming a pane that the same update removed. */
+export interface TabLayout {
+  /** The columns, left to right. All of them are drawn. */
+  panes: TabPane[];
+  /** Which column has focus — what ⌘E, ⌘S, the URL hash and the file tree's
+   *  highlight all mean. */
+  activeId: string | null;
+  /**
+   * Each pane's share of the editor's width, in `panes` order, as percentages
+   * summing to 100 — or ABSENT, which means equal columns and is what the
+   * editor is until someone drags one of its dividers (and what a single pane
+   * always is).
+   *
+   * Absent rather than filled in, because "nobody has arranged this" then has
+   * exactly one representation: an untouched layout is byte-for-byte the object
+   * it was before this feature, a split or a close has nothing to redistribute,
+   * evening the panes up again is a field being deleted, and a session of
+   * ordinary tabs stores nothing but null.
+   *
+   * PERCENTAGES, not pixels: the window and the sidebar resize constantly and a
+   * restored session lands in a window of another size — the same reason a
+   * fitted table's columns and a PDF pane's slot are percentages.
+   *
+   * THE INVARIANT: absent, or exactly one finite, positive entry per pane,
+   * summing to 100. utils/tabPanes.ts is the only writer and keeps it by
+   * routing every value through one gate; `paneSizes()` is the only reader and
+   * answers equal columns for anything that fails it — so a row that has fallen
+   * out of step degrades the way a path with no open document does, to
+   * something plainly wrong on screen rather than to a broken layout.
+   */
+  sizes?: number[];
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GRAPH MODEL
+ * Built by buildGraph() (graph.js:71-142). Node objects are documented at
+ * graph.js:66-69 and constructed at graph.js:82-89 (resolved) & 110-117
+ * (unresolved placeholder). Consumed by GraphView, BacklinksPanel, App,
+ * EditorPane (via getBacklinkNodes).
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export interface GraphNode {
+  id: string;                            // graph.js:83  resolved => file.path; unresolved => `unresolved:<key>`
+  name: string;                          // graph.js:84  baseName(file.name) (no .md)
+  label: string;                         // graph.js:85  resolved => full file name; unresolved => baseName
+  node: FileTreeFileNode | null;         // graph.js:86  the md file node, or null when unresolved
+  unresolved: boolean;                   // graph.js:87  true for placeholder targets (graph.js:115)
+  degree: number;                        // graph.js:88  mutated at graph.js:137-138 (++)
+}
+
+export interface GraphLink {
+  source: string;                        // graph.js:127  a GraphNode.id (file path or unresolved:* )
+  target: string;                        // graph.js:127  a GraphNode.id
+}
+
+/** Adjacency-style maps keyed by GraphNode.id -> list of GraphNode.ids. */
+export type GraphAdjacency = Record<string, string[]>; // graph.js:128-129 (backlinks/outlinks)
+
+export interface GraphData {
+  nodes: GraphNode[];                    // graph.js:141
+  links: GraphLink[];                    // graph.js:141
+  backlinks: GraphAdjacency;             // graph.js:141  { [targetId]: sourceId[] }
+  outlinks: GraphAdjacency;              // graph.js:141  { [sourceId]: targetId[] }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * TEXT RANGE / EDITOR REVEAL REQUEST
+ * TextRange is a half-open [from, to) character range in a document, shared
+ * by vault search (match offsets) and the reveal protocol. An
+ * EditorRevealRequest is a one-shot "select + scroll to this range" order,
+ * issued by App when a vault-search result is clicked and consumed by
+ * EditorPane once the target tab is active; each click builds a fresh object,
+ * whose identity re-triggers the consuming effect even for an identical range.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export interface TextRange {
+  from: number;
+  to: number;
+}
+
+export interface EditorRevealRequest extends TextRange {
+  path: string;   // vault-relative path of the file to reveal in
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * STRING-LITERAL UNIONS (app-level modes / themes / caret)
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export type CaretStyle = 'line' | 'block';      // SettingsPanel.jsx:94,100 ; App.jsx:55
+export type Theme = 'light' | 'dark';           // App.jsx:43 ; default 'dark'
+export type EditorMode = 'edit' | 'read';       // App.jsx:34 ; toggled App.jsx:374
+export type MainView = 'editor' | 'graph';      // App.jsx:37,508
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * RECENT VAULTS
+ * The folders the user has opened as vaults, persisted (handle and all) in
+ * IndexedDB by utils/recentVaults.ts and listed by the vault menu. See that
+ * module for why identity is isSameEntry and why `label` has to be derived.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** One recorded vault, exactly as it is stored in IndexedDB. */
+export interface StoredVault {
+  id: string;                            // stable across re-opens; the React key
+  name: string;                          // the folder's own name (handle.name)
+  handle: FileSystemDirectoryHandle;     // structured-cloned into IndexedDB
+  openedAt: number;                      // ms epoch; the list is sorted by it
+  /** Kept at the top of the menu, never trimmed by the stored cap, and listed
+   *  whatever "Recent vaults shown" is set to — the vaults you live in, as
+   *  opposed to the ones you looked at once. */
+  pinned?: boolean;
+}
+
+/** A stored vault plus what the menu prints for it — the folder name, or
+ *  "parent/name" when another listed vault has the same folder name. */
+export interface RecentVault extends StoredVault {
+  label: string;
+  /** Where this vault sits inside the OPEN one, when it is inside it at all —
+   *  which is what lets the vault menu show the icon and colour the file tree
+   *  gives that same folder. Absent for a vault elsewhere on disk, and for the
+   *  open vault itself (its root has no entry of its own). */
+  vaultPath?: string;
+}
+
+/** Why opening a vault did or didn't take effect — from the recent list, the
+ *  file tree's "Open as Vault", or the folder picker. 'missing' also drops the
+ *  entry from the list, when there is one — its folder is gone from disk.
+ *  'busy' means another vault switch was already walking (see
+ *  FileSystemContext's switchInFlightRef): nothing happened and nothing is
+ *  wrong, but nothing happening is exactly what a caller with somewhere to say
+ *  it must still say — a control that greys and un-greys reads as broken. */
+export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error' | 'busy';
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * TRASH
+ * What the bin's crawl of every `.Garbage` in the vault produces. Built FRESH
+ * on every open of the bin — nothing about the trash is written down, cached or
+ * carried between openings, because a deletion's only record is the copy itself
+ * sitting in the `.Garbage` beside where it came from. FileSystemContext's
+ * `walkForTrash` and the banner above it hold the listing and path rules;
+ * utils/trash.ts holds what the list does afterwards (order, pruning, formats).
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** One restorable thing found by the `.Garbage` crawl. */
+export interface TrashItem {
+  /** Unique within one crawl, and the React key: the source path. */
+  id: string;
+  name: string;
+  kind: 'file' | 'directory';
+  /**
+   * 'retired' = an image the app moved out of `.Assets` by itself once the last
+   * note stopped embedding it (see retireAsset). It goes back INTO `.Assets`,
+   * not beside it: an embed only ever resolves from there, so a retired picture
+   * put back alongside the notes would be a file nothing could display.
+   */
+  origin: 'trashed' | 'retired';
+  /** Vault-relative path of the copy on disk, `.Garbage` segments and all. */
+  sourcePath: string;
+  handle: FileSystemFileHandle | FileSystemDirectoryHandle;
+  /** The directory on disk holding it — what `removeEntry` is called on. */
+  parentHandle: FileSystemDirectoryHandle;
+  /** Vault-relative path of the folder a put-back lands in: the parent of the
+   *  OUTERMOST `.Garbage` on `sourcePath`. '' is the vault root. */
+  restorePath: string;
+  restoreDirHandle: FileSystemDirectoryHandle;
+  /** ms epoch — the newest `lastModified` in this item's subtree, which is when
+   *  the copy was made, i.e. when it was deleted. 0 if nothing was readable. */
+  deletedAt: number;
+  /** Bytes. For a folder, the total of what it holds — its own `.Assets`
+   *  included, its nested `.Garbage` excluded (that is listed separately). */
+  size: number;
+  /** Directories only: what drilling into it shows. Dot-folders are never in
+   *  here — see `buildTrashedDir` in FileSystemContext. */
+  children?: TrashItem[];
+}
+
+/** How a put-back should deal with a destination name that is already taken.
+ *  'auto' = don't: report the collision and let the user decide. */
+export type TrashRestoreMode = 'auto' | 'replace' | 'keep-both';
+
+/** What a put-back did. 'collision' means NOTHING was touched — the name is
+ *  taken and the mode was 'auto'. `displaced` is the live entry a 'replace'
+ *  moved into that folder's own `.Garbage` (never erased), so the bin can list
+ *  it as the newest thing in the trash. */
+export type TrashRestoreResult =
+  | { status: 'ok'; name: string; displaced?: TrashItem }
+  | { status: 'collision' }
+  | { status: 'error' };
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * SETTINGS
+ * The DEFAULTS object is the canonical shape (SettingsPanel.jsx:3) and is what
+ * onResetDefaults receives (App.jsx:138 handleResetDefaults). Each field also
+ * lives as discrete App state (App.jsx:46-58).
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** Shape of SettingsPanel's DEFAULTS const and the onResetDefaults payload. */
+export interface SettingsDefaults {
+  editorFontSize: number;                // SettingsPanel.jsx:3 (16)
+  codeFontSize: number;                  // (14) source files only, in Fira Code
+  rainbowBrackets: boolean;              // (true) depth-coloured brackets in code panes
+  treeFontSize: number;                  // (13)
+  editorPadding: number;                 // (6)
+  tabSize: number;                       // (4) spaces per Tab / per list level
+  caretStyle: CaretStyle;                // ('line')
+  caretThickness: number;                // (10)
+  smoothCaret: boolean;                  // (true)
+  caretSpeed: number;                    // (80)
+  accentColor: string;                   // ('' = per-theme default accent)
+  codeBlockColor: string;                // ('' = follow the accent color)
+  recentVaultLimit: number;              // (10) vaults the vault menu lists
+  showVaultInTitle: boolean;             // (true) browser tab titled with the open vault's name
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * ASSET URL RESOLVER
+ * The editor subsystem (livePreview, ImageWidget) consumes a CURRIED, single-arg
+ * resolver (EditorPane curries the 2-arg context getAssetUrl at EditorPane.jsx:110/112).
+ * Both the bound form and the context success/failure path return Promise<string|null>.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** The single-argument, bound asset resolver used inside src/editor/*. */
+export type AssetUrlResolver = (fileName: string) => Promise<string | null>;
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * FILE SYSTEM CONTEXT VALUE
+ * The exact object assembled at FileSystemContext.jsx:357-374 and returned by
+ * useFileSystem() (FileSystemContext.jsx:383-389). Signatures inferred from the
+ * useCallback definitions (line cited per member). Consumed by App (App.jsx:13)
+ * and EditorPane (EditorPane.jsx:20).
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export interface FileSystemContextValue {
+  // ── state ──
+  rootHandle: FileSystemDirectoryHandle | null;          // FileSystemContext.jsx:70
+  fileTree: FileTreeNode[];                               // FileSystemContext.jsx:71
+  isLoading: boolean;                                     // FileSystemContext.jsx:72
+  previousVault: FileSystemDirectoryHandle | null;       // FileSystemContext.jsx:73
+  /** The vault the address bar asked for, when it is known to this browser but
+   *  its permission has lapsed — `requestPermission` needs a click, and a page
+   *  load is not one. Null in every other case, including a link naming a vault
+   *  this browser has never opened (nothing can be done with that name). */
+  linkedVault: RecentVault | null;
+  /** Folders opened as vaults, newest first, each already labelled. */
+  recentVaults: RecentVault[];
+  /** Which of those is open right now (null until one is). */
+  currentVaultId: string | null;
+
+  // ── actions ──
+  /** Open the OS folder picker and switch to what comes back. Reports its
+   *  outcome like the other two raisers — "Open folder…" is a menu row, and a
+   *  refused picker has to be able to say so. A cancelled pick is 'ok'. */
+  pickDirectory: () => Promise<VaultOpenResult>;         // FileSystemContext.jsx:118
+  /** Switch to an already-known vault, re-requesting permission if needed. */
+  openRecentVault: (vault: RecentVault) => Promise<VaultOpenResult>;
+  /** Open a folder from the file tree as the vault — the same switch the picker
+   *  performs, from a handle already in hand. */
+  openFolderAsVault: (handle: FileSystemDirectoryHandle) => Promise<VaultOpenResult>;
+  /** Grant and open `linkedVault`. Must be called from a user gesture. */
+  openLinkedVault: () => Promise<VaultOpenResult>;
+  /** Take one vault off the recent list — a record only, nothing on disk.
+   *  Resolves false if the list could not be rewritten. */
+  forgetRecentVault: (id: string) => Promise<boolean>;
+  /** Pin or unpin a vault in the recent list. False if the list could not be
+   *  rewritten (blocked storage), so the menu can say so. */
+  pinRecentVault: (id: string, pinned: boolean) => Promise<boolean>;
+  readFileSnapshot: (handle: FileSystemFileHandle, signal?: AbortSignal) => Promise<import('./reading').ReadOnlyFileSnapshot>;
+  readFile: (fileHandle: FileSystemFileHandle) => Promise<string>;            // :143
+  writeFile: (fileHandle: FileSystemFileHandle, content: string) => Promise<void>; // :151
+  // Binary IO — PDFs cannot ride the text path (UTF-8 decode + CRLF
+  // normalization would corrupt them).
+  readFileBytes: (fileHandle: FileSystemFileHandle) => Promise<Uint8Array>;
+  writeFileBytes: (fileHandle: FileSystemFileHandle, bytes: Uint8Array) => Promise<void>;
+  /** Copy OS-dragged files into the vault; returns the names actually written. */
+  importFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
+  // createFile/createFolder accept the parent dir handle (non-null; guarded at call sites)
+  createFile: (parentDirHandle: FileSystemDirectoryHandle, fileName: string) => Promise<FileSystemFileHandle>;   // :161
+  createFolder: (parentDirHandle: FileSystemDirectoryHandle, folderName: string) => Promise<FileSystemDirectoryHandle>; // :176
+  getAssetUrl: (fileName: string, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<string | null>; // :188
+  saveAsset: (fileName: string, blob: Blob, parentDirHandle?: FileSystemDirectoryHandle | null) => Promise<void>; // :218
+  /** Move an asset out of a folder's .Assets and into its .Garbage, once no
+   *  note in that folder refers to it any more. Returns whether it moved. */
+  retireAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+  /** The inverse, for when the reference comes back (undo, cut-and-paste). */
+  restoreAsset: (fileName: string, dirHandle: FileSystemDirectoryHandle) => Promise<boolean>;
+  restoreVault: () => Promise<void>;                     // :241
+  moveToTrash: (node: FileTreeNode) => Promise<boolean>; // :260
+  /** Crawl every `.Garbage` in the vault and return the bin's flat root list,
+   *  newest-deleted first. Uncached by design — see the crawl's own comment. */
+  listTrash: () => Promise<TrashItem[]>;
+  /** Put one item back beside the `.Garbage` it was found in. Never overwrites
+   *  without being told to; 'replace' moves the entry it displaces into that
+   *  folder's own `.Garbage` rather than erasing it, and hands it back so the
+   *  bin can list it. */
+  restoreFromTrash: (item: TrashItem, mode: TrashRestoreMode) => Promise<TrashRestoreResult>;
+  /** Erase one item from `.Garbage` for good — one of only two calls in the app
+   *  that destroy something the user made with no copy surviving. */
+  deleteFromTrash: (item: TrashItem) => Promise<boolean>;
+  /** Remove every `.Garbage` in the vault. Each removal stands alone, so one
+   *  folder something else is holding open does not cost the rest: `failed`
+   *  counts those, and a caller that ignores it would tell the reader the bin
+   *  was emptied while trash was still on disk. */
+  emptyTrash: () => Promise<{ removed: number; failed: number }>;
+  moveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle) => Promise<boolean>; // :297
+  renameFile: (sourceNode: FileTreeNode, newName: string) => Promise<boolean>; // :329
+
+  // ── versioned document IO (outside-change safety) ──
+  /** readFile, plus the DiskVersion of exactly the bytes read. */
+  readFileVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ text: string; version: DiskVersion }>;
+  readBytesVersioned: (fileHandle: FileSystemFileHandle) => Promise<{ bytes: Uint8Array; version: DiskVersion }>;
+  /** `{lastModified, size}` without reading the bytes; null if the file is gone. */
+  statFile: (fileHandle: FileSystemFileHandle) => Promise<DiskStat | null>;
+  /** THE document write: writes only if the file still is `expected` (equal
+   *  stat, or equal hash when only the stat moved). Never recreates a missing
+   *  file. Every document save goes through it. */
+  writeFileVersioned: (fileHandle: FileSystemFileHandle, data: string | Uint8Array, expected: DiskVersion | null) => Promise<VersionedWriteResult>;
+  /** Write `data` beside `filePath` as `stem (conflict).ext` (then
+   *  `(conflict 2)`, …), never over anything, re-making deleted parent folders.
+   *  `vaultRoot`: the document's vault, when it may no longer be the open one
+   *  (a vault switch). Resolves to the copy's path. */
+  writeConflictCopy: (filePath: string, data: string | Uint8Array, vaultRoot?: FileSystemDirectoryHandle | null) => Promise<string>;
+  /** Re-create a file deleted outside the app (and any missing parent folders)
+   *  only if nothing is at `filePath` now. */
+  recreateFile: (filePath: string, data: string | Uint8Array) => Promise<
+    { status: 'written'; version: DiskVersion; handle: FileSystemFileHandle } | { status: 'exists' }>;
+  /** A fresh handle for a vault path, resolved from the root; null if missing. */
+  resolveFileHandle: (filePath: string) => Promise<FileSystemFileHandle | null>;
+  /** Outside changes, after the tree has been patched for them. */
+  subscribeVaultChanges: (listener: (batch: VaultChangeBatch) => void) => () => void;
+  /** How outside changes are noticed: a FileSystemObserver, or (unsupported
+   *  or failed) polling. 'off' while no vault is open. */
+  liveDetection: 'observer' | 'polling' | 'off';
+}
+
+/** The save funnel's third argument (App.updateTabContent). `fromDisk`: the
+ *  content was just reloaded from the file — buffer it, but it is not an edit,
+ *  so the tab stays clean and nothing is scheduled to be written. */
+export interface ContentChangeOptions {
+  fromDisk?: boolean;
+}
+
+/** What the DiskBar's buttons ask App to do (OpenTab.disk): 'reload' and
+ *  'keep' resolve a conflict, 'save' and 'close' a deletion. */
+export type DiskAction = 'reload' | 'keep' | 'save' | 'close' | 'retry';
+
+export type VersionedWriteResult =
+  | { status: 'written'; version: DiskVersion }
+  /** The file changed on disk; nothing was written. `disk` is what is there. */
+  | { status: 'changed'; disk: { bytes: Uint8Array; version: DiskVersion } }
+  /** The file is gone; nothing was written (and nothing recreated). */
+  | { status: 'deleted' };
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * SHARED CALLBACK / PROP ALIASES (used across multiple buckets)
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** Open a note from a graph node, skipping unresolved (App.handleOpenNode). */
+export type OpenNodeHandler = (graphNode: GraphNode) => void;
+/** Open a note by its (base)name (App.openNoteByName). Called with string | null. */
+export type OpenNoteByNameHandler = (name: string | null) => void;
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * FILE SYSTEM ACCESS API — AMBIENT GLOBAL AUGMENTATION
+ * The permission + picker APIs are NOT in TypeScript's stock lib.dom.d.ts.
+ * These match the WICG spec shapes used in FileSystemContext.tsx
+ * (showDirectoryPicker, queryPermission, requestPermission). Because this file
+ * is a module (it has imports/exports), `declare global` AUGMENTS the existing
+ * lib.dom interfaces rather than redeclaring them. If a future lib.dom ships
+ * these, interface merging keeps it harmless (the shapes match the spec).
+ * ───────────────────────────────────────────────────────────────────────── */
+
+type FileSystemPermissionMode = 'read' | 'readwrite';
+
+interface FileSystemHandlePermissionDescriptor {
+  mode?: FileSystemPermissionMode;
+}
+
+declare global {
+  interface FileSystemHandle {
+    queryPermission(
+      descriptor?: FileSystemHandlePermissionDescriptor
+    ): Promise<PermissionState>;        // 'granted' | 'denied' | 'prompt'
+    requestPermission(
+      descriptor?: FileSystemHandlePermissionDescriptor
+    ): Promise<PermissionState>;
+  }
+
+  interface DirectoryPickerOptions {
+    id?: string;
+    mode?: FileSystemPermissionMode;
+    startIn?: FileSystemHandle | string;
+  }
+
+  interface Window {
+    showDirectoryPicker(
+      options?: DirectoryPickerOptions
+    ): Promise<FileSystemDirectoryHandle>;
+  }
+
+  /* FileSystemObserver (Chrome 133+, desktop): not in TS 6's lib.dom. Shapes
+     per the WICG explainer / Chromium's IDL. Feature-detect before use —
+     `typeof FileSystemObserver === 'function'` — it is absent elsewhere. */
+  type FileSystemChangeType = 'appeared' | 'disappeared' | 'modified' | 'moved' | 'unknown' | 'errored';
+
+  interface FileSystemChangeRecord {
+    /** The handle passed to observe(). */
+    readonly root: FileSystemHandle;
+    /** The handle affected (for 'disappeared' it may no longer resolve). */
+    readonly changedHandle: FileSystemHandle | null;
+    /** Path from `root` to the changed entry, as name components. */
+    readonly relativePathComponents: readonly string[];
+    readonly type: FileSystemChangeType;
+    /** 'moved' only: the former path from `root`. */
+    readonly relativePathMovedFrom: readonly string[] | null;
+  }
+
+  interface FileSystemObserverObserveOptions {
+    recursive?: boolean;
+  }
+
+  type FileSystemObserverCallback = (records: FileSystemChangeRecord[], observer: FileSystemObserver) => void;
+
+  interface FileSystemObserver {
+    observe(handle: FileSystemHandle, options?: FileSystemObserverObserveOptions): Promise<void>;
+    unobserve(handle: FileSystemHandle): void;
+    disconnect(): void;
+  }
+
+  var FileSystemObserver: {
+    prototype: FileSystemObserver;
+    new (callback: FileSystemObserverCallback): FileSystemObserver;
+  } | undefined;
+}

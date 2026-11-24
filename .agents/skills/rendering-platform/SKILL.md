@@ -210,7 +210,8 @@ draws differently because a GPU exists.
   A hidden pane's caches are the first any trim takes (`hidden-pane` class). Why: the CPU target counts visible floors only,
   so whatever a hidden pane keeps is room no floor can get (seven hidden dense tabs held 32.1 of 33.6 MB, and every board shown
   after them waited for memory for good). Counted `governor:hidden-release:<pool>` (bytes given back) and
-  `governor:hidden-kept:cpu:<cache>` (still held right after the ask; a frame a draw borrows goes a moment later). Check:
+  `governor:hidden-kept:cpu:<cache>` (still held right after the ask; a frame a draw borrows goes a moment later). A hide
+  during a trim is deferred to the trim's end (`governor:hidden-release:deferred`), never dropped. Check:
   `caches().hiddenPanes` is `{ cpu: 0, gpu: 0 }` at rest (GPU once its retirement completes).
 - Report worker WASM estimates with `reportWorkerMemory` and `releaseWorkerMemory` on stop/crash, and a model derived from an
   open document (a board's stroke geometry) with `reportDerivedModel(owner, bytes)`: both are readout-only, beside the raster

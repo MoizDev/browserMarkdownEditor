@@ -284,6 +284,8 @@ export class MemoryGovernor {
     private grants = new Map<string, PaneMemoryGrant>();
     private nextLease = 1;
     private trimming = false;
+    /** Panes hidden while a trim ran, whose release waits for it to end (releaseHiddenPane). */
+    private readonly hiddenReleaseDeferred = new Set<string>();
     // A run of refused reservations in one pool is one episode: it degrades the governor once, and its retries only wait.
     private readonly refusing: Record<MemoryPool, boolean> = { gpu: false, cpu: false };
     private state: Exclude<MemoryPressureState, 'cpu-pinned'> = 'normal';
@@ -1157,7 +1159,15 @@ export class MemoryGovernor {
      * (`hidden-kept:cpu:<id>`): a frame a draw still borrows goes a moment later (measured: a PDF's ink layer kept 128 KiB at hide
      * and held 0 once its frame retired), so the invariant is checked at rest, in caches().hiddenPanes, not by this count. */
     private releaseHiddenPane(paneId: string): void {
-        if (this.trimming) return;
+        // A hide that comes while a trim runs is deferred, not dropped: dropped, the hidden pane kept its caches until some later
+        // pressure reached them. It runs once the trim has returned (a microtask: the trim sections clear the flag in their own
+        // finally, a nested one before the outer one is done), and asks only what is still hidden then.
+        if (this.trimming) {
+            if (!this.hiddenReleaseDeferred.size) queueMicrotask(() => this.releaseDeferredHidden());
+            this.hiddenReleaseDeferred.add(paneId);
+            auditCount('governor', 'hidden-release:deferred');
+            return;
+        }
         this.trimming = true;
         try {
             for (const cache of [...this.caches.values()]) {
@@ -1168,6 +1178,13 @@ export class MemoryGovernor {
                 if (pool === 'cpu' && cache.bytes > 0) auditCount('governor', `hidden-kept:cpu:${id}`, 1, { bytes: cache.bytes });
             }
         } finally { this.trimming = false; }
+    }
+
+    /** Runs the hidden-pane releases deferred by a trim (see releaseHiddenPane); one deferred again is queued again. */
+    private releaseDeferredHidden(): void {
+        const panes = [...this.hiddenReleaseDeferred];
+        this.hiddenReleaseDeferred.clear();
+        for (const paneId of panes) this.releaseHiddenPane(paneId);
     }
 
     /** Render audit only: what panes that are not on screen still hold, per pool (see releaseHiddenPane). */

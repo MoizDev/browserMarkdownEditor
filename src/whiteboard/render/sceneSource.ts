@@ -53,8 +53,13 @@ function frameClip(node: Extract<Node, { kind: 'frame' }>, world: Affine): Paint
     return { key: `frame:${node.id}`, d, fillRule: 'nonzero', localToWorld: world };
 }
 
+/** How many nodes the traversal resolves ahead of the one it emits. A stroke resolves through a geometry-worker round trip; one
+ * node at a time, a paint stream waited on each in turn with the main thread and the worker mostly idle (measured, WebGL2,
+ * Strokes-3 open: main 60% idle and the geometry worker 85% idle for 7 s). Bounded, so only this many resolutions are held. */
+const RESOLVE_AHEAD = 16;
+/** `resolve` starts a node's resolution (its answer is not awaited); `take` hands back the oldest started one, in canonical order. */
 type PaintStep = { readonly kind: 'cooperate' } | { readonly kind: 'resolve'; readonly node: Readonly<Node>; readonly context: SceneResolveContext }
-    | { readonly kind: 'emit'; readonly node: PaintNode };
+    | { readonly kind: 'take' } | { readonly kind: 'emit'; readonly node: PaintNode };
 function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePaintRequest,
     ports: ScenePaintFilters, signal: AbortSignal, streaming = false): Generator<PaintStep, PaintNodeSource, PaintNode | undefined> {
     const revision = doc.rev;
@@ -129,19 +134,10 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
         previousPath = path;
         return path;
     };
-    const visit = function* (id: NodeId): Generator<PaintStep, void, PaintNode | undefined> {
-        if (due()) { check(); yield { kind: 'cooperate' }; reset(); }
-        if (seen?.has(id)) throw new Error('Duplicate node in scene paint order');
-        if (visited >= SECURITY_LIMITS.records || visited >= doc.nodes.size) throw new RangeError('Scene paint node count exceeds bounds');
-        visited++; seen?.add(id);
-        const node = doc.nodes.get(id);
-        if (!node) throw new Error('Scene paint order names a missing node');
-        if (streaming) orderedPath(node);
-        const ctx = contextFor(node);
-        if (scope.page !== undefined && !ports.intersectsPage!(node, ctx, scope.page)) return;
-        if (scope.world && ports.visible && !ports.visible(node, ctx, scope.world)) return;
-        check();
-        const result = yield { kind: 'resolve', node, context: ctx };
+    let resolving = 0;
+    const take = function* (): Generator<PaintStep, void, PaintNode | undefined> {
+        const result = yield { kind: 'take' };
+        resolving--;
         check();
         if (!result || !Array.isArray(result.content) || result.content.length > SECURITY_LIMITS.records
             || (result.underlay !== undefined && (!Array.isArray(result.underlay) || result.underlay.length > SECURITY_LIMITS.records))) throw new TypeError('Invalid resolved paint node');
@@ -158,6 +154,21 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
         check();
         const frozen = Object.freeze({ ...(underlay ? { underlay } : {}), content });
         if (streaming) yield { kind: 'emit', node: frozen }; else nodes.push(frozen);
+    };
+    const visit = function* (id: NodeId): Generator<PaintStep, void, PaintNode | undefined> {
+        if (due()) { check(); yield { kind: 'cooperate' }; reset(); }
+        if (seen?.has(id)) throw new Error('Duplicate node in scene paint order');
+        if (visited >= SECURITY_LIMITS.records || visited >= doc.nodes.size) throw new RangeError('Scene paint node count exceeds bounds');
+        visited++; seen?.add(id);
+        const node = doc.nodes.get(id);
+        if (!node) throw new Error('Scene paint order names a missing node');
+        if (streaming) orderedPath(node);
+        const ctx = contextFor(node);
+        if (scope.page !== undefined && !ports.intersectsPage!(node, ctx, scope.page)) return;
+        if (scope.world && ports.visible && !ports.visible(node, ctx, scope.world)) return;
+        check();
+        yield { kind: 'resolve', node, context: ctx };
+        if (++resolving >= RESOLVE_AHEAD) yield* take();
     };
     check();
     if (ports.orderedIds) {
@@ -177,6 +188,7 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
             if (children?.length) frames.push(children[Symbol.iterator]());
         }
     }
+    while (resolving > 0) yield* take();
     check();
     return { sourceDoc: doc, token: pinnedToken, theme: request.theme, sceneRevision: revision, sensitiveNodes: scope.sensitiveNodes, nodeCount: nodes.length,
         readNode(index) { if (!Number.isSafeInteger(index) || index < 0 || index >= nodes.length) throw new RangeError('Invalid paint node index'); return nodes[index]; },
@@ -189,6 +201,7 @@ export function createScenePaintNodeStream(doc: BoardDoc, token: RenderToken, re
     const sensitiveNodes = new Set(request.sensitiveNodes);
     const scope: ScenePaintRequest = { ...request, sensitiveNodes, ...(request.world ? { world: { ...request.world } } : {}) };
     const job = scenePaintSource(doc, pinnedToken, scope, ports, controller.signal, true);
+    const ahead = new ResolveAhead();
     let active: Promise<PaintNode | null> | null = null, releasePromise: Promise<void> | null = null, ended = false;
     const abort = () => { controller.abort(signal.reason); void release().catch(() => {}); };
     const release = (): Promise<void> => {
@@ -219,7 +232,8 @@ export function createScenePaintNodeStream(doc: BoardDoc, token: RenderToken, re
                     const next = job.next(value); value = undefined;
                     if (next.done) { ended = true; signal.removeEventListener('abort', abort); return null; }
                     if (next.value.kind === 'emit') return next.value.node;
-                    if (next.value.kind === 'resolve') value = await ports.resolve(next.value.node, next.value.context, controller.signal);
+                    if (next.value.kind === 'resolve') ahead.start(ports.resolve(next.value.node, next.value.context, controller.signal));
+                    else if (next.value.kind === 'take') value = await ahead.take();
                     else await (ports.cooperate?.() ?? yieldToHost());
                 }
             };
@@ -238,13 +252,15 @@ export function createScenePaintNodeStream(doc: BoardDoc, token: RenderToken, re
 export async function prepareScenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePaintRequest,
     ports: ScenePaintPorts, signal: AbortSignal): Promise<PaintNodeSource> {
     const job = scenePaintSource(doc, token, request, ports, signal);
+    const ahead = new ResolveAhead();
     let value: PaintNode | undefined;
     try {
         for (;;) {
             signal.throwIfAborted();
             const next = job.next(value); value = undefined;
             if (next.done) return next.value;
-            if (next.value.kind === 'resolve') value = await ports.resolve(next.value.node, next.value.context, signal);
+            if (next.value.kind === 'resolve') ahead.start(ports.resolve(next.value.node, next.value.context, signal));
+            else if (next.value.kind === 'take') value = await ahead.take();
             else await (ports.cooperate?.() ?? yieldToHost());
             signal.throwIfAborted();
         }
@@ -254,13 +270,33 @@ export async function prepareScenePaintSource(doc: BoardDoc, token: RenderToken,
 export function prepareScenePaintSourceNow(doc: BoardDoc, token: RenderToken, request: ScenePaintRequest,
     ports: ScenePaintSyncPorts, signal: AbortSignal): PaintNodeSource {
     const job = scenePaintSource(doc, token, request, ports, signal);
-    let value: PaintNode | undefined;
+    const resolved: PaintNode[] = [];
+    let value: PaintNode | undefined, head = 0;
     try {
         for (;;) {
             signal.throwIfAborted();
             const next = job.next(value); value = undefined;
             if (next.done) return next.value;
-            if (next.value.kind === 'resolve') value = ports.resolve(next.value.node, next.value.context, signal);
+            if (next.value.kind === 'resolve') resolved.push(ports.resolve(next.value.node, next.value.context, signal));
+            else if (next.value.kind === 'take') { value = resolved[head]; resolved[head++] = undefined as never; }
         }
     } finally { job.return(undefined as never); }
+}
+
+/** The started resolutions of one traversal, oldest first. A rejection is held until its turn (so a later node's failure never
+ * surfaces as an unhandled rejection before an earlier node is taken); one left untaken when the traversal ends is let go. */
+class ResolveAhead {
+    private readonly queue: Promise<PaintNode>[] = [];
+    private head = 0;
+    start(resolution: Promise<PaintNode>): void {
+        resolution.catch(() => { /* Surfaced by take(), in order. */ });
+        this.queue.push(resolution);
+    }
+    take(): Promise<PaintNode> {
+        if (this.head >= this.queue.length) return Promise.reject(new Error('Scene paint took a resolution it did not start'));
+        const next = this.queue[this.head];
+        this.queue[this.head++] = undefined as never;
+        if (this.head > 64 && this.head * 2 > this.queue.length) { this.queue.splice(0, this.head); this.head = 0; }
+        return next;
+    }
 }

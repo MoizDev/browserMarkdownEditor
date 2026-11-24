@@ -23,7 +23,11 @@ This is the board's own route. Editing (tools, selection, text) is `whiteboard-e
    adapter's next-scale snapshot shares the presented snapshot's picture leases in the same prepare, so a step
    completes in its own frame (video frames still ask, for the newest frame).
 3. **Stream** (`paintStream.ts`, `scenePaintStream.ts`): each node yields `underlay` items then `content` items
-   (`PaintBand`); every node's underlay is emitted before any content.
+   (`PaintBand`); every node's underlay is emitted before any content. The source resolves `RESOLVE_AHEAD` (16) nodes
+   ahead of the one it emits, in canonical order (`sceneSource.ts`): one at a time, every stroke waited on its own
+   geometry-worker round trip. The services build a node once per band and signature at a time (`building`), reuse geometry a
+   frame still holds after its idle entry went (`surviving`, a `WeakRef` to the coverage), and `realize` (bounds only)
+   builds at the band the paint last asked for.
 4. **Assembler** (`frameAssembler.ts`): builds the stream into a `PaintSource` frame under CPU leases.
 5. **Board layers** (`boardLayers.ts`, `createBoardLayers`): two platform layers, one per band, sharing one state.
    - With a device (`host.device()`): the frame goes to the GPU adapter (`gpuPaintAdapter.ts`) and its tile

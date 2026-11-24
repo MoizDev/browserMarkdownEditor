@@ -197,14 +197,55 @@ export function createBoardRenderServices(options: {
         if (entry.lease) derived?.release(entry.lease);
     };
     const forgetIdle = (id: NodeId) => { for (const key of [...(variantsOf.get(id) ?? [])]) dropVariant(key); };
+    // Stroke geometry outlives its idle entry while anything draws it: a presented frame's ink items hold the very coverage array
+    // the build returned. Each build leaves a small record (key, signature, bounds) holding that array weakly, so a later stream
+    // takes the geometry that is still in memory instead of building a second copy of it. Evicted from the idle budget and asked
+    // again by the next stream (view, whole scene, a dense tile), every stroke of a dense board was built again: measured, a
+    // 451-stroke notebook opened with 2,519 builds of 905 variants. The record goes when the coverage is collected.
+    interface Surviving { readonly key: string; readonly signature: readonly unknown[]; readonly bounds: LocalGeometryBounds;
+        readonly inkPrecision?: string; readonly inkLod?: boolean; readonly ink: WeakRef<readonly InkCoverage[]> }
+    const surviving = new Map<NodeId, Map<string, Surviving>>();
+    const survivingGone = typeof FinalizationRegistry === 'function' ? new FinalizationRegistry<{ id: NodeId; band: string }>(({ id, band }) => {
+        const bands = surviving.get(id), entry = bands?.get(band);
+        if (entry && entry.ink.deref() === undefined) { bands!.delete(band); if (!bands!.size) surviving.delete(id); }
+    }) : null;
+    const noteSurviving = (id: NodeId, prepared: Prepared): void => {
+        if (!prepared.ink || prepared.inkPrecision === undefined || typeof WeakRef !== 'function') return;
+        let bands = surviving.get(id);
+        if (!bands) surviving.set(id, bands = new Map());
+        bands.set(prepared.inkPrecision, { key: prepared.key, signature: prepared.signature, bounds: prepared.bounds,
+            inkPrecision: prepared.inkPrecision, inkLod: prepared.inkLod, ink: new WeakRef(prepared.ink) });
+        survivingGone?.register(prepared.ink, { id, band: prepared.inkPrecision });
+    };
+    const survivingFor = (id: NodeId, signature: readonly unknown[], accept: (value: Prepared) => boolean): Prepared | undefined => {
+        const bands = surviving.get(id);
+        if (!bands) return undefined;
+        for (const [band, entry] of bands) {
+            const ink = entry.ink.deref();
+            if (!ink) { bands.delete(band); continue; }
+            if (!sameGeometrySignature(entry.signature, signature)) continue;
+            const value: Prepared = { key: entry.key, signature: entry.signature, bounds: entry.bounds, ink,
+                ...(entry.inkPrecision !== undefined ? { inkPrecision: entry.inkPrecision, inkLod: entry.inkLod } : {}) };
+            if (accept(value)) { auditCount(AUDIT, 'geometry:surviving'); return value; }
+        }
+        if (!bands.size) surviving.delete(id);
+        return undefined;
+    };
     // A node's prepared geometry for `signature`, whichever precision it was prepared for (bounds and changes do not depend on it).
     const variantFor = (id: NodeId, signature: readonly unknown[], accept: (value: Prepared) => boolean = () => true): Prepared | undefined => {
         for (const key of variantsOf.get(id) ?? []) {
             const value = cached.get(key);
             if (value && accept(value) && sameGeometrySignature(value.signature, signature)) return value;
         }
-        return undefined;
+        return survivingFor(id, signature, accept);
     };
+    // Marks an idle entry most recently used. A surviving geometry (survivingFor) is not an idle entry and stays out of the budget.
+    const touch = (value: Prepared): void => { if (cached.delete(value.key)) cached.set(value.key, value); };
+    // One build per node, precision and signature at a time: a second stream asking while it runs takes its answer. Without it the
+    // view and whole-scene streams, which share one realisation per stroke on a device, built the same stroke side by side.
+    const building = new Map<string, { readonly signature: readonly unknown[]; readonly promise: Promise<Prepared>; readonly signal: AbortSignal }>();
+    // The band a paint stream last resolved an ordinary stroke at: what a bounds-only build (realize) builds, so the two share it.
+    let lastPaintPrecision: Pick<SceneResolveContext, 'deviceScale' | 'allowInkLod' | 'sensitive'> | null = null;
     // The geometry a visible item draws at its wanted band, else at the band before the last crossing. A missing wanted band is
     // counted (geometry:band-miss) whether or not the previous band serves it; both missing leaves the caller a counted stand-in.
     const variantForBand = (id: NodeId, signature: readonly unknown[], wanted: string, previous: string | null): Prepared | undefined => {
@@ -360,7 +401,7 @@ export function createBoardRenderServices(options: {
         const node = createNode(borrowed), before = signature(node, doc);
         const precision = node.kind === 'stroke' ? inkPrecision(context) : undefined;
         const old = variantFor(node.id, before, value => value.inkPrecision === precision?.key);
-        if (old) { cached.delete(old.key); cached.set(old.key, old); auditCount(AUDIT, 'geometry:hit'); return old; }
+        if (old) { touch(old); auditCount(AUDIT, 'geometry:hit'); return old; }
         // A band crossing during a live zoom: the stroke draws its previous band's geometry (a band miss) while the wanted band builds
         // in the background, so the zoom frame does not wait for the build. Only the async producer takes this (the live paint path).
         if (precision && context?.previousDeviceScale !== undefined) {
@@ -369,6 +410,24 @@ export function createBoardRenderServices(options: {
             const held = variantForBand(node.id, before, precision.key, previousKey);
             if (held) { warmBand(borrowed, doc, context, `${node.id}:${precision.key}`); return held; }
         }
+        const flightKey = `${node.id}|${precision?.key ?? ''}`;
+        const flight = building.get(flightKey);
+        if (flight && sameGeometrySignature(flight.signature, before)) {
+            try { const value = await flight.promise; check(signal); auditCount(AUDIT, 'geometry:joined'); return value; }
+            catch (error) {
+                check(signal);
+                // A build its own caller cancelled is not this caller's failure, whatever form the cancellation took (a worker reports
+                // it as its own 'Cancelled' error, not an AbortError): this caller builds. Rethrown, an old board's acquisition
+                // failed with "Request aborted" when a stream it had joined was superseded.
+                if (!flight.signal.aborted) throw error;
+            }
+        }
+        const promise = build(node, doc, signal, before, precision);
+        building.set(flightKey, { signature: before, promise, signal });
+        try { return await promise; } finally { if (building.get(flightKey)?.promise === promise) building.delete(flightKey); }
+    };
+    const build = async (node: Node, doc: BoardDoc, signal: AbortSignal, before: readonly unknown[],
+        precision: ReturnType<typeof inkPrecision> | undefined): Promise<Prepared> => {
         auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
@@ -437,11 +496,12 @@ export function createBoardRenderServices(options: {
         // and signature is kept, so every stream that asks gets the same geometry key (a second key would make an unchanged node
         // look changed to the composer's index, which reports the parts whose key moved).
         const twin = variantFor(node.id, before, value => value.inkPrecision === precision?.key);
-        if (twin) { cached.delete(twin.key); cached.set(twin.key, twin); auditCount(AUDIT, 'geometry:twin'); return twin; }
+        if (twin) { touch(twin); auditCount(AUDIT, 'geometry:twin'); return twin; }
         const prepared: Prepared = { ...result, signature: before,
             ...(precision ? { inkPrecision: precision.key, inkLod: precision.lod } : {}) };
-        // Retained source items own their geometry by reference after eviction.
+        // Retained source items own their geometry by reference after eviction, and a later lookup finds it there (noteSurviving).
         storeIdle(node.id, prepared);
+        noteSurviving(node.id, prepared);
         return prepared;
     };
     // A pick reuses the coverage the painter already built when that coverage is precise enough at the pick's zoom. Every
@@ -462,7 +522,7 @@ export function createBoardRenderServices(options: {
         const value = variantFor(borrowed.id, signature(borrowed, doc), candidate => !!candidate.ink
             && coverageError(candidate) * cssPerWorld <= PICK_COVERAGE_ERROR_CSS);
         if (!value) return undefined;
-        cached.delete(value.key); cached.set(value.key, value); auditCount(AUDIT, 'geometry:pick-reuse');
+        touch(value); auditCount(AUDIT, 'geometry:pick-reuse');
         return value;
     };
     // A native copy event cannot await fonts, images, or a worker. These are the
@@ -474,7 +534,7 @@ export function createBoardRenderServices(options: {
         const node = createNode(borrowed), before = signature(node, doc);
         const precision = node.kind === 'stroke' ? inkPrecision(context ? { ...context, allowInkLod: false } : undefined) : undefined;
         const old = variantFor(node.id, before, value => value.inkPrecision === precision?.key);
-        if (old) { cached.delete(old.key); cached.set(old.key, old); auditCount(AUDIT, 'geometry:hit'); return old; }
+        if (old) { touch(old); auditCount(AUDIT, 'geometry:hit'); return old; }
         auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
@@ -538,6 +598,7 @@ export function createBoardRenderServices(options: {
             intersectsPage: () => true,
             async resolve(node, context, itemSignal) {
                 if (node.kind === 'group') return { content: [] };
+                if (node.kind === 'stroke' && !context.sensitive) lastPaintPrecision = { deviceScale: context.deviceScale, allowInkLod: context.allowInkLod, sensitive: false };
                 // A picture's tiles depend on the stream's own world, so only world-independent resolutions are shared.
                 const reuse = shared && node.kind !== 'picture' ? shared : undefined;
                 const known = reuse?.cache.get(reuse.variant, node.id, context.sensitive);
@@ -877,7 +938,14 @@ export function createBoardRenderServices(options: {
          * exact-bound or page-placement capability. */
         encoderLocal: localEnvelope,
         retainNode: (node: Readonly<Node>) => retainPaintNodeResources(node, options.samples, options.media),
-        async realize(node: Readonly<Node>, signal: AbortSignal) { return (await prepare(node, options.doc, signal)).bounds; },
+        // Bounds do not depend on the band: any geometry of the node's current signature answers, whichever band it was built at.
+        // A missing one is built at the band the paint last asked for, so the stream that draws it shares the build. Built at the
+        // default band, the camera fit of a converted 5,640-stroke drawing built every stroke a second time, at a band no frame
+        // drew (measured: 5,640 extra builds beside the view's, the open's whole second half).
+        async realize(node: Readonly<Node>, signal: AbortSignal) {
+            const known = variantFor(node.id, signature(node, options.doc));
+            return (known ?? await prepare(node, options.doc, signal, lastPaintPrecision ?? undefined)).bounds;
+        },
         preparePaint: paint, preparePaintStream: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder, resolved?: ResolvedNodeCache | null) =>
             paintStream(doc, request, signal, order, undefined, resolved),
         prepareOverlay(doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId>, signal: AbortSignal) {

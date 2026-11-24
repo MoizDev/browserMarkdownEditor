@@ -47,12 +47,19 @@ export function readLabelledShape(shape: LegacyShape, base: NodeBase, rich: Rich
             color: pick(p.color, SWATCHES, 'colour'), size: pick(p.size, SIZES, 'size'), font: pick(p.font, FONTS, 'font'),
             align: pick(p.textAlign, V_ALIGNS, 'alignment'), autoSize: bool(p.autoSize, 'auto-size'),
             w: num(p.w, 'width'), scale: num(p.scale, 'scale') };
-        case 'note': return { ...base, kind: 'sticky', text: rich(p.richText, shape.id),
-            color: pick(p.color, SWATCHES, 'colour'), labelColor: pick(p.labelColor, SWATCHES, 'label colour'),
-            size: pick(p.size, SIZES, 'size'), font: pick(p.font, FONTS, 'font'),
-            align: pick(p.align, H_ALIGNS, 'alignment'), valign: pick(p.verticalAlign, V_ALIGNS, 'vertical alignment'),
-            growY: num(p.growY, 'growth'), fit: num(p.fontSizeAdjustment, 'font adjustment'),
-            scale: num(p.scale, 'scale'), url: url(p.url) };
+        case 'note': {
+            // The old file's `fontSizeAdjustment` is the old app's own measured label size, 0 until it measured one, not a
+            // scale: read as `fit` (a multiplier, null for none), 0 hid the note's text and made every print and PDF export of
+            // the board fail ("Text raster geometry is out of range"). This app shrinks a note's text to fit by itself
+            // (geom/providers.ts stickyLabelRequest, overflow 'shrink'), so the note keeps no adjustment of its own; the
+            // value is still checked, as every field the reader knows is.
+            num(p.fontSizeAdjustment, 'font adjustment');
+            return { ...base, kind: 'sticky', text: rich(p.richText, shape.id),
+                color: pick(p.color, SWATCHES, 'colour'), labelColor: pick(p.labelColor, SWATCHES, 'label colour'),
+                size: pick(p.size, SIZES, 'size'), font: pick(p.font, FONTS, 'font'),
+                align: pick(p.align, H_ALIGNS, 'alignment'), valign: pick(p.verticalAlign, V_ALIGNS, 'vertical alignment'),
+                growY: num(p.growY, 'growth'), fit: null, scale: num(p.scale, 'scale'), url: url(p.url) };
+        }
         case 'arrow': {
             const size = pick(p.size, SIZES, 'size'), scale = num(p.scale, 'scale');
             const start = ends?.start ?? { ...point(p.start, 'start'), attach: null };

@@ -600,7 +600,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     };
     const clearResources = (reason: GpuReleaseReason) => {
         discardHolds();
-        if (reason === 'context-lost') forgetPresented();
+        // A hidden board presents nothing until it is shown and asks for its paint again; its 2D picture records each name a prepared
+        // paint, which held a hidden 10,060-stroke drawing's whole geometry (measured, heap snapshot of the hidden pane).
+        if (reason === 'context-lost' || reason === 'hidden') forgetPresented();
         // The reference adapter keeps CPU paths on context loss; this owner must
         // explicitly evict them before returning its CPU leases for any release.
         gpu?.release(reason);
@@ -611,7 +613,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         ackFrame = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
             const wasDense = useDense;
-            deferredClear = true; collectRetired(); presented = null; presentedContext = null; refreshProgress();
+            // The direct build's mark and a two-phase frame's pending paint name a frame too; nothing is built for a hidden pane.
+            directBuiltFor = null; pendingFrame = null; foregroundFrame = -1;
+            deferredClear = true; collectRetired(); presented = null; presentedContext = null; sceneAudit.forget(); refreshProgress();
             density.reset(); useDense = false; returnedFromHide = true;
             // The owner's density mode outlives a hide: a board that returns direct must say so, or its owner keeps asking
             // for live-only frames this board cannot take (by reading: dense-coupling note, the hide-while-dense item).

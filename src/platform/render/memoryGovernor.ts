@@ -141,6 +141,8 @@ export interface MemoryReadout {
     readonly hiddenMirrorLimitBytes: number;
     readonly workerHeapBytes: number;
     readonly sourceBytes: number;
+    /** Models derived from open documents (reportDerivedModel), all owners together. */
+    readonly derivedModelBytes: number;
 }
 
 export type MemoryTrouble = 'allocation' | 'framebuffer' | 'context-loss' | 'capability' | 'slow-gpu' | 'stalled-fence';
@@ -315,6 +317,8 @@ export class MemoryGovernor {
     private readonly workerHeaps = new Map<object, number>();
     private readonly legacyWorker = {};
     private sourceBytes = 0;
+    private derivedModelBytes = 0;
+    private readonly derivedModels = new Map<object, number>();
 
     constructor(deviceMemory: unknown, private readonly onPressureChange?: () => void) {
         // Chromium reports rounded/capped hints (historically at 8 GiB), not installed RAM (§6.2:607).
@@ -552,6 +556,19 @@ export class MemoryGovernor {
 
     releaseWorkerMemory(worker: object): void { this.reportWorkerMemory(worker, 0); }
 
+    /** What one owner holds of a model derived from its document (a board's stroke geometry): an absolute byte count, 0 when it
+     * holds none. It grows with the document, not with pixels, so it is reported beside the worker heaps and never charged to a
+     * raster pool: charged as the board's CPU working set, a 10,060-stroke drawing's geometry (122 MB) held the 128 MB pool over
+     * its target and the app reduced its rendering quality at rest (measured, WebGL2). */
+    reportDerivedModel(owner: object, bytes: number): void {
+        if (typeof owner !== 'object' || owner === null) throw new MemoryAdmissionError('invalid-input');
+        count(bytes);
+        const total = this.derivedModelBytes - (this.derivedModels.get(owner) ?? 0) + bytes;
+        count(total);
+        if (bytes) this.derivedModels.set(owner, bytes); else this.derivedModels.delete(owner);
+        this.derivedModelBytes = total;
+    }
+
     reportExternalHeaps(workerHeapBytes: number, sourceBytes: number): void {
         count(sourceBytes);
         this.reportWorkerMemory(this.legacyWorker, workerHeapBytes);
@@ -670,7 +687,7 @@ export class MemoryGovernor {
             deviceClass: this.deviceClass, state: this.state, lastTrouble: this.lastTrouble, gpu, cpu,
             hiddenMirrorBytes: this.hiddenMirrorBytes(), borrowedRetiringBytes: this.kindBytes('mirror-retiring'),
             hiddenMirrorLimitBytes: this.hiddenMirrorLimit(),
-            workerHeapBytes: this.workerHeapBytes, sourceBytes: this.sourceBytes,
+            workerHeapBytes: this.workerHeapBytes, sourceBytes: this.sourceBytes, derivedModelBytes: this.derivedModelBytes,
         };
     }
 

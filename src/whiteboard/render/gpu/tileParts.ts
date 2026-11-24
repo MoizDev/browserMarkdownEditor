@@ -511,6 +511,11 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
             auditCount(audit, 'index:take-area', area);
             return taken;
         },
+        release(): void {
+            index = null; building = null; spare = []; out.length = 0;
+            pending = []; pendingAll = false; changesReady = false;
+            boundsVersion = -1; boundsIds = new Set(); boundsRects = [];
+        },
         boundsOfNodes(ids: ReadonlySet<string>): readonly Rect[] {
             if (!index || !ids.size) return NO_RECTS;
             if (boundsVersion === index.version) {

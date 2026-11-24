@@ -199,7 +199,9 @@ draws differently because a GPU exists.
   after them waited for memory for good). Counted `governor:hidden-release:<pool>` (bytes given back) and
   `governor:hidden-kept:cpu:<cache>` (still held right after the ask; a frame a draw borrows goes a moment later). Check:
   `caches().hiddenPanes` is `{ cpu: 0, gpu: 0 }` at rest (GPU once its retirement completes).
-- Report worker WASM estimates with `reportWorkerMemory` and `releaseWorkerMemory` on stop/crash.
+- Report worker WASM estimates with `reportWorkerMemory` and `releaseWorkerMemory` on stop/crash, and a model derived from an
+  open document (a board's stroke geometry) with `reportDerivedModel(owner, bytes)`: both are readout-only, beside the raster
+  pools whose ceilings (64/128/256 MB; Chrome caps `deviceMemory` at 8, so 128 MB) are sized for tiles, not documents.
 
 ## WebGL2 frame-path rules
 

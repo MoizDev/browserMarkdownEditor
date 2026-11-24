@@ -2,8 +2,9 @@
  * frame, in paint order, with the view and the exact world-to-pane matrix they were drawn at (text items with their boxes). The kit rasterises the exact
  * coverage of this geometry as its reference (FAULT-GPU.md: the truth yardstick, not canvas2d), so it describes the item's own
  * geometry, never a backend's flattening: ink as its capsule hulls and discs, paths as their commands and stroke style.
- * Off, `presentedScene` returns a no-op and keeps nothing. On, a pane's last frame stays referenced until it presents again or
- * its registration is replaced; that is the price of measuring. */
+ * Off, `presentedScene` returns a no-op and keeps nothing. On, a pane's last frame stays referenced until it presents again, is
+ * hidden (`forget`) or its registration is replaced; that is the price of measuring. Kept through a hide, it held a hidden
+ * 10,060-stroke drawing's whole paint, so every memory kit run with the audit on read a hidden board as still holding it. */
 import { auditScene, renderAuditEnabled } from '../../platform/render/renderAudit';
 import type { Affine, ViewState } from '../../platform/types';
 import { inkCoverageChunks, type PaintItem, type PaintSource } from './paintStream';
@@ -45,8 +46,8 @@ function describe(item: PaintItem): unknown {
 }
 
 /** Registers (once per surface) and updates the scene a surface last presented. Returns the registration's removal. */
-export function presentedScene(surface: string): { update(frame: PaintSource, view: ViewState, paneTransform: Affine | null): void; dispose(): void } {
-    if (!renderAuditEnabled()) return { update() {}, dispose() {} };
+export function presentedScene(surface: string): { update(frame: PaintSource, view: ViewState, paneTransform: Affine | null): void; forget(): void; dispose(): void } {
+    if (!renderAuditEnabled()) return { update() {}, forget() {}, dispose() {} };
     let last: Presented | null = null;
     const dispose = auditScene(`board:${surface}`, () => {
         if (!last) return null;
@@ -55,5 +56,5 @@ export function presentedScene(surface: string): { update(frame: PaintSource, vi
         return { revision: frame.sceneRevision, theme: frame.theme ?? null, liveOnly: !!frame.liveOnly,
             camera: view.camera, viewport: view.viewport, paneTransform, items };
     });
-    return { update(frame, view, paneTransform) { last = { frame, view, paneTransform }; }, dispose() { last = null; dispose(); } };
+    return { update(frame, view, paneTransform) { last = { frame, view, paneTransform }; }, forget() { last = null; }, dispose() { last = null; dispose(); } };
 }

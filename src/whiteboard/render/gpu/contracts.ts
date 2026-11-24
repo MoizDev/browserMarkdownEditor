@@ -69,6 +69,8 @@ export interface TileParts {
     /** World rects changed since the previously synced revision; 'all' when unknown. Read once per sync. */
     takeChanges(): readonly Rect[] | 'all';
     boundsOfNodes(ids: ReadonlySet<string>): readonly Rect[];
+    /** Drops the index and any build in progress (a hidden pane): the next sync indexes its paint from scratch. */
+    release(): void;
 }
 
 /** `scale` is device pixels per world unit; interior covers world [x·512/scale, (x+1)·512/scale) on each axis. */

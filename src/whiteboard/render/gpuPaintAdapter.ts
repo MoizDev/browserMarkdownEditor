@@ -196,6 +196,9 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
             if (scratchLease) host.allocator.cpu.release(scratchLease);
             scratchLease = null;
             scratch = null;
+            // The paint's resources reach its prepared snapshot, and through it the whole paint: the composer hands them over again
+            // with the next paint it prepares (measured: a hidden 10,060-stroke drawing's geometry held here).
+            resources = null;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
             // The ledger is the leases the live runs hold on this generation's device: each run's own lease, never a count.
@@ -335,8 +338,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         text: textRoute,
         cpu,
     };
+    // The composer's index of the paint's items, by world position. It holds every item, and so every stroke's coverage, of the
+    // frame it indexed: kept through a hide, a hidden 10,060-stroke drawing still held its whole geometry (measured, heap snapshot).
+    const parts = createTileParts(host, surface);
     const composer = createTileComposer({
-        host: withWake('retry'), audit: surface, parts: createTileParts(host, surface), store, routes,
+        host: withWake('retry'), audit: surface, parts, store, routes,
         tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
         layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
@@ -445,7 +451,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             // Audit only: a released adapter has no picture to draw until it prepares again (a layer that loses its frame is traced).
             if (renderAuditEnabled()) auditTape(`adapter-release:${surface}:${reason}`);
             composer.release(reason);
-            presented = null; omitPrepared = null; lastFrame = -1; ledger = null;
+            // A hidden pane composes nothing until it is shown, and then from a paint it asks for again (attachView clears its frames).
+            // Nothing that names a paint outlives the release either: the memos below held a hidden 10,060-stroke drawing's whole paint
+            // (measured, heap snapshot of the hidden pane: every ink item through inkMemo's paint).
+            if (reason === 'hidden') parts.release();
+            presented = null; omitPrepared = null; lastFrame = -1; ledger = null; inkMemo = null; pendingPrepared = null; filtered = null;
         },
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
         memoryBlocked(): boolean { return !disposed && composer.memoryBlocked(); },

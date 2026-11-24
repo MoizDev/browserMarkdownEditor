@@ -574,7 +574,10 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
             for (const key of body.holds) textures.unhold(key);
             returnBody(body);
         },
-        release,
+        // The composer's release also lets go of the paint's resources, which reach its whole prepared paint (every stroke's geometry):
+        // its next prepare hands them over again. Kept, they held a hidden 10,060-stroke drawing's geometry (measured, heap snapshot of
+        // the hidden pane). Not in `release` itself, which a new device runs from inside useResources.
+        release(): void { release(); resources = null; hold = null; },
         memory(): { gpuBytes: number; cpuBytes: number } { return textures.memory(); },
         useResources(next: PaintResources2d): void {
             resources = next; hold = imageHoldOf(next);

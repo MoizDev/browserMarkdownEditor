@@ -549,7 +549,7 @@ export const attachView: AttachView = options => {
             if (disposed) return;
             const old = view; view = { ...next }; previousSheet = sheet();
             if (old.theme !== view.theme) interaction?.paletteChanged?.();
-            if (old.visible !== view.visible) embedPort?.setVisible(view.visible);
+            if (old.visible !== view.visible) { embedPort?.setVisible(view.visible); runtime.viewVisibilityChanged(); }
             if (view.visible && (old.theme !== view.theme || old.sheetId !== view.sheetId)) clearPreview?.();
             // A hidden pane's frames and stream are gone, and its camera may change before it is shown again (a resize, a restored
             // position): the request state that assumes the old stream and camera is dropped, so a show always asks for the current one.

@@ -2,6 +2,7 @@ import type { createPdfInkHost, pinPdfInkHostForSave, readPdfInkLegacyDigest, va
 import type { PdfRuntimeInkSource } from '../../pdf/session/legacyInkAcquisition.types';
 import { isConvertedPdfInkSource } from '../../pdf/session/convertedInkBrand';
 import type { RenderToken } from '../../platform/render/types';
+import { getPlatformRuntime } from '../../platform/render/platformRuntime';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import type { SourceOwner } from '../../utils/documentBuffers';
 import { Limiter } from '../../utils/pool';
@@ -130,7 +131,9 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
         check();
         const token = { vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
             session: identity.session, bytesGeneration: identity.bytesGeneration };
-        render = createBoardRenderServices({ doc, samples, media: store, token });
+        const model = {};
+        render = createBoardRenderServices({ doc, samples, media: store, token,
+            modelMemory: bytes => getPlatformRuntime().governor.reportDerivedModel(model, bytes) });
         const services = render;
         const bounds = await createBoardEncoderBounds({ doc, sources: load.sources, local: services.encoderLocal,
             realize: services.realize, geometryEpoch: () => services.text.fonts.epoch });

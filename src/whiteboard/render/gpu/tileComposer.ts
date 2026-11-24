@@ -1616,6 +1616,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         for (const route of routeList) route.release();
         denied = false; waiting = false; blockedOnGpu = false; retryAt = 0; retryDelay = GPU_RETRY_MS; retryMisses = 0; settled = false; presenting = false; drawnInk.clear(); drawnInkFrame = -1;
         heldNodes.clear();
+        // The routes let go of the paint's resources at release; the next prepare scans its paint and hands them over again.
+        resourcesSeen = null; paintScanned = null;
     };
 
     return {

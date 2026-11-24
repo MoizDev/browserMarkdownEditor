@@ -59,6 +59,8 @@ export interface BoardRuntime {
         adopt: (token: RenderToken) => void, isCurrent: () => boolean): PaintSourceAdmission;
     adoptPaintSource(witness: PaintSourceWitness, expected: PaintSourceExpectation, isCurrent: () => boolean): PaintSourceAdmission;
     bindView(sink: BoardRuntimeViewSink): () => void;
+    /** A bound view was shown or hidden: once no view of the document is on screen, its rebuildable geometry is given back. */
+    viewVisibilityChanged(): void;
     /** Document-owned services, never tied to a pane's mount/visibility lifetime. Returns unregister. */
     registerOwned(dispose: () => void): () => void;
     flushFrame(frameId: number): void;
@@ -96,6 +98,16 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     const stopSelection = selection.subscribe(() => { pendingReveal = undefined; });
     const report = (error: unknown) => options.onFailure(error);
     const visible = (entry: Registration) => safe(entry, () => entry.sink.visible(), false);
+    // Whether a view of this document was on screen at the last change. When the last one hides (another tab, a closed pane), the
+    // session's derived geometry goes too: the hide releases each pane's own memory, but these caches belong to the document, and
+    // a hidden 10,060-stroke drawing kept its idle geometry and resolved paint charged at rest (measured: 15.5 MB).
+    let shown = false;
+    const viewsChanged = () => {
+        let any = false;
+        for (const entry of attached) if (visible(entry)) { any = true; break; }
+        if (shown && !any && !disposed) options.render.releaseDerived();
+        shown = any;
+    };
     const focused = (entry: Registration) => safe(entry, () => entry.sink.focused(), false);
     const preferred = (): Registration | undefined => {
         let firstVisible: Registration | undefined;
@@ -214,10 +226,11 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
         },
         bindView(sink) {
             if (disposed) throw new Error('Board runtime disposed');
-            const entry = { sink, report }; attached.add(entry); views.add(entry); notices.visibilityChanged(); flushReveal();
+            const entry = { sink, report }; attached.add(entry); views.add(entry); notices.visibilityChanged(); flushReveal(); viewsChanged();
             let detached = false;
-            return () => { if (detached) return; detached = true; attached.delete(entry); views.delete(entry); notices.visibilityChanged(); };
+            return () => { if (detached) return; detached = true; attached.delete(entry); views.delete(entry); notices.visibilityChanged(); viewsChanged(); };
         },
+        viewVisibilityChanged() { if (!disposed) { notices.visibilityChanged(); viewsChanged(); } },
         registerOwned(dispose) {
             if (disposed) throw new DOMException('Board runtime disposed', 'AbortError');
             if (typeof dispose !== 'function') throw new TypeError('Owned resource requires a disposer');

@@ -155,7 +155,9 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
         const token = { vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
             session: identity.session, bytesGeneration: identity.bytesGeneration };
         // Stroke LOD levels and idle geometry are rebuildable from the samples and document, so the governor may reclaim them first (`redundant-level`).
-        services = createBoardRenderServices({ doc, samples, media: store, token, derivedMemory: evict => {
+        const model = {};
+        services = createBoardRenderServices({ doc, samples, media: store, token,
+            modelMemory: bytes => getPlatformRuntime().governor.reportDerivedModel(model, bytes), derivedMemory: evict => {
             // The governor reads `memory()` while publishing its readout, so the live count is kept here, not read back.
             let live = 0;
             const now = performance.now();

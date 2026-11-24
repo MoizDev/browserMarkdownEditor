@@ -23,11 +23,15 @@ This is the board's own route. Editing (tools, selection, text) is `whiteboard-e
    adapter's next-scale snapshot shares the presented snapshot's picture leases in the same prepare, so a step
    completes in its own frame (video frames still ask, for the newest frame).
 3. **Stream** (`paintStream.ts`, `scenePaintStream.ts`): each node yields `underlay` items then `content` items
-   (`PaintBand`); every node's underlay is emitted before any content. The source resolves `RESOLVE_AHEAD` (16) nodes
-   ahead of the one it emits, in canonical order (`sceneSource.ts`): one at a time, every stroke waited on its own
-   geometry-worker round trip. The services build a node once per band and signature at a time (`building`), reuse geometry a
-   frame still holds after its idle entry went (`surviving`, a `WeakRef` to the coverage), and `realize` (bounds only)
-   builds at the band the paint last asked for.
+   (`PaintBand`); every node's underlay is emitted before any content. The source resolves up to `RESOLVE_AHEAD_STROKES`
+   (256) strokes and `RESOLVE_AHEAD` (16) other nodes ahead of the one it emits, in canonical order (`sceneSource.ts`). The
+   chunks a task asks for go to the geometry workers as ONE `ink.batch` per pool member (`workers/inkCoverageClient.ts`: up to
+   3 workers, more than one only for 32+ chunks; one input buffer, one packed reply). The services build a node once per band
+   and signature at a time (`building`), reuse geometry a frame still holds after its idle entry went (`surviving`, a `WeakRef`
+   to the coverage), and `realize` (bounds only) builds at the band the paint last asked for.
+   - **A chunk's coverage is one buffer** (`ink/packedCoverage.ts`): its segment, disc and centreline rows and run starts. The
+     curve, radii and arc maps stay in the job that built them (`InkCoverageJob.result` vs `.coverage`); nothing on the main
+     thread reads them. Measured (WebGL2, after forced GC, over idle): 57 ArrayBuffers per stroke before; a 10,060-stroke drawing +692 → +315 MB at rest, +671 → +190 MB hidden.
 4. **Assembler** (`frameAssembler.ts`): builds the stream into a `PaintSource` frame under CPU leases.
 5. **Board layers** (`boardLayers.ts`, `createBoardLayers`): two platform layers, one per band, sharing one state.
    - With a device (`host.device()`): the frame goes to the GPU adapter (`gpuPaintAdapter.ts`) and its tile
@@ -194,6 +198,13 @@ refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF wri
   (`bindMemory`). The dense adapter gives exactly those back (`releaseCharged`, counted `board-dense:charged-release`) at hide,
   on dispose and when the board moves to the device route, which draws none of them: kept, a hidden board's tiles sat outside
   every visible floor and a WebGL2 board's sat pinned by its view, never reclaimable. A return re-rasters its view's tiles.
+- **Geometry is a document model, not raster**: the services count every live coverage (built, not yet collected) and report it
+  through `governor.reportDerivedModel` (readout `derivedModelBytes`), never into a pane's CPU pool: charged as the board's
+  working set, a 10,060-stroke drawing's 122 MB held the 128 MB pool over target and the app reduced its quality at rest.
+  When no view of the document is visible the runtime releases the session's derived caches (`render.releaseDerived`), and the
+  hide drops everything that names a paint: frames, the composer's part index (`TileParts.release`), the adapter's memos, the
+  routes' paint resources (re-handed at the next prepare: `tileComposer` resets `resourcesSeen`), the 2D picture records and
+  the audit's scene. Check: `__bmeRenderAudit.memory().derivedModelBytes` is 0 a few seconds after a hide and a forced GC.
 - **Unsized waits still exist** (`grep -rn whenAvailable src/whiteboard`): `boardLayers.ts` (per-pool refusal waiter),
   `densePlan.ts` (four CPU sites), `streamingDenseTile.ts`, `analyticInkBatch.ts` and `gpu/imageTextures.ts` (both
   pools), `frameAssembler.ts`, and `gpu/tileStore.ts`. Sizing one needs its thrower to report the bytes refused.

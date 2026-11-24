@@ -17,6 +17,7 @@ import { resolveConnectorGeometry, resolveConnectorGeometryNow } from '../geom/r
 import type { AttachmentSurface, ConnectorGeometry } from '../geom/connectorTypes';
 import type { PathOp } from '../geom/path';
 import type { InkCoverage } from '../ink/outline';
+import { inkCoverageBytes } from '../ink/packedCoverage';
 import { CURVE_CHUNK_SPANS } from '../ink/curve';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
@@ -154,6 +155,9 @@ export function createBoardRenderServices(options: {
     readonly fonts?: BoardFonts;
     /** The session's cache allocator for derived residency: idle geometry and stroke LOD levels. Absent, nothing is charged. */
     readonly derivedMemory?: (evict: (bytes: number) => void) => Pick<MemoryCacheHandle, 'reserve' | 'release' | 'close'>;
+    /** Hears the bytes of stroke geometry alive now (built by these services and not yet collected), whoever holds it: frames, caches,
+     * picks. Absent, nothing is reported. */
+    readonly modelMemory?: (bytes: number) => void;
     cooperate?(): Promise<void>;
 }) {
     // Every prepared geometry is kept under its own geometry key (unique per build), indexed by node. A frame can ask for one node
@@ -162,6 +166,30 @@ export function createBoardRenderServices(options: {
     const cached = new Map<string, Prepared>(), variantsOf = new Map<NodeId, Set<string>>();
     const listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
     const sessionRasters = new SessionDenseRasters();
+    // Every coverage these services built, counted until it is collected: what a board's geometry costs while anything holds it.
+    // The frames that draw it, the idle cache and the surviving index all share one object per chunk, so it is counted once.
+    let liveModelBytes = 0, modelReported = -1, modelReport = false;
+    const reportModel = () => {
+        if (modelReport || !options.modelMemory) return;
+        modelReport = true;
+        queueMicrotask(() => {
+            modelReport = false;
+            if (disposed || liveModelBytes === modelReported) return;
+            modelReported = liveModelBytes; options.modelMemory?.(Math.max(0, liveModelBytes));
+        });
+    };
+    const modelCounted = new WeakSet<InkCoverage>();
+    const modelGone = typeof FinalizationRegistry === 'function' && options.modelMemory
+        ? new FinalizationRegistry<number>(bytes => { if (!disposed) { liveModelBytes -= bytes; reportModel(); } }) : null;
+    const countModel = (ink: readonly InkCoverage[]): void => {
+        if (!modelGone) return;
+        for (const chunk of ink) {
+            if (modelCounted.has(chunk)) continue;
+            const bytes = inkCoverageBytes(chunk);
+            modelCounted.add(chunk); modelGone.register(chunk, bytes); liveModelBytes += bytes;
+        }
+        reportModel();
+    };
     // An opaque service incarnation binds the full owner token without putting an arbitrarily
     // long document id into the worker protocol's 128-character session field.
     const workerSession = `render/${options.token.session}/${options.token.bytesGeneration}/${crypto.randomUUID()}`;
@@ -361,6 +389,8 @@ export function createBoardRenderServices(options: {
         for (const id of [...inkLadders.keys()]) dropInkLadder(id);
         sessionResolved?.dispose();
         derived?.close();
+        // The services' own count ends with them; geometry still drawn by a closing pane goes with it.
+        if (options.modelMemory) { liveModelBytes = 0; modelReported = 0; options.modelMemory(0); }
     };
     const signature = (node: Readonly<Node>, doc: BoardDoc): readonly unknown[] => {
         const local = localGeometrySignature(node, text.fonts.epoch, 1);
@@ -449,6 +479,7 @@ export function createBoardRenderServices(options: {
                     }, precision!.lod ? { ladder, chunkCount: Math.max(1, Math.ceil((options.samples.count(sampleRef) - 1) / CURVE_CHUNK_SPANS)) } : undefined);
                 } : undefined,
             });
+            countModel(ink);
             result = strokePrepared(key, ink);
         } else if (node.kind === 'connector') {
             // Capture every dependency before awaiting fonts/geometry. An export
@@ -540,7 +571,9 @@ export function createBoardRenderServices(options: {
         let result: Omit<Prepared, 'signature'>;
         if (node.kind === 'group' || node.kind === 'opaque') throw new TypeError('Copy geometry requires a supported non-container leaf');
         if (node.kind === 'stroke') {
-            result = strokePrepared(key, buildStrokeCoverageNow(node, options.samples, { deviceScale: precision!.scale, signal }));
+            const ink = buildStrokeCoverageNow(node, options.samples, { deviceScale: precision!.scale, signal });
+            countModel(ink);
+            result = strokePrepared(key, ink);
         } else if (node.kind === 'connector') {
             const world = matrix(doc, node.id), inverseWorld = inverse(world, 1e12);
             if (!inverseWorld) throw new RangeError('Connector transform is not invertible');
@@ -952,6 +985,14 @@ export function createBoardRenderServices(options: {
             return paint(doc, request, signal, ids);
         },
         subscribeInvalidation(listener: (ids: ReadonlySet<NodeId>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+        /** No view shows the document: gives back everything derived it holds (idle geometry, stroke levels, resolved paint), all of it
+         * rebuildable. A geometry a frame still draws is found again through `surviving` while that frame lives. */
+        releaseDerived() {
+            if (disposed) return;
+            releasePins();
+            evictDerived(Number.POSITIVE_INFINITY);
+            auditCount(AUDIT, 'geometry:release-derived');
+        },
         dispose() { if (!ownerReleased) { ownerReleased = true; releaseHolder(); } },
     };
 }

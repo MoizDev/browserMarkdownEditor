@@ -1,3 +1,4 @@
+import { inkRefusal } from '../../pdf/session/inkReadOnlyText';
 import { getPlatformRuntime } from '../../platform/render/platformRuntime';
 import type { ReserveOptions } from '../../platform/render/memoryGovernor';
 import { acquireLegacyPdfInkCandidate } from '../../pdf/session/legacyInkAcquisition';
@@ -45,7 +46,7 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
         candidate = await acquireLegacyPdfInkCandidate({ outer, token, isCurrent: current, signal: internal.signal });
         signal.throwIfAborted();
         if (!current()) throw stale();
-        if (candidate.kind !== 'conversion-required') throw new Error(candidate.kind === 'read-only' ? candidate.reason : 'This PDF is not a legacy annotated PDF');
+        if (candidate.kind !== 'conversion-required') throw candidate.kind === 'read-only' ? inkRefusal(candidate.reason) : new Error('This PDF is not a legacy annotated PDF');
         const source = candidate;
         const native = await acquireNativeBoard({ bytes: source.snapshot, kind: 'pdf-ink',
             pdfPages: source.pages.map(page => [page.width, page.height] as const), signal: internal.signal,

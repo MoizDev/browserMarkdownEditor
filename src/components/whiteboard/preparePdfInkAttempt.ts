@@ -1,3 +1,4 @@
+import { inkRefusal } from '../../pdf/session/inkReadOnlyText';
 import { createPdfInkHost, pinPdfInkHostForSave, readPdfInkLegacyDigest, rebindPdfInkSource, validateLoadedPdfInkHost } from '../../pdf/session/inkHost';
 import { prepareOwnedPdfInk } from '../../pdf/session/ownedInkAcquisition';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
@@ -72,7 +73,7 @@ export async function preparePdfInkAttempt(input: PdfInkAttemptInput, signal: Ab
                 if (!isCurrent?.() || !handoff.canHandOff()) throw new DOMException('PDF notebook handoff ended', 'AbortError');
             }
             if (role) throw new NotebookCopyOnlyRefusal(result.reason, role);
-            throw new Error(result.reason);
+            throw inkRefusal(result.reason);
         } finally { await result.dispose(); }
     }
     return result;

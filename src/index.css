@@ -3579,6 +3579,11 @@ body.is-resizing-panes * {
   text-align: center;
 }
 
+/* A sentence with an action under it keeps a reading measure: Annotate's refusals ran the full width of a wide pane. */
+.pdf-pane-message > span {
+  max-width: 62ch;
+}
+
 /* A canvas pane's own wait or failure, before its board exists: centred in the body like a PDF's. */
 .canvas-pane-message {
   position: absolute;

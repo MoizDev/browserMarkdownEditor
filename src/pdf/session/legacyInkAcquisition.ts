@@ -1,3 +1,4 @@
+import { legacyConversionRefusalText } from './inkReadOnlyText';
 import { Sha256 } from '../../utils/sha256';
 import { tiledPdfCapabilities } from '../../utils/pdfCapabilities';
 import { NATIVE_FORMAT_ID } from '../../whiteboard/format/identity';
@@ -26,9 +27,9 @@ async function hash(blob: Blob, guard: () => void): Promise<string> {
 }
 function policy(doc: PdfPoolDocument): string | null {
     const cap = tiledPdfCapabilities(doc.info);
-    if (cap.encrypted !== false) return 'Encrypted PDFs cannot be converted.';
-    if (cap.signed !== false) return 'PDF signatures could not be ruled out.';
-    return cap.render === true && cap.copy === true && cap.capture === true && cap.write === true ? null : 'PDF permissions or write safety could not be established.';
+    if (cap.encrypted !== false) return legacyConversionRefusalText('encrypted');
+    if (cap.signed !== false) return legacyConversionRefusalText('signed');
+    return cap.render === true && cap.copy === true && cap.capture === true && cap.write === true ? null : legacyConversionRefusalText('permissions');
 }
 function samePage(a: Readonly<PageGeometry>, b: Readonly<PageGeometry>): boolean {
     return a.index === b.index && a.width === b.width && a.height === b.height && a.rotate === b.rotate && a.userUnit === b.userUnit &&
@@ -63,12 +64,12 @@ export async function acquireLegacyPdfInkCandidate(options: PdfLegacyInkAcquisit
         if (outer.source !== 'outer' || outer.docKey !== pdfDocKey({ ...token, source: 'outer' })) throw new Error('Invalid outer PDF lease');
         const inspected = await outer.request('doc.inspectLegacyInk', {}, { priority: 0, signal: lifetime }); guard();
         if (inspected.kind === 'not-legacy') { await release(); if (!callerCurrent()) throw stale(); return { kind: 'not-legacy', release }; }
-        if (inspected.kind === 'read-only') return await refused(`PDF conversion is read-only: ${inspected.reason}.`);
+        if (inspected.kind === 'read-only') return await refused(legacyConversionRefusalText(inspected.reason));
         if (inspected.writeSafety?.kind !== 'safe' || !memoryBlob(inspected.pristine) || !memoryBlob(inspected.snapshot) || inspected.snapshot.size > 32 * 1024 * 1024 ||
             !/^[0-9a-f]{64}$/.test(inspected.outerFingerprint) || !/^[0-9a-f]{64}$/.test(inspected.pristineFingerprint) ||
-            inspected.writeMark.kind === 'verified' && inspected.writeMark.writeId !== undefined) return await refused('The legacy PDF source could not be verified.');
+            inspected.writeMark.kind === 'verified' && inspected.writeMark.writeId !== undefined) return await refused(legacyConversionRefusalText('unreadable'));
         const outerHash = await hash(options.outer, guard), pristineHash = await hash(inspected.pristine, guard);
-        if (outerHash !== inspected.outerFingerprint || pristineHash !== inspected.pristineFingerprint) return await refused('The legacy PDF fingerprint does not match the inspected bytes.');
+        if (outerHash !== inspected.outerFingerprint || pristineHash !== inspected.pristineFingerprint) return await refused(legacyConversionRefusalText('source-changed'));
         const outerPolicy = policy(outer); if (outerPolicy) return await refused(outerPolicy);
         const openedOriginal = await pool.open({ token, source: 'original', blob: inspected.pristine, priority: 0, signal: lifetime });
         openedOriginal.setVisible(false);
@@ -78,15 +79,15 @@ export async function acquireLegacyPdfInkCandidate(options: PdfLegacyInkAcquisit
         const originalInspection = await original.request('doc.inspectInk', {}, { priority: 0, signal: lifetime }); guard();
         if (originalInspection.kind !== 'plain' || originalInspection.writeSafety?.kind !== 'safe' ||
             originalInspection.outerFingerprint !== pristineHash || originalInspection.pristineFingerprint !== pristineHash) {
-            return await refused('The retained pristine PDF does not match the inspected source.');
+            return await refused(legacyConversionRefusalText('mismatch'));
         }
         const originalPolicy = policy(original); if (originalPolicy) return await refused(originalPolicy);
-        if (outer.info.pageCount !== original.info.pageCount) return await refused('The legacy PDF pages do not match the pristine source.');
+        if (outer.info.pageCount !== original.info.pageCount) return await refused(legacyConversionRefusalText('mismatch'));
         const pages: Readonly<PageGeometry>[] = [];
         for (let page = 0; page < original.info.pageCount; page++) {
             const visible = await outer.resolveGeometry(page, { priority: 0, signal: lifetime }); guard();
             const pristine = await original.resolveGeometry(page, { priority: 0, signal: lifetime }); guard();
-            if (!samePage(visible, pristine)) return await refused('The legacy PDF geometry does not match the pristine source.');
+            if (!samePage(visible, pristine)) return await refused(legacyConversionRefusalText('mismatch'));
             pages.push(Object.freeze({ ...pristine, toUserSpace: Object.freeze([...pristine.toUserSpace]) as PageGeometry['toUserSpace'] }));
         }
         const geometryEngine = pool.geometryEngine; guard();

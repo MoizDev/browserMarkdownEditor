@@ -1,3 +1,4 @@
+import { inkReadOnlyText } from './inkReadOnlyText';
 import { Sha256 } from '../../utils/sha256';
 import { tiledPdfCapabilities } from '../../utils/pdfCapabilities';
 import { NATIVE_FORMAT_ID } from '../../whiteboard/format/identity';
@@ -38,11 +39,9 @@ function matchingGeometry(a: Readonly<PageGeometry>, b: Readonly<PageGeometry>):
 
 function policyReason(doc: PdfPoolDocument): string | null {
     const policy = tiledPdfCapabilities(doc.info);
-    if (policy.encrypted !== false) return 'Encrypted PDFs cannot be edited.';
-    if (policy.signed !== false) return 'PDF signatures could not be ruled out; editing is unavailable.';
-    if (policy.render !== true || policy.copy !== true || policy.capture !== true || policy.write !== true) {
-        return 'PDF permissions or write safety could not be established; editing is unavailable.';
-    }
+    if (policy.encrypted !== false) return inkReadOnlyText('encrypted');
+    if (policy.signed !== false) return inkReadOnlyText('signed');
+    if (policy.render !== true || policy.copy !== true || policy.capture !== true || policy.write !== true) return inkReadOnlyText('permissions');
     return null;
 }
 
@@ -91,19 +90,22 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         const inspection: PdfInkInspection = await outer.request('doc.inspectInk', {}, { priority: 0, signal: lifetime });
         guard();
         if (inspection.kind === 'read-only') {
-            if (inspection.reason === 'inspection-failed') return await readOnly(`PDF ink inspection failed (${inspection.phase}; ${inspection.errorClass}).`, undefined, 'inspection-failed');
-            if (inspection.reason !== 'notebook-source') return await readOnly(inspection.reason === 'unsafe-policy'
-                ? 'The PDF write safety could not be established; annotation is read-only.' : `PDF ink is read-only: ${inspection.reason}.`, undefined, inspection.reason);
+            if (inspection.reason === 'inspection-failed') {
+                // Where it failed is for whoever reads the console; the person is told what it means (inkReadOnlyText.ts).
+                console.warn(`PDF ink inspection failed (${inspection.phase}; ${inspection.errorClass}).`);
+                return await readOnly(inkReadOnlyText('inspection-failed'), undefined, 'inspection-failed');
+            }
+            if (inspection.reason !== 'notebook-source') return await readOnly(inkReadOnlyText(inspection.reason), undefined, inspection.reason);
             const outerFingerprint = await chunkedBlobSha256(options.outer, guard);
             guard();
-            if (outerFingerprint !== inspection.outerFingerprint) return await readOnly('The PDF source fingerprint does not match the inspected bytes.');
+            if (outerFingerprint !== inspection.outerFingerprint) return await readOnly(inkReadOnlyText('source-changed'));
             return await readOnly('This PDF was exported from a notebook.', { notebookSource: Object.freeze({ ...inspection.notebookSource }), outerFingerprint }, 'notebook-source');
         }
         if ((inspection.kind !== 'plain' && inspection.kind !== 'native') || inspection.formatId !== NATIVE_FORMAT_ID || inspection.writeSafety?.kind !== 'safe' ||
             !memoryBlob(inspection.pristine) || !HASH.test(inspection.outerFingerprint) || !HASH.test(inspection.pristineFingerprint) ||
             (inspection.kind === 'plain' && (inspection.board !== null || inspection.media.length !== 0)) ||
             (inspection.kind === 'native' && (!memoryBlob(inspection.board) || !/^[0-9a-f]{32}$/.test(inspection.writeId)))) {
-            return await readOnly('The PDF ink source could not be safely verified.');
+            return await readOnly(inkReadOnlyText('unreadable'));
         }
         const outerHash = await chunkedBlobSha256(options.outer, guard);
         guard();
@@ -111,19 +113,19 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         guard();
         if (outerHash !== inspection.outerFingerprint || pristineHash !== inspection.pristineFingerprint ||
             (inspection.kind === 'plain' && outerHash !== pristineHash)) {
-            return await readOnly('The PDF source fingerprint does not match the inspected bytes.');
+            return await readOnly(inkReadOnlyText('source-changed'));
         }
         const media = new Map<string, string>();
         for (const entry of inspection.media) {
             const match = MEDIA.exec(entry.name);
             if (!match || entry.sha256 !== match[1] || entry.size !== null || media.has(entry.name)) {
-                return await readOnly('The PDF ink media inventory could not be verified.');
+                return await readOnly(inkReadOnlyText('mismatch'));
             }
             media.set(entry.name, entry.sha256);
         }
         if (inspection.kind === 'native') {
             try { await validateBoardWriteIdentity(inspection.board, NATIVE_FORMAT_ID, inspection.writeId, async () => guard()); }
-            catch { guard(); return await readOnly('The PDF ink board identity could not be verified.'); }
+            catch { guard(); return await readOnly(inkReadOnlyText('mismatch')); }
             guard();
         }
         const outerReason = policyReason(outer);
@@ -139,22 +141,23 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         const originalInspection = await original.request('doc.inspectInk', {}, { priority: 0, signal: lifetime });
         guard();
         if (originalInspection.kind === 'read-only' && originalInspection.reason === 'inspection-failed') {
-            return await readOnly(`Pristine PDF ink inspection failed (${originalInspection.phase}; ${originalInspection.errorClass}).`);
+            console.warn(`Pristine PDF ink inspection failed (${originalInspection.phase}; ${originalInspection.errorClass}).`);
+            return await readOnly(inkReadOnlyText('inspection-failed'));
         }
         if (originalInspection.kind !== 'plain' || originalInspection.writeSafety?.kind !== 'safe' || originalInspection.outerFingerprint !== pristineHash ||
             originalInspection.pristineFingerprint !== pristineHash) {
-            return await readOnly('The retained pristine PDF does not match the inspected source.');
+            return await readOnly(inkReadOnlyText('mismatch'));
         }
         const originalReason = policyReason(original);
         if (originalReason) return await readOnly(originalReason);
-        if (outer.info.pageCount !== original.info.pageCount) return await readOnly('The PDF ink source pages do not match the displayed PDF.');
+        if (outer.info.pageCount !== original.info.pageCount) return await readOnly(inkReadOnlyText('mismatch'));
         const pages: Readonly<PageGeometry>[] = [];
         for (let page = 0; page < original.info.pageCount; page++) {
             const visible = await outer.resolveGeometry(page, { priority: 0, signal: lifetime });
             guard();
             const pristine = await original.resolveGeometry(page, { priority: 0, signal: lifetime });
             guard();
-            if (!matchingGeometry(visible, pristine)) return await readOnly('The PDF ink source geometry does not match the displayed PDF.');
+            if (!matchingGeometry(visible, pristine)) return await readOnly(inkReadOnlyText('mismatch'));
             pages.push(Object.freeze({ ...pristine, toUserSpace: Object.freeze([...pristine.toUserSpace]) as PageGeometry['toUserSpace'] }));
         }
         const geometryEngine = pool.geometryEngine;

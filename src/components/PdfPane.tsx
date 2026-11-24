@@ -126,6 +126,16 @@ interface PdfSource {
     path: string;
 }
 
+
+/** An error's own text is shown only when it is a sentence this app wrote for the person. A worker's refusal code
+ * ("Unsigned copy unavailable: duplicate signature fields"), a pool error name or the browser's wording reached the
+ * screen as it was; it goes to the console, and the person is told what failed and what is left as it was. */
+function shownError(error: unknown, fallback: string): string {
+    const message = error instanceof Error ? error.message.trim() : '';
+    if (/^[A-Z“][^:]*[.!?…]$/.test(message) && (!(error instanceof Error) || error.name === 'Error' || error.name === 'AbortError')) return message;
+    console.error(error);
+    return fallback;
+}
 /** Original/Text borrow the App-owned contained source; Annotate borrows its
  * admitted native ink session. Metadata inspection cannot create a second reader,
  * and a dirty/rebinding document must keep its actual editing shell mounted. */
@@ -213,7 +223,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
             setPrint('ready');
         } catch (error) {
             if (printEpoch.current !== epoch) return;
-            setPrintError(error instanceof Error ? error.message : 'Could not prepare this PDF.'); setPrint('confirm');
+            setPrintError(shownError(error, 'This PDF could not be prepared for printing. Try again in a moment; nothing was changed.')); setPrint('confirm');
         } finally { if (printPending.current === epoch) printPending.current = null; }
     };
     const openPrint = async () => {
@@ -818,12 +828,12 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
             ) : (
                 <PdfTiledSurface fallback={<div className="pdf-pane-message is-waiting">Opening extracted text…</div>} sourceOnly reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
                         sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
-                        rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
+                        rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(shownError(error, 'The text of this PDF could not be opened. You can still read it in Original.'))); }}
                         onSource={setTiledSource} onCapabilities={reportTiledCapabilities} notify={tiledNotify} />
             ) : (
                 <PdfTiledSurface fallback={<div className="pdf-pane-message is-waiting">Loading PDF…</div>} reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
                         sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
-                        rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
+                        rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(shownError(error, 'The text of this PDF could not be opened. You can still read it in Original.'))); }}
                         onSource={setTiledSource} onCapabilities={reportTiledCapabilities} onPresentation={tiledPresented} notify={tiledNotify} />
             );
         } else {
@@ -895,7 +905,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                             unsignedInFlight.current = true; setUnsignedPending(true);
                             void (async () => {
                                 try { await onUnsignedPdfCopy(identity, version); }
-                                catch (error) { tiledNotify(error instanceof Error ? error.message : 'Could not create an unsigned copy.'); }
+                                catch (error) { tiledNotify(shownError(error, 'An unsigned copy of this PDF could not be made safely: it has parts this app cannot rewrite with certainty. The signed original is unchanged.')); }
                                 finally { unsignedInFlight.current = false; if (unsignedMounted.current) setUnsignedPending(false); }
                             })();
                         }}>Create unsigned copy</button>

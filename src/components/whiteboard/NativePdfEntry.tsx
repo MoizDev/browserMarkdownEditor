@@ -1,3 +1,4 @@
+import { inkRefusal, isInkRefusal } from '../../pdf/session/inkReadOnlyText';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPdfInkHost, pinPdfInkHostForSave, readPdfInkLegacyDigest, rebindPdfInkSource, validateLoadedPdfInkHost } from '../../pdf/session/inkHost';
 import { prepareOwnedPdfInk } from '../../pdf/session/ownedInkAcquisition';
@@ -31,7 +32,12 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
         [documentId, session, vaultActivation, bytesGeneration, kind, path, name]);
     const [error, setError] = useState<string | null>(null);
     const onError = useCallback((cause: unknown) => {
-        const message = cause instanceof Error ? cause.message : String(cause);
+        // A refusal is already in the person's words (pdf/session/inkReadOnlyText.ts). Anything else is an exception whose
+        // text was written for a developer ("Board session ended", "Invalid outer PDF lease"): it goes to the console, and
+        // the person is told what happened and what to do.
+        const refusal = isInkRefusal(cause);
+        if (!refusal) console.error('PDF annotations failed:', cause);
+        const message = refusal ? (cause as Error).message : 'The annotations could not be opened on this PDF. Switch to Original and back to Annotate to try again; the file has not been changed.';
         // Once the session owns a PDF source, rebind/view errors belong to
         // that mounted view; dropping it would also drop its camera and cover.
         if (getPdfInkSourceState(documentId)) { latest.current.onNotice(message); return; }
@@ -63,7 +69,7 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
                         throw new DOMException('PDF notebook handoff ended', 'AbortError');
                     }
                 }
-                throw new Error(result.reason);
+                throw inkRefusal(result.reason);
             } finally { await result.dispose(); }
         }
         return result;
@@ -81,8 +87,9 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
     useEffect(() => visible ? showLegacyLoadTarget(documentId) : undefined, [documentId, visible]);
     const phase = useSyncExternalStore(subscribeLegacyLoadPhase, () => legacyLoadPhase(documentId), () => null);
     if (error || acquired && !source) {
-        return <div role="alert">{error ?? 'The PDF ink source is unavailable.'}
-            <button type="button" onClick={props.onViewOriginal}>Back to view</button></div>;
+        return <div className="pdf-pane-message" role="alert">
+            <span>{error ?? 'The annotations could not be opened on this PDF. Switch to Original and back to Annotate to try again; the file has not been changed.'}</span>
+            <button type="button" className="pdf-pane-action" onClick={props.onViewOriginal}>Show Original</button></div>;
     }
     if (!acquired || !source) return <div role="status">{phase === 'waiting' ? 'Opening PDF annotations: waiting for another document to finish opening…'
         : 'Preparing PDF annotations…'}</div>;

@@ -71,7 +71,7 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
     };
     const release = async (source: PdfInkAcquisition) => { await source.release(); };
     const pause = () => {
-        const reason = 'The saved PDF could not be safely rebound; editing is paused.';
+        const reason = 'The annotations could not be reopened on the PDF as it was just saved, so editing is paused. Switch to Original and back to Annotate to go on.';
         publish({ source: snapshot.source, token: snapshot.token, status: 'failed', reason });
         try { options.onReadOnly(reason); } catch (failure) { report(failure); }
     };

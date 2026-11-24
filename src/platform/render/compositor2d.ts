@@ -217,7 +217,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
 
     get surfaceGeneration(): number { return this.generation; }
 
-    promoteSurface(): boolean { return this.backing?.promote() ?? true; }
+    // The floor's promotion (SurfaceBacking.promote): canvas2d is the last display a pane can fall to, so it is never refused.
+    promoteSurface(): boolean { return this.backing?.promote(true) ?? true; }
 
     attach(host: PaneSurfaceHost): void {
         this.check();

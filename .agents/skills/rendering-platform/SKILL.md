@@ -71,6 +71,10 @@ Constants are in `types.ts` (`RenderConstants`, documented per field) with value
 - Hiding zeroes the GPU canvas and stages its backing (`GpuPaneCandidate.zeroed`): shown again, the kept GPU rebuilds as
   scratch behind the 2D picture until `selectGpu` promotes it. Left 'displayed', the rebuild was charged as a second
   display, refused, and a PDF stayed on its blurred 2D picture for good after a tab switch.
+- canvas2d's own display promotion (`select2D` → `SurfaceBacking.promote(true)`) is the floor and is never refused: its canvas
+  is allocated and charged, the GPU display it replaces already zeroed, so a refusal freed nothing and ended the pane in
+  "CPU backing promotion was refused". A pool it leaves over target is pressure (`promote-floor:over-target`). No pane ever
+  ends in an error for memory a neighbour holds or for a resize: it waits, or degrades visibly.
 - **The person is told** when a pane really runs on canvas2d: `SurfaceCallbacks.onGpuUnavailable(cause)` →
   `options.onNotice('gpu-unavailable', cause)`, cause `no-webgl2 | software | unsupported | gpu-error`, text from
   `gpuUnavailableText` (`platform/renderStatus.ts`). Device causes show once per app session, `gpu-error` (the

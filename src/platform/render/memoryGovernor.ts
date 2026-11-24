@@ -477,8 +477,13 @@ export class MemoryGovernor {
     /** A detached browser canvas is working scratch until it becomes the one displayed surface.
      * Promotion keeps the SAME tokens and total charge; arena-owned GPU resources never use it.
      * The caller has already zeroed the previous displayed backing in the atomic canvas swap.
+     * `floor`: canvas2d's own display, the last rung of the presentation ladder. Its canvas is allocated and its bytes are charged
+     * already, and the GPU display it replaces is zeroed, so a refusal frees nothing and leaves the pane with no display: it threw
+     * "CPU backing promotion was refused" and the pane ended in an error (measured: 1 in 6 resizes of a board, 2 in 7 after a copy,
+     * and both read-only neighbours of a copied middle pane of three). It is granted; a pool it leaves over target is pressure,
+     * which trims and steps quality like any other, and the pane's next size follows its grant.
      */
-    promoteCanvasBacking(leases: readonly ByteLease[], target: MemoryCacheHandle): boolean {
+    promoteCanvasBacking(leases: readonly ByteLease[], target: MemoryCacheHandle, options?: { readonly floor?: boolean }): boolean {
         const destination = this.cacheHandles.get(target);
         if (!destination || destination.registration.pool !== 'gpu' || destination.registration.kind !== 'surface') {
             throw new MemoryAdmissionError('invalid-input');
@@ -506,8 +511,8 @@ export class MemoryGovernor {
         const bytes = records.reduce((sum, record) => sum + record.bytes, 0);
         const displayed = [...this.caches.values()].filter(cache => cache.registration.paneId === paneId &&
             cache.registration.kind === 'surface').reduce((sum, cache) => sum + cache.bytes, 0);
-        if (!pane?.visible || !grant || destination.activity.hiddenAt !== null || this.charged.gpu > this.target.gpu ||
-            displayed + bytes > grant.pixelGrant * POLICY.surfaceReserveBytesPerPixel) return false;
+        if (!options?.floor && (!pane?.visible || !grant || destination.activity.hiddenAt !== null || this.charged.gpu > this.target.gpu ||
+            displayed + bytes > grant.pixelGrant * POLICY.surfaceReserveBytesPerPixel)) return false;
         for (const record of records) {
             const source = record.cache;
             source.bytes -= record.bytes;
@@ -517,6 +522,10 @@ export class MemoryGovernor {
             record.cache = destination;
             this.bumpCapacity();
             if (source.closed && !source.leaseCount) this.caches.delete(source.registration.id);
+        }
+        if (options?.floor && this.charged.gpu > this.target.gpu) {
+            auditCount('governor', 'promote-floor:over-target', 1, { bytes: this.charged.gpu - this.target.gpu });
+            this.refuseReservation('gpu');
         }
         return true;
     }

@@ -110,11 +110,12 @@ export class SurfaceBacking implements MemoryAllocator {
         this.displayed = false;
     }
 
-    /** Called only after the selected old canvas has released its actual backing. */
-    promote(): boolean {
+    /** Called only after the selected old canvas has released its actual backing. `floor`: canvas2d's own display, which the
+     * governor never refuses (MemoryGovernor.promoteCanvasBacking). */
+    promote(floor = false): boolean {
         if (this.closed) return false;
         if (this.displayed) return true;
-        if (!this.options.governor.promoteCanvasBacking([...this.leases], this.display)) return false;
+        if (!this.options.governor.promoteCanvasBacking([...this.leases], this.display, { floor })) return false;
         this.displayed = true;
         return true;
     }

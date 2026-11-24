@@ -962,7 +962,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         memoryGate.refused();
                         allocatorHost!.demandChanged?.();
                         denied = true;
-                        if (frame.openTile && deniedDirectSegments === null) { deniedDirectSegments = segments; allocatorHost!.invalidate('board-density-demand-ready'); }
+                        // A frame that can be tiled draws in tiles instead (dense mode): the whole-frame estimate is not waited for. Parked,
+                        // its wait was for a size no pool can hold (measured: 352 MB, 1.39 GB and 2.04 GB on the dense fixtures), and it
+                        // latched awaitCpu, so the board's later refusals registered no wait at all.
+                        if (frame.openTile && deniedDirectSegments === null) { deniedDirectSegments = segments; allocatorHost!.invalidate('board-density-demand-ready'); return; }
                         awaitCpu(bytes);
                         return;
                     }

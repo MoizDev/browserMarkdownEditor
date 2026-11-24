@@ -26,6 +26,7 @@ import { describeReadError } from './readErrors';
 import type { FlushTab, IndexGraphRef, RecoveryEvent, SetLayout, SetTabs } from './types';
 import type { Notify } from './useAppDialogs';
 import { loadChunk } from '../platform/chunkLoad';
+import { pdfTurnSettled } from '../utils/pdfTurnHold';
 
 /** The App-scope values `useRenameMove` reads, named as App names them. */
 export interface UseRenameMoveDeps {
@@ -318,6 +319,15 @@ export function useRenameMove(deps: UseRenameMoveDeps) {
 
   // Both tracked from the first FS call to the end of retargetTabs — see
   // vaultMovesRef for what the restore pass waits on and why.
+  // A PDF whose pages are still being turned is renamed or moved once the turn's write has landed: the write goes to the
+  // entry the turn began on, whatever has happened to that name since (utils/pdfTurnHold.ts pdfTurnSettled).
+  const pdfTurnsSettled = useCallback(async (paths: readonly string[]) => {
+    for (const path of paths) {
+      const tab = tabsRef.current.find(t => t.file.path === path);
+      if (tab) await pdfTurnSettled(tab.id);
+    }
+  }, [tabsRef]);
+
   const handleRenameFile = useCallback((node: FileTreeNode, newName: string) => trackVaultMove(async () => {
     if (node.kind === 'file' && classifyRequestedKind(node.name) !== classifyRequestedKind(newName)) {
       const tab = tabsRef.current.find(t => t.file.path === node.path);
@@ -331,6 +341,7 @@ export function useRenameMove(deps: UseRenameMoveDeps) {
     const newPath = joinVaultPath(parentVaultPath(node.path), newName);
     const sources = node.kind === 'directory' ? collectFiles(node.children).map(f => f.path) : [node.path];
     const destinations = sources.map(path => node.kind === 'directory' ? newPath + path.slice(node.path.length) : newPath).filter(path => path !== node.path);
+    await pdfTurnsSettled(sources);
     if (!await preparePdfDeparture(destinations)) return false;
     const cancelIndexMoves = indexGraphRef.noteMoves([{ from: node.path, to: newPath }]);
     let success: boolean;
@@ -342,7 +353,7 @@ export function useRenameMove(deps: UseRenameMoveDeps) {
     retargetExpanded(node, newPath);
     await retargetTabs(node, newPath);
     return true;
-  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove, flushTab, requeueAssetsAffected, preparePdfDeparture, indexGraphRef, diskStateRef, flushChainsRef, tabsRef]);
+  }), [renameFile, retargetTabs, retargetExpanded, trackVaultMove, flushTab, requeueAssetsAffected, preparePdfDeparture, pdfTurnsSettled, indexGraphRef, diskStateRef, flushChainsRef, tabsRef]);
 
   // Wrap moveFile so a moved document's tab tracks its new path and handle —
   // including every document inside a moved FOLDER.
@@ -350,6 +361,7 @@ export function useRenameMove(deps: UseRenameMoveDeps) {
     const newPath = joinVaultPath(targetPath, sourceNode.name);
     const sources = sourceNode.kind === 'directory' ? collectFiles(sourceNode.children).map(f => f.path) : [sourceNode.path];
     const destinations = sources.map(path => sourceNode.kind === 'directory' ? newPath + path.slice(sourceNode.path.length) : newPath).filter(path => path !== sourceNode.path);
+    await pdfTurnsSettled(sources);
     if (!await preparePdfDeparture(destinations)) return false;
     const cancelIndexMoves = indexGraphRef.noteMoves([{ from: sourceNode.path, to: newPath }]);
     let success: boolean;
@@ -363,7 +375,7 @@ export function useRenameMove(deps: UseRenameMoveDeps) {
       await retargetTabs(sourceNode, newPath);
     }
     return success;
-  }), [moveFile, retargetTabs, retargetExpanded, trackVaultMove, requeueAssetsAffected, preparePdfDeparture, indexGraphRef]);
+  }), [moveFile, retargetTabs, retargetExpanded, trackVaultMove, requeueAssetsAffected, preparePdfDeparture, pdfTurnsSettled, indexGraphRef]);
 
   return { retargetPaths, retargetExpandedPaths, handleRenameFile, handleMoveFile };
 }

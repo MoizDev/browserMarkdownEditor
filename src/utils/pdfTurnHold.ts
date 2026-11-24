@@ -49,6 +49,19 @@ export function pdfTurnQueued(documentId: string): boolean { return queued.has(d
 
 export function pdfTurnHeld(documentId: string): boolean { return held.has(documentId); }
 
+/**
+ * Resolves once no turn is held for the document (at once when none is). Whatever takes a PDF's tab away or moves its
+ * file waits here first: the turn's write lands whether or not its tab is still open, and a tab reopened meanwhile has a
+ * new id and no hold — its board opened on the unturned pages, its stroke saved, and the turn then landed over that save
+ * with no notice and no copy (review run, close() held 8 s: 2 strokes in the file, then 1).
+ */
+export function pdfTurnSettled(documentId: string): Promise<void> {
+    if (!held.has(documentId)) return Promise.resolve();
+    return new Promise(resolve => {
+        const stop = subscribePdfTurnHolds(() => { if (!held.has(documentId)) { stop(); resolve(); } });
+    });
+}
+
 export function subscribePdfTurnHolds(listener: () => void): () => void {
     listeners.add(listener);
     return () => { listeners.delete(listener); };

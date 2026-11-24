@@ -385,6 +385,7 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
   useEffect(() => { retryUnreadTabRef.current = retryUnreadTab; }, [retryUnreadTab, retryUnreadTabRef]);
 
   const pendingPdfMode = useRef(new Set<string>());
+  const changeTabModeRef = useRef<(path: string | null, requestedMode?: EditorMode) => void>(() => {});
   const changeTabMode = useCallback((path: string | null, requestedMode?: EditorMode) => {
     if (!path) return;
     const tab = tabsRef.current.find(t => t.file.path === path);
@@ -395,9 +396,16 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     if (tab.representation.loadedKind === 'pdf' && pdfTurnHeld(tab.id)) {
       if (!requestedMode && cancelAfterPdfTurn(tab.id)) return;
       if (mode === 'edit') {
-        afterPdfTurn(tab.id, () => setTabs(prev => prev.map(t => t.id === tab.id && t.file.path === path && t.mode === 'read' && canChangeTabMode(t) ? { ...t, mode: 'edit' } : t)));
+        // Made as any other switch to Annotate is, once the turn is released: the document is found again by id (it may
+        // have been renamed meanwhile), and a tab showing Text goes through Original first, as the direct switch does.
+        afterPdfTurn(tab.id, () => {
+          const now = tabsRef.current.find(t => t.id === tab.id);
+          if (now && now.mode === 'read') changeTabModeRef.current(now.file.path, 'edit');
+        });
         return;
       }
+      // An explicit request for reading (the agent's, a command's) withdraws a waiting Annotate switch as the toggle does.
+      cancelAfterPdfTurn(tab.id);
     }
     if (mode === tab.mode) return;
     const view = getView(path);
@@ -429,6 +437,7 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
         ? { ...t, mode }
         : t));
   }, [flushTab, documentBuffers, documentSessions, currentVaultIdRef, notifyRef, readerEpochRef, setTabs, tabsRef]);
+  useEffect(() => { changeTabModeRef.current = changeTabMode; }, [changeTabMode]);
   const toggleTabMode = useCallback((path: string | null) => changeTabMode(path), [changeTabMode]);
 
   return {

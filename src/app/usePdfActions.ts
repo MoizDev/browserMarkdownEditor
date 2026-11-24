@@ -13,7 +13,7 @@ import { PdfBuildRefused, pdfSnapshotRefusal } from '../utils/pdfBuildRefusal';
 import { describeReadError } from './readErrors';
 import { hasHostedNativeOwner, RECOVERY_SESSION_BINDING } from './nativeOwners';
 import { loadChunk } from '../platform/chunkLoad';
-import { holdPdfTurn, pdfTurnHeld } from '../utils/pdfTurnHold';
+import { cancelAfterPdfTurn, holdPdfTurn, pdfTurnHeld, pdfTurnSettled } from '../utils/pdfTurnHold';
 
 /** Everything the PDF actions read from App. Refs are App's own `useRef`s. */
 export interface UsePdfActionsDeps {
@@ -133,11 +133,21 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
   const pdfDeparturesRef = useRef(new Set<string>());
   const preparePdfDeparture = useCallback(async (paths: readonly string[], trashOwned = false): Promise<boolean> => {
     for (const path of paths) {
-      const tab = tabsRef.current.find(t => t.file.path === path);
-      if (tab?.representation.loadedKind !== 'pdf') continue;
-      if (pdfDeparturesRef.current.has(tab.id)) return false;
-      pdfDeparturesRef.current.add(tab.id);
+      const opened = tabsRef.current.find(t => t.file.path === path);
+      if (opened?.representation.loadedKind !== 'pdf') continue;
+      if (pdfDeparturesRef.current.has(opened.id)) return false;
+      pdfDeparturesRef.current.add(opened.id);
+      let tab = opened;
       try {
+        // A turn still being written is waited out, as a pending ink save is (utils/pdfTurnHold.ts pdfTurnSettled); an
+        // Annotate switch that waited for it is not made on a document that is leaving.
+        if (pdfTurnHeld(opened.id)) {
+          cancelAfterPdfTurn(opened.id);
+          await pdfTurnSettled(opened.id);
+          const settled = tabsRef.current.find(t => t.id === opened.id);
+          if (!settled || settled.file.path !== path || settled.representation.loadedKind !== 'pdf') return false;
+          tab = settled;
+        }
         await drain(tab.id);
         const revision = documentBuffers.revisionForDocument(tab.id)?.revision;
         const data = documentBuffers.snapshotForDocument(tab.id)?.data;
@@ -154,7 +164,7 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
           return false;
         }
       } catch (error) { notifyRef.current(`Could not finish PDF annotations: ${describeReadError(error)}`); return false; }
-      finally { pdfDeparturesRef.current.delete(tab.id); }
+      finally { pdfDeparturesRef.current.delete(opened.id); }
     }
     return true;
   }, [documentBuffers, flushTab, notifyRef, tabsRef]);
@@ -163,6 +173,11 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
   // A refused PDF revision stays in its current vault instead of being dropped
   // by the workspace reset before an asynchronous refusal can reach it.
   const canLeavePdfVault = useCallback(() => {
+    // Synchronous, so it cannot wait for a turn: the turn's write would land in the vault being left.
+    if (tabsRef.current.some(t => t.representation.loadedKind === 'pdf' && pdfTurnHeld(t.id))) {
+      notifyRef.current('A PDF’s pages are still being turned. Keep this vault open until that has finished.');
+      return false;
+    }
     const tab = tabsRef.current.find(t => t.representation.loadedKind === 'pdf' &&
       (t.dirty || documentBuffers.isDirty(t.id) || flushingRef.current.has(t.id) || getView(t.file.path)?.hasPendingEdits?.()));
     if (!tab) return true;

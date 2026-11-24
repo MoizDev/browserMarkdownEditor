@@ -152,6 +152,21 @@ export class SessionDenseRasters {
         }
         return removed;
     }
+    /** Retires every entry charged to `owner` (its bitmap or its metadata), borrowed or not, and returns their bytes. A borrowed
+     * entry is no longer served and is freed when its last borrow ends. A pane that hides gives back what it charged here: the
+     * entries outlive the pane, but their leases are its cache's, and a hidden pane's cache is charged with nothing (measured: 3-7
+     * of these per hidden dense board, 32.1 of the 33.6 MB CPU pool over seven hidden tabs, and every board shown after them
+     * waited for memory for good). */
+    releaseCharged(owner: MemoryAllocator): number {
+        let removed = 0;
+        for (const entry of [...this.lru.keys()]) {
+            if (entry.input.owner !== owner && entry.metadataOwner !== owner) continue;
+            removed += entry.metadata.bytes + entry.input.bytesLease.bytes;
+            this.hierarchy.retire(entry.interval, entry.address);
+        }
+        if (this.allocator === owner) this.allocator = null;
+        return removed;
+    }
     memory(): Readonly<{ live: number; retiring: number }> { return { live: this.liveBytes, retiring: this.retiringBytes }; }
     get memoryBytes(): number { return this.liveBytes + this.retiringBytes; }
     clear(): void { this.hierarchy.clear(); this.retireTickets(); this.intervals.clear(); this.currentRevision = null; }

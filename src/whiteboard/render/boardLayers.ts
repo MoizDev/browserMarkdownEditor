@@ -828,7 +828,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             const gpuRoute = !!allocatorHost?.device();
             if (gpuRoute !== onDeviceRoute) {
                 onDeviceRoute = gpuRoute; estimate = null; denied = false; deniedDirectSegments = null; density.reset();
-                if (gpuRoute) for (const old of [...reservations.keys()]) releaseFrame(old);
+                // The device draws none of the dense session tiles the first CPU picture charged to this pane: kept, they sat in its
+                // grant pinned by the view and unreclaimable (3-7 MB a dense board on WebGL2).
+                if (gpuRoute) { for (const old of [...reservations.keys()]) releaseFrame(old); dense?.releaseCharged(); }
             }
             if (gpuRoute) {
                 if (useDense) {

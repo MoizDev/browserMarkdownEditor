@@ -169,7 +169,11 @@ draws differently because a GPU exists.
   0.8 inside the device ceiling; everything a pane holds above its floor is reclaimable, either admitted as `prefetch` or given
   back by its owner before its own refusal counts as pressure (`quiet`, shed, then a normal ask). Bytes that are neither are how
   a pool fills with nothing that can give way, and the next floor request then waits for good. Check it at rest:
-  `__bmeRenderAudit.caches()` — no cache holds a waiter, and each pane's charge is within its `panes[].cpuNeedBytes`.
+  `__bmeRenderAudit.caches()` — `hiddenPanes` is `{ cpu: 0, gpu: 0 }` (a hidden pane's charge is outside every floor, see
+  below) and each visible pane's charge is within its `panes[].cpuNeedBytes`. A waiter at rest is not itself a fault:
+  `caches[].waiting` gives each one's size (null: any release wakes it; caches holding no bytes are not listed). Known: a
+  canvas2d board whose direct-frame estimate exceeds the whole pool (refused without pressure, it draws dense tiles instead)
+  leaves a sized wait it can never meet (measured 2.04 GB, a 3 MB `.tldraw`), and its `awaitCpu` latch then parks no later wait.
   A floor that grows with a request (a whole-frame estimate) is re-collected (`refreshDemandNow`) BEFORE that reserve: asked
   against the old grant, the refusal is pool pressure and steps quality (S2000 canvas2d: degraded for good, a raise/drop every
   5 s). `caches().recovery` and the `governor:degrade:*` counters say why a quality has not stepped back up.
@@ -180,10 +184,17 @@ draws differently because a GPU exists.
   gesture. `trouble()` gives a layer `'slow-gpu'` (timing, never memory: shed per-frame work) or `'pressure'`.
 - A cache filling its budget is not a leak: it must plateau under the target and give back everything above the view
   and its ring on a forced trim (`__bmeRenderAudit.trim('gpu')`).
-- **A hidden pane holds no GPU working memory**: hide releases every texture, target and buffer in the same task;
-  only the broker's context/program reserve survives. Session mirrors (`mirrorSet.ts`) belong to the App document
-  session, not the pane; unmount returns a borrow. Report worker WASM estimates with `reportWorkerMemory` and
-  `releaseWorkerMemory` on stop/crash.
+- **A hidden pane holds no working memory, in either pool.** Hide releases every texture, target and buffer in the same task
+  (each layer's `releaseGpu('hidden')`, which also gives back the CPU it charged: the board's dense session tiles), then the
+  governor asks every other cache of the pane for all it holds (`releaseHiddenPane`, on the pane's visible→hidden demand; a
+  layer's `cpuEvict` on a hidden pane keeps nothing). Kept: the broker's context/program reserve and the session mirrors
+  (`HIDDEN_KEPT_KINDS`; mirrors belong to the App document session and have their own hidden budget; unmount returns a borrow).
+  A hidden pane's caches are the first any trim takes (`hidden-pane` class). Why: the CPU target counts visible floors only,
+  so whatever a hidden pane keeps is room no floor can get (seven hidden dense tabs held 32.1 of 33.6 MB, and every board shown
+  after them waited for memory for good). Counted `governor:hidden-release:<pool>` (bytes given back) and
+  `governor:hidden-kept:cpu:<cache>` (still held right after the ask; a frame a draw borrows goes a moment later). Check:
+  `caches().hiddenPanes` is `{ cpu: 0, gpu: 0 }` at rest (GPU once its retirement completes).
+- Report worker WASM estimates with `reportWorkerMemory` and `releaseWorkerMemory` on stop/crash.
 
 ## WebGL2 frame-path rules
 

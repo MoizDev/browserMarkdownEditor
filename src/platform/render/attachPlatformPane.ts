@@ -218,10 +218,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working', liveInput: definition.liveInput === true, foreground: definition.foregroundCpu === true,
             memory: () => ({ live: current()?.memory().cpuBytes ?? 0, retiring: 0 }),
             // The layer names what it can rebuild; without the hook nothing in this cache is reclaimable, and the bytes its
-            // drop measures are the bytes freed.
+            // drop measures are the bytes freed. A hidden pane draws no frame, so this frame's touch protects nothing of it: gated on
+            // it, the governor's ask at hide (releaseHiddenPane) came in the frame the pane last presented and was refused.
             evict: bytes => {
                 const layer = current();
-                if (!layer || touchedThisFrame()) return 0;
+                if (!layer || (visible && touchedThisFrame())) return 0;
                 const before = layer.memory().cpuBytes;
                 layerSet.definition(layer)?.cpuEvict?.(layer, bytes);
                 return Math.max(0, before - layer.memory().cpuBytes);

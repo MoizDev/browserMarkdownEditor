@@ -7,7 +7,7 @@ import { MIN_SURFACE_QUALITY } from './surfaceMetrics';
 import type { LayerTrouble, RenderToken } from './types';
 
 export type MemoryPool = 'gpu' | 'cpu';
-export type MemoryClass = 'hidden-mirror' | 'obsolete-arrival' | 'offscreen-high' |
+export type MemoryClass = 'hidden-pane' | 'hidden-mirror' | 'obsolete-arrival' | 'offscreen-high' |
     'redundant-level' | 'prefetch' | 'scene-cache' | 'critical';
 export type MemoryKind = 'working' | 'canvas-working' | 'surface-scratch' | 'program' | 'context' | 'surface' | 'mirror' | 'mirror-retiring' | 'capture' |
     /** A live gesture's working set (wet ink). Bounded by the pool, outside its pane's cache grant: it is released only
@@ -30,6 +30,9 @@ export interface ReserveOptions {
      * without it; only that refusal is pressure. */
     readonly quiet?: boolean;
 }
+/** What a hidden pane may keep: the broker's context and program reserves (a return reuses them), and session mirrors, which belong
+ * to the document session and have their own hidden budget (hiddenMirrorLimit). Everything else a pane holds is asked back at hide. */
+const HIDDEN_KEPT_KINDS: ReadonlySet<string> = new Set(['context', 'program', 'mirror', 'mirror-retiring']);
 /** The kinds a pane's layer-cache share never counts: each is limited apart (paneUsed). */
 const PANE_APART_KINDS: ReadonlySet<string> = new Set(['surface', 'program', 'context', 'live-input', 'canvas-working', 'surface-scratch']);
 /** The exact token object crosses the arena boundary; never reconstruct a ByteLease by id. */
@@ -402,6 +405,7 @@ export class MemoryGovernor {
         // The scheduler refreshes every frame (snapshotScene), so demand that did not change re-plans nothing: the grants
         // move only with the demand, with degradation and recovery (which plan themselves) and with context/program charges.
         const changed = this.panes.length !== panes.length || panes.some((pane, i) => !samePaneDemand(pane, this.panes[i]));
+        const hiding = changed ? panes.filter(pane => !pane.visible && this.paneById.get(pane.paneId)?.visible).map(pane => pane.paneId) : [];
         this.panes = panes.map(pane => ({ ...pane }));
         this.paneById.clear();
         for (const pane of this.panes) this.paneById.set(pane.paneId, pane);
@@ -429,6 +433,7 @@ export class MemoryGovernor {
             this.trimmedAt.cpu = -1;
             this.replan();
         }
+        for (const paneId of hiding) this.releaseHiddenPane(paneId);
         this.trimHiddenMirrors();
         for (const pool of ['gpu', 'cpu'] as const) {
             if (this.charged[pool] > this.target[pool]) this.pressureTrim(pool, this.target[pool]);
@@ -702,16 +707,19 @@ export class MemoryGovernor {
 
     /** Render audit only: every cache's charge with its pane, and each pane's grant. */
     auditCaches(): { caches: { id: string; pane: string | null; pool: MemoryPool; kind: MemoryKind; bytes: number; hidden: boolean;
-        waiters: number; refused: number | null }[];
+        waiters: number; waiting: (number | null)[]; refused: number | null }[];
         grants: { pane: string; cpuBytes: number; gpuCacheBytes: number }[]; panes: readonly PaneMemoryDemand[];
-        target: { gpu: number; cpu: number }; recovery: Record<string, unknown> } {
+        target: { gpu: number; cpu: number }; hiddenPanes: { gpu: number; cpu: number }; recovery: Record<string, unknown> } {
         return {
             caches: [...this.caches.values()].filter(cache => cache.bytes > 0).map(cache => ({ id: cache.registration.id,
                 pane: cache.registration.paneId ?? null, pool: cache.registration.pool, kind: cache.registration.kind,
                 bytes: cache.bytes, hidden: cache.activity.hiddenAt !== null,
-                waiters: this.capacityWaiters.get(cache)?.size ?? 0, refused: cache.refusal?.bytes ?? null })),
+                waiters: this.capacityWaiters.get(cache)?.size ?? 0,
+                // Each waiter's size (null: any release wakes it), so a kit can tell a sized wait from a parked unsized one.
+                waiting: [...(this.capacityWaiters.get(cache)?.values() ?? [])].map(bytes => bytes ?? null),
+                refused: cache.refusal?.bytes ?? null })),
             grants: [...this.grants].map(([pane, grant]) => ({ pane, cpuBytes: grant.cpuBytes, gpuCacheBytes: grant.gpuCacheBytes })),
-            panes: this.panes, target: { ...this.target },
+            panes: this.panes, target: { ...this.target }, hiddenPanes: this.hiddenPaneBytes(),
             // Why a lowered quality has or has not stepped back up: every input advance() reads for the raise.
             recovery: { now: this.now, quality: this.qualityLimit, ceilings: Object.fromEntries(this.paneCeiling), charged: { ...this.charged },
                 cool: this.cool(), belowRecoverySince: this.belowRecoverySince, delay: this.recoveryDelay(), failedQuality: this.failedQuality,
@@ -1107,6 +1115,44 @@ export class MemoryGovernor {
 
     private hiddenMirrorLimit(): number { return Math.min(POLICY.hiddenCpuMirrorLimitBytes, this.ceilings.cpuRasterBytes); }
 
+    /** A cache of a pane that is not on screen, other than what such a pane may keep (HIDDEN_KEPT_KINDS). The pane's demand says
+     * whether it is visible: the platform's own per-pane caches (2D canvases, surfaces, GPU services) carry no hiddenAt of their own. */
+    private hiddenPaneCache(cache: CacheRecord): boolean {
+        const { paneId, kind } = cache.registration;
+        if (paneId === undefined || HIDDEN_KEPT_KINDS.has(kind)) return false;
+        const pane = this.paneById.get(paneId);
+        return pane ? !pane.visible : cache.activity.hiddenAt !== null;
+    }
+
+    /** A pane that leaves the screen gives back everything it holds, at once, in both pools: the platform hides its layers first
+     * (each releases its GPU work and, the board, the session tiles it charged), then every cache of the pane is asked for all it has.
+     * A hidden pane draws nothing, so nothing it holds is worth a visible pane's floor. Before, hidden boards kept their session tiles:
+     * the CPU target counts only visible floors, the owners refused to evict tiles their (hidden) view could draw, and seven hidden tabs
+     * held 32.1 of the 33.6 MB CPU pool, so every board shown after them stayed on 'Waiting for memory' at quality 0.5 for good.
+     * Counted: what was given back (`hidden-release:<pool>`), and what a CPU cache still holds right after the ask
+     * (`hidden-kept:cpu:<id>`): a frame a draw still borrows goes a moment later (measured: a PDF's ink layer kept 128 KiB at hide
+     * and held 0 once its frame retired), so the invariant is checked at rest, in caches().hiddenPanes, not by this count. */
+    private releaseHiddenPane(paneId: string): void {
+        if (this.trimming) return;
+        this.trimming = true;
+        try {
+            for (const cache of [...this.caches.values()]) {
+                if (cache.registration.paneId !== paneId || cache.bytes <= 0 || !this.hiddenPaneCache(cache)) continue;
+                const { pool, id } = cache.registration;
+                const freed = this.evictCache(cache, cache.bytes);
+                if (freed > 0) auditCount('governor', `hidden-release:${pool}`, 1, { bytes: freed });
+                if (pool === 'cpu' && cache.bytes > 0) auditCount('governor', `hidden-kept:cpu:${id}`, 1, { bytes: cache.bytes });
+            }
+        } finally { this.trimming = false; }
+    }
+
+    /** Render audit only: what panes that are not on screen still hold, per pool (see releaseHiddenPane). */
+    private hiddenPaneBytes(): { gpu: number; cpu: number } {
+        const bytes = { gpu: 0, cpu: 0 };
+        for (const cache of this.caches.values()) if (cache.bytes > 0 && this.hiddenPaneCache(cache)) bytes[cache.registration.pool] += cache.bytes;
+        return bytes;
+    }
+
     private trimHiddenMirrors(incoming = 0): void {
         if (this.trimming) return;
         const candidates = [...this.caches.values()].filter(cache => cache.registration.kind === 'mirror' &&
@@ -1150,10 +1196,12 @@ export class MemoryGovernor {
      * every candidate has been asked: 0 when the trim met its target, or when another trim is already running. */
     private trimPool(pool: MemoryPool, target: number): number {
         if (this.trimming) return 0;
-        const order: readonly MemoryClass[] = ['hidden-mirror', 'obsolete-arrival', 'offscreen-high',
+        // A hidden pane's caches go first: it draws nothing (releaseHiddenPane asked them for everything at hide; what is left, or was
+        // charged since, is taken before any visible pane's residency).
+        const order: readonly MemoryClass[] = ['hidden-pane', 'hidden-mirror', 'obsolete-arrival', 'offscreen-high',
             'redundant-level', 'prefetch', 'scene-cache', 'critical'];
         const evictionClass = (cache: CacheRecord): MemoryClass => cache.registration.kind === 'mirror' && cache.activity.hiddenAt !== null ?
-            'hidden-mirror' : cache.registration.class;
+            'hidden-mirror' : this.hiddenPaneCache(cache) ? 'hidden-pane' : cache.registration.class;
         const candidates = [...this.caches.values()].filter(cache => cache.registration.pool === pool &&
             evictionClass(cache) !== 'critical' && cache.bytes > 0 && cache.registration.kind !== 'live-input' &&
             (evictionClass(cache) !== 'hidden-mirror' || cache.activity.hiddenAt !== null) &&

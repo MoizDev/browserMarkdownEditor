@@ -182,6 +182,10 @@ refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF wri
   session's idle geometry (`services.ts` `admit`). The plan reports them in `memory()`, never in its floor, and sheds them before
   any of its own reservations is refused as pressure (`reserveNeed`, the tile job's `shed`). Charged twice and as pressure, a
   454-stroke notebook held 29 MB of the 33.6 MB pool in them, every tile run was refused and it waited for memory for good.
+- **The dense session tiles (`sessionDenseRasters.ts`) outlive the pane but are charged to the pane that rastered them**
+  (`bindMemory`). The dense adapter gives exactly those back (`releaseCharged`, counted `board-dense:charged-release`) at hide,
+  on dispose and when the board moves to the device route, which draws none of them: kept, a hidden board's tiles sat outside
+  every visible floor and a WebGL2 board's sat pinned by its view, never reclaimable. A return re-rasters its view's tiles.
 - **Unsized waits still exist** (`grep -rn whenAvailable src/whiteboard`): `boardLayers.ts` (per-pool refusal waiter),
   `densePlan.ts` (four CPU sites), `streamingDenseTile.ts`, `analyticInkBatch.ts` and `gpu/imageTextures.ts` (both
   pools), `frameAssembler.ts`, and `gpu/tileStore.ts`. Sizing one needs its thrower to report the bytes refused.

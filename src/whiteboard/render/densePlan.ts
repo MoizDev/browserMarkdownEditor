@@ -167,8 +167,20 @@ const supportsLive = (plan: Plan, live?: ReadonlySet<string>): boolean => {
 export function createDensePaintAdapter(resources: PaintLayerResources, host: LayerHost, report: (error: unknown) => void,
     gate: MemoryRetryGate = new MemoryRetryGate()) {
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false, serial = 0;
-    // The view last prepared: what a reclaim must keep is what this view can draw.
+    // The view last prepared: what a reclaim must keep is what this view can draw. Null while the pane is hidden: it draws nothing.
     let lastView: ViewState | null = null;
+    // The session caches this adapter charges its tiles to (bindMemory), so a hide can give back exactly those charges.
+    const bound = new Set<SessionDenseRasters>();
+    const bind = (cache: SessionDenseRasters): void => { cache.bindMemory(host.allocator.cpu); bound.add(cache); };
+    /** Gives back every session tile charged to this pane, whatever view it serves. The tiles outlive the pane, but their leases are
+     * this pane's cache's: kept while hidden, seven hidden tabs held 32.1 of the 33.6 MB CPU pool and no board shown after them drew. */
+    const releaseCharged = (): number => {
+        let freed = 0;
+        for (const cache of bound) freed += cache.releaseCharged(host.allocator.cpu);
+        bound.clear();
+        if (freed > 0) auditCount('board-dense', 'charged-release', 1, { bytes: freed });
+        return freed;
+    };
     const sessionOf = () => {
         const frame = resources.frames.readFrame();
         return frame?.sessionRasters && frame.rasterVariant ? { cache: frame.sessionRasters, variant: frame.rasterVariant } : null;
@@ -398,7 +410,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             if (!cache || !variant || !root || !cache.advanceRevision(p.source.sceneRevision, p.source.regionChangesSince)) {
                 p.phase = 'tiles'; return;
             }
-            cache.bindMemory(host.allocator.cpu);
+            bind(cache);
             const grid = summaryGrid(p);
             const floor = rootFloorLevel(root, chooseTileScale(p.scale));
             // The view's ancestors, coarse first: standins for a later zoom-out. Only an idle pass builds them (after the
@@ -416,7 +428,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             if (!p.job) {
                 const target = p.summaries[p.summaryIndex];
                 if (!cache || !variant) { p.summaryIndex = p.summaries.length; break; }
-                cache.bindMemory(host.allocator.cpu);
+                bind(cache);
                 const interval = summaryInterval(variant, target.band);
                 const held = cache.borrowAncestor(interval, target.address);
                 const current = !!held && sameAddress(held.address, target.address);
@@ -471,7 +483,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             && p.source.sensitiveNodes !== undefined && !reaches(p.source.sensitiveNodes) && !(p.live && reaches(p.live));
         const interval = cacheable ? bandInterval(variant!, band) : '';
         if (cacheable && !p.job && !p.cache) {
-            cache.bindMemory(host.allocator.cpu);
+            bind(cache);
             if (cache.advanceRevision(p.source.sceneRevision, p.source.regionChangesSince)) {
                 const own = cache.borrowAncestor(interval, address);
                 if (own && sameAddress(own.address, address)) {
@@ -598,6 +610,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         cpuWorkingSet(nativePathUpperBound?: number): number;
         /** Frees up to `bytes` of session bitmaps the last view cannot draw; a borrowed bitmap is never freed. */
         reclaim(bytes: number): void;
+        /** Gives back every session tile charged to this pane (see releaseCharged), for a route that no longer draws them. */
+        releaseCharged(): number;
         /** On return from a hidden pane: drops the bitmaps the view cannot draw before any plan is made. False when
          * the frame has no session to drop from yet, so the caller asks again on a later prepare. */
         dropUnused(view: ViewState): boolean;
@@ -754,8 +768,13 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         release(reason: GpuReleaseReason) {
             if (reason === 'context-lost') return;
             clearRetry(); drop(staged); drop(ready); staged = ready = null; lastFrame = -1; denied = false;
+            // A hidden pane holds nothing: its plans are dropped above, and the session tiles it charged go with them. A return
+            // re-rasters its view (the session's scene and geometry survive, so that is the tiles alone).
+            if (reason === 'hidden') { lastView = null; releaseCharged(); }
         },
         reclaim(bytes) {
+            // Hidden (no view since the hide): nothing is pinned, so everything this pane charged goes.
+            if (!disposed && lastView === null) { if (releaseCharged() < bytes) shed(); return; }
             const view = lastView, session = !disposed && view ? sessionOf() : null;
             const freed = session && view ? session.cache.evictUnused(usableBitmaps(session.variant, pinnedRects(view)), bytes) : 0;
             if (freed > 0) host.demandChanged?.();
@@ -770,8 +789,10 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             if (session.cache.evictUnused(usableBitmaps(session.variant, pinnedRects(view)), Number.MAX_SAFE_INTEGER) > 0) host.demandChanged?.();
             return true;
         },
+        releaseCharged: () => disposed ? 0 : releaseCharged(),
         gaveUp(frame: PaintSource): boolean { return !disposed && failureFrame === frame && failures >= MAX_TILE_FAILURES; },
-        dispose() { if (!disposed) { disposed = true; clearRetry(); drop(staged); drop(ready); staged = ready = null; } },
+        // Disposed, the pane's cache closes: tiles left charged to it would stay on the books of a pane that is gone.
+        dispose() { if (!disposed) { disposed = true; clearRetry(); drop(staged); drop(ready); staged = ready = null; releaseCharged(); } },
     };
     return adapter;
 }

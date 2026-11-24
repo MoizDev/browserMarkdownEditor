@@ -11,9 +11,10 @@ import { focusedPath, focusTab, openTab, renamePath } from '../utils/tabPanes';
 import { representationFor } from '../utils/documentReading';
 import { setBaseline } from '../utils/docBaselines';
 import {
-  editableCopyNames, handOffCopyNotice, registerEditableCopyOpener, registerOldBoardPeek, requestEditableCopy, startsAsOldBoard,
+  editableCopyNames, handOffCopyNotice, registerBoardRowPeek, registerEditableCopyOpener, requestEditableCopy, startsAsOldBoard,
 } from '../utils/oldBoards';
 import { isCanvasFile, isNativeDrawingFile } from '../utils/fileTypes';
+import { startsAsConvertedBoard } from '../utils/conversionRestore';
 import { newTabId } from './documentIds';
 import { describeReadError } from './readErrors';
 
@@ -90,11 +91,14 @@ export function useEditableCopy(deps: UseEditableCopyDeps) {
 
   // The tree row's question, "is this an old board?": an open document's admission knows; a closed file is told by its
   // first bytes, where a native board names its format (canvasFormat.ts reads the envelope from its first 256 characters).
-  useEffect(() => registerOldBoardPeek(async node => {
-    if (node.kind !== 'file' || !isCanvasFile(node.name) || isNativeDrawingFile(node.name)) return false;
+  // A board an earlier version converted in place names what it was made from in its header, which starts in the first
+  // few hundred characters (after the fixed fence line); 1024 holds it.
+  useEffect(() => registerBoardRowPeek(async node => {
+    if (node.kind !== 'file' || !isCanvasFile(node.name) || isNativeDrawingFile(node.name)) return 'other';
     const open = tabsRef.current.find(tab => tab.file.path === node.path);
-    if (open) return !!open.representation.oldBoard || !!nativePoliciesRef.current.get(open.id)?.oldBoard;
-    return startsAsOldBoard(await (await handleIO.file(node.handle)).slice(0, 512).text(), node.name);
+    if (open && (open.representation.oldBoard || nativePoliciesRef.current.get(open.id)?.oldBoard)) return 'old';
+    const start = await (await handleIO.file(node.handle)).slice(0, 1024).text();
+    return !open && startsAsOldBoard(start, node.name) ? 'old' : startsAsConvertedBoard(start, node.name) ? 'converted' : 'other';
   }), [handleIO, nativePoliciesRef, tabsRef]);
 
   const make = useCallback<NativeCanvasHost['makeEditableCopy']>(async (identity, copy, signal) => {

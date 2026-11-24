@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore }
 import { BookOpen, ChevronRight, ChevronDown, FileText, FolderIcon, FilePlus, FolderPlus, Trash2, Edit2, PenTool, Notebook } from './icons';
 import { isCanvasFile, isEpubFile, isNativeDrawingFile, isNotebookFile, isPdfFile, noteDisplayName } from '../utils/fileTypes';
 import { requestConversionRestore } from '../utils/conversionRestore';
-import { isOldBoardRow, makeEditableCopyOf } from '../utils/oldBoards';
+import { boardRowOrigin, makeEditableCopyOf, type BoardRowOrigin } from '../utils/oldBoards';
 import {
     clearCreateRequest, getCreateKindFor, nameForKind, placeholderFor, requestCreate,
     subscribeCreateRequest, type CreateKind,
@@ -288,15 +288,16 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
 
         // An old-format board's one way on (utils/oldBoards.ts). The original's own rows stay ordinary file operations. It
         // has never been converted (nothing converts one now), so it offers no restore from before a conversion: that row is
-        // for a board an earlier version converted in place, whose bytes are this app's own.
+        // for a PDF and for a board an earlier version converted in place, whose header says what it was made from. A board
+        // made here has nothing to restore: the row only ever answered "No pre-conversion copy is recorded".
         const editableCopy: ContextMenuEntry[] = [{ kind: 'command', id: 'make-editable-copy', label: 'Make an editable copy',
             run: () => makeEditableCopyOf(node) }];
-        const fileEntries = (oldBoard: boolean): ContextMenuEntry[] => [rename, ...(oldBoard ? editableCopy : []),
-            ...(!oldBoard && (isCanvasFile(node.name) || isPdfFile(node.name))
+        const fileEntries = (origin: BoardRowOrigin): ContextMenuEntry[] => [rename, ...(origin === 'old' ? editableCopy : []),
+            ...(origin === 'converted' || isPdfFile(node.name)
                 ? [{ kind: 'command' as const, id: 'restore-before-conversion', label: 'Restore the copy from before conversion', run: () => requestConversionRestore(node) }]
                 : []), { kind: 'separator', id: 'sep-style' }, styleRow, ...trash];
         const entries: ContextMenuEntry[] = node.kind === 'file'
-            ? fileEntries(false)
+            ? fileEntries('other')
             : [
                 { kind: 'command', id: 'new-note', label: 'New note', run: () => startCreate('file') },
                 { kind: 'command', id: 'new-folder', label: 'New folder', run: () => startCreate('folder') },
@@ -335,12 +336,13 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
             // the row unmarked underneath its own open menu.
             setMarked(true);
         };
-        // A drawing or notebook may be an old-format board, which its bytes say, not its name: App answers, within a
-        // moment (oldBoards.ts isOldBoardRow), and the menu waits for it rather than offer a copy of a native board.
+        // A drawing or notebook may be an old-format board, or one made from one, which its bytes say, not its name: App
+        // answers, within a moment (oldBoards.ts boardRowOrigin), and the menu waits for it rather than offer a copy of a
+        // native board or a restore that has nothing to restore.
         if (node.kind === 'file' && isCanvasFile(node.name) && !isNativeDrawingFile(node.name)) {
             // A menu raised or dismissed while this one waited is the newer intent: arriving late, this one would replace it.
             const shown = getContextMenu();
-            void isOldBoardRow(node).then(oldBoard => { if (getContextMenu() === shown) raise(fileEntries(oldBoard)); });
+            void boardRowOrigin(node).then(origin => { if (getContextMenu() === shown) raise(fileEntries(origin)); });
         } else raise(entries);
     };
 

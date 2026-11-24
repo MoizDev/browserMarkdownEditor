@@ -89,19 +89,21 @@ export function registerEditableCopyOpener(open: (node: FileTreeNode) => void): 
 }
 export function makeEditableCopyOf(node: FileTreeNode): void { openForCopy?.(node); }
 
-/* Whether a tree row's file is an old board, for its menu: App answers from an open document's own bytes, or from the
- * first bytes of a closed file (a native board says so in its first line). The menu waits for that at most this long,
- * then goes by the name: a slow disk must not hold a right-click. */
+/* What a tree row's drawing or notebook is, for its menu: an old board (Make an editable copy), a board made from one
+ * (Restore the copy from before conversion, utils/conversionRestore.ts), or neither. App answers from an open document's
+ * own bytes, or from the first bytes of a closed file (a native board says so in its first line). The menu waits for
+ * that at most this long, then goes by the name: a slow disk must not hold a right-click. */
+export type BoardRowOrigin = 'old' | 'converted' | 'other';
 const PEEK_WAIT_MS = 150;
-let peek: ((node: FileTreeNode) => Promise<boolean>) | undefined;
-export function registerOldBoardPeek(next: (node: FileTreeNode) => Promise<boolean>): () => void {
+let peek: ((node: FileTreeNode) => Promise<BoardRowOrigin>) | undefined;
+export function registerBoardRowPeek(next: (node: FileTreeNode) => Promise<BoardRowOrigin>): () => void {
     peek = next;
     return () => { if (peek === next) peek = undefined; };
 }
-export function isOldBoardRow(node: FileTreeNode): Promise<boolean> {
-    const byName = hasOldBoardName(node.name);
+export function boardRowOrigin(node: FileTreeNode): Promise<BoardRowOrigin> {
+    const byName: BoardRowOrigin = hasOldBoardName(node.name) ? 'old' : 'other';
     if (!peek) return Promise.resolve(byName);
-    return Promise.race([peek(node).catch(() => byName), new Promise<boolean>(resolve => setTimeout(() => resolve(byName), PEEK_WAIT_MS))]);
+    return Promise.race([peek(node).catch(() => byName), new Promise<BoardRowOrigin>(resolve => setTimeout(() => resolve(byName), PEEK_WAIT_MS))]);
 }
 
 /* What the importer left out is said once, in the COPY's notice (its file keeps those items as preserved records). The

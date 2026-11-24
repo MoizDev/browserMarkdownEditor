@@ -219,7 +219,10 @@ both names; nothing else spells `'.Assets'`.**
   pictures it added (never `removeEntry` on a picture), so nothing half-written is left beside the original.
 - **Conversion backups** (old annotated PDFs; boards an EARLIER build converted in place): `keepConversionBackup`
   copies the verified source bytes into the folder's `.Garbage` before a PDF conversion; `restoreConversionCopy`
-  brings one back as a **separate copy** beside the file, never over it. `keepCopyInGarbage` is the generic "preserve these bytes" path (a failure
+  brings one back as a **separate copy** beside the file, never over it. A board an earlier build converted in place
+  recorded no digest: `app/conversionRestore.ts` finds its backup by content (`utils/conversionRestore.ts`
+  `matchesConversionEvidence`: verbatim envelope, shape ids, kept records), preferring the board's own folder's Trash, and
+  restores nothing when two different files fit. The tree offers the row only for PDFs and boards made from an old one. `keepCopyInGarbage` is the generic "preserve these bytes" path (a failure
   must stop the caller's rebuild).
 
 ## Recent vaults and switching (`context/recentVaults.ts`, `utils/recentVaults.ts`, `VaultMenu.tsx`)

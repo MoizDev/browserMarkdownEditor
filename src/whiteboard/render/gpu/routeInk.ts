@@ -43,7 +43,9 @@ const AREA_CACHE_BYTES = 8 * 2 ** 20;
 /** A stroke's union outline at one band, as origin-relative edges; null edges with `why` when the grid draws it instead. */
 interface InkArea { readonly band: number; readonly edges: Float32Array | null; readonly why: string | null;
     readonly origin: { readonly x: number; readonly y: number }; readonly box: { readonly x1: number; readonly y1: number };
-    readonly bytes: number; readonly lease: ByteLease | null }
+    readonly bytes: number; readonly lease: ByteLease | null;
+    /** The route's frame that last drew or admitted it (see reclaimAreas). */
+    used: number }
 
 /** The whole stroke's union outline (unionOutline): the chunks' segments and discs in one frame. A chunk's first run start is dropped
  * when it continues the previous chunk at the same point, so the two chunks form one run, as rows inside a run do (the larger radius
@@ -107,7 +109,8 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
     const areaKit = createAreaKit();
     areaKit.warm(host);
     const areas = new Map<object, InkArea>();
-    let areaBytes = 0, areaFrame = -1;
+    // The route's current frame and the one before it (areas either used are kept by the size limit, see reclaimAreas).
+    let areaBytes = 0, areaFrame = -1, areaPrevious = -1;
     const pinned = new Set<object>();
     const dropArea = (key: object, old: InkArea): number => {
         areas.delete(key);
@@ -116,11 +119,16 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         areaBytes -= old.bytes; host.allocator.cpu.release(old.lease);
         return old.bytes;
     };
-    const reclaimAreas = (bytes: number): number => {
+    /** Drops the least recently used outlines no admission in progress holds. `keepRecent` (the size limit's trim) also keeps what this
+     * frame or the route's previous one used: a deferred admission resumes next frame from the outlines it built, and dropped at the
+     * limit they were built again, so a view whose outlines passed it rebuilt them every frame and its tile never finished (measured,
+     * the 10,000-stroke old board after a zoom reset on WebGL2: ~105 outlines rebuilt and ~1,330 admitted per frame, at every vsync for
+     * good). A refused CPU lease reclaims recent ones too: memory comes first, and the bytes kept are the pool's leases either way. */
+    const reclaimAreas = (bytes: number, keepRecent = false): number => {
         let freed = 0;
         for (const [key, old] of areas) {
             if (freed >= bytes) break;
-            if (!pinned.has(key)) freed += dropArea(key, old);
+            if (!pinned.has(key) && !(keepRecent && old.used >= areaPrevious)) freed += dropArea(key, old);
         }
         return freed;
     };
@@ -133,13 +141,13 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         const key = item.coverage, cached = areas.get(key);
         if (cached && (cached.band === band || (moving && cached.band > band && cached.band <= band * 2))) {
             if (cached.band !== band) auditCount(audit, 'ink:area:band-held');
-            areas.delete(key); areas.set(key, cached); pinned.add(key); return cached;
+            areas.delete(key); areas.set(key, cached); pinned.add(key); cached.used = areaFrame; return cached;
         }
         if (cached) dropArea(key, cached);
         const chunks = inkCoverageChunks(item.coverage);
         const outline = chunks.length ? strokeOutline(chunks, AREA_FLATTEN_DEVICE_PX / band) : { edges: new Float64Array(0), why: null };
         let area: InkArea;
-        if (!outline.edges) area = { band, edges: null, why: outline.why, origin: { x: 0, y: 0 }, box: { x1: 0, y1: 0 }, bytes: 0, lease: null };
+        if (!outline.edges) area = { band, edges: null, why: outline.why, origin: { x: 0, y: 0 }, box: { x1: 0, y1: 0 }, bytes: 0, lease: null, used: areaFrame };
         else {
             // Rebased on the outline's lower-left corner in double precision before the edges become float32.
             const source = outline.edges;
@@ -153,12 +161,12 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
             let lease = bytes ? host.allocator.cpu.reserve(bytes) : null;
             if (bytes && !lease && reclaimAreas(bytes) > 0) lease = host.allocator.cpu.reserve(bytes);
             if (bytes && !lease) { auditCount(audit, 'ink:area:geom-refused'); return { refused: bytes }; }
-            area = { band, edges, why: null, origin: any ? { x: ox, y: oy } : { x: 0, y: 0 }, box: any ? { x1: mx - ox, y1: my - oy } : { x1: 0, y1: 0 }, bytes, lease };
+            area = { band, edges, why: null, origin: any ? { x: ox, y: oy } : { x: 0, y: 0 }, box: any ? { x1: mx - ox, y1: my - oy } : { x1: 0, y1: 0 }, bytes, lease, used: areaFrame };
             areaBytes += bytes;
         }
         areas.set(key, area); pinned.add(key);
         auditCount(audit, 'ink:area:geom-build');
-        if (areaBytes > AREA_CACHE_BYTES) reclaimAreas(areaBytes - AREA_CACHE_BYTES);
+        if (areaBytes > AREA_CACHE_BYTES) reclaimAreas(areaBytes - AREA_CACHE_BYTES, true);
         return area;
     };
     const part: AreaPart[] = [{ edges: new Float32Array(0), affine: [1, 0, 0, 1, 0, 0] }];
@@ -194,7 +202,7 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
     const one: PreparedArea[] = [];
     const beginFrame = (frame: number): void => {
         if (frame === areaFrame) return;
-        areaFrame = frame; kit.beginFrame(frame); areaKit.beginFrame(frame);
+        areaPrevious = areaFrame; areaFrame = frame; kit.beginFrame(frame); areaKit.beginFrame(frame);
     };
     /** The frame whose area draw a uniform-ring refusal cost (-1: none): skipped, counted, the next frame requested, and the frame
      * reported incomplete through drawRefusedThisFrame (as the path route's areas are). Anything else propagates. */
@@ -308,5 +316,9 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         },
     };
 
-    return { analytic, union, beginFrame, evictCpu: (bytes, keep) => { const freed = geometry.evictIdle(bytes, keep); return freed < bytes ? freed + reclaimAreas(bytes - freed) : freed; } };
+    const evictGpu = (bytes: number, keepRecent = false): number => {
+        const freed = kit.evict(bytes);
+        return freed < bytes ? freed + areaKit.evictIdle(bytes - freed, keepRecent) : freed;
+    };
+    return { analytic, union, beginFrame, evictGpu, evictCpu: (bytes, keep) => { const freed = geometry.evictIdle(bytes, keep); return freed < bytes ? freed + reclaimAreas(bytes - freed) : freed; } };
 };

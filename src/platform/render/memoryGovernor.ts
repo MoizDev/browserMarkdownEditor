@@ -583,16 +583,16 @@ export class MemoryGovernor {
         this.trimHiddenMirrors();
         // Quality drops only when the trims cannot bring a pool back to target: a trim that frees what it is asked for
         // is the answer to pressure, and a degradation for pressure it has not yet had the chance to release is premature.
-        let unmet = false;
+        let unmet: MemoryPool | null = null;
         for (const pool of ['gpu', 'cpu'] as const) {
             if (this.charged[pool] > this.target[pool] * POLICY.memorySoftPressureRatio) {
                 this.state = 'trimming';
-                unmet = this.pressureTrim(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio)) || unmet;
+                if (this.pressureTrim(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio))) unmet ??= pool;
             } else this.trimmedAt[pool] = -1;
         }
         // Over budget steps down unless a resume holds pressure: the rebuild after a return is charged at once, and stepping on it stacked
         // the quality down (1.0 -> 0.8 -> 0.64), which the recovery window then held for five seconds.
-        if (unmet && now >= this.pressureHoldUntil) { auditCount('governor', 'degrade:unmet'); this.degrade(); }
+        if (unmet && now >= this.pressureHoldUntil) { auditCount('governor', `degrade:unmet:${unmet}`); this.degrade(); }
         this.trimPanesOverGrant();
         if (!liveGesture) this.recoverRoom();
         const cool = this.cool() && !liveGesture;
@@ -620,7 +620,7 @@ export class MemoryGovernor {
             this.failedQuality = null;
             this.failureBackoffMs = POLICY.qualityFailureBackoffMinMs;
         }
-        this.wake = this.nextWake(now, cool, unmet);
+        this.wake = this.nextWake(now, cool, unmet !== null);
     }
 
     /** The next instant at which advancing again changes something, with no event to wait for: a degrade that a resume hold
@@ -631,7 +631,10 @@ export class MemoryGovernor {
         // A lowered quality over the GPU's cool line with a charge the recovery trim has not asked about is not waited out: no
         // event may come (measured: 46 s at 215.0 MB against a 214.7 MB line with no advance), so one advance is armed to ask.
         if (this.recoveryDue()) recovery = now + POLICY.qualityStepSettleMs;
-        if (this.state !== 'normal' && cool && this.belowRecoverySince !== null) {
+        // A pane's ceiling lowered under an app quality of 1 leaves the state 'normal': waited on the state alone, no advance came to
+        // raise it, and the pane rested at its lowered quality for good (measured, the 5,642-stroke board after a zoom to fit on WebGL2,
+        // 1 run in 10: ceiling 0.488, cool, no wake, the 'quality reduced' notice at rest).
+        if ((this.state !== 'normal' || this.belowFull()) && cool && this.belowRecoverySince !== null) {
             let due = this.belowRecoverySince + this.recoveryDelay();
             if (this.failedQuality !== null) due = Math.max(due, this.failedUntil);
             recovery = Math.max(due, now);
@@ -725,7 +728,7 @@ export class MemoryGovernor {
     /** Render audit only: every cache's charge with its pane, and each pane's grant. */
     auditCaches(): { caches: { id: string; pane: string | null; pool: MemoryPool; kind: MemoryKind; bytes: number; hidden: boolean;
         waiters: number; waiting: (number | null)[]; refused: number | null }[];
-        grants: { pane: string; cpuBytes: number; gpuCacheBytes: number }[]; panes: readonly PaneMemoryDemand[];
+        grants: { pane: string; cpuBytes: number; gpuCacheBytes: number; pixelGrant: number; qualityScale: number }[]; panes: readonly PaneMemoryDemand[];
         target: { gpu: number; cpu: number }; hiddenPanes: { gpu: number; cpu: number }; recovery: Record<string, unknown> } {
         return {
             caches: [...this.caches.values()].filter(cache => cache.bytes > 0).map(cache => ({ id: cache.registration.id,
@@ -735,7 +738,8 @@ export class MemoryGovernor {
                 // Each waiter's size (null: any release wakes it), so a kit can tell a sized wait from a parked unsized one.
                 waiting: [...(this.capacityWaiters.get(cache)?.values() ?? [])].map(bytes => bytes ?? null),
                 refused: cache.refusal?.bytes ?? null })),
-            grants: [...this.grants].map(([pane, grant]) => ({ pane, cpuBytes: grant.cpuBytes, gpuCacheBytes: grant.gpuCacheBytes })),
+            grants: [...this.grants].map(([pane, grant]) => ({ pane, cpuBytes: grant.cpuBytes, gpuCacheBytes: grant.gpuCacheBytes,
+                pixelGrant: grant.pixelGrant, qualityScale: grant.qualityScale })),
             panes: this.panes, target: { ...this.target }, hiddenPanes: this.hiddenPaneBytes(),
             // Why a lowered quality has or has not stepped back up: every input advance() reads for the raise.
             recovery: { now: this.now, quality: this.qualityLimit, ceilings: Object.fromEntries(this.paneCeiling), charged: { ...this.charged },
@@ -884,15 +888,18 @@ export class MemoryGovernor {
         return lease;
     }
 
-    /** Another cache of `cache`'s pane in `pool` waits for need capacity the grant can hold: a refusal of this capacity epoch, or a
-     * sized waiter. One the grant can never hold, or a refusal from before capacity last moved, blocks nothing. Counted. */
+    /** A cache of `cache`'s pane in `pool`, `cache` itself included, waits for need capacity the grant can hold: a refusal of this
+     * capacity epoch, or a sized waiter. One the grant can never hold, or a refusal from before capacity last moved, blocks nothing.
+     * Counted. The asking cache counts too: a board's ring and its refused visible tile share one cache, and the room a raised grant
+     * gave the tile went to the ring first, so the tile stayed on its stand-in for good (measured, a narrow pane of dense ink beside
+     * two others after divider drags on WebGL2: its grant raised 1.6 MB, its ring took 1.6 MB, its visible tile waited on). */
     private paneNeedWaiting(cache: CacheRecord, pool: MemoryPool): boolean {
         const paneId = cache.registration.paneId;
         const grant = paneId === undefined ? undefined : this.grants.get(paneId);
         if (paneId === undefined || !grant) return false;
         const limit = pool === 'gpu' ? grant.gpuCacheBytes : grant.cpuBytes;
         for (const other of this.caches.values()) {
-            if (other === cache || other.registration.paneId !== paneId || other.registration.pool !== pool) continue;
+            if (other.registration.paneId !== paneId || other.registration.pool !== pool) continue;
             let waiting = other.refusal !== null && other.refusal.epoch === this.capacityEpoch && other.refusal.bytes <= limit;
             if (!waiting) for (const bytes of this.capacityWaiters.get(other)?.values() ?? []) if (bytes !== undefined && bytes <= limit) { waiting = true; break; }
             if (waiting) { auditCount('governor', `prefetch-yield:${pool}`); return true; }
@@ -1383,8 +1390,16 @@ export class MemoryGovernor {
             need: Math.max(0, Math.floor(pane.requestedPixels * ceilingOf(pane) * ceilingOf(pane)) - (floorPixels.get(pane.paneId) ?? 0)) })),
         Math.floor(surfaceBytes / POLICY.surfaceReserveBytesPerPixel));
         const pixelGrantOf = (paneId: string): number => (floorPixels.get(paneId) ?? 0) + (pixels.get(paneId) ?? 0);
+        // A ceiling falls only when the pool granted less than the pane asked for at its ceiling. The pixels it asks for are rounded
+        // down, so the grant of a full ask is a few pixels under the ceiling's square: taken as a shortfall, every plan at 0.8 set the
+        // ceiling to 0.79999..., the recovery raised it to 0.99999... (not 1), and the pane stayed "below full" for good. Measured,
+        // three dense panes on WebGL2 after divider drags: ceilings 0.9999976/0.9999966/0.9999940 at quality 1, "Rendering quality was
+        // reduced" on all three and a recovery trim each time the GPU charge moved (586 per 10 s at rest), each evicting tiles the
+        // boards composed again.
         for (const pane of visible) {
-            const q = Math.sqrt(pixelGrantOf(pane.paneId) / pane.requestedPixels);
+            const granted = pixelGrantOf(pane.paneId);
+            if (granted >= Math.floor(pane.requestedPixels * ceilingOf(pane) * ceilingOf(pane))) continue;
+            const q = Math.sqrt(granted / pane.requestedPixels);
             if (q < (this.paneCeiling.get(pane.paneId) ?? 1)) this.paneCeiling.set(pane.paneId, Math.max(MIN_SURFACE_QUALITY, q));
         }
         const assignedSurface = [...pixels.values()].reduce((sum, value) => sum + value, 0) * POLICY.surfaceReserveBytesPerPixel;

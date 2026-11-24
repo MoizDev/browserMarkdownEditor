@@ -680,7 +680,18 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 touchedFrame = frame.frameId;
                                 shownPresented = true;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');
-                                if (drawing !== compositor) { candidate.presented(frame.token.deviceGeneration); bridgeSkipped = false; if (budgetNoticeTimer !== null || budgetNoticeShown) endBudgetNotice(); }
+                                if (drawing !== compositor) {
+                                    candidate.presented(frame.token.deviceGeneration); bridgeSkipped = false; if (budgetNoticeTimer !== null || budgetNoticeShown) endBudgetNotice();
+                                    // The GPU presents on its own display with no bridge pending: a 2D bridge it skipped (or overtook) still
+                                    // held its back buffer and staged display, which only a switch to the GPU gave back (selectGpu). Kept, they
+                                    // were 'canvas-working' and 'surface-scratch' charges no frame drew (measured, three dense panes after six
+                                    // divider drags on WebGL2: 18.5 MB at rest, which held the GPU pool over its cool line, so a quality lowered
+                                    // for the drags never stepped back up).
+                                    if (bridgeSince === null && surfaceHost.current === drawing && created.presenter.holdsSurface()) {
+                                        created.presenter.releaseSurface();
+                                        auditCount('pane', 'bridge:released');
+                                    }
+                                }
                                 lastReport = { frameId: frame.frameId, revision, backend: drawing.backend, complete, sharp, staleVersion,
                                     camera: { x: liveCamera.x, y: liveCamera.y, z: liveCamera.z },
                                     drawn: { x: frame.view.camera.x, y: frame.view.camera.y, z: frame.view.camera.z }, geometry: geometry?.generation };

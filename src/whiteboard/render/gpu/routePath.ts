@@ -356,6 +356,8 @@ export function createPath(host: LayerHost, audit: string): {
     readonly coverage: ReturnType<typeof createPathCoverageKit>;
     readonly beginFrame: (frame: number) => void;
     readonly evictCpu: (bytes: number) => number;
+    /** The GPU reclaim for the exact-area kit's idle edge sets (AreaKit.evictIdle). */
+    readonly evictAreas: (bytes: number, keepRecent?: boolean) => number;
 } {
     // Triangles by content and band, most recently used last. An array's CPU lease lives while the cache or the kit holds the array:
     // the last holder to let go releases it, so the lease is never released over memory still alive, and no array is alive without one.
@@ -956,6 +958,7 @@ export function createPath(host: LayerHost, audit: string): {
         beginFrame: beginFrameBoth,
         /** The governor's CPU reclaim for the outline cache: frees unused outlines oldest first and returns the bytes freed. */
         evictCpu(bytes: number): number { const freed = reclaimLeases(bytes); return freed < bytes ? freed + reclaimArea(bytes - freed) : freed; },
+        evictAreas: (bytes: number, keepRecent = false): number => areaKit.evictIdle(bytes, keepRecent),
     };
 }
 

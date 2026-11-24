@@ -66,7 +66,9 @@ Constants are in `types.ts` (`RenderConstants`, documented per field) with value
 - A resize of a displayed GL canvas is bridged by a detached CPU picture while the same GPU rebuilds
   (`fallback:2d-bridge`, with its pixel count). A bridge that cannot present within `BRIDGE_WAIT_MS` (300 ms) is
   skipped (`fallback:2d-bridge-skipped`): the GPU resizes directly and draws from the textures it kept. Measured:
-  waiting on a bridge that could not fit the CPU pool left 'Updating' up for good.
+  waiting on a bridge that could not fit the CPU pool left 'Updating' up for good. The GPU's next present on its own display
+  gives back what a skipped bridge allocated (`Pane2DPresenter.holdsSurface`/`releaseSurface`, counted `bridge:released`): kept,
+  three panes held 18.5 MB of `canvas-working`/`surface-scratch` at rest and the GPU pool never cooled.
 - A governor refusal of a resize is pressure, not a fallback: the pane keeps its picture and waits, sized
   (`SurfaceBackingOptions.wake`): a pane behind its 2D picture asks no frame of its own, so unwoken nothing retried it.
 - Hiding zeroes the GPU canvas and stages its backing (`GpuPaneCandidate.zeroed`): shown again, the kept GPU rebuilds as
@@ -115,7 +117,8 @@ draws differently because a GPU exists.
   bridge even when a candidate exists. Re-read it after a backend or `generation` change. Never import the broker or
   native GL into a layer.
 - `host.uniforms(bytes)` / `uniformsInto` are valid only during `drawGpu` (the encoder's fenced ring).
-  `drawTexturedQuad(s)` take source texels including gutters and a device-pixel destination, on either backend.
+  `drawTexturedQuad(s)` take source texels including gutters and a device-pixel destination, on either backend; in an
+  offscreen pass the destination is that pass's pixels (mapped against the surface, a CPU raster laid into a tile shrank).
   `paintWorld`/`paintPage` install the common transform and page clip for 2D. `host.imageReady(image)` (2D) says
   whether a draw needs an upload not admitted this frame: draw a stand-in instead, because a canvas2d frame that
   misses an image is not presented at all.
@@ -144,10 +147,13 @@ draws differently because a GPU exists.
   still lands. `startFling` and `cancelMotion` are wired the same way (`scheduler.ts`, `attachPlatformPane.ts`).
 - Background work (two-phase layers' second call) gets the upload window (1 ms) while anyone interacts, and up to half
   the interval on a quiet frame (`QUIET_BACKGROUND_FRACTION`): held to 1 ms at rest, a dense board's tiles took 20–50 s.
+  A background call passed over for time asks no next frame when its foreground call ran and the layer needs none: the
+  board's bands share one composer, and that mark kept a heavy settling board framing at rest for good.
 - An offscreen-only encode that recorded no pass settles its layers as submitted (`offscreenSettled(true)`): told
   "discarded", the board composer asked for the next frame forever at rest. At rest a settled pane runs 0 frames.
 - Ask for a frame only for a cause. With the audit on, each present is named `present:<cause>` (`input`, `camera`,
-  `wake`, `invalidate:<reason>`, `needsFrame:<layer>`); `none` is a fault.
+  `wake`, `invalidate:<reason>`, `needsFrame:<layer>`); `none` is a fault. A frame whose picture is unchanged is named
+  `skipped:<cause>`: a pane framing at rest with nothing to present shows up only there.
 - A layer passed over by the budget counts as changed. A layer's class (critical/optional) is read once as its
   prepare starts.
 - Page, committed ink and live stroke compose as ONE document-colour group, inverted once in dark view; chrome and
@@ -167,6 +173,11 @@ draws differently because a GPU exists.
   `min(DPR,2)²`. Unscaled, a small DPR 2 pane sat at the floor and never drew again after a saturated zoom.
 - Grants: a visible pane's pinned positions (`gpuPinnedBytes`) first and never trimmed while visible; the rest by
   focus weight (2:1). A position past its pane's share is composed one level down, never trimmed from the screen.
+- A pane's quality ceiling falls only when the plan grants fewer pixels than the pane asked for at its ceiling (the ask is
+  rounded down): taken on rounding, ceilings stuck at 0.99999…, the governor stayed "below full" at quality 1 and ran a recovery
+  trim on every charge change (422 per 10 s at rest). `caches().grants` gives each pane's `pixelGrant` and `qualityScale`.
+  A lowered pane ceiling arms the recovery wake like a lowered app quality (the state reads 'normal' with ceilings below 1).
+  `paneNeedWaiting` counts the asking cache too: a ring's prefetch took the room a parked visible tile of its own pane waited for.
 - CPU target: `8 MB·N + 12 B·devicePixels`, raised to `Σ visible cpuMandatoryBytes / 0.8` (the trim line, so a trim never
   cuts into a floor), floor 32 MB, inside the device ceiling. Without it one DPR 2 PDF was refused its own floor.
 - **The CPU floor invariant** (what keeps a pane from waiting forever): every visible pane's floor (`cpuMandatoryBytes`, what it
@@ -181,7 +192,8 @@ draws differently because a GPU exists.
   leaves a sized wait it can never meet (measured 2.04 GB, a 3 MB `.tldraw`), and its `awaitCpu` latch then parks no later wait.
   A floor that grows with a request (a whole-frame estimate) is re-collected (`refreshDemandNow`) BEFORE that reserve: asked
   against the old grant, the refusal is pool pressure and steps quality (S2000 canvas2d: degraded for good, a raise/drop every
-  5 s). `caches().recovery` and the `governor:degrade:*` counters say why a quality has not stepped back up.
+  5 s). `caches().recovery` and the `governor:degrade:*` counters say why a quality has not stepped back up
+  (`degrade:unmet:<pool>` names the pool a pressure trim could not bring under its target).
 - `ReserveOptions.quiet`: a first ask the owner can answer from its own idle residency; a refusal is not pressure.
 - `prefetch` stops at the trim target on the CPU (always) and on the GPU while quality is down: under each pool's cool line, so
   caches admitted ahead of need never hold the pool off cool (stuck 'trimming', quality never stepping back up).

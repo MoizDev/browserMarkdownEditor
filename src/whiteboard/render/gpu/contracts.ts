@@ -93,6 +93,11 @@ export interface TileEntry {
     usedFrame: number;
 }
 
+/** How the composer draws the view, for an eviction: not live (its tiles are drawn), live while the view moves (a zoom or a pan
+ * drawn direct: no tile at the view is what it draws next), or live while it settles (the view rests: it draws live until the tiles
+ * at the view are composed, and those tiles are what it then draws). */
+export type LiveEviction = false | 'moving' | 'settling';
+
 export interface TileStore {
     get(id: string): TileEntry | undefined;
     /** A target from the free list or a new lease. null = refused: keep the stand-in and call `wait(bytes)`. A `prefetch` target (the
@@ -103,10 +108,10 @@ export interface TileStore {
     /** Composed entries of other scales covering `world`, nearest scale first. */
     standIns(band: PaintBand, world: Readonly<Rect>, scale: number): readonly TileEntry[];
     touch(entry: TileEntry, frameId: number): void;
-    /** Never an on-view entry touched in `frameId`, unless `drawnLive` (the composer draws the view live: no tile is drawn). Order:
-     *  free list, other scales off view (live: every other scale), same scale off view (farthest first), then live the same scale on
-     *  view, else other scales on view that a composed tile covers. Returns the bytes actually freed. */
-    evict(bytes: number, frameId: number, view: ViewState, drawnLive?: boolean): number;
+    /** Never an on-view entry touched in `frameId`, unless the composer draws the view live (`live`: no tile is drawn). Order:
+     *  free list, other scales off view (live: every other scale), same scale off view (farthest first), then, live while the view
+     *  moves, the same scale on view, else other scales on view that a composed tile covers. Returns the bytes actually freed. */
+    evict(bytes: number, frameId: number, view: ViewState, live?: LiveEviction): number;
     /** Stamps every held entry the view shows, at any scale, as used in `frameId` (see Layer.protectFrame). */
     touchVisible(view: ViewState, frameId: number): void;
     dropScalesExcept(scale: number, band: PaintBand): number;
@@ -134,6 +139,9 @@ export type CreateInkRoutes = RouteFactory<{ readonly analytic: ItemRoute<PaintI
     /** Frees up to `bytes` of the union route's idle chunk geometry, never a chunk in `keep`; returns the bytes freed. */
     readonly evictCpu: (bytes: number, keep: ReadonlySet<InkCoverage>) => number;
     /** Marks the frame the calls that follow belong to (the union route's kits: a refused draw is reported for its own frame only). */
-    readonly beginFrame: (frame: number) => void }>;
+    readonly beginFrame: (frame: number) => void;
+    /** The GPU reclaim for the union route's idle buffers (its grid kit's triangles, its exact-area kit's edge sets), none used in the
+     * frame `beginFrame` named (`keepRecent`: nor the route's previous one); returns the bytes freed. */
+    readonly evictGpu: (bytes: number, keepRecent?: boolean) => number }>;
 export type CreateImageRoute = RouteFactory<ItemRoute>;
 export type CreateTextRoute = RouteFactory<ItemRoute>;

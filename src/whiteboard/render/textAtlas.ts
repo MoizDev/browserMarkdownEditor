@@ -141,14 +141,17 @@ export class TextAtlas {
         return entry;
     }
 
-    /** Places a w x h cell under the identity and returns the entry, or 'oversize' when no page can hold it, or 'denied' when
-     * the grant refuses a page. The atlas keeps its own copy of the identity. The pixels are written by the caller; the entry is
+    /** Places a w x h cell under the identity and returns the entry, or 'oversize' when no page can hold it, or the bytes of the page
+     * the grant refused (`denied`): what a refused cell waits for is a page, never its own few bytes. Reported as the cell's bytes, the
+     * governor's sized wake came with the next unrelated release, the cell was refused its page again and the board framed at every
+     * vsync at rest (measured, a notebook beside two dense boards after divider drags on WebGL2: 601 frames per 10 s, each refusing a
+     * 4 MB R8 page as a 2.9 KB cell). The atlas keeps its own copy of the identity. The pixels are written by the caller; the entry is
      * not drawable before they are. */
-    place(probe: MaskIdentity, w: number, h: number, frame: number): AtlasEntry | 'oversize' | 'denied' {
-        if (this.disposed) return 'denied';
+    place(probe: MaskIdentity, w: number, h: number, frame: number): AtlasEntry | 'oversize' | { readonly denied: number } {
+        if (this.disposed) return { denied: this.pageBytes() };
         if (w > ATLAS_PAGE || h > ATLAS_PAGE) return 'oversize';
         const placed = this.findSlot(w, h, frame);
-        if (!placed) return 'denied';
+        if (!placed) return { denied: this.pageBytes() };
         const identity = copyIdentity(probe);
         const entry: AtlasEntry = { identity, hash: identityHash(identity), page: placed.page, x: placed.x, y: placed.y, w, h,
             pinned: 0, retired: false, dropped: false };
@@ -248,8 +251,10 @@ export class TextAtlas {
         return page && at ? { page, ...at } : null;
     }
 
+    private pageBytes(): number { return ATLAS_PAGE * ATLAS_PAGE * (this.options.format === 'r8' ? 1 : 4); }
+
     private newPage(): AtlasPage | null {
-        const bytes = ATLAS_PAGE * ATLAS_PAGE * (this.options.format === 'r8' ? 1 : 4);
+        const bytes = this.pageBytes();
         const lease = this.host.reserve(bytes);
         if (!lease) return null;
         let texture: TextureHandle | null = null;

@@ -19,6 +19,15 @@ export const TILE_KEY_REACH = XY_BIAS;
 export const TILE_KEY_SLICES = SLICE_MAX + 1;
 export const TILE_KEY_SCALES = SCALE_MAX + 1;
 
+/** The scale a tile of a view is composed and keyed at: device pixels per world unit, rounded so a return to a zoom reuses its
+ * tiles. The composer and the store both name the view's scale through this one function: the store compared keys against the
+ * raw product, so after a divider drag left a camera at a long fraction every tile the composer made was "another scale" to the
+ * store, and a trim evicted the tiles a settling board was composing for its view (measured, three dense panes on WebGL2:
+ * 3,550 visible tiles evicted and composed again per 10 s at rest, the pane on 'Updating…' for good). */
+export function exactTileScale(demand: number): number {
+    return Number(demand.toPrecision(12));
+}
+
 function bandIndex(band: PaintBand): number {
     if (band === 'underlay') return 0;
     if (band === 'content') return 1;

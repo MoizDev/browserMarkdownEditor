@@ -318,6 +318,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     const wakes: Record<'store' | 'retry', number | null> = { store: null, retry: null };
     const armWake = (slot: 'store' | 'retry', deadline: number | null): void => {
         wakes[slot] = deadline;
+        // The other slot's deadline, once passed, was delivered when it passed (the scheduler fires a due deadline once): sent again
+        // with this one, it was due again, so a slot its owner left armed woke the pane at every frame that re-armed the other.
+        const now = performance.now();
+        for (const other of ['store', 'retry'] as const) if (other !== slot && wakes[other] !== null && wakes[other] <= now) wakes[other] = null;
         let first: number | null = null;
         for (const at of [wakes.store, wakes.retry]) if (at !== null && (first === null || at < first)) first = at;
         host.wakeAt(first);
@@ -341,6 +345,18 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     // The composer's index of the paint's items, by world position. It holds every item, and so every stroke's coverage, of the
     // frame it indexed: kept through a hide, a hidden 10,060-stroke drawing still held its whole geometry (measured, heap snapshot).
     const parts = createTileParts(host, surface);
+    /** The routes' GPU caches, each freeing only what `frameId` did not use (`keepRecent`: nor the edge sets the frame before it used);
+     * the sum is what was freed. */
+    const evictRoutes = (bytes: number, frameId: number, keepRecent = false): number => {
+        pathRoute.beginFrame(frameId); ink.beginFrame(frameId);
+        let freed = pathRoute.coverage.evict(bytes);
+        if (freed < bytes) freed += pathRoute.evictAreas(bytes - freed, keepRecent);
+        if (freed < bytes) freed += ink.evictGpu(bytes - freed, keepRecent);
+        if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
+        if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;
+        if (freed > 0) composer.noteEvicted();
+        return freed;
+    };
     const composer = createTileComposer({
         host: withWake('retry'), audit: surface, parts, store, routes,
         tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
@@ -352,6 +368,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         ...(options.pins ? { pins: options.pins } : {}),
         // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
         slowGpu: () => host.trouble() === 'slow-gpu',
+        reclaimRoutes: (bytes, frame) => evictRoutes(bytes, frame, true),
     });
 
     return {
@@ -471,12 +488,9 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         evictGpu(bytes: number, frameId: number): number {
             if (disposed || !(bytes > 0)) return 0;
             // Route caches first, then composed tiles: each frees only what this frame did not use. The sum is what was freed.
-            pathRoute.beginFrame(frameId); ink.beginFrame(frameId);
-            let freed = pathRoute.coverage.evict(bytes);
-            if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
-            if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;
+            let freed = evictRoutes(bytes, frameId);
             // A composer drawing live draws no tile: its tiles go before anything the view shows is refused (store.evict).
-            if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView, composer.drawsLive());
+            if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView, composer.liveEviction());
             if (freed > 0) composer.noteEvicted();
             return freed;
         },

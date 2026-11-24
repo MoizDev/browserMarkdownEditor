@@ -60,6 +60,11 @@ and the platform alone picks the device.
   or a live part sits). Positions are admitted over frames within the frame budget, acquired from `tileStore.ts`,
   encoded in `encodeOffscreen` (per band), then drawn. `tileParts.ts` indexes parts by position: a change marks the
   positions under its bounds dirty, and a dirty position is recomposed into the target it already has.
+- **One tile scale**: a view's tiles are keyed at `exactTileScale(z·dpr)` (`tileKeys.ts`, 12 digits) by the composer AND the
+  store; the store judging "current scale" from the raw product took every tile a settling board composed after a divider drag
+  as another scale's, and trims evicted them as fast as they were composed (3,550 per 10 s at rest).
+- A GPU route admits a run whole or defers it, and a deferred run starts over next frame, so runs hold at most `RUN_MAX_ITEMS`
+  (256) items: a slice resumes run by run. Unbounded, a 5,000-stroke union-ink run never fit one frame and deferred for good.
 - `prepare(view, budget, prepared, omit?)`: `omit` is the nodes a drag previews elsewhere; their tiles compose
   without them. The draw never takes an omit set.
 - Every upload belongs to prepare: each route's `uploadPrepared()` runs at its end, and `encodeOffscreen` (the text
@@ -91,6 +96,9 @@ and the platform alone picks the device.
 - **Mask clips need planned isolation targets.** The composer learns a shortfall from a refused encode or live draw
   (`noteShortfall`) and reserves it at each prepare that encodes or draws live (`reserveIsolation`); unplanned, an
   arrow's label cut was refused every frame and the label never drew.
+- A pending region's cover is laid whole in a frame or not at all, so a position whose cover reaches more than
+  `ZOOM_DIRECT_MAX_PARTS` parts lets its regions go (`live:region:dropped-dense`) and its dirty tile draws stale until composed:
+  a paged-in scene's regions over thousands of strokes were laid every frame and starved the compose that clears them.
 - A frame composes at most one dirty tile a pending region covers (`DIRTY_COVERED_PER_FRAME`), except one the last
   draw failed to cover. A covered position, and one whose tile replaced its cover, signs as its position
   (`coverSignature`), so the swap presents nothing.
@@ -111,7 +119,15 @@ and the platform alone picks the device.
   reclaimed each other's undrawn tiles recomposed them every frame at rest. Keep the still-wanted test on the same
   margin, or ring positions are cancelled and begun again each frame.
 - A position the governor refuses is composed one level down (half scale, four positions); a second refusal waits.
-  At rest a refused position first frees its own tiles and is admitted in the same frame (`freeOwn`).
+  At rest a refused position first frees its own tiles and is admitted in the same frame (`freeOwn`). Refused at rest, it
+  first lets go of what holds its room: the pending regions' live covers (`live:region:dropped-memory`), the other positions in
+  progress (`compose:cancel-others`) and the routes' admission caches from before the last frame (`compose:free-own:routes`).
+  Still refused with nothing of its own left, its slice is rastered by the CPU route (`compose:cpu-for-memory:<pass>`, counted
+  `fallback:item-cpu:…:memory`), which needs the tile target alone; its pictures stay on the image route (their bitmaps are
+  released once uploaded). The visible work a refusal parks is the pane's pinned demand (`mandatoryBytes`: its missing tiles and
+  denied bytes), granted before any share; counted from composed tiles only, a pane rested on a stand-in under its own grant. A lowered position is
+  driven each frame (no pass walks its scale) and dropped once the visible cells above it are exact; a position in progress
+  that a whole compose at rest neither advanced nor left on a governor wait is counted `building:orphan`.
 
 ## Drag, wet ink and handover
 
@@ -187,8 +203,19 @@ refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF wri
 - CPU bytes on a device are the direct build's leases in 64 KiB chunks (`DIRECT_CHUNK`).
 - A refused reservation waits once, sized: `awaitSizedCapacity(host, wake, { pool, bytes })`
   (`budgetRefusal.ts`); the governor wakes it only when the bytes fit. The composer's GPU retry after a visible
-  refusal also arms a 250 ms deadline (`GPU_RETRY_MS`) that only invalidates. `needsFrame` is false while a GPU
-  admission is refused (no per-frame retry).
+  refusal also arms a 250 ms deadline (`GPU_RETRY_MS`) that only invalidates, only while the wait stands, and a deadline that
+  passes is cleared whether or not the wait is (the adapter's one wake slot re-sent a stale one with every store deadline: a
+  frame per vsync at rest). `needsFrame` is false while a GPU
+  admission is refused (no per-frame retry). The size waited for is the reservation that was refused, never the item's own
+  bytes: the text atlas reports the page it was refused (`place` → `{ denied }`); a 2.9 KB glyph standing for a 4 MB page was
+  woken by every unrelated release and framed at every vsync at rest.
+- **What the view draws is not trim fodder.** `store.evict` takes on-view tiles of the current scale only while the composer
+  draws live because the view MOVES (`liveEviction()`: `'moving'`); a settling view draws live only until those tiles land, and
+  evicting them (as `live-covered`) cycled recovery trims and recomposes at rest for good (2,663 evictions per 10 s).
+- Admission caches keep what the route's previous frame used, as well as this frame's: the union ink outlines over
+  `AREA_CACHE_BYTES` (`routeInk.ts`) and the area kit's idle edge sets over `IDLE_EDGE_BYTES` (`areaCoverage.ts`). Kept for the
+  current frame only, a deferred admission rebuilt and re-uploaded its outlines every frame (the 10,000-stroke old board after a
+  zoom reset: ~105 outlines per frame, 'Updating…' for good). Both are pool leases; a refused lease still reclaims them.
 - **What only saves later work is admitted as `prefetch` and charged once**: a dense plan's node buffer and resolved nodes
   (`planNodeBuffer.ts`, `resolvedNodeCache.ts`; the buffer's own read resolves into no cache, `openTile(…, null)`) and the
   session's idle geometry (`services.ts` `admit`). The plan reports them in `memory()`, never in its floor, and sheds them before

@@ -54,6 +54,8 @@ export interface Pane2DPresenter<T extends object> {
     selectGpu(grant: GpuGrant): boolean;
     /** Same-task 0×0/backing-lease release; never closes session pixels. */
     releaseSurface(): void;
+    /** Whether the 2D side holds any canvas or charge that releaseSurface would give back. */
+    holdsSurface(): boolean;
 }
 
 export interface PaneSession<T extends object> {

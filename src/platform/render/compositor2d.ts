@@ -216,6 +216,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
 
     get surfaceGeneration(): number { return this.generation; }
+    /** Whether this compositor holds a canvas or a charge for one: a sized display, a working buffer, or a display reserve. */
+    holdsSurface(): boolean { return this.surface.width > 0 || this.surface.height > 0 || this.gpuBytes > 0 || this.displayReserved > 0; }
 
     // The floor's promotion (SurfaceBacking.promote): canvas2d is the last display a pane can fall to, so it is never refused.
     promoteSurface(): boolean { return this.backing?.promote(true) ?? true; }
@@ -1206,5 +1208,6 @@ export function createCompositor2D<T extends object>(options: Compositor2DOption
         select2D: () => options.select2D(compositor),
         selectGpu: grant => options.selectGpu(grant),
         releaseSurface: () => compositor.releaseGpu('hidden'),
+        holdsSurface: () => compositor.holdsSurface(),
     } };
 }

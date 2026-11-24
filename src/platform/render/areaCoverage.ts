@@ -81,6 +81,9 @@ export interface AreaKit {
     retire(prepared: PreparedArea): void;
     /** The caller no longer keeps this edge array: its buffer goes once no admission holds it. */
     forget(edges: Float32Array): void;
+    /** Destroys edge sets no admission holds and the current frame did not use (`keepRecent`: nor the kit's previous frame), least
+     * recently used first, until `bytes` are freed. Returns the bytes freed (their leases return as the buffers retire). */
+    evictIdle(bytes: number, keepRecent?: boolean): number;
     /** Starts compiling the device's shared pipelines (at the route's creation), so the first area admitted on this device does not
      * wait a frame for them: the first drag's preview did (its ink-union route is the first area user, as the board draws ink by the
      * analytic route). */
@@ -227,7 +230,8 @@ export function createAreaKit(): AreaKit {
     let device: GfxDevice | null = null;
     let edgePipeline: PipelineHandle | null = null;
     let clear: PipelineHandle | null = null;
-    let pipelineSet: SharedAreaPipelines | null = null, frame = 0;
+    // The kit's current frame and the one before it: idle sets either used are kept (trimIdle).
+    let pipelineSet: SharedAreaPipelines | null = null, frame = 0, previous = -1;
     /** Every edge set on the device, by its edge array; idle ones (refs 0) are the least recently used first. */
     const sets = new Map<Float32Array, EdgeSet>();
     const live = new Set<PreparedArea>();
@@ -334,17 +338,23 @@ export function createAreaKit(): AreaKit {
         for (const piece of set.pieces) set.device.destroy(piece.buffer);
         set.pieces.length = 0;
     };
-    /** Keeps idle sets within IDLE_EDGE_BYTES, least recently used first out; a set used this frame stays. */
+    /** Keeps idle sets within IDLE_EDGE_BYTES, least recently used first out; a set used this frame or the kit's previous one stays.
+     * An admission the upload budget defers resumes next frame from the sets it already uploaded; kept for the current frame only,
+     * a view whose sets passed the limit uploaded the same edges again each frame and never finished (measured, the 10,000-stroke
+     * old board after a zoom reset on WebGL2: ~0.75 MB of edge buffers re-created per frame, its tile deferred at every vsync). Every
+     * set is leased from the GPU pool, so the governor still bounds what this keeps. */
     const trimIdle = (): void => {
         if (idleBytes <= IDLE_EDGE_BYTES) return;
         for (const set of [...sets.values()]) {
             if (idleBytes <= IDLE_EDGE_BYTES) break;
-            if (set.refs === 0 && set.usedFrame < frame) destroySet(set);
+            if (set.refs === 0 && set.usedFrame < previous) destroySet(set);
         }
     };
     const unref = (set: EdgeSet): void => {
         if (--set.refs !== 0) return;
-        idleBytes += set.bytes; set.usedFrame = frame;
+        // Its recency stays the frame an admission last used it: a set let go by a cancelled admission is as old as that admission, so
+        // the reclaim a refused position makes (freeOwn) can take it at once, while the sets this frame or the last admitted stay.
+        idleBytes += set.bytes;
         // Most recently used last, so the trim takes the oldest first. A set no longer indexed (forgotten, or of an old device
         // generation) goes with its last holder.
         if (sets.get(set.key) === set) { sets.delete(set.key); sets.set(set.key, set); }
@@ -515,7 +525,18 @@ export function createAreaKit(): AreaKit {
             if (set.refs === 0) destroySet(set);
             else sets.delete(edges);
         },
-        beginFrame(next): void { frame = next; },
+        beginFrame(next): void { if (next !== frame) { previous = frame; frame = next; } },
+        // Unreached by any trim, up to IDLE_EDGE_BYTES of idle edges per kit sat in a pane's GPU grant for good: a narrow pane of
+        // dense ink at rest after divider drags was refused its visible tiles at its own grant, its picture on a stand-in.
+        evictIdle(bytes, keepRecent = false): number {
+            let freed = 0;
+            for (const set of [...sets.values()]) {
+                if (freed >= bytes) break;
+                if (set.refs !== 0 || set.usedFrame >= (keepRecent ? previous : frame)) continue;
+                freed += set.bytes; destroySet(set);
+            }
+            return freed;
+        },
         release,
         // The scratch is reported once, by the kit whose allocator holds its charge (a report never moves without the lease).
         memory: () => {

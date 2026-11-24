@@ -648,11 +648,11 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             if (!budget.claimUpload(bytes)) return { status: 'deferred' };
             // Rastered before it is placed: an entry the atlas holds must already have its texels, or a later draw would read nothing.
             const made = raster.rasteriseBitmap(req, geometry, cellIndex, colourOf);
-            let placed: AtlasEntry | 'oversize' | 'denied';
+            let placed: ReturnType<TextAtlas['place']>;
             try {
                 placed = colour!.place(fillIdentity(probe, req, cellIndex, colourOf), at.w, at.h, frame);
                 if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
-                if (placed === 'denied') return refused('gpu', bytes);
+                if ('denied' in placed) return refused('gpu', placed.denied);
                 colour!.uploadBitmap(placed, made.bitmap);
             } finally { made.bitmap.close(); }
             auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
@@ -691,7 +691,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             try {
                 const placed = mono!.place(fillIdentity(probe, req, cellIndex, null), at.w, at.h, frame);
                 if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
-                if (placed === 'denied') return refused('gpu', at.w * at.h);
+                if ('denied' in placed) return refused('gpu', placed.denied);
                 device!.writeTexture(staged.texture, { x: spot.x, y: spot.y, width: at.w, height: at.h },
                     { source: made.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
                 let next = pending[pendingCount];

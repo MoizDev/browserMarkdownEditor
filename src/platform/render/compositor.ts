@@ -213,6 +213,11 @@ export class GpuCompositor implements PaneCompositor {
     #atlas: { lease: TargetLease | null; x: number; y: number; rowH: number } | null = null;
     /** Layer tile texture → its region of the atlas, for the samples that follow in this frame. */
     readonly #atlasRegions = new Map<TextureHandle, { texture: TextureHandle; x: number; y: number }>();
+    /** Each open offscreen pass's extent in device pixels, both the scope and the audit proxy the layer was given. A quad's destination
+     * is in its pass's pixels: mapped against the pane's surface instead, the CPU route's raster laid into a 516-px tile pass came out
+     * at the tile-to-pane ratio (measured, the 5,642-stroke board at fit on WebGL2: one tile's picture drawn at 0.5 × 0.6, the rest of
+     * it blank, while every tile counted exact). */
+    readonly #passExtents = new WeakMap<GpuPass, { readonly width: number; readonly height: number }>();
 
     constructor(options: GpuCompositorOptions) {
         if (options.target.generation !== options.owner.resources.generation || options.target.limits !== options.owner.limits) {
@@ -781,8 +786,7 @@ export class GpuCompositor implements PaneCompositor {
             sourceRect.x + sourceRect.width > info.usedRect.x + info.usedRect.width ||
             sourceRect.y + sourceRect.height > info.usedRect.y + info.usedRect.height) throw new ArenaError('invalid-input');
         if (!sourceRect.width || !sourceRect.height || !destRect.width || !destRect.height || !opacity) return;
-        const width = Math.round(active.view.viewport.width * active.view.viewport.dpr);
-        const height = Math.round(active.view.viewport.height * active.view.viewport.dpr);
+        const { width, height } = this.#extentOf(pass, active.view);
         const scissor = envelope(destRect, width, height);
         if (!scissor.width || !scissor.height) return;
         // A tile drawn into the shared atlas is sampled from its region: the same texels, shifted by the region's origin.
@@ -831,8 +835,7 @@ export class GpuCompositor implements PaneCompositor {
         const sampledTexture = region ? region.texture : gpuTexture;
         const sampledInfo = region ? this.#options.owner.textureInfo(region.texture) : info;
         if (region) auditCount('compositor', 'atlas-sample', quads.length);
-        const width = Math.round(active.view.viewport.width * active.view.viewport.dpr);
-        const height = Math.round(active.view.viewport.height * active.view.viewport.dpr);
+        const { width, height } = this.#extentOf(pass, active.view);
         // Every quad is checked before anything is drawn, so a bad quad refuses the whole batch and draws none of it.
         const batch = this.#batchBuffer(quads.length * 8);
         let count = 0, left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
@@ -973,6 +976,8 @@ export class GpuCompositor implements PaneCompositor {
             return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(t) : value;
         } }) : scope;
         run.open = scope; run.counted = counted;
+        const extent = { width: viewport.width, height: viewport.height };
+        this.#passExtents.set(scope, extent); this.#passExtents.set(counted, extent);
         drawScope.passes.add(scope); drawScope.passes.add(counted);
         return counted;
     }
@@ -993,6 +998,11 @@ export class GpuCompositor implements PaneCompositor {
         else { current.finish(); current.raw.end(); }
     }
 
+    /** The pixel extent a draw into `pass` is mapped against: an offscreen pass's own viewport, else the surface's. */
+    #extentOf(pass: GpuPass, view: ViewState): { readonly width: number; readonly height: number } {
+        return this.#passExtents.get(pass)
+            ?? { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
+    }
     #check(): void { if (this.#disposed) throw new ArenaError('aborted'); }
     #drawable(snapshot: Snapshot, frame: ScheduledFrame): boolean {
         return !this.#disposed && this.#snapshot === snapshot && !!snapshot.metrics &&

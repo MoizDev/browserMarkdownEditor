@@ -119,7 +119,10 @@ come back to either.
   HOST ext. Every save goes through App's versioned IO (`useSaveFunnel`), never directly from a worker.
 - The pane's own autosave does not rebind: the writer builds from pristine + full ink, so the new bytes are what the
   pane already paints, and `pdfInkRebind` skips a same-generation write. A rebind covers with input detached
-  (~150 ms of dropped presses), so only outside changes may cause one.
+  (~150 ms of dropped presses), so with a board on screen only outside changes may cause one. The skipped write is
+  remembered (`writtenAhead`): once Original/Text shows the document, App advances the generation over it
+  (`usePdfActions.adoptSavedPdfInk`, keeping the retained owner) and the owner follows (`adoptWritten`) with no board
+  on screen — otherwise Original keeps drawing the generation from before the ink.
 - Rebind only to freshly inspected saved bytes with a forward generation and the same pristine. The caller invokes
   `runtime.adoptPaintSource` before publishing ready. Pins retain the WHOLE `capturePaintBinding()` bundle (token,
   factories, retainer); `scene.setPaintBinding` installs it atomically. Updating a token alone retags old work.

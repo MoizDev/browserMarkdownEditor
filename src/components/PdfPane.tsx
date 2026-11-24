@@ -46,6 +46,7 @@ const PdfTiledTextSurface = pdfTiledTextSurfaceSlot.View;
 const NativePdfEntry = nativePdfEntrySlot.View;
 const NATIVE_PDF_ZOOM = Object.freeze({ min: 0.4, max: 4 });
 const NATIVE_PDF_INSETS = Object.freeze({ left: 28, right: 28, top: 16, bottom: 0 });
+const noSubscription = () => () => {};
 
 export interface PdfPaneProps {
     documentId: string;
@@ -96,6 +97,8 @@ export interface PdfPaneProps {
     /** Turn the pages a quarter and write the file (App.rotatePdf). Reading
      *  only: the annotate canvas draws against the pages as they are. */
     onRotate: (path: string, delta: number, pageIndex?: number) => void;
+    /** Advance the byte generation over this document's own Annotate saves (App.adoptSavedPdfInk); true when it did. */
+    onAdoptSavedInk?: (path: string) => Promise<boolean>;
     /** True while this tab has strokes not yet written to disk. */
     isDirty: boolean;
     /** The file parted ways with the tab on disk (OpenTab.disk). The bar is
@@ -124,7 +127,7 @@ interface PdfSource {
  * and a dirty/rebinding document must keep its actual editing shell mounted. */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode: requestedMode, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
+function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode: requestedMode, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, onAdoptSavedInk, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
     // A page turn held for this document (utils/pdfTurnHold.ts): the pane is Original, whatever mode was asked, until
     // it settles; no Annotate board mounts, reads the role of the bytes being replaced or takes ink meant for the old
@@ -338,7 +341,9 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         && reading.identity.documentId === documentId && reading.identity.path === file.path
         && nativeCanvasHost.isCurrent(liveNativeIdentity));
     const retainedIdentity = nativeCanvasHost?.identity(documentId), retainedSource = getPdfInkSourceState(documentId);
-    const retainedToken = retainedSource?.getSnapshot().token;
+    const retainedState = useSyncExternalStore(retainedSource?.subscribe ?? noSubscription,
+        () => retainedSource?.getSnapshot(), () => undefined);
+    const retainedToken = retainedState?.token;
     // Dirty ink and a saved-byte rebind change the outer role entry, not the acquired
     // document owner. Keep its camera/input shell; that source's own cover fences writes.
     const retainedNative = !!(mode === 'edit' && retainedIdentity && retainedToken && nativeCanvasHost && appSession && reading
@@ -704,6 +709,22 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         const pane = root.current;
         if (documentId && pane && standIn && (!isVisible || mode !== 'read' || textSurface)) dropPdfStandInFrame(documentId, pane);
     }, [documentId, standIn, isVisible, mode, textSurface]);
+    // Annotate's own saves keep the byte generation (no rebind under the pen), so the generation Original opens still
+    // names the pages without that ink: the file looked unannotated here until the tab was reloaded (measured: a saved
+    // stroke absent from Original, present after reload). Once Original or Text is what shows the document, App moves
+    // the generation onto the saved file and the retained Annotate owner follows it while no board is on screen.
+    const adoptInk = !!retainedState?.writtenAhead && requestedMode === 'read' && !turnHeld && isVisible && !!onAdoptSavedInk && !isDirty && !flushing && !disk;
+    const adopting = useRef(false);
+    useEffect(() => {
+        const state = retainedSource, ahead = retainedState;
+        if (!adoptInk || !onAdoptSavedInk || !state || !ahead || adopting.current) return;
+        adopting.current = true;
+        // Advanced already by an earlier pass whose rebind did not start: only the owner has to follow.
+        const advance = appSession && ahead.token.bytesGeneration < appSession.bytesGeneration ? Promise.resolve(true) : onAdoptSavedInk(file.path);
+        void advance.then(advanced => advanced && getPdfInkSourceState(documentId) === state ? state.adoptWritten() : undefined)
+            .catch(() => { /* The owner reports a failed rebind itself, as editing paused. */ })
+            .finally(() => { adopting.current = false; });
+    }, [adoptInk, onAdoptSavedInk, file.path, documentId, retainedSource, retainedState, appSession]);
     // Bound to this pane's path once: a fresh arrow per render would re-render
     // the memoized viewer on every keystroke anywhere in the app.
     const rotateThis = useCallback((delta: number, pageIndex?: number) => onRotate(file.path, delta, pageIndex), [onRotate, file.path]);

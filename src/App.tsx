@@ -334,7 +334,7 @@ export default function App() {
   });
 
   const {
-    handleUnsignedPdfCopy, preparePdfPrint, rotatePdf, preparePdfDeparture, canLeavePdfVault
+    handleUnsignedPdfCopy, preparePdfPrint, rotatePdf, adoptSavedPdfInk, preparePdfDeparture, canLeavePdfVault
   } = usePdfActions({
     getVaultActivation, readFileSnapshot, readBytesVersioned, writeDistinctCopy, ask,
     tell, notifyRef, rootHandleRef, currentVaultIdRef, readerEpochRef, tabsRef, activeTabPathRef,
@@ -715,6 +715,7 @@ export default function App() {
             onAnnotationPreflight={onAnnotationPreflight}
             onPreparePdfPrint={preparePdfPrint}
             onRotatePdf={rotatePdf}
+            onAdoptSavedPdfInk={adoptSavedPdfInk}
             onRetryRead={retryUnreadTab}
             onOpenNotebookSource={handleOpenNotebookSource}
             onExportNotebook={handleExportNotebook}

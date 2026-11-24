@@ -405,7 +405,8 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
           // source plus the board's full ink, so the bytes just written are what this pane already shows, and a new
           // generation would rebind the pane — new immutable tokens, an opaque Updating cover with input detached —
           // dropping any press in the ~150 ms after each autosave (whiteboard's person-click matrix: 2 of 6 PDF rows).
-          // The versioned baseline above still moves, and any outside change still bumps and rebinds.
+          // The versioned baseline above still moves, and any outside change still bumps and rebinds. Original catches
+          // up once it is what shows the file, with no board on screen (PdfPane → usePdfActions.adoptSavedPdfInk).
           const selfSave = nativeSource && !!sessionAtCall && documentSessions.get(id) === sessionAtCall
             && typeof bufferedSource !== 'string' && bufferedSource?.owner.session === sessionAtCall.serial;
           if (isPdf && !selfSave) bumpBytesGeneration(id);

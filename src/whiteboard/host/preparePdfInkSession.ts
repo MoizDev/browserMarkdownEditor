@@ -18,6 +18,8 @@ export interface PdfInkSourceState {
     getSnapshot(): PdfInkRebindSnapshot;
     subscribe(listener: () => void): () => void;
     readMedia(id: MediaId, signal: AbortSignal): Promise<Blob>;
+    /** After App advanced the generation over this owner's kept write (`writtenAhead`), rebind to it. */
+    adoptWritten(): Promise<void>;
 }
 
 export interface PreparePdfInkSessionOptions {
@@ -128,6 +130,7 @@ export async function prepareAcceptedPdfInkSession(options: PreparePdfInkSession
                     return prepared.sources.retain();
                 },
                 getSnapshot: rebind.getSnapshot, subscribe: rebind.subscribe,
+                adoptWritten() { return closed || !current() || !isLiveOwner(owner) ? Promise.resolve() : rebind.adoptWritten(); },
                 async readMedia(id, mediaSignal) {
                     mediaSignal.throwIfAborted();
                     if (closed || !current() || !isLiveOwner(owner)) throw stale();

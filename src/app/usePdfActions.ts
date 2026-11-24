@@ -11,9 +11,9 @@ import { drain } from '../utils/unloadCoordinator';
 import { getView } from '../utils/viewRegistry';
 import { PdfBuildRefused, pdfSnapshotRefusal } from '../utils/pdfBuildRefusal';
 import { describeReadError } from './readErrors';
-import { RECOVERY_SESSION_BINDING } from './nativeOwners';
+import { hasHostedNativeOwner, RECOVERY_SESSION_BINDING } from './nativeOwners';
 import { loadChunk } from '../platform/chunkLoad';
-import { holdPdfTurn } from '../utils/pdfTurnHold';
+import { holdPdfTurn, pdfTurnHeld } from '../utils/pdfTurnHold';
 
 /** Everything the PDF actions read from App. Refs are App's own `useRef`s. */
 export interface UsePdfActionsDeps {
@@ -99,6 +99,37 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
     try { await turnPdf(path, delta, pageIndex); } finally { release?.(); }
   }, [tabsRef, turnPdf]);
 
+  /**
+   * Original is about to show a PDF whose Annotate board saved without a new byte generation (useSaveFunnel keeps it
+   * for the pane's own saves, so the pen never meets a rebind's cover). That generation still names the bytes before
+   * the ink, which is what Original would draw. Advance it now that no board is on screen, keeping the retained
+   * Annotate owner (its camera, history and write authority) through it; the caller then has the owner's PDF source
+   * follow (`adoptWritten`). The board's after-write step is waited out first: until it has run, the source does not
+   * know the newest write id, and a rebind to the older one would refuse the file as not its own. False, with nothing
+   * advanced, when anything is still being written or the file is held.
+   */
+  const adoptSavedPdfInk = useCallback(async (path: string): Promise<boolean> => {
+    const eligible = () => {
+      const tab = tabsRef.current.find(t => t.file.path === path);
+      if (!tab || tab.mode !== 'read' || tab.readError || tab.representation.loadedKind !== 'pdf') return undefined;
+      const session = documentSessions.get(tab.id), policy = nativePoliciesRef.current.get(tab.id);
+      return session && policy && policy.kind === 'pdfInk' && policy.session === session.serial && policy.activation === getVaultActivation()
+        && policy.retainedThroughGeneration === session.bytesGeneration && hasHostedNativeOwner(session, tab.id)
+        && !diskStateRef.current.has(tab.id) && !flushingRef.current.has(tab.id) && !documentBuffers.isDirty(tab.id)
+        // A turn reads the generation it began on; advancing it mid-turn would abandon the turn.
+        && !pdfTurnHeld(tab.id)
+        ? { id: tab.id, session, policy } : undefined;
+    };
+    const before = eligible();
+    if (!before) return false;
+    try { await before.session.adapter.drain?.(); } catch { return false; }
+    const now = eligible();
+    if (!now || now.session !== before.session || now.session.bytesGeneration !== before.session.bytesGeneration
+      || documentSessions.hasPendingEdits(now.id)) return false;
+    bumpBytesGeneration(now.id, true);
+    return now.policy.retainedThroughGeneration === now.session.bytesGeneration;
+  }, [bumpBytesGeneration, documentBuffers, documentSessions, getVaultActivation, diskStateRef, flushingRef, nativePoliciesRef, tabsRef]);
+
   const pdfDeparturesRef = useRef(new Set<string>());
   const preparePdfDeparture = useCallback(async (paths: readonly string[], trashOwned = false): Promise<boolean> => {
     for (const path of paths) {
@@ -142,6 +173,6 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
   }, [documentBuffers, flushingRef, notifyRef, tabsRef]);
 
   return {
-    handleUnsignedPdfCopy, preparePdfPrint, rotatePdf, preparePdfDeparture, canLeavePdfVault,
+    handleUnsignedPdfCopy, preparePdfPrint, rotatePdf, adoptSavedPdfInk, preparePdfDeparture, canLeavePdfVault,
   };
 }

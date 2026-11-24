@@ -649,7 +649,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     // A device frame prepares no outlines (CanvasPaintAdapter.prepare): its routes never read them.
                     else direct!.prepare(view, work, !allocatorHost?.device());
                 },
-                readyFrame: () => current().readyFrame(), outlined: () => !useDense && !!direct!.outlined?.(), borrowPrepared: () => current().borrowPrepared(),
+                readyFrame: () => current().readyFrame(), outlined: () => !useDense && !!direct!.outlined?.(), building: () => !useDense && !!direct!.building?.(), borrowPrepared: () => current().borrowPrepared(),
                 retainPrepared: () => current().retainPrepared(),
                 draw2d: (ctx, view, band, omit) => current().draw2d(ctx, view, band, omit),
                 drawable2d: () => current().drawable2d(), reacquireReleased: () => current().reacquireReleased(),
@@ -880,8 +880,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     directBuiltFor = frame;
                 } else if (directBuiltFor !== frame) auditCount(options.auditSurface ?? 'board', 'direct:build-held');
                 else if (adapter.readyFrame() !== frame) { adapter.prepare(view, budget); auditCount(options.auditSurface ?? 'board', 'direct:build-resumed'); }
-                // A 2D bridge's outlines are shed by the device frames after it (CanvasPaintAdapter.prepare, `shed`).
+                // A 2D bridge's outlines are shed by the device frames after it (CanvasPaintAdapter.prepare, `shed`), and a build the
+                // reference has staged for this frame is driven too: a skipped resize bridge left its outlined build staged with no
+                // device frame to finish or drop it, and the board asked for a frame at every vsync with 'Updating…' for good
+                // (measured, a 5,642-stroke board at DPR 2 on WebGL2, the window grown: 600 frames per 10 s, no present). Only a staged
+                // build: the reference's paced retry of pictures it skipped would rebuild the whole snapshot on every retry.
                 else if (adapter.outlined?.()) { adapter.prepare(view, budget); auditCount(options.auditSurface ?? 'board', 'direct:shed-outlines'); }
+                else if (adapter.building?.()) { adapter.prepare(view, budget); auditCount(options.auditSurface ?? 'board', 'direct:build-staged'); }
                 if (directBuiltFor !== frame || adapter.readyFrame() !== frame) prepareUnchanged = false;
                 const composerChanged = prepareGpu(view, budget, frame);
                 if (composerChanged && renderAuditEnabled()) auditCount(options.auditSurface ?? 'board', 'unchanged-miss:composer');

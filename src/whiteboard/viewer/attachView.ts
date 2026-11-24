@@ -68,6 +68,8 @@ export const attachView: AttachView = options => {
     const sameSceneKey = (a: SceneKey | null, b: SceneKey): boolean => !!a && a.revision === b.revision && a.sheet === b.sheet
         && a.theme === b.theme && a.sensitive === b.sensitive && a.band === b.band;
     let viewAsked: SceneKey | null = null, sceneAsked: SceneKey | null = null, sceneDue = false;
+    // Whether the last stream asked for was a dense one (its frame holds only the live nodes): see onDensityMode.
+    let streamDense = false;
     // A refusal is for the whole sheet's size (revision, sheet, theme, sensitivity), not for the band: it latches across crossings.
     const sameSheetState = (a: SceneKey | null, b: SceneKey): boolean => sameSceneKey(a, { ...b, band: a?.band ?? null });
     // The band the last request was made at, and the band the view held before the last crossing during a live zoom (carriedBand).
@@ -210,7 +212,18 @@ export const attachView: AttachView = options => {
             pinVisible: ids => runtime.render.pinVisible(ids as Iterable<NodeId>), releasePins: () => runtime.render.releasePins() },
         inputActive: () => interaction?.pointerDown?.() ?? false,
         liveNodeIds, liveDraws: (nodeId, band, view, canvas) => interaction?.liveDraws?.(nodeId, band, view, canvas) ?? false, candidates: () => lastCandidates,
-        onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
+        // Back to 'direct' after a dense stream was asked for, the frame in hand holds only the live nodes, so the device requests that
+        // still stand (asked before it) no longer describe it and are forgotten, as a hide forgets them: kept, the scene asked before a
+        // context loss stood for the same key, the request returned early, and the restored WebGL2 board waited on its dense frame with
+        // 'Updating…' for good (measured, a 5,642-stroke board at DPR 2: 600 frames per 10 s after WEBGL_lose_context lose and restore;
+        // hide/show cured it). Only then: forgotten at every switch, each resize bridge asked the view and the whole scene again, and
+        // three dense panes on WebGL2 rested at quality 0.64 for the CPU those builds took.
+        onDensityMode(mode) {
+            if (densityMode === mode || disposed) return;
+            densityMode = mode;
+            if (mode === 'direct' && streamDense) { viewWorld = null; view2d = null; viewAsked = null; sceneAsked = null; sceneDue = false; }
+            requestPaint();
+        },
         requestFrame: () => { if (!disposed) requestPaint(); },
         onPaintProgress: () => { if (!disposed) publish('paint'); },
         onDrawn(revision, frame, context) {
@@ -473,6 +486,7 @@ export const attachView: AttachView = options => {
                 const total = pin.countCandidates?.(selectedSheet, WHOLE_SHEET) ?? null;
                 if (total !== null) wholeCount = { revision: key.revision, sheet: selectedSheet, count: total };
             }
+            streamDense = dense;
             frames.requestStream({ stream, isCurrent: () => pin.isCurrent(), release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
                 open: (apron, signal, resolved) => open.call(pin, { ...identity, world: apron }, signal, resolved) });
             paintJob = null; publish('paint');

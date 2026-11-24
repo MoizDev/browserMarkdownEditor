@@ -23,6 +23,8 @@ export interface CanvasPaintAdapter {
     readyFrame(): PaintSource | null;
     /** Whether the presented snapshot carries outlines (a 2D draw asked for them): a device frame then prepares again, to shed them. */
     outlined?(): boolean;
+    /** True while a build for the current frame is staged and unfinished: work only a later prepare advances. */
+    building?(): boolean;
     /** Borrow is valid only until the next prepare, release or dispose. */
     borrowPrepared(): PreparedPaint2d | null;
     /** Physical retention for asynchronous fact work: the returned prepared resources, their image
@@ -414,8 +416,13 @@ export function createCanvasPaintAdapter(
                 return;
             }
             if (presented && !sameToken(presented.frame, frame)) { releaseSnapshot(presented); presented = null; }
-            // A snapshot with outlines serves a frame that needs none; one without cannot serve a 2D draw.
-            if (staged && (staged.frame !== frame || staged.scale !== scale || (vectors && !staged.vectors))) { releaseSnapshot(staged); staged = null; }
+            // A snapshot with outlines serves a frame that needs none; one without cannot serve a 2D draw. An outlined build still in
+            // progress is let go by a device frame the presented snapshot already serves: only a 2D draw (a resize bridge since skipped)
+            // wanted its outlines, and finished it would only be shed again.
+            const presentedServes = !!presented && presented.frame === frame && presented.scale === scale;
+            if (staged && (staged.frame !== frame || staged.scale !== scale || (vectors && !staged.vectors) || (!vectors && staged.vectors && presentedServes))) {
+                releaseSnapshot(staged); staged = null;
+            }
             // A presented snapshot that skipped pictures for want of memory is redone, paced, until they draw: nothing else would ask
             // again while the frame and scale stay the same, and the placeholder stayed for good (measured: 8000x6000 at DPR 2).
             const retry = !staged && !!presented && presented.frame === frame && presented.scale === scale && presented.skipped.size > 0;
@@ -448,6 +455,7 @@ export function createCanvasPaintAdapter(
         },
         readyFrame() { return disposed ? null : presented?.frame ?? null; },
         outlined() { return !disposed && !!presented?.vectors; },
+        building() { const frame = resources.frames.readFrame(); return !disposed && !!staged && staged.frame === frame && !staged.complete && !staged.failed; },
         borrowPrepared,
         retainPrepared() {
             const s = presented;

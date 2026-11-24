@@ -147,8 +147,9 @@ draws differently because a GPU exists.
   still lands. `startFling` and `cancelMotion` are wired the same way (`scheduler.ts`, `attachPlatformPane.ts`).
 - Background work (two-phase layers' second call) gets the upload window (1 ms) while anyone interacts, and up to half
   the interval on a quiet frame (`QUIET_BACKGROUND_FRACTION`): held to 1 ms at rest, a dense board's tiles took 20–50 s.
-  A background call passed over for time asks no next frame when its foreground call ran and the layer needs none: the
-  board's bands share one composer, and that mark kept a heavy settling board framing at rest for good.
+  A background call passed over for time asks no next frame when the layer says that frame is finished
+  (`Layer.backgroundOwed`): the board's bands share one composer, and that mark kept a heavy settling board framing at rest.
+  Never read it from `needsFrame`: a composer waiting on a denied part answers false with its draw list still owed.
 - An offscreen-only encode that recorded no pass settles its layers as submitted (`offscreenSettled(true)`): told
   "discarded", the board composer asked for the next frame forever at rest. At rest a settled pane runs 0 frames.
 - Ask for a frame only for a cause. With the audit on, each present is named `present:<cause>` (`input`, `camera`,

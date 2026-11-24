@@ -1211,6 +1211,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 // false only when the composer and the draw inputs all match the presented frame (see unchangedSincePresented). The
                 // foreground call answers false: the frame's answer is the background call's.
                 twoPhase: true,
+                backgroundOwed: (frameId: number) => pendingFrame !== null && foregroundFrame === frameId,
                 prepare: (view: ViewState, budget: FrameBudget): boolean | void => {
                     prepareFrame(view, budget);
                     return budget.phase === 'foreground' || prepareUnchanged ? false : true;

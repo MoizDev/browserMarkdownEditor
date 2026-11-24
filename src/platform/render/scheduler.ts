@@ -1047,7 +1047,8 @@ export class FrameScheduler {
                     // A skipped frame is a presented frame whose GPU work is skipped: the same observers, overlays and presented record
                     // run for it. Acknowledgements are not added: nothing it draws is new, and the earlier ones still arrive on their own.
                     if (this.unchangedPicture(item) && item.entry.pane.presentUnchanged(item.frame)) {
-                        if (renderAuditEnabled()) auditCount('pane', 'present-skipped:unchanged');
+                        // Named like a present (present:<cause>): a pane that frames at rest with every picture unchanged shows up only here.
+                        if (renderAuditEnabled()) { auditCount('pane', 'present-skipped:unchanged'); auditCount('pane', 'skipped:' + item.cause); }
                         item.batch.skipped = true;
                         item.entry.presented = { token: item.frame.token, view: item.frame.view, geometry: item.geometry };
                         item.entry.pane.writeOverlays(item.frame);
@@ -1231,7 +1232,14 @@ export class FrameScheduler {
             const platform = meta === null;
             if (exhausted && !requesting && !platform) {
                 if (renderAuditEnabled() && meta && cameraMoved(meta.layer, item.frame.view)) auditCount('scheduler', 'camera-skipped:' + phase);
-                item.skipped = true;
+                // A background call passed over is no work lost when the layer says that frame is finished (backgroundOwed): the board's two
+                // bands share one composer, whose frame the underlay's background call had already finished. Marked deferred, every frame
+                // over its interval asked for the next, whose foreground call unsettled the composer again (measured, the 462-stroke notebook
+                // zoomed out to 40% on WebGL2, 1 run in 5: settling live at 34 ms of submit a frame, the content band passed over in 77 of
+                // 77 frames, 25 frames a second at rest for good). Asked of the layer, not read from needsFrame: a composer waiting on a
+                // denied live part answers no frame while its draw list is still owed, and skipped unmarked, a notebook rested on a third
+                // of its strokes with nothing to finish it (measured, ten dense tabs on WebGL2, 3 of 3 first visits of an old notebook).
+                if (!(meta && phase === 'background' && item.foreground.has(meta.layer) && meta.layer.backgroundOwed?.(item.frame.frameId) === false)) item.skipped = true;
                 // Which pass ran out of window: foreground ran out of its budget, background out of what foreground left.
                 if (renderAuditEnabled()) auditCount('scheduler', 'skip:' + phase);
                 // As below for a yielded background call: its foreground call ran this frame and draws at this camera. Not recorded here,

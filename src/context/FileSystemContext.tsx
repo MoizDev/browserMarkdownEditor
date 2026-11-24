@@ -2079,16 +2079,41 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             if (!parentPath) throw new Error('Board folder is outside the vault');
             const garbage = await request.parent.getDirectoryHandle(TRASH_DIR, { create: true });
             check();
-            const name = await freeEntryName(garbage, request.owner.name);
-            check();
-            const handle = await garbage.getFileHandle(name, { create: true });
-            check();
-            const output = await handle.createWritable();
-            try {
-                await output.write(request.blob);
+            // One copy of these exact bytes is the backup. The conversion keeps it before it shows the converted board, and
+            // the first save asks again before it overwrites the file (useSaveFunnel): each wrote its own, so a converted
+            // PDF left `mixed.pdf` and `mixed (1).pdf`, byte-identical, in Trash. A verified copy already there — under the
+            // names `freeEntryName` gives, walked as it walks them — is the backup; only with none is one written, so the
+            // first save still keeps one if the earlier copy was deleted meanwhile. Nothing already in Trash is touched.
+            const dot = request.owner.name.lastIndexOf('.');
+            const stem = dot > 0 ? request.owner.name.slice(0, dot) : request.owner.name, ext = dot > 0 ? request.owner.name.slice(dot) : '';
+            let name: string | undefined, handle: FileSystemFileHandle | undefined;
+            for (let n = 0; !handle; n++) {
+                const candidate = n ? `${stem} (${n})${ext}` : request.owner.name;
+                let existing: FileSystemFileHandle;
+                try { existing = await garbage.getFileHandle(candidate); }
+                catch (error) {
+                    if (error instanceof DOMException && error.name === 'TypeMismatchError') continue;
+                    if (error instanceof DOMException && error.name === 'NotFoundError') break;
+                    throw error;
+                }
                 check();
-                await output.close();
-            } catch (error) { await output.abort().catch(() => {}); throw error; }
+                const kept = await existing.getFile();
+                check();
+                if (kept.size === request.blob.size && await fingerprintSnapshot(kept, request.signal) === request.hash) { name = candidate; handle = existing; }
+            }
+            check();
+            if (!handle || !name) {
+                name = await freeEntryName(garbage, request.owner.name);
+                check();
+                handle = await garbage.getFileHandle(name, { create: true });
+                check();
+                const output = await handle.createWritable();
+                try {
+                    await output.write(request.blob);
+                    check();
+                    await output.close();
+                } catch (error) { await output.abort().catch(() => {}); throw error; }
+            }
             // A completed backup is retained even if the source or activation
             // changes before this proof finishes.
             await checkSource();

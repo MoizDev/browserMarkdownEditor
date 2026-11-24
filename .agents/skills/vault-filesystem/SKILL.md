@@ -218,7 +218,8 @@ both names; nothing else spells `'.Assets'`.**
   and a read-back fingerprint. On ANY failure it removes only the file it created (`isSameEntry`) and RETIRES the
   pictures it added (never `removeEntry` on a picture), so nothing half-written is left beside the original.
 - **Conversion backups** (old annotated PDFs; boards an EARLIER build converted in place): `keepConversionBackup`
-  copies the verified source bytes into the folder's `.Garbage` before a PDF conversion; `restoreConversionCopy`
+  copies the verified source bytes into the folder's `.Garbage` before a PDF conversion — or, when a verified copy of
+  those exact bytes is already there under `freeEntryName`'s names, returns it (conversion and first save both ask); `restoreConversionCopy`
   brings one back as a **separate copy** beside the file, never over it. A board an earlier build converted in place
   recorded no digest: `app/conversionRestore.ts` finds its backup by content (`utils/conversionRestore.ts`
   `matchesConversionEvidence`: verbatim envelope, shape ids, kept records), preferring the board's own folder's Trash, and

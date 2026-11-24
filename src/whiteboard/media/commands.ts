@@ -3,6 +3,7 @@ import type { Op } from '../change/ops';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { PictureNode } from '../model/nodes';
+import { missingPictureSentence } from './missingMedia';
 import { planPictureCrop, planPictureWindow, type CropWindow, type PictureCropPreset } from './crop';
 
 // Provenance: media edit gestures and session-owned transaction contracts;
@@ -35,7 +36,7 @@ export function createPictureCommands(options: { readonly runtime: BoardRuntime;
         const node = picture(id, false), entry = node.media ? doc.media.get(node.media) : undefined;
         const bytes = node.media ? runtime.media.get(node.media) : undefined;
         if (!entry) throw new Error('Original picture bytes are unavailable');
-        if (!bytes) throw new Error(`This picture’s file${entry.file ? `, ${entry.file},` : ''} is not in the .Assets folder beside this board, so it cannot be downloaded. Put the file back there and reopen the board.`);
+        if (!bytes) throw new Error(missingPictureSentence(entry, 'its original cannot be downloaded'));
         const ext = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
             'image/avif': 'avif', 'image/svg+xml': 'svg' } as Readonly<Record<string, string>>)[entry.mime];
         if (!ext) throw new Error('Unsupported original picture type');

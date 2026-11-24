@@ -27,6 +27,7 @@ import { prepareBoardClipboardMediaInJob } from './prepareMedia';
 import { pastePrivateClipboardInJob } from './privatePaste';
 import { pasteClipboardTextInJob } from './textPaste';
 import type { ClipboardInput, ClipboardIntent, ClipboardTarget } from './types';
+import { missingPictureSentence } from '../media/missingMedia';
 import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: clipboard classification order, C5 external-source admission and
@@ -104,9 +105,12 @@ export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, in
         const classification = await classifyClipboard(copied, intent, host.classifier, context.signal);
         try {
         check();
-        const noticeMissing = (ids: readonly MediaId[]) => host.notice(ids.length === 1
-            ? 'A pasted picture’s file is not in this board’s .Assets folder, so it shows as a placeholder; it appears once the file is there and the board is reopened.'
-            : `${ids.length} pasted pictures’ files are not in this board’s .Assets folder, so they show as placeholders; they appear once the files are there and the board is reopened.`);
+        // Called once the paste is in, so the records it names are this board's own (a paste into another folder keeps their names).
+        const noticeMissing = (ids: readonly MediaId[]) => {
+            const entry = ids.length === 1 ? runtime.session.doc.media.get(ids[0]) : undefined;
+            host.notice(entry ? missingPictureSentence(entry, 'it was pasted as a grey box')
+                : `${ids.length} pasted pictures are missing, so they were pasted as grey boxes. To bring them back, put their files in the .Assets folder beside this board and reopen the board.`);
+        };
         const base = { runtime, target: captured, intent, current: host.current, receivingBoardId: host.receivingBoardId,
             cameraZoom: host.cameraZoom, embedEnvironment: host.embedEnvironment ?? { appOrigin: host.classifier.appOrigin },
             embedManifest: host.embedManifest, noticeMissing, cooperate: host.cooperate };

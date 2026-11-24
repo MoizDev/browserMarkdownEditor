@@ -1,6 +1,6 @@
 import { getBoardPreferences, mouseInputChosen, mouseZoomInverted } from '../../utils/boardPreferences';
 import { isTransientPictureFailure } from '../../whiteboard/media/transientFailure';
-import { isMissingMedia, MissingMediaError } from '../../whiteboard/media/missingMedia';
+import { isMissingMedia, MissingMediaError, missingPictureSentence } from '../../whiteboard/media/missingMedia';
 import { recordBoardPresentation } from './debugStats';
 import { encodeTiledPngInWorker } from '../../whiteboard/export/pngWorkerClient';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
@@ -286,10 +286,10 @@ export function createNativeViewLease(options: {
     // view which file to put back. The bare id read as a fault, and the notice came back on every repaint after Dismiss.
     const toldMissing = new Set<MediaId>();
     const missingPicture = (id: MediaId): MissingMediaError => {
-        const entry = board.doc.media.get(id), file = runtime.media.currentFile(id) ?? entry?.file ?? null;
-        return new MissingMediaError(id, `A picture could not be shown: ${entry?.name ? `“${entry.name}”` : 'its file'} is not in the `
-            + `.Assets folder beside this board. The rest of the board can be edited, saved and exported; reopen the board once the file`
-            + `${file ? `, ${file},` : ''} is back there.`);
+        const entry = board.doc.media.get(id);
+        const sentence = entry ? missingPictureSentence({ ...entry, file: runtime.media.currentFile(id) ?? entry.file })
+            : 'A picture on this board is missing.';
+        return new MissingMediaError(id, `${sentence} The rest of the board can be edited, saved and exported.`);
     };
     const tellMissing = (error: MissingMediaError) => { if (!toldMissing.has(error.id)) { toldMissing.add(error.id); options.onNotice(error.message); } };
     const images = createBoardHostImages({ identity: { session: `${identity.documentId}:${identity.session}`,

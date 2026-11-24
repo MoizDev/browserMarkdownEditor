@@ -1,6 +1,7 @@
 import type { WorkerContext } from '../../platform/workers';
 import { add, divide, interval, multiply, nextDown, nextUp, subtract } from '../geom/numeric';
-import type { InkCoverageReply, InkCoverageRequest } from './geometryProtocol';
+import type { InkCoverage } from '../ink/outline';
+import type { InkCoverageRequest } from './geometryProtocol';
 
 const upAdd = (a: number, b: number) => a === 0 && b === 0 ? 0 : nextUp(a + b);
 const upMul = (a: number, b: number) => a === 0 || b === 0 ? 0 : nextUp(a * b);
@@ -20,12 +21,12 @@ function distanceUpper(x: number, y: number, ax: number, ay: number, bx: number,
 }
 
 export interface NestedLodResult {
-    readonly coverage: InkCoverageReply;
+    readonly coverage: InkCoverage;
     readonly certificate: Readonly<{ areaBoundWorld: number; referenceLowerWorld: number }>;
 }
 
 /** All levels compare directly to the original chain, never to the preceding approximation. */
-export async function nestedInkLod(fine: InkCoverageReply, request: InkCoverageRequest, chunkCount: number,
+export async function nestedInkLod(fine: InkCoverage, request: InkCoverageRequest, chunkCount: number,
     context: WorkerContext, scratch: (bytes: number) => void): Promise<NestedLodResult | null> {
     const s = fine.segments, n = s.length / 6, scale = request.options.deviceScale;
     if (chunkCount !== 1 || request.range.firstSpan !== 0 || request.range.spanCount !== request.samples.totalCount - 1 ||

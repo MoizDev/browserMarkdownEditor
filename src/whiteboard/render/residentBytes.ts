@@ -1,6 +1,7 @@
 import type { ConnectorGeometry } from '../geom/connectorTypes';
 import type { BoardVectorGeometry } from './vectorGeometry';
 import type { InkCoverage } from '../ink/outline';
+import { inkCoverageBytes } from '../ink/packedCoverage';
 import type { TextPaint } from '../text/paint';
 import { inkCoverageChunks, type PaintNode } from './paintStream';
 
@@ -8,8 +9,7 @@ import { inkCoverageChunks, type PaintNode } from './paintStream';
 // record objects count at fixed costs. These size budgets and leases; they are not a heap measurement.
 
 export function inkChunkBytes(chunk: InkCoverage): number {
-    return 256 + chunk.radii.byteLength + chunk.segments.byteLength + chunk.discs.byteLength
-        + chunk.centreline.byteLength + chunk.arcMaps.length * 64;
+    return 256 + inkCoverageBytes(chunk);
 }
 
 export function textPaintBytes(paint: TextPaint): number {

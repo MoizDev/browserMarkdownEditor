@@ -1,10 +1,9 @@
 import { serve, type WorkerContext } from '../../platform/workers';
 import { boardHandlers, type BoardWorkerHandler } from './protocol';
 import { buildPackedWithMemory } from './geometryHandler';
-import { inkCoverage } from './inkCoverageHandler';
-import { inkLod } from './inkLodHandler';
+import { inkBatch } from './inkBatchHandler';
 
-const handlers = boardHandlers({ buildPacked: buildPackedWithMemory, 'ink.coverage': inkCoverage, 'ink.lod': inkLod });
+const handlers = boardHandlers({ buildPacked: buildPackedWithMemory, 'ink.batch': inkBatch });
 const unwrapped: Record<string, BoardWorkerHandler> = {};
 for (const [name, handler] of Object.entries(handlers)) {
     unwrapped[name] = (args, context) => {

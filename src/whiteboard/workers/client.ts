@@ -39,6 +39,16 @@ export function boardWorker(kind: SharedBoardWorker): BoardWorkerClient {
     clients.set(kind, client);
     return client;
 }
+const pools = new Map<SharedBoardWorker, BoardWorkerClient[]>();
+/** Member `index` of a small pool of `kind` workers: member 0 is the shared worker (`boardWorker`), each other member a worker of
+ * its own, made on its first request and kept, like the shared one, for the page's life. */
+export function boardWorkerPoolMember(kind: SharedBoardWorker, index: number): BoardWorkerClient {
+    if (!Number.isSafeInteger(index) || index < 0) throw new RangeError('Invalid board worker pool member');
+    if (index === 0) return boardWorker(kind);
+    let pool = pools.get(kind);
+    if (!pool) pools.set(kind, pool = []);
+    return pool[index - 1] ??= createBoardWorkerClient(kind, `whiteboard-${kind}-pool-${index}`);
+}
 let dedicatedSerial = 0;
 /** A board worker of its own for one job, whose `dispose` ends the worker and so returns its whole heap at once. An old board's
  * import builds the file's text, its object graph and the board in the worker's heap, and the shared worker kept that garbage long

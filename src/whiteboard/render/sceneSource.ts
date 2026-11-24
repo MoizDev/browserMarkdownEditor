@@ -57,6 +57,11 @@ function frameClip(node: Extract<Node, { kind: 'frame' }>, world: Affine): Paint
  * node at a time, a paint stream waited on each in turn with the main thread and the worker mostly idle (measured, WebGL2,
  * Strokes-3 open: main 60% idle and the geometry worker 85% idle for 7 s). Bounded, so only this many resolutions are held. */
 const RESOLVE_AHEAD = 16;
+/** How many strokes may be resolving ahead: a stroke's geometry is asked in one batch with every other the task asks for, so the
+ * look-ahead is the batch, and sixteen strokes per round trip left a 10,060-stroke board's geometry phase bound by the round trips
+ * (measured, WebGL2: 16 in flight for 2.7 s, 4.2 ms each). A resolved stroke holds only its paint and packed coverage. Other nodes
+ * (pictures, text) keep the RESOLVE_AHEAD bound among them. */
+const RESOLVE_AHEAD_STROKES = 256;
 /** `resolve` starts a node's resolution (its answer is not awaited); `take` hands back the oldest started one, in canonical order. */
 type PaintStep = { readonly kind: 'cooperate' } | { readonly kind: 'resolve'; readonly node: Readonly<Node>; readonly context: SceneResolveContext }
     | { readonly kind: 'take' } | { readonly kind: 'emit'; readonly node: PaintNode };
@@ -134,10 +139,15 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
         previousPath = path;
         return path;
     };
-    let resolving = 0;
+    // The kinds of the resolutions in flight, oldest first (true: not a stroke), so a take knows which bound it frees.
+    let resolving = 0, others = 0, oldest = 0;
+    const heavy: boolean[] = [];
     const take = function* (): Generator<PaintStep, void, PaintNode | undefined> {
         const result = yield { kind: 'take' };
         resolving--;
+        if (heavy[oldest]) others--;
+        heavy[oldest++] = false;
+        if (oldest > 1024 && oldest * 2 > heavy.length) { heavy.splice(0, oldest); oldest = 0; }
         check();
         if (!result || !Array.isArray(result.content) || result.content.length > SECURITY_LIMITS.records
             || (result.underlay !== undefined && (!Array.isArray(result.underlay) || result.underlay.length > SECURITY_LIMITS.records))) throw new TypeError('Invalid resolved paint node');
@@ -168,7 +178,11 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
         if (scope.world && ports.visible && !ports.visible(node, ctx, scope.world)) return;
         check();
         yield { kind: 'resolve', node, context: ctx };
-        if (++resolving >= RESOLVE_AHEAD) yield* take();
+        resolving++;
+        const other = node.kind !== 'stroke';
+        heavy.push(other);
+        if (other) others++;
+        while (resolving >= RESOLVE_AHEAD_STROKES || others >= RESOLVE_AHEAD) yield* take();
     };
     check();
     if (ports.orderedIds) {

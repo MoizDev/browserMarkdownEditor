@@ -126,7 +126,6 @@ interface Estimate {
     current: PaintItem | null;
     clip: number;
     chunk: number;
-    arc: number;
     bytes: number;
     itemBytes: number;
     maxItemBytes: number;
@@ -214,24 +213,17 @@ function estimateStep(state: Estimate): void {
     if (item.kind === 'ink') {
         const chunks = inkCoverageChunks(item.coverage);
         if (state.chunk < chunks.length) {
-            const coverage = chunks[state.chunk], g = coverage.geometry;
-            if (state.arc < 0) {
-                const primitives = coverage.segments.length / 6 + coverage.discs.length / 3;
-                state.segments += primitives;
-                // Conservative provisional path estimate; exact native Path2D allocation is opaque.
-                addBytes(state, coverage.segments.byteLength + coverage.discs.byteLength + coverage.centreline.byteLength
-                    + coverage.radii.byteLength + g.cubics.byteLength + g.flags.byteLength + primitives * 40 * 80);
-                state.arc = 0; return;
-            }
-            if (state.arc < coverage.arcMaps.length) {
-                const map = coverage.arcMaps[state.arc++];
-                addBytes(state, map.cubic.byteLength + map.pieces.byteLength); return;
-            }
-            state.chunk++; state.arc = -1; return;
+            const coverage = chunks[state.chunk++];
+            const primitives = coverage.segments.length / 6 + coverage.discs.length / 3;
+            state.segments += primitives;
+            // Conservative provisional path estimate; exact native Path2D allocation is opaque. The coverage itself is the frame's
+            // charge (frameAssembler.ts), not the outlines'.
+            addBytes(state, primitives * 40 * 80);
+            return;
         }
     } else if (item.kind === 'path') { addBytes(state, item.d.length * 80); state.segments += item.d.length; }
     state.items++; state.maxItemBytes = Math.max(state.maxItemBytes, state.itemBytes); state.itemBytes = 0;
-    state.current = null; state.clip = 0; state.chunk = 0; state.arc = -1;
+    state.current = null; state.clip = 0; state.chunk = 0;
 }
 
 /** Each invocation belongs to one view; the paired layer definitions share one adapter. */
@@ -668,7 +660,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const startEstimate = (frame: PaintSource) => {
         if (estimate?.frame === frame) return;
         known.add(frame);
-        estimate = { frame, walk: paintItemsOf(frame), current: null, clip: 0, chunk: 0, arc: -1, bytes: 0, itemBytes: 0, maxItemBytes: 0, segments: 0, items: 0, done: false };
+        estimate = { frame, walk: paintItemsOf(frame), current: null, clip: 0, chunk: 0, bytes: 0, itemBytes: 0, maxItemBytes: 0, segments: 0, items: 0, done: false };
         denied = false;
     };
     const prune = (requested: PaintSource, ready: PaintSource | null) => {

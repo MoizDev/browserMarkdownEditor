@@ -10,8 +10,6 @@ import { auditCount } from '../../platform/render/renderAudit';
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { PathCoverageShapes } from '../../platform/render/pathCoverage';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import { prepareInkCoverageInWorker } from '../workers/inkCoverageClient';
-import type { BoardJobIdentity } from '../workers/protocol';
 import { pathFillTriangles, type PathFillTriangles } from './pathFillTriangles';
 import { inkCoverageChunks, type PaintInkItem } from './paintStream';
 import { yieldToHost } from '../../platform/yieldToHost';
@@ -132,7 +130,7 @@ function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: 
                 if (status === 'pending' && due()) { yield; check(); reset(); }
             } while (status === 'pending');
             if (status !== 'complete') throw new DOMException('Ink geometry cancelled', 'AbortError');
-            const coverage = job.result;
+            const coverage = job.coverage;
             chunks.push(coverage);
             distance += coverage.lengthWorld;
             error = coverage.dashPhaseErrorWorld;
@@ -148,14 +146,8 @@ function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: 
 /** Chunks are one stroke's union, not independently composited alpha bands. */
 export async function buildStrokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: {
     deviceScale: number; cooperate?: () => Promise<void>; signal?: AbortSignal; worker?: CoverageWorker;
-    lod?: { identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean };
 }): Promise<readonly InkCoverage[]> {
-    const lod = options.lod;
-    const chunkCount = Math.max(1, Math.ceil((samples.count(node.samples) - 1) / CURVE_CHUNK_SPANS));
-    const worker: CoverageWorker | undefined = lod ? (points, parameters, width, range, coverageOptions) =>
-        prepareInkCoverageInWorker(points, parameters, width, range, coverageOptions, lod.identity, options.signal,
-            lod.isCurrent, { chunkCount }) : options.worker;
-    const job = strokeCoverage(node, samples, { ...options, worker });
+    const job = strokeCoverage(node, samples, options);
     try {
         let value: InkCoverage | undefined;
         for (;;) {

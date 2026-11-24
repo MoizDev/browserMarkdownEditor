@@ -1,14 +1,14 @@
 import type { WorkerContext } from '../../platform/workers';
 import { CURVE_CHUNK_SPANS, materializeCurveRange } from '../ink/curve';
-import { InkCoverageJob } from '../ink/outline';
+import { InkCoverageJob, type InkCoverage } from '../ink/outline';
 import type { SampleSequence } from '../ink/samples';
 import { DOT_METRIC_PROVISIONAL } from '../ink/width';
-import { reportBoardMemory } from './boardMemory';
 import type { InkCoverageRequest } from './geometryProtocol';
 
-export async function inkCoverage(payload: unknown, context: WorkerContext): Promise<unknown> {
-    if (!payload || typeof payload !== 'object') throw new TypeError('Invalid ink coverage request');
-    const { samples, parameters, style, range, options } = payload as InkCoverageRequest;
+/** One chunk's coverage from its sample slabs. `memory` hears the job's working bytes at each cooperation point. */
+export async function computeInkCoverage(request: InkCoverageRequest, context: WorkerContext, memory: (bytes: number) => void): Promise<InkCoverage> {
+    if (!request || typeof request !== 'object') throw new TypeError('Invalid ink coverage request');
+    const { samples, parameters, style, range, options } = request;
     if (!samples || !(samples.xy instanceof Float64Array) || !(samples.kinds instanceof Uint8Array)
         || (samples.pressure !== null && !(samples.pressure instanceof Float64Array)) || !range || !options
         || !Number.isSafeInteger(samples.indexOffset) || samples.indexOffset < 0
@@ -34,40 +34,22 @@ export async function inkCoverage(payload: unknown, context: WorkerContext): Pro
         pressure: i => samples.pressure?.[index(i)],
         segmentKind: i => samples.kinds[index(i)] ? 'straight' : 'freehand',
     };
-    const owner = {}, inputBuffers = new Set([samples.xy.buffer, samples.kinds.buffer, ...(samples.pressure ? [samples.pressure.buffer] : [])]);
-    let inputBytes = 0;
-    for (const buffer of inputBuffers) inputBytes += buffer.byteLength;
-    reportBoardMemory(context, owner, inputBytes);
+    const closure = options.closure ?? null;
+    if (closure && ![closure.beforeX, closure.beforeY, closure.afterX, closure.afterY].every(Number.isFinite)) throw new TypeError('Invalid ink closure');
+    const geometry = materializeCurveRange(sequence, range, parameters, closure);
+    const job = new InkCoverageJob(sequence, geometry, style, { ...options, dotMetric: DOT_METRIC_PROVISIONAL });
+    memory(job.byteLength);
     try {
-        const closure = options.closure ?? null;
-        if (closure && ![closure.beforeX, closure.beforeY, closure.afterX, closure.afterY].every(Number.isFinite)) throw new TypeError('Invalid ink closure');
-        const geometry = materializeCurveRange(sequence, range, parameters, closure);
-        const job = new InkCoverageJob(sequence, geometry, style, { ...options, dotMetric: DOT_METRIC_PROVISIONAL });
-        reportBoardMemory(context, owner, inputBytes + job.byteLength);
-        try {
-            let started = performance.now(), work = 0;
-            for (;;) {
-                context.signal.throwIfAborted();
-                const status = job.step(1);
-                if (status === 'cancelled') throw new DOMException('Ink coverage cancelled', 'AbortError');
-                if (status === 'complete') {
-                    const { radiusAt: _radiusAt, ...result } = job.result;
-                    const buffers = new Set<ArrayBuffer>();
-                    const collect = (value: unknown): void => {
-                        if (!value || typeof value !== 'object') return;
-                        if (ArrayBuffer.isView(value)) { if (value.buffer instanceof ArrayBuffer) buffers.add(value.buffer); return; }
-                        for (const child of Object.values(value)) collect(child);
-                    };
-                    collect(result);
-                    reportBoardMemory(context, owner, inputBytes + job.byteLength);
-                    context.transfer(...buffers);
-                    return result;
-                }
-                if (++work >= 256 || performance.now() - started >= 3) {
-                    reportBoardMemory(context, owner, inputBytes + job.byteLength);
-                    await context.slice(); work = 0; started = performance.now();
-                }
+        let started = performance.now(), work = 0;
+        for (;;) {
+            context.signal.throwIfAborted();
+            const status = job.step(1);
+            if (status === 'cancelled') throw new DOMException('Ink coverage cancelled', 'AbortError');
+            if (status === 'complete') { memory(job.byteLength); return job.coverage; }
+            if (++work >= 256 || performance.now() - started >= 3) {
+                memory(job.byteLength);
+                await context.slice(); work = 0; started = performance.now();
             }
-        } finally { job.cancel(); }
-    } finally { reportBoardMemory(context, owner, null); }
+        }
+    } finally { job.cancel(); }
 }

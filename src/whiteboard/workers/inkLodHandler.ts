@@ -1,49 +1,28 @@
 import type { WorkerContext } from '../../platform/workers';
-import { inkCoverage } from './inkCoverageHandler';
-import { reportBoardMemory } from './boardMemory';
+import type { InkCoverage } from '../ink/outline';
+import { computeInkCoverage } from './inkCoverageHandler';
 import { nestedInkLod } from './inkLodNested';
 import { nestedInkLodGroups, type DerivedLod } from './inkLodGroups';
-import type { InkCoverageReply, InkCoverageRequest } from './geometryProtocol';
+import type { InkCoverageRequest } from './geometryProtocol';
 
-export async function inkLod(payload: unknown, context: WorkerContext): Promise<unknown> {
-    if (!payload || typeof payload !== 'object') throw new TypeError('Invalid ink LOD request');
-    const { request, chunkCount } = payload as { request: InkCoverageRequest; chunkCount: number };
+/** A chunk's coverage at the coarsest certified level of detail its device scale allows, or its fine coverage. */
+export async function computeInkLod(request: InkCoverageRequest, chunkCount: number, context: WorkerContext,
+    memory: (bytes: number) => void): Promise<{ readonly coverage: InkCoverage; readonly level: 'fine' | 'coarse' }> {
     if (!request || !Number.isSafeInteger(chunkCount) || chunkCount < 1) throw new TypeError('Invalid ink LOD descriptor');
-    const owner = {};
-    const buffers: Transferable[] = [];
-    const scoped: WorkerContext = {
-        get cancelled() { return context.cancelled; }, signal: context.signal,
-        slice: () => context.slice(), heartbeat: () => context.heartbeat(),
-        emit: (event, data, transfer) => context.emit(event, data, transfer),
-        transfer: (...items) => { buffers.push(...items); },
-    };
+    const fine = await computeInkCoverage(request, context, memory);
+    context.signal.throwIfAborted();
+    let result: DerivedLod | null = null;
     try {
-        const fine = await inkCoverage(request, scoped) as InkCoverageReply;
-        let bytes = 0;
-        for (const item of buffers) if (item instanceof ArrayBuffer) bytes += item.byteLength;
-        const input = new Set([request.samples.xy.buffer, request.samples.kinds.buffer,
-            ...(request.samples.pressure ? [request.samples.pressure.buffer] : [])]);
-        for (const buffer of input) bytes += buffer.byteLength;
-        reportBoardMemory(context, owner, bytes);
+        const scratch = (bytes: number) => memory(fine.segments.buffer.byteLength + bytes);
+        const uniform = await nestedInkLod(fine, request, chunkCount, context, scratch);
+        result = uniform ? { segments: uniform.coverage.segments, centreErrorWorld: uniform.coverage.centreErrorWorld,
+            certificate: uniform.certificate }
+            : await nestedInkLodGroups(fine, request.options.deviceScale, chunkCount, context, scratch);
+    } catch (error) {
         context.signal.throwIfAborted();
-        let result: DerivedLod | null = null;
-        try {
-            const memory = (scratch: number) => reportBoardMemory(context, owner, bytes + scratch);
-            const uniform = await nestedInkLod(fine, request, chunkCount, context, memory);
-            result = uniform ? { segments: uniform.coverage.segments, centreErrorWorld: uniform.coverage.centreErrorWorld,
-                certificate: uniform.certificate }
-                : await nestedInkLodGroups(fine, request.options.deviceScale, chunkCount, context, memory);
-        } catch (error) {
-            context.signal.throwIfAborted();
-            if (error instanceof DOMException && error.name === 'AbortError') throw error;
-        }
-        context.signal.throwIfAborted();
-        if (!result) {
-            context.transfer(...buffers);
-            return { coverage: fine, level: 'fine', certificate: null };
-        }
-        context.transfer(...buffers.filter(buffer => buffer !== fine.segments.buffer), result.segments.buffer as ArrayBuffer);
-        return { coverage: { ...fine, segments: result.segments, centreErrorWorld: result.centreErrorWorld },
-            level: 'coarse', certificate: result.certificate };
-    } finally { reportBoardMemory(context, owner, null); }
+        if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    }
+    context.signal.throwIfAborted();
+    if (!result) return { coverage: fine, level: 'fine' };
+    return { coverage: { ...fine, segments: result.segments, centreErrorWorld: result.centreErrorWorld }, level: 'coarse' };
 }

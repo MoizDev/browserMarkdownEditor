@@ -226,7 +226,7 @@ export interface InkGeometry {
 export function prepareInkGeometry(key: string, coverage: InkCoverage): InkGeometry {
     const rect = (r: Readonly<{ x: number; y: number; w: number; h: number }>): Rect =>
         ({ x: r.x, y: r.y, width: r.w, height: r.h });
-    const ink = rect(coverage.boundsLocal), centre = rect(coverage.centrelineBoundsLocal), box = rect(coverage.geometry.boundsLocal);
+    const ink = rect(coverage.boundsLocal), centre = rect(coverage.centrelineBoundsLocal), box = rect(coverage.curveBoundsLocal);
     if (![ink.x, ink.y, ink.width, ink.height, centre.x, centre.y, centre.width, centre.height,
         box.x, box.y, box.width, box.height].every(Number.isFinite)
         || ink.width < 0 || ink.height < 0 || centre.width < 0 || centre.height < 0 || box.width < 0 || box.height < 0) throw new RangeError('Invalid ink coverage bounds');

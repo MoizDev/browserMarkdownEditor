@@ -127,7 +127,7 @@ function* attachmentSurface(node: Readonly<Node>, options: BoardAttachmentSurfac
                         if (status !== 'pending') throw new DOMException('Attachment coverage cancelled', 'AbortError');
                         if (due()) { yield; reset(); }
                     }
-                    yield* addCoverage(job.result);
+                    yield* addCoverage(job.coverage);
                 } finally { job.cancel(); }
                 current = end;
                 if (due()) { yield; reset(); }

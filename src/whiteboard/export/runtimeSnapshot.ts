@@ -12,6 +12,7 @@ import type { MediaEntry, MediaId } from '../model/media';
 import type { SheetId } from '../model/ids';
 import type { SceneSnapshot } from '../scene/types';
 import { inkCoverageChunks, PaintStreamJob, type PaintFrame, type PaintItem } from '../render/paintStream';
+import { inkCoverageBytes } from '../ink/packedCoverage';
 import { paintItem2d } from '../render/reference/paint2d';
 import { prepareRaster, type PreparedRaster } from './prepareRaster';
 import { yieldToHost } from '../../platform/yieldToHost';
@@ -190,10 +191,8 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
                 for (const clip of item.clips) { add(clip.d.length * 80); await checkpoint(); }
                 if (item.kind === 'path') add(item.d.length * 80);
                 else if (item.kind === 'ink') for (const coverage of inkCoverageChunks(item.coverage)) {
-                    const g = coverage.geometry, primitives = coverage.segments.length / 6 + coverage.discs.length / 3;
-                    add(coverage.segments.byteLength + coverage.discs.byteLength + coverage.centreline.byteLength
-                        + coverage.radii.byteLength + g.cubics.byteLength + g.flags.byteLength + primitives * 40 * 80);
-                    for (const map of coverage.arcMaps) { add(map.cubic.byteLength + map.pieces.byteLength); await checkpoint(); }
+                    const primitives = coverage.segments.length / 6 + coverage.discs.length / 3;
+                    add(inkCoverageBytes(coverage) + primitives * 40 * 80);
                     await checkpoint();
                 }
                 await checkpoint();

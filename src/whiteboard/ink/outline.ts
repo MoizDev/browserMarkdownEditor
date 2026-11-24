@@ -6,6 +6,7 @@ import type { CubicArcMap } from './flatten';
 import type { SampleSequence } from './samples';
 import { curveRadii, DOT_METRIC_PROVISIONAL, interpolateRadius, radiusAtCurveParameter, radiusAtSample, strokeDot } from './width';
 import type { DotMetric, InkDot, InkWidth } from './width';
+import { inkCoverageBytes, packInkCoverage } from './packedCoverage';
 
 export interface DashPattern {
     readonly lengths: readonly number[]; // Positive even-count on/off lengths in world units; no guessed recipe.
@@ -29,10 +30,9 @@ export interface CoverageOptions {
     readonly radiusSlopeBound?: number; // Whole-stroke bound required for partial pressure/dash chunks.
     readonly maxPrimitives?: number;
 }
+/** A chunk's coverage as it is kept and drawn, picked, clipped and bounded: its rows and the bounds and errors certified for
+ * them. Its arrays are views on one buffer (packedCoverage.ts). */
 export interface InkCoverage {
-    readonly geometry: CurveGeometry;
-    readonly radii: Float64Array;
-    readonly arcMaps: readonly CubicArcMap[];
     readonly segments: Float64Array; // stride 6: x0,y0,r0,x1,y1,r1; endpoint-disc convex hulls.
     // Segment-row indices (into segments, stride 6) where a run of contiguous rows begins, ascending. A run breaks at a dash
     // off-interval, so the first row after one starts a run; the first emitted row of a chunk always starts one.
@@ -41,6 +41,8 @@ export interface InkCoverage {
     readonly centreline: Float64Array; // stride 4, undashed canonical centreline approximation.
     readonly boundsLocal: Readonly<{ x: number; y: number; w: number; h: number; }>;
     readonly centrelineBoundsLocal: Readonly<{ x: number; y: number; w: number; h: number; }>;
+    /** The chunk's curve (its realized samples' cubics) box: a stroke's pick box. */
+    readonly curveBoundsLocal: Readonly<{ x: number; y: number; w: number; h: number; }>;
     readonly centreErrorWorld: number;
     readonly radiusErrorWorld: number;
     readonly dashPhaseErrorWorld: number;
@@ -48,6 +50,13 @@ export interface InkCoverage {
     readonly lengthLowerWorld: number;
     readonly lengthUpperWorld: number;
     readonly closed: boolean;
+}
+/** The job's whole result: the coverage plus the curve, radii and arc maps it was flattened from. Only the job's own caller
+ * (the worker's level-of-detail derivation) reads these; what is kept is the coverage alone (`packInkCoverage`). */
+export interface InkCoverageBuild extends InkCoverage {
+    readonly geometry: CurveGeometry;
+    readonly radii: Float64Array;
+    readonly arcMaps: readonly CubicArcMap[];
     radiusAt(span: number, t: number): number;
 }
 
@@ -63,11 +72,8 @@ class Rows {
         }
         return this.stride * this.count++;
     }
-    finish(): Float64Array {
-        const result = this.data.slice(0, this.count * this.stride);
-        this.data = new Float64Array(0);
-        return result;
-    }
+    /** The rows written, as a view (the packed coverage copies them once). */
+    rows(): Float64Array { return this.data.subarray(0, this.count * this.stride); }
 }
 class DashCursor {
     index = 0;
@@ -144,7 +150,8 @@ export class InkCoverageJob {
     private lengthUpper = 0;
     private centreError = 0;
     private radiusError = 0;
-    private resultValue: InkCoverage | undefined;
+    private resultValue: InkCoverageBuild | undefined;
+    private coverageValue: InkCoverage | undefined;
     private readonly runStarts: number[] = [];
     private runOpen = false;
     private cancelled = false;
@@ -228,13 +235,17 @@ export class InkCoverageJob {
             + this.segments.data.byteLength + this.discs.data.byteLength + this.centreline.data.byteLength
             + (this.active?.byteLength ?? 0);
         for (const map of this.maps) bytes += map.cubic.byteLength + map.pieces.byteLength;
-        if (this.resultValue) bytes += this.resultValue.segments.byteLength + this.resultValue.discs.byteLength
-            + this.resultValue.centreline.byteLength;
+        if (this.resultValue) bytes += inkCoverageBytes(this.resultValue);
         return bytes;
     }
-    get result(): InkCoverage {
+    get result(): InkCoverageBuild {
         if (!this.resultValue) throw new Error('Ink coverage is not complete');
         return this.resultValue;
+    }
+    /** The coverage alone, as it is kept: it holds none of the curve, radii or arc maps the result also carries. */
+    get coverage(): InkCoverage {
+        if (!this.coverageValue) throw new Error('Ink coverage is not complete');
+        return this.coverageValue;
     }
     cancel(): void { this.cancelled = true; this.active?.cancel(); }
     step(maxWork: number): 'pending' | 'complete' | 'cancelled' {
@@ -337,7 +348,7 @@ export class InkCoverageJob {
             const g = this.geometry, n = g.cubics.length;
             this.disc(g.originX + g.cubics[n - 2], g.originY + g.cubics[n - 1], this.radii[this.radii.length - 1]);
         }
-        const segments = this.segments.finish(), discs = this.discs.finish(), centreline = this.centreline.finish();
+        const segments = this.segments.rows(), discs = this.discs.rows(), centreline = this.centreline.rows();
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (let i = 0; i < segments.length; i += 3) {
             const x = segments[i], y = segments[i + 1], r = segments[i + 2];
@@ -371,12 +382,14 @@ export class InkCoverageJob {
         if (!Object.values(boundsLocal).every(Number.isFinite) || !Object.values(centrelineBoundsLocal).every(Number.isFinite)) {
             throw new RangeError('Ink conservative bounds overflow');
         }
+        const coverage = packInkCoverage({ segments, segmentRunStarts: this.runStarts, discs, centreline, boundsLocal, centrelineBoundsLocal,
+            curveBoundsLocal: this.geometry.boundsLocal, centreErrorWorld: this.centreError, radiusErrorWorld: radiusError,
+            dashPhaseErrorWorld: phaseError, lengthWorld: this.arcPosition, lengthLowerWorld: this.lengthLower,
+            lengthUpperWorld: this.lengthUpper, closed: this.closed });
+        this.segments.data = this.discs.data = this.centreline.data = new Float64Array(0);
+        this.coverageValue = coverage;
         this.resultValue = Object.freeze({
-            geometry: this.geometry, radii, arcMaps: maps, segments, segmentRunStarts: Uint32Array.from(this.runStarts), discs, centreline,
-            boundsLocal, centrelineBoundsLocal,
-            centreErrorWorld: this.centreError, radiusErrorWorld: radiusError,
-            dashPhaseErrorWorld: phaseError,
-            lengthWorld: this.arcPosition, lengthLowerWorld: this.lengthLower, lengthUpperWorld: this.lengthUpper, closed: this.closed,
+            ...coverage, geometry: this.geometry, radii, arcMaps: maps,
             radiusAt: (span: number, t: number) => {
                 if (!Number.isInteger(span) || span < 0 || span >= maps.length || !Number.isFinite(t) || t < 0 || t > 1) throw new RangeError('Invalid ink radius span or parameter');
                 if (patterned && maps[span].upperLength === 0) return radii[2 * span + 1];

@@ -95,9 +95,7 @@ function unionBounds(a: Bounds | null, next: Bounds): Bounds {
 function retainedBuffers(coverage: InkCoverage, known: readonly ReadonlySet<ArrayBufferLike>[]): { buffers: ArrayBufferLike[]; bytes: number } {
     const unique = new Set<ArrayBufferLike>();
     const add = (view: ArrayBufferView) => { if (!known.some(set => set.has(view.buffer))) unique.add(view.buffer); };
-    add(coverage.geometry.cubics); add(coverage.geometry.flags); add(coverage.radii);
-    add(coverage.segments); add(coverage.discs); add(coverage.centreline);
-    for (const map of coverage.arcMaps) { add(map.cubic); add(map.pieces); }
+    add(coverage.segments); add(coverage.discs); add(coverage.centreline); add(coverage.segmentRunStarts);
     const buffers = [...unique], bytes = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
     if (!Number.isSafeInteger(bytes)) throw new RangeError('Wet coverage accounting overflow');
     return { buffers, bytes };
@@ -632,7 +630,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         }
         if (c?.coverage) {
             if (c.coverage.step(1) === 'complete') {
-                const coverage = c.coverage.result;
+                const coverage = c.coverage.coverage;
                 c.coverage = null;
                 c.retained = { coverage, ...retainedBuffers(coverage, c.finalizing ? [s.buffers] : [s.buffers, w.tail.buffers]) };
             }

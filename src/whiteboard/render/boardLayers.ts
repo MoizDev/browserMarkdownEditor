@@ -687,8 +687,26 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const want = direct!.memory().cpuBytes;
         let leases = reservations.get(frame);
         if (!leases) { leases = []; reservations.set(frame, leases); }
+        // `want` is the adapter's whole count (every snapshot it holds, any frame's), so it is charged once: the measured charges
+        // of other frames move onto this one. Charged per frame, a presented frame kept beside the ready one held a second copy
+        // (measured at rest on WebGL2: 2 x 7.5 MB for a 7.5 MB adapter, 2 x 8.4 MB after a resize). A canvas2d frame still
+        // held on its estimate keeps its own lease.
+        const device = !!allocatorHost?.device();
+        for (const [other, charged] of reservations) {
+            if (other === frame || !(device || truedUp.has(other))) continue;
+            leases.push(...charged); reservations.set(other, []);
+        }
         let held = 0;
         for (const lease of leases) held += lease.bytes;
+        // The charge follows the build down as well as up: a device frame that shed a 2D bridge's outlines holds less than it did.
+        // Grown only, the bridge's bytes stayed charged for the frame's life and the pane's floor with them (measured: two panes
+        // at 3.4 and 7.0 MB before one WebGL2 resize, 19.3 and 22.1 MB after it, for good).
+        let surplus = 0;
+        while (leases.length && held - leases[leases.length - 1]!.bytes >= want) {
+            const lease = leases.pop()!;
+            allocatorHost?.allocator.cpu.release(lease); reserved -= lease.bytes; held -= lease.bytes; surplus += lease.bytes;
+        }
+        if (surplus) { auditCount(options.auditSurface ?? 'board', 'direct:charge-returned', 1, { bytes: surplus }); allocatorHost?.demandChanged?.(); }
         if (held >= want) { denied = false; return true; }
         if (memoryGate.closed()) { auditCount(options.auditSurface ?? 'board', 'direct:gate-closed'); denied = true; return false; }
         while (held < want) {

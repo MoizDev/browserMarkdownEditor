@@ -177,7 +177,9 @@ refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF wri
   paint of another document drops them. Released per bridge frame, a resize dropped and rebuilt every tile
   (measured: 540 tile releases and 8 picture re-uploads over 8 bridges → 0 and 0).
 - A bridge's 2D draw builds outlines; the device frames after it build the snapshot again without them
-  (`CanvasPaintAdapter.outlined`, `direct:shed-outlines`), or a resize left a notebook's floor 9 → 22 MB for good.
+  (`CanvasPaintAdapter.outlined`, `direct:shed-outlines`) and drop the outline LRU, or a resize left a notebook's floor 9 → 22 MB
+  for good. `chargeDirect` charges the adapter's whole `memory()` ONCE (other frames' charges move onto the one charged) and
+  gives back what the build no longer holds: per-frame and grow-only, it charged a kept presented frame a second copy.
 - CPU bytes on a device are the direct build's leases in 64 KiB chunks (`DIRECT_CHUNK`).
 - A refused reservation waits once, sized: `awaitSizedCapacity(host, wake, { pool, bytes })`
   (`budgetRefusal.ts`); the governor wakes it only when the bytes fit. The composer's GPU retry after a visible

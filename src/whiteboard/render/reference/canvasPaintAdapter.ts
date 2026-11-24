@@ -438,6 +438,10 @@ export function createCanvasPaintAdapter(
                 if (s.complete && resources.frames.isCurrent(s.frame)) {
                     if (presented) releaseSnapshot(presented);
                     presented = s; staged = null;
+                    // Only an outlined build reads the cached outlines (a clip reads its own snapshot's), so a device's build lets them go
+                    // with the bridge's: kept, they stayed counted in memory() and charged to the pane (measured: 8.4 MB a board, both
+                    // panes of a two-board resize run, for good). A later bridge builds its outlines again, as one did before the cache.
+                    if (!s.vectors && geometryCache.size) { geometryCache.clear(); geometryCacheBytes = 0; }
                     if (s.skipped.size) { retryAt = performance.now() + RETRY_SKIPPED_MS; resources.wakeAt?.(retryAt); }
                 }
             } catch (error) { s.failed = true; s.failure = error; releaseSnapshot(s); onError(error); }

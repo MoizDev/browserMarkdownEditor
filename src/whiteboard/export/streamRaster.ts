@@ -7,6 +7,7 @@ import type { BoardJobIdentity } from '../workers/protocol'
 import { inkOutline } from './displayList'
 import { checkPngSize } from './png'
 import type { RasterWireImage, RasterWireItem } from './rasterWire'
+import { missingPictureBitmap } from './exportImage'
 import { yieldToHost } from '../../platform/yieldToHost'
 
 async function wire(item: PaintItem, scale: number, signal: AbortSignal): Promise<RasterWireItem> {
@@ -52,7 +53,15 @@ export async function streamRasterPng(
           signal.throwIfAborted()
           items.push(await wire(item, scale, signal))
           if (item.kind === 'image' && !sent.has(item.imageKey)) {
-            const lease = await images.acquire(item.imageKey, source.token, signal)
+            let lease
+            try { lease = await images.acquire(item.imageKey, source.token, signal) } catch (error) {
+              // A picture whose file is missing is sent as the screen's placeholder, and the rest of the PNG is made.
+              const placeholder = signal.aborted ? null : await missingPictureBitmap(images, item.imageKey, error)
+              if (!placeholder) throw error
+              if (signal.aborted) { placeholder.close(); signal.throwIfAborted() }
+              bitmaps.push({ key: item.imageKey, bitmap: placeholder }); sent.add(item.imageKey)
+              continue
+            }
             try {
               signal.throwIfAborted()
               const bitmap = await createImageBitmap(lease.source as ImageBitmapSource)

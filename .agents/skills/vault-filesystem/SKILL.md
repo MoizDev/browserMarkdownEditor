@@ -213,6 +213,10 @@ both names; nothing else spells `'.Assets'`.**
   `freeEntryName`, one serialized queue, owner + activation re-checked at every step, only our own staging
   file removed). `readLegacyBoardAsset` resolves an old board's relative `src` with strict path checks
   (no scheme, no escape above the root, never `.VaultAgent`, ≤ 10 MiB).
+- **A board picture whose file is missing** (moved without `.Assets`, unsynced, deleted) is normal, never fatal: its record
+  stays exactly as written (no rename, no retire), the journal holds no bytes for it (`recoveryCapture.ts`), the view and
+  every export draw its placeholder (`MissingMediaError`, `media/missingMedia.ts`, `export/exportImage.ts`), a paste into
+  another folder keeps its name, and it returns on the next open once the file is back (the observer ignores `.Assets`).
 - **An old board's editable copy** (`writeBoardCopy`; old boards are never written, see `pdf-and-drawings`): in the
   board-asset queue and one mutation, it stores the copy's pictures as `putBoardAsset` does, builds the bytes from
   the stored names, takes the first free name from the caller's list (`entryExists`: files AND folders, as

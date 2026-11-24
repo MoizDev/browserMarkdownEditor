@@ -1,5 +1,6 @@
 import { getBoardPreferences, mouseInputChosen, mouseZoomInverted } from '../../utils/boardPreferences';
 import { isTransientPictureFailure } from '../../whiteboard/media/transientFailure';
+import { isMissingMedia, MissingMediaError } from '../../whiteboard/media/missingMedia';
 import { recordBoardPresentation } from './debugStats';
 import { encodeTiledPngInWorker } from '../../whiteboard/export/pngWorkerClient';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
@@ -280,6 +281,17 @@ export function createNativeViewLease(options: {
         if (key !== viewportKey) { viewportKey = key; cameraOwner.resize(viewport); }
         return camera.viewport;
     };
+    // A picture whose file is not in `.Assets` (the board moved without that folder, a sync not finished, a file deleted)
+    // keeps its place and its reference; the screen and every export draw its placeholder, and the person is told once per
+    // view which file to put back. The bare id read as a fault, and the notice came back on every repaint after Dismiss.
+    const toldMissing = new Set<MediaId>();
+    const missingPicture = (id: MediaId): MissingMediaError => {
+        const entry = board.doc.media.get(id), file = runtime.media.currentFile(id) ?? entry?.file ?? null;
+        return new MissingMediaError(id, `A picture could not be shown: ${entry?.name ? `“${entry.name}”` : 'its file'} is not in the `
+            + `.Assets folder beside this board. The rest of the board can be edited, saved and exported; reopen the board once the file`
+            + `${file ? `, ${file},` : ''} is back there.`);
+    };
+    const tellMissing = (error: MissingMediaError) => { if (!toldMissing.has(error.id)) { toldMissing.add(error.id); options.onNotice(error.message); } };
     const images = createBoardHostImages({ identity: { session: `${identity.documentId}:${identity.session}`,
         epoch: identity.vaultActivation, revision: board.doc.rev }, token, media: runtime.media,
         current: () => current() && parameters.visible,
@@ -294,14 +306,17 @@ export function createNativeViewLease(options: {
             const entry = board.doc.media.get(id);
             if (!entry) throw new Error(`Missing media descriptor: ${id}`);
             const found = await host.readMedia(identity, { hash: id.slice(7), preferredName: runtime.media.currentFile(id) ?? entry.file }, signal);
-            if (!found) throw new Error(`Missing board media: ${id}`);
+            if (!found) throw missingPicture(id);
             return found.blob;
         }, invalidate: hintFrom('media'),
         // A picture that cannot be decoded is drawn as a placeholder and named in the app's notice; it is never the board's failure
         // (it was: 'Could not open canvas: Insufficient memory for full-frame image', on every reopen of a board holding the picture).
         // A transient failure (a cancelled or retired decode, a deadline, a memory refusal) is retried by the painter and is not the
         // person's news: naming it said 'could not be shown' over a picture that appeared a moment later.
-        onError: error => { if (!isTransientPictureFailure(error)) options.onNotice(`A picture could not be shown: ${error instanceof Error ? error.message : String(error)}`); } });
+        onError: error => {
+            if (isMissingMedia(error)) tellMissing(error);
+            else if (!isTransientPictureFailure(error)) options.onNotice(`A picture could not be shown: ${error instanceof Error ? error.message : String(error)}`);
+        } });
     // This view's own playback: it stops when the view hides and when the view is torn down, and it closes its presented frames
     // before the source it came from is released.
     const video = new BoardVideoPlayback({ memory: images.memory, frames: images.frames,
@@ -435,13 +450,15 @@ export function createNativeViewLease(options: {
                 { session: `view:${token.session}:${revision}`, epoch: token.vaultEpoch, revision }, encodeOptions),
             snapshot: (capture, memory) => {
             if (!current()) throw new DOMException('Native view ended', 'AbortError');
+            const captureError = (error: unknown) => { if (isMissingMedia(error)) tellMissing(error); else options.onError(error); };
             const readMedia = async (entry: { readonly id: MediaId; readonly bytes: number }, signal: AbortSignal) => {
                 signal.throwIfAborted();
                 const blob = blobs.get(entry.id);
+                if (!blob && board.doc.kind !== 'pdf-ink') throw missingPicture(entry.id);
                 if (!blob || blob.size !== entry.bytes) throw new Error(`Captured board media is unavailable: ${entry.id}`);
                 return blob;
             };
-            if (board.doc.kind !== 'pdf-ink') return createBoardCaptureSnapshot({ runtime, sheetId, request: capture, memory, onError: options.onError, readMedia });
+            if (board.doc.kind !== 'pdf-ink') return createBoardCaptureSnapshot({ runtime, sheetId, request: capture, memory, onError: captureError, readMedia });
             const pdf = backdrop;
             if (!pdf) throw new Error('PDF backdrop capture is unavailable');
             pdf.assertCaptureCurrent();
@@ -464,7 +481,7 @@ export function createNativeViewLease(options: {
                 }
                 if (boardLayers.length) {
                     const request = { ...capture, layers: boardLayers };
-                    children.push({ snapshot: createBoardCaptureSnapshot({ runtime, sheetId, request, memory, onError: options.onError, readMedia }), request });
+                    children.push({ snapshot: createBoardCaptureSnapshot({ runtime, sheetId, request, memory, onError: captureError, readMedia }), request });
                 } else {
                     if (!runtime.scene || runtime.scene.revision !== board.doc.rev) throw new Error('Board scene is not ready');
                     identityPin = runtime.scene.pin();

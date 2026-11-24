@@ -4,6 +4,7 @@ import type { PaintImageLease, PaintImageProvider } from '../render/resources'
 import { InkCoverageUnionPath2dJob, Path2dJob } from '../render/reference/coverage2d'
 import type { PaintResources2d, PreparedPath2d } from '../render/reference/paint2d'
 import { yieldToHost } from '../../platform/yieldToHost'
+import { isMissingMedia } from '../media/missingMedia'
 
 export interface PreparedRaster {
   readonly resources: PaintResources2d
@@ -37,6 +38,10 @@ export async function prepareRaster(
   const clips = new Map<string, PreparedPath2d>()
   const geometry = new Map<string, PreparedPath2d>()
   const leases = new Map<string, PaintImageLease>()
+  // A picture whose file is missing is drawn as the placeholder the screen shows, and the rest is exported: refusing the
+  // whole export for it lost every PNG, SVG and PDF of such a board ("Captured board media is unavailable"). The
+  // provider has already told the person which file is missing.
+  const missing = new Set<string>()
   let disposed = false
   function dispose(): void {
     if (disposed) return
@@ -55,8 +60,10 @@ export async function prepareRaster(
         clips.set(clip.key, await finishPath(new Path2dJob(clip.d, origin(clip.d)), signal))
       }
       if (item.kind === 'image') {
-        if (!leases.has(item.imageKey)) {
-          const lease = await images.acquire(item.imageKey, frame.token, signal)
+        if (!leases.has(item.imageKey) && !missing.has(item.imageKey)) {
+          let lease: PaintImageLease
+          try { lease = await images.acquire(item.imageKey, frame.token, signal) }
+          catch (error) { if (!isMissingMedia(error) || signal.aborted) throw error; missing.add(item.imageKey); continue }
           if (signal.aborted) { lease.release(); signal.throwIfAborted() }
           leases.set(item.imageKey, lease)
         }
@@ -79,7 +86,10 @@ export async function prepareRaster(
     return { resources: {
       path(item) { const value = paths.get(item); if (disposed || !value) throw new Error('Export path unavailable'); return value },
       clip(key) { const value = clips.get(key); if (disposed || !value) throw new Error('Export clip unavailable'); return value },
-      image(key) { const value = leases.get(key); if (disposed || !value) throw new Error('Export image unavailable'); return value.source },
+      image(key) {
+        if (!disposed && missing.has(key)) return null
+        const value = leases.get(key); if (disposed || !value) throw new Error('Export image unavailable'); return value.source
+      },
     }, dispose }
   } catch (error) { dispose(); throw error }
 }

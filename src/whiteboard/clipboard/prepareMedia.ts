@@ -128,12 +128,13 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
                 if (!candidate) { candidate = await options.readBlob(entry, context.signal) ?? undefined; check(); }
                 if (!(candidate instanceof Blob)) {
                     if (!existing) {
-                        if (entry.file !== null && (entry.ext && (entry.ext.raw.size || entry.ext.fields.size)
-                            || (preservedRefs.get(id) ?? 0) > 0 || hasUnknownRaw)) {
-                            throw new Error(`Cannot remap missing media with uninterpreted filename dependencies: ${id}`);
-                        }
-                        ops.push({ t: 'media', op: 'add', entry: { ...entry, file: null } });
-                        files.set(id, null);
+                        // No bytes to store, so nothing is renamed: where unknown data may name the file, the record keeps the
+                        // name it was written with (the picture appears if that file is put in this folder's .Assets). Refusing
+                        // here lost the whole paste of a board whose picture file was missing ("Cannot remap missing media…").
+                        const keepName = entry.file !== null && (entry.ext && (entry.ext.raw.size || entry.ext.fields.size)
+                            || (preservedRefs.get(id) ?? 0) > 0 || hasUnknownRaw);
+                        ops.push({ t: 'media', op: 'add', entry: keepName ? entry : { ...entry, file: null } });
+                        files.set(id, keepName ? entry.file : null);
                     }
                     missing.push(id); await cooperate(); continue;
                 }

@@ -104,7 +104,9 @@ export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, in
         const classification = await classifyClipboard(copied, intent, host.classifier, context.signal);
         try {
         check();
-        const noticeMissing = (ids: readonly MediaId[]) => host.notice(`${ids.length} clipboard media item(s) are missing; placeholders were pasted.`);
+        const noticeMissing = (ids: readonly MediaId[]) => host.notice(ids.length === 1
+            ? 'A pasted picture’s file is not in this board’s .Assets folder, so it shows as a placeholder; it appears once the file is there and the board is reopened.'
+            : `${ids.length} pasted pictures’ files are not in this board’s .Assets folder, so they show as placeholders; they appear once the files are there and the board is reopened.`);
         const base = { runtime, target: captured, intent, current: host.current, receivingBoardId: host.receivingBoardId,
             cameraZoom: host.cameraZoom, embedEnvironment: host.embedEnvironment ?? { appOrigin: host.classifier.appOrigin },
             embedManifest: host.embedManifest, noticeMissing, cooperate: host.cooperate };

@@ -30,6 +30,7 @@ import { concatPaintSources } from './allSheetPaint';
 import { inspectPdfVisualDoc, visualRefusal } from './pdfVisualPreflight';
 import type { PdfInkSourceLease } from './pdfInkSourceOwner';
 import type { BoardRuntime } from './runtime';
+import { missingFromExport, type MissingMediaError } from '../media/missingMedia';
 
 /** The canonical parts an export reads: a live BoardRuntime supplies them, and so does an immutable closed
  * source with its own real scene, render services and media. Nothing here needs a camera or a live store. */
@@ -158,18 +159,23 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             if (!entry) throw new Error(`Captured board media entry is unavailable: ${id}`);
             entries.set(id, structuredClone(entry));
         }
-        const blobs = new Map<MediaId, Blob>();
+        const blobs = new Map<MediaId, Blob>(), missing = new Map<MediaId, MissingMediaError>();
         for (const [id, entry] of entries) {
             leases.push(runtime.media.retain(id, 'snapshot'));
             const blob = runtime.media.get(id) ?? await options.readMedia?.(entry, signal);
             signal.throwIfAborted();
+            // A picture whose file is not in `.Assets` has no bytes anywhere: the export draws its placeholder and says so once.
+            // Bytes that are there but do not match their record are still refused.
+            if (!blob && doc.kind !== 'pdf-ink') { missing.set(id, missingFromExport(entry)); continue; }
             if (!blob || blob.size !== entry.bytes) throw new Error(`Captured board media is unavailable: ${id}`);
             blobs.set(id, blob.slice(0, blob.size, blob.type));
         }
+        const told = new Set<MediaId>();
         const token = pin.token;
         const readBlob = async (id: MediaId, readSignal: AbortSignal) => {
             readSignal.throwIfAborted();
-            const blob = blobs.get(id);
+            const blob = blobs.get(id), gone = missing.get(id);
+            if (!released && gone) { if (!told.has(id)) { told.add(id); options.notice(gone.message); } throw gone; }
             if (released || !blob) throw new Error(`Captured board media is unavailable: ${id}`);
             return blob;
         };

@@ -3,6 +3,43 @@ import type { PaintImageProvider } from '../render/resources'
 import type { ExportImage } from './displayList'
 import type { MediaId } from '../model/media'
 import { mediaTileKey, wholeMip } from '../media/mips'
+import { isMissingMedia } from '../media/missingMedia'
+
+// The screen's placeholder (paint2d): a grey fill at 0.18 and a grey frame at 0.7. Drawn at most this many pixels on a side
+// and placed by the picture's own size, as a lower decode level is.
+const PLACEHOLDER_SIDE = 256
+
+/** A missing picture's placeholder at most PLACEHOLDER_SIDE on a side, so every writer (PNG, SVG, PDF, print, notebook export)
+ * draws the grey box the screen shows and exports the rest, instead of failing the whole export for one absent file. */
+function drawPlaceholder(width: number, height: number): HTMLCanvasElement {
+  const scale = Math.min(1, PLACEHOLDER_SIDE / Math.max(width, height))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(width * scale)); canvas.height = Math.max(1, Math.round(height * scale))
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('Canvas 2D is unavailable')
+  context.fillStyle = 'rgba(128, 128, 128, 0.18)'; context.fillRect(0, 0, canvas.width, canvas.height)
+  const line = Math.max(1, Math.max(canvas.width, canvas.height) / 400)
+  context.strokeStyle = 'rgba(128, 128, 128, 0.7)'; context.lineWidth = line
+  context.strokeRect(line / 2, line / 2, canvas.width - line, canvas.height - line)
+  return canvas
+}
+
+/** The placeholder for a picture whose bytes are missing, as a bitmap for the raster writer; null when the failure is not that. */
+export async function missingPictureBitmap(images: PaintImageProvider, imageKey: string, error: unknown): Promise<ImageBitmap | null> {
+  const size = images.mediaSize?.(imageKey) ?? null
+  if (!isMissingMedia(error) || !size) return null
+  const canvas = drawPlaceholder(size.width, size.height)
+  try { return await createImageBitmap(canvas) } finally { canvas.width = 0; canvas.height = 0 }
+}
+
+async function placeholderImage(width: number, height: number, signal: AbortSignal) {
+  const canvas = drawPlaceholder(width, height)
+  try {
+    const png = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('Image PNG encoding failed')), 'image/png'))
+    signal.throwIfAborted()
+    return { bytes: new Uint8Array(await png.arrayBuffer()), mime: 'image/png' as const, width, height }
+  } finally { canvas.width = 0; canvas.height = 0 }
+}
 
 /** Read the exact pinned frame represented by imageKey, not the latest mutable media. */
 export type ReadExportImage = (imageKey: string, signal: AbortSignal) => Promise<Blob>
@@ -20,7 +57,12 @@ export function createExportImageResolver(
     let pending = cache.get(key)
     if (!pending) {
       pending = (async () => {
-        const blob = await read(item.imageKey, signal)
+        let blob: Blob
+        try { blob = await read(item.imageKey, signal) } catch (error) {
+          const size = images.mediaSize?.(item.imageKey) ?? null
+          if (!isMissingMedia(error) || !size || signal.aborted) throw error
+          return placeholderImage(size.width, size.height, signal)
+        }
         signal.throwIfAborted()
         // A PNG or JPEG kept as it is needs no decode: its size comes from the media entry. Decoding it whole only for its size
         // stopped every save of a PDF board holding a picture of about 2000x1500 and up ('Insufficient memory for full-frame image').

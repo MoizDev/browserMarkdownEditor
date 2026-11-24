@@ -7,6 +7,7 @@ import type { SheetId } from '../model/ids';
 import type { MediaId } from '../model/media';
 import type { BoardRuntime } from './runtime';
 import { inspectPdfVisualDoc, visualRefusal, type PdfVisualPreflight } from './pdfVisualPreflight';
+import { missingFromExport, type MissingMediaError } from '../media/missingMedia';
 
 /** Pin the actual paged scene and embedded/media-store bytes, not live view geometry. */
 export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, current: () => boolean, onError: (error: unknown) => void) {
@@ -48,10 +49,12 @@ export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, curr
         const rects = Object.freeze(scene.layout.rects.map(rect => Object.freeze({ ...rect })));
         const sheets = Object.freeze(doc.sheetOrder.map(sheet => sheet.id));
         const entries = new Map([...doc.media].map(([id, entry]) => [id, structuredClone(entry)]));
-        const blobs = new Map<MediaId, Blob>();
+        const blobs = new Map<MediaId, Blob>(), missing = new Map<MediaId, MissingMediaError>();
         for (const [id, entry] of entries) {
             held.push(runtime.media.retain(id, 'snapshot'));
             const blob = runtime.media.get(id);
+            // A notebook picture whose file is not in `.Assets` is drawn as its placeholder (a PDF's pictures are embedded and present).
+            if (!blob && doc.kind === 'notebook') { missing.set(id, missingFromExport(entry)); continue; }
             if (!blob || blob.size !== entry.bytes) throw new Error(`Captured board media is unavailable: ${id}`);
             blobs.set(id, blob);
         }
@@ -60,7 +63,8 @@ export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, curr
         const token = scene.token;
         const readBlob = (id: MediaId, signal: AbortSignal): Promise<Blob> => {
             signal.throwIfAborted();
-            const blob = blobs.get(id);
+            const blob = blobs.get(id), gone = missing.get(id);
+            if (!released && current() && gone) return Promise.reject(gone);
             if (released || !current() || !blob) return Promise.reject(new Error(`Captured board media is unavailable: ${id}`));
             return Promise.resolve(blob);
         };

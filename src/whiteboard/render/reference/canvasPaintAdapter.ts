@@ -21,6 +21,8 @@ export interface CanvasPaintAdapter {
     prepare(view: ViewState, budget: FrameBudget, vectors?: boolean): void;
     /** The complete shared frame actually available to both band wrappers. */
     readyFrame(): PaintSource | null;
+    /** Whether the presented snapshot carries outlines (a 2D draw asked for them): a device frame then prepares again, to shed them. */
+    outlined?(): boolean;
     /** Borrow is valid only until the next prepare, release or dispose. */
     borrowPrepared(): PreparedPaint2d | null;
     /** Physical retention for asynchronous fact work: the returned prepared resources, their image
@@ -418,7 +420,11 @@ export function createCanvasPaintAdapter(
             // again while the frame and scale stay the same, and the placeholder stayed for good (measured: 8000x6000 at DPR 2).
             const retry = !staged && !!presented && presented.frame === frame && presented.scale === scale && presented.skipped.size > 0;
             if (retry && performance.now() < retryAt) { resources.wakeAt?.(retryAt); return; }
-            if (!staged && (retry || !presented || presented.frame !== frame || presented.scale !== scale || (vectors && !presented.vectors))) {
+            // A device frame over a snapshot a 2D draw built with outlines (a resize bridge, the first picture) builds it again without
+            // them: kept, a bridge's outlines stayed for good (measured, a notebook beside a drawing, four divider drags: its floor
+            // 9.2 -> 22.5 MB and its charge 8.2 -> 21.7 MB, with 3 of the 4 bridges skipped, so the outlines mostly drew nothing).
+            const shed = !vectors && !!presented && presented.vectors;
+            if (!staged && (retry || shed || !presented || presented.frame !== frame || presented.scale !== scale || (vectors && !presented.vectors))) {
                 staged = start(frame, scale, vectors);
             }
             const s = staged;
@@ -437,6 +443,7 @@ export function createCanvasPaintAdapter(
             } catch (error) { s.failed = true; s.failure = error; releaseSnapshot(s); onError(error); }
         },
         readyFrame() { return disposed ? null : presented?.frame ?? null; },
+        outlined() { return !disposed && !!presented?.vectors; },
         borrowPrepared,
         retainPrepared() {
             const s = presented;

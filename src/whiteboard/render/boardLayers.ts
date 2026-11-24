@@ -653,7 +653,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     // A device frame prepares no outlines (CanvasPaintAdapter.prepare): its routes never read them.
                     else direct!.prepare(view, work, !allocatorHost?.device());
                 },
-                readyFrame: () => current().readyFrame(), borrowPrepared: () => current().borrowPrepared(),
+                readyFrame: () => current().readyFrame(), outlined: () => !useDense && !!direct!.outlined?.(), borrowPrepared: () => current().borrowPrepared(),
                 retainPrepared: () => current().retainPrepared(),
                 draw2d: (ctx, view, band, omit) => current().draw2d(ctx, view, band, omit),
                 drawable2d: () => current().drawable2d(), reacquireReleased: () => current().reacquireReleased(),
@@ -866,6 +866,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     directBuiltFor = frame;
                 } else if (directBuiltFor !== frame) auditCount(options.auditSurface ?? 'board', 'direct:build-held');
                 else if (adapter.readyFrame() !== frame) { adapter.prepare(view, budget); auditCount(options.auditSurface ?? 'board', 'direct:build-resumed'); }
+                // A 2D bridge's outlines are shed by the device frames after it (CanvasPaintAdapter.prepare, `shed`).
+                else if (adapter.outlined?.()) { adapter.prepare(view, budget); auditCount(options.auditSurface ?? 'board', 'direct:shed-outlines'); }
                 if (directBuiltFor !== frame || adapter.readyFrame() !== frame) prepareUnchanged = false;
                 const composerChanged = prepareGpu(view, budget, frame);
                 if (composerChanged && renderAuditEnabled()) auditCount(options.auditSurface ?? 'board', 'unchanged-miss:composer');

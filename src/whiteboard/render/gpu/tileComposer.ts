@@ -572,6 +572,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let waiting = false;
     // The refusal that set `waiting` was a GPU admission (a budget the governor may free), not a CPU one.
     let blockedOnGpu = false;
+    // The GPU wait is a position's (its target or its admission refused), so new room is kept for it (see drive). A live part's refusal
+    // is not: the live draw stands in for tiles not yet composed, and composing them is what ends it. Read as one, the live draw's
+    // refusal stopped every missing compose, so the tiles that would replace it never came (measured, the ten-tabs case: a first visit
+    // with 87 to 278 of ~450 strokes missing under 'Updating…' for good, its grant full of the live draw's ink edges).
+    let roomForPosition = false;
     // The deadline (performance.now) of the armed retry; 0 when none is armed or it was satisfied. A deadline that fires with nothing
     // to do is a no-op: the layer's wake slot is shared with the store's trim deadline, so it is not cancelled with null.
     let retryAt = 0;
@@ -670,7 +675,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The governor's wake for a refusal: the parked positions may be advanced again, and the board is asked for a frame.
     const wake = (): void => {
         for (const position of building.values()) position.parked = false;
-        waiting = false; blockedOnGpu = false;
+        waiting = false; blockedOnGpu = false; roomForPosition = false;
         // The back-off is not reset here, only by a compose that lands: a wake comes for any release that fits the size waited for,
         // the refused position's own frees included, and reset by each, the retry ran every 250 ms for good.
         if (retryAt !== 0) { retryAt = 0; host.wakeAt(null); }
@@ -706,12 +711,16 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         if (next === visibleWait) return;
         visibleWait = next; host.demandChanged?.();
     };
-    const refuseTarget = (): void => { denied = true; waiting = true; blockedOnGpu = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
+    const refuseTarget = (): void => { denied = true; waiting = true; blockedOnGpu = true; roomForPosition = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
     const refuseAdmission = (pool: 'gpu' | 'cpu', bytes: number, live = false): void => {
         denied = true; waiting = true; blockedOnGpu = pool === 'gpu'; auditCount(audit, 'tile:denied');
+        if (!live) roomForPosition = blockedOnGpu;
         if (live && pool === 'gpu') {
             if (liveWaitFrame !== frame) { liveWaitFrame = frame; liveWait = 0; }
             liveWait += bytes;
+            // Its wake is the retry deadline too: the pane's own live draw can hold the room it waits for, and no release then comes from
+            // the governor. The retried frame's compose frees it (freeOwn); waited on the wake alone, the board drew no frame again.
+            armRetry();
         }
         auditCount(audit, `refusal:${pool}:bucket:${2 ** Math.ceil(Math.log2(Math.max(1, bytes)))}`);
         if (pool === 'gpu') store.wait(bytes, wake); else host.allocator.cpu.whenAvailable?.(wake, bytes);
@@ -1118,6 +1127,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         // to fit on WebGL2: 27.6 MB of ink edges, one tile composed in 25 s). Edges used this frame or the last are kept: taken, a
         // deferred admission re-uploaded them every frame (measured: 254 edge buffers created per frame, 10 s of CPU per 10 s).
         if ((options.reclaimRoutes?.(FREE_FOR_REFUSAL, frame) ?? 0) > 0) { auditCount(audit, 'compose:free-own:routes'); return true; }
+        // Then the live draw's runs, kept across settling frames: they hold every visible stroke's edges, the tiles that replace them
+        // could not get a target from the grant they filled, and the board waited on itself (measured, the ten-tabs case: 11.8 MB of
+        // ink edges in a 17.4 MB grant, one visible tile refused its 1 MB target for good). Retired, the edges the asking position does
+        // not share are idle; the frame admits its live parts again into what is left, a hole held as one (holding).
+        if (liveRuns.length) {
+            retireLive();
+            if ((options.reclaimRoutes?.(FREE_FOR_REFUSAL, frame) ?? 0) > 0) { auditCount(audit, 'compose:free-own:live'); return true; }
+        }
         // The other lowered positions in progress go; never the one asking (driven past its own cancel, it finished as a partial tile).
         for (const position of building.values()) if (position.lowered && position !== asking) { cancel(position); building.delete(position.key); }
         // The other scales' tiles the last frame laid stay: they are the picture of positions not yet composed, and dropped, the screen
@@ -1192,7 +1209,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // or held position recomposes into the target it already has, so an erase or an undo still shows (ended at a parked lowered
             // position, every compose stopped before the dirty pass until the wake, the erased strokes on screen meanwhile).
             if (position.parked) { if (waiting) position.drivenFrame = frame; return true; }
-            if (waiting && blockedOnGpu && pass !== 'dirty' && pass !== 'held') { position.drivenFrame = frame; auditCount(audit, `compose:room-wait:${pass}`); return true; }
+            if (waiting && blockedOnGpu && roomForPosition && pass !== 'dirty' && pass !== 'held') { position.drivenFrame = frame; auditCount(audit, `compose:room-wait:${pass}`); return true; }
             position.drivenFrame = frame;
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
             // The count limit is for background recomposes: a foreground compose (a visible tile with no valid cover) is bounded by the budget.
@@ -1327,7 +1344,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         let position = building.get(key);
                         if (!position) {
                             // A floor tile an edit overtook is composed again too: as a stand-in it would show the board before the edit.
-                            if (statusAt(band, floorScale, x, y) === 'ok' || finishedAt(band, floorScale, x, y) || (waiting && blockedOnGpu)) continue;
+                            if (statusAt(band, floorScale, x, y) === 'ok' || finishedAt(band, floorScale, x, y) || (waiting && blockedOnGpu && roomForPosition)) continue;
                             const started = begin(band, floorScale, x, y, view);
                             if (!started) continue;
                             position = started;
@@ -1361,7 +1378,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                             const status = statusAt(band, target, x, y);
                             if (pass === 'dirty' ? status !== 'dirty' : status !== 'missing') continue;
                             // New room is not taken while a GPU wait stands (see drive): the position is not even begun.
-                            if (pass !== 'dirty' && waiting && blockedOnGpu) continue;
+                            if (pass !== 'dirty' && waiting && blockedOnGpu && roomForPosition) continue;
                             // Composed earlier this frame (the held pass takes the positions under a held node first) and still dirty until
                             // its encode: begun again it composed twice per frame (rotate, WebGL2 DPR 2 dark: every position under the
                             // rotated rectangle composed twice in the change frame and the next).
@@ -1999,7 +2016,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         store.releaseAll();
         for (const route of routeList) route.release();
         if (retryAt !== 0) host.wakeAt(null);
-        denied = false; waiting = false; blockedOnGpu = false; retryAt = 0; retryDelay = GPU_RETRY_MS; retryMisses = 0; settled = false; presenting = false; drawnInk.clear(); drawnInkFrame = -1;
+        denied = false; waiting = false; blockedOnGpu = false; roomForPosition = false; retryAt = 0; retryDelay = GPU_RETRY_MS; retryMisses = 0; settled = false; presenting = false; drawnInk.clear(); drawnInkFrame = -1;
         visibleWait = 0; liveWait = 0; liveWaitFrame = -1;
         heldNodes.clear();
         floorScale = 0; floorSpan = null; floorChecked.scale = 0; floorChecked.revision = -1; shownValid = false; holdSince = -1; frameHoles = 0; frameRegressions = 0;
@@ -2273,7 +2290,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (retryAt !== 0 && performance.now() >= retryAt) {
                     retryAt = 0; host.wakeAt(null);
                     if (waiting && blockedOnGpu) {
-                        waiting = false; blockedOnGpu = false;
+                        waiting = false; blockedOnGpu = false; roomForPosition = false;
                         for (const position of building.values()) position.parked = false;
                         auditCount(audit, 'compose:retry:deadline');
                     } else auditCount(audit, 'compose:retry:stale');

@@ -138,8 +138,10 @@ and the platform alone picks the device.
   of more than `FLOOR_MAX_PARTS` parts has none (`floor:off:dense`): a dense board's floor never finished composing.
 - `freeOwn` never drops other scales' tiles the last frame laid (the picture of positions not yet composed), nor cancels the
   position it frees for; `cancel` resets a position's admission to its first run (driven past a cancel, it was encoded partial).
-- While a GPU wait stands, a parked position is passed over and so is any work that would take new room (missing, ring, floor);
-  dirty and held positions keep recomposing into the targets they hold, so an erase still shows.
+- While a position's GPU wait stands (`roomForPosition`), a parked position is passed over and so is any work that would take new
+  room (missing, ring, floor); dirty and held positions keep recomposing into the targets they hold, so an erase still shows. A live
+  part's refusal is not such a wait: composing the tiles is what ends the live draw. It arms the retry deadline, since the pane's
+  own live draw can hold the room it waits for and no governor release then comes.
 - The rest ring (a viewport each side, one tile while zooming; `ringMargin`) is prefetch, reserved with
   `reserve(bytes, { prefetch: true })`: admitted only if it fits, never reclaiming tiles. Two composers' rings that
   reclaimed each other's undrawn tiles recomposed them every frame at rest. Keep the still-wanted test on the same
@@ -147,7 +149,8 @@ and the platform alone picks the device.
 - A position the governor refuses is composed one level down (half scale, four positions); a second refusal waits.
   At rest a refused position first frees its own tiles and is admitted in the same frame (`freeOwn`). Refused at rest, it
   first lets go of what holds its room: the pending regions' live covers (`live:region:dropped-memory`), the other positions in
-  progress (`compose:cancel-others`) and the routes' admission caches from before the last frame (`compose:free-own:routes`).
+  progress (`compose:cancel-others`), the routes' admission caches from before the last frame (`compose:free-own:routes`) and
+  the live draw's kept runs, which hold every visible stroke's edges (`compose:free-own:live`; the ten-tabs case waited on itself).
   It frees and retries until nothing of its own is left that frame (`FREE_RETRY_ROUNDS`).
   Still refused with nothing of its own left, its slice is rastered by the CPU route (`compose:cpu-for-memory:<pass>`, counted
   `fallback:item-cpu:…:memory`), which needs the tile target alone; its pictures stay on the image route (their bitmaps are

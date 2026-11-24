@@ -45,6 +45,8 @@ export interface BoardInputHostOptions {
     released?(): void;
     /** Composable observer of each actual presented frame; the wet layer always runs first. */
     presented?(revision: number, token: RenderToken, frame?: PaintSource, context?: ViewerPaintPresentation): void;
+    /** The view has presented a frame since it was last shown; until then a press on the surface is held back. */
+    readonly framePresented?: () => boolean;
     invalidate(): void;
     onError(error: unknown): void;
     readonly overlays?: {
@@ -86,7 +88,16 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         exists: identity => options.session.doc.rev < identity.nodeRevision || options.session.doc.nodes.has(identity.nodeId as import('../model/ids').NodeId),
         invalidate: options.invalidate, onError: report, gpuRoutes: { createInkRoutes, inkRouteFor, withClips } });
     options.engine.setInteractionLayers(wet.layers);
-    const mappings = new MappingHistory();
+    const mappings = new MappingHistory(undefined, () => options.framePresented?.() ?? true);
+    // The surface's busy cursor while a press is held back for want of a presented frame (pointer.ts `down`). It is the one sign
+    // of that wait: the chrome, tools and keys stay live, so the board must not look read-only for a frame (it flashed faded
+    // on every tab switch when the whole input waited).
+    const syncWaiting = () => {
+        const surface = binding?.surface;
+        if (!surface) return;
+        if (attached && !mappings.ready()) { if (!surface.style.cursor) surface.style.cursor = 'progress'; }
+        else if (surface.style.cursor === 'progress') surface.style.cursor = '';
+    };
     const interaction: ViewerInteractionPorts = {
         finishGesture: () => { if (flush) safe(flush); },
         finishComposition: () => safe(() => options.overlays?.finishComposition()),
@@ -104,19 +115,10 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         pointerDown: () => contacts.size > 0,
     };
     const stopInteraction = options.engine.bindInteractions(interaction);
-    // While the surface takes no press (no frame presented yet, a cover, a hide) its cursor says the board is busy; the
-    // "Loading drawing…" label alone left a press that did nothing looking like a failed stroke.
-    const showWaiting = (waiting: boolean) => {
-        const surface = binding?.surface;
-        if (!surface) return;
-        if (waiting) { if (!surface.style.cursor) surface.style.cursor = 'progress'; }
-        else if (surface.style.cursor === 'progress') surface.style.cursor = '';
-    };
     const stopAttachment = () => {
         const stop = attached; attached = null; pointerClient = null;
         if (stop) { safe(stop); notifyAttachment(); safe(() => options.released?.()); }
-        contacts.clear(); flush = null;
-        showWaiting(true);
+        contacts.clear(); flush = null; syncWaiting();
     };
     const clientToSurface = (x: number, y: number): Point => {
         if (!binding) throw new Error('Input surface is not attached');
@@ -132,8 +134,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         return mappings.surface(sample.time, client.x, client.y);
     };
     const connect = () => {
-        // A press is placed through a presented frame's mapping; with none yet it could only fail (writeOverlays connects).
-        if (!binding || attached || !enabled || !current() || !mappings.latest()) return;
+        if (!binding || attached || !enabled || !current()) return;
         const { surface, overlay } = binding;
         const services = options.services(surface, overlay, wet, { mappings, sampleToSurface, clientToSurface, schedule });
         const view: BoardInputView = {
@@ -168,16 +169,16 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         try { detach = attachBoardInput(view, options.session, services, options.mode); }
         catch (error) { removeListeners(); throw error; }
         attached = () => { try { detach(); } finally { removeListeners(); } };
-        showWaiting(false);
+        syncWaiting();
         // Constructing services is not input readiness: the browser listeners,
         // router and session gesture bridge must all have attached successfully.
         notifyAttachment();
     };
     const attachInput = (surface: HTMLElement, overlay: HTMLElement): (() => void) => {
         if (disposed) throw new Error('Input host disposed');
-        stopAttachment(); showWaiting(false); binding = { surface, overlay }; safe(connect); if (!attached) showWaiting(true);
+        stopAttachment(); binding = { surface, overlay }; safe(connect);
         let removed = false;
-        return () => { if (removed) return; removed = true; if (binding?.surface === surface && binding.overlay === overlay) { stopAttachment(); showWaiting(false); binding = null; } };
+        return () => { if (removed) return; removed = true; if (binding?.surface === surface && binding.overlay === overlay) { stopAttachment(); binding = null; } };
     };
     const schedule = (callback: () => void, onDrop?: () => void): (() => void) => {
         if (disposed) return () => {};
@@ -217,8 +218,8 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
                 const rect = binding!.surface.getBoundingClientRect(), viewport = frame.view.viewport, camera = { ...frame.view.camera };
                 if (rect.width > 0 && rect.height > 0 && viewport.width > 0 && viewport.height > 0) {
                     mappings.present(presentedMapping(presentedAt, rect, viewport, camera));
-                    if (!attached) safe(connect);
                 }
+                syncWaiting();
                 options.overlays?.write(frame, binding!.overlay);
             });
         },
@@ -228,7 +229,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         },
         dispose() {
             if (disposed) return;
-            stopAttachment(); showWaiting(false); attachmentListeners.clear(); dropScheduled(); disposed = true; binding = null; presented = null;
+            stopAttachment(); attachmentListeners.clear(); dropScheduled(); disposed = true; binding = null; presented = null;
             safe(stopInteraction); safe(() => options.engine.setInteractionLayers(null)); safe(() => wet.dispose()); safe(() => options.overlays?.dispose?.());
         },
     };

@@ -451,6 +451,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     let focusSurface = event.pointerType !== 'touch'
     if (event.pointerType === 'pen') { doubleTap.clear(); services.tools.penDown(owner, event.pointerId, services.isDirectPen(event), event.timeStamp) }
     else if (event.pointerType === 'touch') {
+      // A touch, like any press, waits for a presented frame of this showing (pointer.ts `down`): mapped through none, it threw
+      // "No presented input mapping" out of this listener on a touch the moment a board was shown.
+      if (!view.mappings.ready()) return
       const point = contact(event)
       // A touch at a window's edge belongs to the OS (back and forward swipes) and is never admitted (catalogue I§4.1).
       const edge = event.clientX < TOUCH_EDGE_GUARD_PX || event.clientX > window.innerWidth - TOUCH_EDGE_GUARD_PX
@@ -474,13 +477,13 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (!current()) return
     // A hover is enough: the tool shown on the bar follows the keys really held before any press.
     reconcileModifiers(event)
-    if (event.pointerType === 'touch') { const point = contact(event); doubleTap.move(event.pointerId, point); touch.touchMove(point) }
+    if (event.pointerType === 'touch' && view.mappings.latest()) { const point = contact(event); doubleTap.move(event.pointerId, point); touch.touchMove(point) }
     else if (event.pointerType === 'pen' && event.buttons === 0) touch.penHover()
   }
   const up = (event: PointerEvent) => {
     if (event.pointerType === 'pen') services.tools.penUp(owner, event.pointerId, event.timeStamp)
     else if (event.pointerType === 'touch') {
-      doubleTap.up(event.pointerId, contact(event), event.timeStamp, event.type !== 'pointerup')
+      if (view.mappings.latest()) doubleTap.up(event.pointerId, contact(event), event.timeStamp, event.type !== 'pointerup')
       touch.touchUp(event.pointerId); touchAdmission.delete(event.pointerId)
     }
   }
@@ -493,7 +496,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const auxclick = (event: MouseEvent) => { if (event.button === 1 || event.button === 2) event.preventDefault() }
   const doubleClick = (event: MouseEvent) => {
     // A double-click with Shift, accel or Ctrl is no gesture at all (catalogue S§12): it creates no text and edits nothing.
-    if (!current() || !editable() || event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) return
+    if (!current() || !editable() || event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey || !view.mappings.ready()) return
     let handled = false
     try {
       if (services.handleDoubleClick) handled = services.handleDoubleClick(

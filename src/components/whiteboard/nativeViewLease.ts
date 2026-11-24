@@ -413,6 +413,7 @@ export function createNativeViewLease(options: {
     let presentedView: ViewState | null = null, presentedFrame: number | null = null, qualityNotice: string | null = null;
     const edit = options.parameters.mode === 'edit' ? options.editing : undefined;
     const editing = (() => { try { return edit ? createNativeEditingLease({ session: board, runtime, engine: viewer, token,
+        framePresented: () => presentedView !== null,
         inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
         camera, viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
             candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
@@ -550,24 +551,17 @@ export function createNativeViewLease(options: {
         captureRegion, captureBlob,
         readSheetId: () => runtime.selection.getSnapshot().sheet,
         ports: { consumeInput: timestamp => navigation.consumeInput(timestamp), isInteracting: () => navigation.isInteracting(),
-            setInputEnabled: enabled => navigation.setInputEnabled(enabled && inputReady()),
+            setInputEnabled: enabled => navigation.setInputEnabled(enabled && inputPermitted && sourceCurrent() && parameters.visible),
             cancelViewWork: reason => navigation.cancelViewWork(reason),
-            writeOverlays: frame => {
-                refreshViewport(); recordViewport();
-                const unmapped = presentedView === null;
-                if (presentedFrame === frame.frameId) presentedView = { ...frame.view, camera: { ...frame.view.camera }, viewport: { ...frame.view.viewport } };
-                navigation.writeOverlays(frame); readonlyOutline?.write(frame);
-                // The first frame shown (after an open, a show or a refused presentation) is what input is placed with: only now
-                // may the surface take a press. The navigation host has just recorded the same frame's mapping.
-                if (unmapped && presentedView) updateInput();
-            },
+            writeOverlays: frame => { refreshViewport(); recordViewport(); if (presentedFrame === frame.frameId) presentedView = { ...frame.view,
+                camera: { ...frame.view.camera }, viewport: { ...frame.view.viewport } }; navigation.writeOverlays(frame); readonlyOutline?.write(frame); },
             onPresentation: presentation => {
                 presentedFrame = presentation && current() && presentation.token.documentId === token.documentId &&
                     presentation.token.session === token.session && presentation.token.vaultEpoch === token.vaultEpoch &&
                     presentation.token.bytesGeneration === token.bytesGeneration ? presentation.frameId : null;
                 // A null presentation is pane lifecycle (suspend, dispose, hide), not a new mapping: the last frame shown
                 // stays until a frame is presented. Only a presentation this lease refuses clears it (hiding clears it in setView).
-                if (presentation && presentedFrame === null && presentedView) { presentedView = null; updateInput(); }
+                if (presentation && presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
                 // Audit only: why a presentation the embeds and backdrop act on was refused.
                 if (presentation && renderAuditEnabled() && !certifyPresentation(presentation)) auditCount('embed', 'uncertified:' + (!presentation.complete ? 'incomplete'
@@ -618,11 +612,9 @@ export function createNativeViewLease(options: {
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });
     let resize: ResizeObserver | undefined;
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
-    // Input waits for a presented frame: a press is placed through the camera and surface of a frame the person saw, and
-    // before the first one there is none (seen: strokes drawn while a board said "Loading drawing…" failed with "No presented
-    // input mapping" and were lost). Until then the surface takes no press at all, so no stroke is begun only to be dropped.
-    function inputReady() { return inputPermitted && sourceCurrent() && parameters.visible && presentedView !== null; }
-    function updateInput() { navigation.setInputEnabled(inputReady() && !!platformPane); }
+    const updateInput = () => {
+        navigation.setInputEnabled(inputPermitted && sourceCurrent() && parameters.visible && !!platformPane);
+    };
     let unregisterView: (() => void) | null = null;
     const lease: NativeViewLease = {
         runtime, engine: viewer, camera, editing, video: videoPort, getNavigationSnapshot, changed: () => cameraOwner.changed(), reveal,

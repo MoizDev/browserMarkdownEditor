@@ -89,6 +89,9 @@ export class ChromeToolDrag<Context> {
       if (Math.hypot(event.clientX - armed.x, event.clientY - armed.y) < threshold) return
       const rect = armed.bar.getBoundingClientRect()
       if (event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom) return
+      // Before the board has presented a frame of this showing there is nowhere to place the shape yet: the drag stays armed
+      // and starts on the first move after it (a drop before then creates nothing, as a click on the bar does).
+      if (!options.mappings.ready()) return
       // Leaving the bar is the intent: the shape is created where the pointer is, and it follows the pointer until release.
       try {
         const sample = this.sample(event), modifiers = this.modifiers(event)

@@ -25,7 +25,10 @@ export function presentedMapping(time: number,
 // Record mappings only after presentation, not when a future camera is scheduled.
 export class MappingHistory {
   private entries: PresentedMapping[] = []
-  constructor(private readonly onExpired: () => void = () => {}) {}
+  /** `shown`: the view has presented a frame since it was last shown (its owner knows; hiding forgets the frame). */
+  constructor(private readonly onExpired: () => void = () => {}, private readonly shown: () => boolean = () => true) {}
+  /** A new press can be placed: there is a presented frame of this showing to place it with. */
+  ready(): boolean { return this.entries.length > 0 && this.shown() }
   present(mapping: PresentedMapping): void {
     if (!Number.isFinite(mapping.time) || typeof mapping.clientToWorld !== 'function' || typeof mapping.clientToSurface !== 'function'
       || (this.entries.length && mapping.time < this.entries[this.entries.length - 1].time)) throw new Error('Invalid presented input mapping')
@@ -181,6 +184,11 @@ export class PointerAcquisition {
 
   private down = (event: PointerEvent): void => {
     if (this.contacts.has(event.pointerId)) return
+    // Before the first presented frame of a showing there is nothing to place a press with: it is not taken at all (the
+    // surface shows the busy cursor meanwhile). Taken, it failed with "No presented input mapping" and the stroke was lost
+    // (measured: every stroke drawn during "Loading drawing…" on a dense board, and after each tab switch, until its frame).
+    // Only a new press waits; a contact already down keeps its mappings, and the chrome and keys are not involved.
+    if (!this.mappings.ready()) return
     try {
       const sample = this.sample(event)
       if (!this.sink.down(sample, modifiers(event, this.mac), event)) return
@@ -235,5 +243,9 @@ export class PointerAcquisition {
   private got = (event: PointerEvent): void => { if (this.contacts.has(event.pointerId)) this.sink.captured?.(event.pointerId) }
   private lost = (event: PointerEvent): void => { this.end(event.pointerId, 'capture-lost') }
   private hover = (event: PointerEvent): void => { this.sink.hover?.(event) }
-  private menu = (event: MouseEvent): void => { if (this.sink.contextMenu) { event.preventDefault(); this.sink.contextMenu(event) } }
+  private menu = (event: MouseEvent): void => {
+    if (!this.sink.contextMenu) return
+    event.preventDefault()
+    if (this.mappings.ready()) this.sink.contextMenu(event)
+  }
 }

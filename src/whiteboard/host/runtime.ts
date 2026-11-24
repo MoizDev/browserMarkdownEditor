@@ -68,6 +68,9 @@ export interface BoardRuntime {
     dispose(): Promise<void>;
 }
 type Registration = { sink: BoardRuntimeViewSink; report: (error: unknown) => void };
+/** How long a document must have had no visible view before its derived geometry is released (see `viewsChanged`): longer than
+ * a glance at the graph view or another tab, far shorter than a tab left hidden (the hidden figures are read after 5 s). */
+const RELEASE_HIDDEN_MS = 2_000;
 const views = new Set<Registration>();
 const runtimes = new WeakMap<BoardSession, BoardRuntime>();
 function safe<T>(view: Registration, action: () => T, fallback: T): T {
@@ -100,12 +103,18 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     const visible = (entry: Registration) => safe(entry, () => entry.sink.visible(), false);
     // Whether a view of this document was on screen at the last change. When the last one hides (another tab, a closed pane), the
     // session's derived geometry goes too: the hide releases each pane's own memory, but these caches belong to the document, and
-    // a hidden 10,060-stroke drawing kept its idle geometry and resolved paint charged at rest (measured: 15.5 MB).
-    let shown = false;
+    // a hidden 10,060-stroke drawing kept its idle geometry and resolved paint charged at rest (measured: 15.5 MB). The release
+    // waits RELEASE_HIDDEN_MS and is called off if a view shows meanwhile, so a look elsewhere does not throw the geometry away
+    // just before it is needed again: the graph view detaches every view for as long as it is up (measured: a 1 s visit, a 1.04 s
+    // gap). A tab moved to another pane needs no wait: its new view binds before the old one goes (no gap measured).
+    let shown = false, releasing: ReturnType<typeof setTimeout> | undefined;
     const viewsChanged = () => {
         let any = false;
         for (const entry of attached) if (visible(entry)) { any = true; break; }
-        if (shown && !any && !disposed) options.render.releaseDerived();
+        if (any && releasing !== undefined) { clearTimeout(releasing); releasing = undefined; }
+        if (shown && !any && !disposed) {
+            releasing = setTimeout(() => { releasing = undefined; if (!disposed) options.render.releaseDerived(); }, RELEASE_HIDDEN_MS);
+        }
         shown = any;
     };
     const focused = (entry: Registration) => safe(entry, () => entry.sink.focused(), false);
@@ -241,6 +250,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
         dispose() {
             if (disposed) return retiring ?? Promise.resolve();
             disposed = true;
+            if (releasing !== undefined) { clearTimeout(releasing); releasing = undefined; }
             // Cache/services stop accepting new work at document close. Already
             // captured read-only jobs retain their own Scene/media/renderer leases.
             for (const entry of owned) {

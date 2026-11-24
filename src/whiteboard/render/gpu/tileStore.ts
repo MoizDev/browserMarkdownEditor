@@ -346,8 +346,9 @@ class GpuTileStore implements NumericTileStore {
     }
 
     /** Composed entries (with a target) of other scales covering `world`, nearest scale first. The array is the store's own
-     * and is valid until the next standIns call: a caller that keeps the entries copies them. */
-    standIns(band: PaintBand, world: Readonly<Rect>, scale: number): readonly TileEntry[] {
+     * and is valid until the next standIns call: a caller that keeps the entries copies them. `empty` also returns the composed
+     * entries with no target: a cell composed empty shows, truly, that nothing is there. */
+    standIns(band: PaintBand, world: Readonly<Rect>, scale: number, empty = false): readonly TileEntry[] {
         const found = this.standFound;
         found.length = 0;
         const scales = this.byBand.get(band);
@@ -369,7 +370,7 @@ class GpuTileStore implements NumericTileStore {
         for (let i = 0; i < count; i++) {
             const other = order[i];
             for (const slot of this.inRange(other, scales.get(other)!, world, this.rangeScratch)) {
-                if (slot.composed && slot.target) found.push(slot);
+                if (slot.composed && (slot.target || empty)) found.push(slot);
             }
         }
         return found;
@@ -608,9 +609,9 @@ class GpuTileStore implements NumericTileStore {
         return freed;
     }
 
-    /** Moves every entry of `band` at other scales off the index. Their targets join the free list, where the new scale
+    /** Moves every entry of `band` at other scales (but `keep`, and any used in frame `usedSince` or later) off the index. Their targets join the free list, where the new scale
      * reuses them, so the bytes stay charged until reuse or eviction. Returns the number of entries dropped. */
-    dropScalesExcept(scale: number, band: PaintBand): number {
+    dropScalesExcept(scale: number, band: PaintBand, keep = Number.NaN, usedSince = Infinity): number {
         const scales = this.byBand.get(band);
         if (!scales) return 0;
         // Collected before any unlink, which edits the index being walked. The walk visits this band's scales and the entries
@@ -618,8 +619,8 @@ class GpuTileStore implements NumericTileStore {
         const others = this.dropScratch;
         others.length = 0;
         for (const [other, positions] of scales) {
-            if (other === scale) continue;
-            for (const slots of positions.values()) for (const slot of slots) others.push(slot);
+            if (other === scale || other === keep) continue;
+            for (const slots of positions.values()) for (const slot of slots) if (slot.usedFrame < usedSince) others.push(slot);
         }
         const dropped = others.length;
         for (const slot of others) {

@@ -68,8 +68,10 @@ and the platform alone picks the device.
 - **One tile scale**: a view's tiles are keyed at `exactTileScale(z·dpr)` (`tileKeys.ts`, 12 digits) by the composer AND the
   store; the store judging "current scale" from the raw product took every tile a settling board composed after a divider drag
   as another scale's, and trims evicted them as fast as they were composed (3,550 per 10 s at rest).
-- A GPU route admits a run whole or defers it, and a deferred run starts over next frame, so runs hold at most `RUN_MAX_ITEMS`
-  (256) items: a slice resumes run by run. Unbounded, a 5,000-stroke union-ink run never fit one frame and deferred for good.
+- A GPU route admits a run whole or defers it, so runs hold at most `RUN_MAX_ITEMS` (256) items: a slice resumes run by run.
+  Unbounded, a 5,000-stroke union-ink run never fit one frame and deferred for good. A union-ink run deferred part way resumes at
+  the stroke it stopped at, its admitted strokes kept (`routeInk.ts` `pendingRuns`; the composer's `cancel` and `toCpu` call
+  `ItemRoute.abandon`): started over, a slow GPU's frames never reached a run's last strokes ('Updating…' for good).
 - `prepare(view, budget, prepared, omit?)`: `omit` is the nodes a drag previews elsewhere; their tiles compose
   without them. The draw never takes an omit set.
 - Every upload belongs to prepare: each route's `uploadPrepared()` runs at its end, and `encodeOffscreen` (the text
@@ -85,7 +87,9 @@ and the platform alone picks the device.
   MSAA coverage kit, counted `area:fallback:<why>` (dash, non-simple outline, nesting).
 - Union ink is exact area too: `ink/unionOutline.ts` builds a stroke's union boundary; a refusal goes to the grid,
   counted `ink:area:fallback:<why>`. Wet and committed ink share the route, so pen-up hands over identical coverage.
-  A moving view may hold a FINER band's outline, never a coarser one. The area shader's per-column share comes from
+  A moving view may hold a FINER band's outline; a coarser one only while its own band's edges are still uploading (the stroke's
+  outgoing outline is kept for that, `ink:area:band-stand-in`), and the run is then inexact (`exact()`), so the rest recomposes it.
+  Dropped instead, a zoom crossing a band left every stroke in view out of its frame. The area shader's per-column share comes from
   the run's own width (`tb = ta + d`): two separate differences of pixel-sized coordinates streaked rows on Apple GPUs.
 - Edges are cached per content and band and moved by a uniform: a pan or zoom inside a band uploads nothing. A run's
   areas share one accumulation pass, then composite from their scratch regions.
@@ -107,9 +111,18 @@ and the platform alone picks the device.
 - A frame composes at most one dirty tile a pending region covers (`DIRTY_COVERED_PER_FRAME`), except one the last
   draw failed to cover. A covered position, and one whose tile replaced its cover, signs as its position
   (`coverSignature`), so the swap presents nothing.
-- Coverage (`coverage(view)`): a position is `ok`, `dirty` or `missing`; any picture (its tile, a dirty one, a
-  stand-in of another scale) makes it complete. `sharp` needs the drawn scale to be the demanded one and every
-  position `ok`. While zooming, a hole does not hold the frame.
+- **A frame never takes an item off the screen.** Each visible position draws its own tile; else the other scales' picture of it
+  (`standInPicture`: nearest scale first, each farther scale only where the nearer ones leave it bare, every cell clipped to what it
+  fills; a cell composed empty covers its part unless an edit has since dirtied it); else its parts live (`fillLive`, at most
+  `LIVE_FILL_MAX_PARTS` a frame, all or none); else it is a hole. A live frame (zoom-direct, a pan, settling) that could not admit a
+  part draws the frame from tiles instead (`live:fallback:tiles`). A hole whose bare world the last drawn frame showed is a
+  regression: the board's `critical()` holds the frame (`holding()`, the previous picture stays) for up to `HOLE_HOLD_MS`, then
+  presents it. A draw refused on the surface holds the same way. Counted: `hole:<why>`, `hold:<why>`, `fill:live*`, and every frame
+  laid with an item missing, `present:missing:<hold-expired|revealed|loading|draw-refused>` (revealed: world the move uncovered that
+  no tile or live part shows yet; loading: at rest, the board says it is working). Kit: per-present cameras are in
+  `presents()` (`view`), so each present can be scored against `scenes()` geometry.
+- Coverage (`coverage(view)`): incomplete while the draw list holds a hole or a refused draw; at rest also while a visible
+  position has no tile and no stand-in. `sharp` needs the drawn scale to be the demanded one and every position `ok`.
 
 ## Zoom
 
@@ -119,6 +132,14 @@ and the platform alone picks the device.
 - Text (`ZoomRoute.setZoom`): while zooming, a missing exact mask draws from its cached stand-in, never rasters; the
   run is marked `exact: false` and recomposes at rest. At rest an exact encode supersedes other scales
   (`dropScalesExcept`).
+- **The floor** (`FLOOR_VIEWS`): at rest, after the ring's first tile each side, the view's neighbourhood (three viewports each
+  side) is composed at the power-of-two scale at which it spans two tiles, as prefetch. It is kept through zooms and pans
+  (`dropScalesExcept` and `dropSuperseded` skip its scale) as the last stand-in: a zoom out reveals far more than the ring. A region
+  of more than `FLOOR_MAX_PARTS` parts has none (`floor:off:dense`): a dense board's floor never finished composing.
+- `freeOwn` never drops other scales' tiles the last frame laid (the picture of positions not yet composed), nor cancels the
+  position it frees for; `cancel` resets a position's admission to its first run (driven past a cancel, it was encoded partial).
+- While a GPU wait stands, a parked position is passed over and so is any work that would take new room (missing, ring, floor);
+  dirty and held positions keep recomposing into the targets they hold, so an erase still shows.
 - The rest ring (a viewport each side, one tile while zooming; `ringMargin`) is prefetch, reserved with
   `reserve(bytes, { prefetch: true })`: admitted only if it fits, never reclaiming tiles. Two composers' rings that
   reclaimed each other's undrawn tiles recomposed them every frame at rest. Keep the still-wanted test on the same

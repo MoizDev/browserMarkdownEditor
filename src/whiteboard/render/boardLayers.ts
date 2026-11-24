@@ -457,8 +457,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const blocked = !!options.frames.blocked?.() || denied || !!dense?.memoryBlocked();
         // An idle ancestor pass runs while the view is already sharp: it is not work the board is waiting on.
         const idleOnly = useDense && !!dense?.idleOnly();
+        // A device frame that left an item in view out is work still owed, even while nothing can advance it (a wait on memory): at rest
+        // the picture is complete or the board says it is working (a first visit among ten dense tabs rested on part of its strokes).
         const working = !!options.frames.needsFrame() || (!!estimate && !estimate.done) || (!idleOnly && !!adapter?.needsFrame())
-            || (!!activeHost()?.device() && !!gpu?.needsFrame()) || !!dense?.pending();
+            || (!!activeHost()?.device() && (!!gpu?.needsFrame() || !!gpu?.incomplete())) || !!dense?.pending();
         // The frame still drawn may be the previous zoom's, re-drawn at the new view, while its replacement is staged.
         const showsView = !!presentedContext && !!preparedView && samePictureView(presentedContext.view, preparedView) && !options.frames.replacing?.();
         if (!blocked && !working && presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented) && showsView) return { kind: 'current' };
@@ -1359,8 +1361,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // A layer waiting on a refused GPU admission defers instead: holding every frame for memory the governor has not freed
         // froze the pane (a board whose ink tile could not be admitted refused every frame, and nothing requested another).
         // A draw list that cannot be drawn for this frame's view is critical too: the compositor then refuses the frame and keeps the
-        // previous complete picture, instead of presenting the board with its draws skipped.
-        critical(_layer, view) { return (presented === null && !adapter?.readyFrame() && !gpu?.readyFrame() && !gpu?.memoryBlocked()) || !!gpu?.listInvalid(view); },
+        // previous complete picture, instead of presenting the board with its draws skipped. So is a frame that would take an item the
+        // screen shows off it (the composer's hold, bounded): the previous picture shows the item, this one would not.
+        critical(_layer, view) { return (presented === null && !adapter?.readyFrame() && !gpu?.readyFrame() && !gpu?.memoryBlocked()) || !!gpu?.listInvalid(view) || !!gpu?.holding(); },
         coverage(layer, frame, backend) {
             // An optional layer with no request has nothing to draw: the platform reads it complete, and so does the audit.
             const { actual, read } = bandCoverage(band, frame, backend);

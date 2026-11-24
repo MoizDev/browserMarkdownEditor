@@ -237,6 +237,11 @@ export interface GpuPaintAdapter {
     needsFrame(): boolean;
     /** True while the layer waits on a refused GPU admission with nothing else to do (see the composer's memoryBlocked). */
     memoryBlocked(): boolean;
+    /** True while this frame would take an item the screen shows off it: the layer is critical, so the previous picture stays (see the
+     * composer's holding). */
+    holding(): boolean;
+    /** The last drawn frame left an item in view out (the composer's incomplete): the board is still working. */
+    incomplete(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
     cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number };
     /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
@@ -476,6 +481,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         },
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
         memoryBlocked(): boolean { return !disposed && composer.memoryBlocked(); },
+        holding(): boolean { return !disposed && composer.holding(); },
+        incomplete(): boolean { return !disposed && composer.incomplete(); },
         drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
         drawnLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnLiveNodeIds(band); },
         drewNothing(band: PaintBand): boolean { return disposed || composer.drewNothing(band); },

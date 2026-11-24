@@ -466,8 +466,9 @@ class NotebookPaperLayer implements Layer {
             (this.ready?.revision === snapshot.revision || this.staged?.snapshot.revision === snapshot.revision ? 0 : workingBytes(snapshot, stack));
     }
     /** Critical only while the paper has drawn no page at all: a stand-in (any drawn page) lets a pan that exposes pages faster
-     * than they compose present what there is, instead of refusing every frame (the 0-presents class, measured on large boards). */
-    critical(): boolean { return !this.drawnOnce; }
+     * than they compose present what there is, instead of refusing every frame (the 0-presents class, measured on large boards). And
+     * while its composed frame would take paper the screen shows off it (the composer's hold, bounded). */
+    critical(): boolean { return !this.drawnOnce || (!!this.host.device() && !this.proceduralOn && this.gpu.holding()); }
     coverage(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
         const result = this.coverageNow(frame, layer, backend);
         // What the paper draws besides the current picture, for the present audit: pages drawn before are stand-ins; none drawn is a hole.

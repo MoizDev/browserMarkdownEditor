@@ -187,7 +187,8 @@ interface LiveAdmission { readonly route: ItemRoute; readonly run: PreparedRun }
 export interface TileRoutes {
     readonly path: ItemRoute & Partial<ZoomRoute>;
     readonly inkAnalytic: ItemRoute<PaintInkItem>;
-    readonly inkUnion: ItemRoute<PaintInkItem>;
+    /** `exact` is false for a run that drew a stroke from another band's outline while its own uploaded (routeInk.ts admitArea). */
+    readonly inkUnion: ItemRoute<PaintInkItem> & Partial<Pick<ZoomRoute, 'exact'>>;
     /** Absent until the route is built: its items are then rastered by `cpu`, counted as a fallback. */
     readonly image?: ItemRoute & Partial<PictureRoute>;
     readonly text?: ItemRoute & ZoomRoute;
@@ -287,6 +288,13 @@ export interface TileComposer {
     /** The GPU bytes the visible tiles at the drawn scale hold, for a viewport of `width` by `height` (view units): one
      * tile target per slice of each visible position that is composed. The governor's mandatory working set. */
     mandatoryBytes(width: number, height: number): number;
+    /** True while this frame must not replace the picture on screen: it would take off the screen an item the last drawn frame showed
+     * (a position it showed now has no picture, or a draw it planned was refused). Bounded by HOLE_HOLD_MS from the first such frame,
+     * after which the frame is presented and counted (present:missing:hold-expired). The layer reads it as critical. */
+    holding(): boolean;
+    /** The last drawn frame left an item in view out (a hole, or a live part it could not admit and no tile showed): the board is
+     * not current, whether or not anything can make progress now, and says so. */
+    incomplete(): boolean;
     /** False while nothing can make progress this frame: composed and settled, or waiting for memory. */
     needsFrame(): boolean;
     /** True while the composer waits on a refused GPU admission and has no other work (no indexing, nothing finished to encode): a
@@ -316,6 +324,20 @@ const ZOOM_DIRECT_MAX_PARTS = 512;
  * WebGL2 with the CPU throttled 3x: 5,036 stroke admissions and one deferral per frame). The CPU route rasters a run as one scrap, so
  * its runs are not split. */
 const RUN_MAX_ITEMS = 256;
+/** The most parts a frame draws live to fill visible positions no tile of any scale pictures (live fill, see fillLive): the zoom-direct
+ * bound, so a fill costs at most what a live zoom frame does. */
+const LIVE_FILL_MAX_PARTS = 512;
+/** How long a frame that would lose an item the screen shows is held (the previous picture stays) before it is presented anyway, counted
+ * (present:missing:hold-expired). Bounded so a hole that cannot fill (memory refused, a slow compose) costs a stutter, never a freeze. */
+const HOLE_HOLD_MS = 250;
+/** The floor: a coarse picture of the view's neighbourhood, FLOOR_VIEWS viewports each side, composed at rest after the ring at the
+ * power-of-two scale at which that whole region spans at most FLOOR_PIXELS (two tiles) across. It is kept through zooms and pans as the
+ * last stand-in: zooming out of a dense board reveals far more than its ring, and no compose can keep up with it (measured, the 3 MB
+ * read-only board pinched out from 456% in half a second: up to every stroke gone from the frames for 1.5 s). Composed as prefetch,
+ * so it only takes room that is free. */
+const FLOOR_VIEWS = 3;
+const FLOOR_MAX_PARTS = 2048;
+const FLOOR_PIXELS = 2 * EDGE;
 /** The most tiles a rest margin composes beyond the visible span, each side (one viewport, bounded). */
 const RING_MAX_TILES = 8;
 /** The tiles each side of the view the ring holds: one while zooming, at rest a viewport each side (bounded). The compose pass and the
@@ -471,11 +493,38 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // A live part deferred this frame asks for the next one. Consecutive deferred frames are counted and the asking stops at the
     // retry limit (a part that never fits its upload budget must not keep the board framing at rest).
     let liveDeferredNow = false, liveDeferredFrames = 0;
-    // A live part dropped this frame (denied, unsupported, or no route) draws nothing for it: the frame is not complete for it.
-    let liveHoleNow = false;
+    // Live parts admitted by the end of the last frame, and the most any deferred frame of this run reached: a deferred frame that
+    // admitted more than any before it made progress (its uploads resume where they stopped), so it does not count toward the stop.
+    // Counted per frame alone, a board opening among ten dense tabs stopped asking after 12 deferred frames with 278 of 405 strokes
+    // still to upload, and rested on part of its strokes (no frame came to admit the rest).
+    let liveAdmittedNow = 0, liveAdmittedBest = 0;
+    // A part reaching the view of a live frame was not admitted while its draws were built (deferred, denied, unsupported): the frame
+    // then draws from tiles instead (buildDraws), so no item the view holds is left out of it.
+    let liveMissed = false;
+    // The positions this frame's draw list leaves with no picture while parts reach them (holes), and those of them whose world the
+    // last drawn frame showed (regressions: the frame would take an item off the screen). A regression holds the frame (holding).
+    let frameHoles = 0, frameRegressions = 0, holeCause = '';
+    // A draw this frame planned was refused on the surface or in its encode (a route's draw, a live part, a tile's encode): what it
+    // planned is not all laid, so the frame is held like a regression.
+    let drawRefusedNow = false;
+    // When the current run of held frames began (performance.now), -1 when the last frame was not held; and the frame last judged.
+    let holdSince = -1, holdFrame = -1, holdNow = false, holdRefused = false;
+    // The last frame's draw was refused (read by the next prepare: its hold's clock runs on until a frame is laid whole).
+    let refusedBefore = false;
+    // The world the last drawn frame's view showed (both bands draw one view), and live parts drawn this frame to fill positions.
+    const shownWorld: Rect = { x: 0, y: 0, width: 0, height: 0 };
+    let shownValid = false, shownFrame = -1, fillParts = 0, missingCounted = -1;
+    // The floor's scale and span (see FLOOR_VIEWS), fixed at rest and kept through a zoom or a pan; 0 and null when there is none.
+    let floorScale = 0, floorSpan: Span | null = null;
+    // The floor last weighed (its scale, span and the scene revision): a region is counted once, not at every rest frame.
+    const floorChecked = { scale: 0, x0: 0, y0: 0, x1: 0, y1: 0, revision: -1 };
+    // The world rectangles of this frame's holes, and the last drawn frame's: a position that was a hole there showed nothing, so its
+    // hole now takes nothing off the screen (an opening board's progressive tiles are not regressions).
+    let curHoles: Rect[] = [], lastHoles: Rect[] = [];
     // A part of a cut is drawn inside its pieces only (pixel-disjoint from the tile pieces beside them); any other part, inside the clip.
     const liveScratch: { order: number; run: PreparedRun; route: ItemRoute; nodeId: string; item: object; pieces?: readonly Rect[] }[] = [];
-    const standScratch: { order: number; entry: TileEntry; slot: Slot }[] = [];
+    // A stand-in entry to lay for a position, clipped to the part of the position it pictures (surface pixels).
+    const standScratch: { order: number; entry: TileEntry; slot: Slot; clip: Rect }[] = [];
     // Batch scratch: the quads of one call, reused. The pool holds spec objects for the composer's life.
     const quadPool: { sourceRect: Rect; destRect: Rect }[] = [];
     const quadList: TexturedQuadSpec[] = [];
@@ -709,6 +758,76 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         return standInScratch;
     };
 
+    /** The surface pixels of a world rectangle, rounded as clipOnSurface rounds a position (so two pieces of one position share their
+     * seam pixel by pixel), inside `within`; null when none of it is there. */
+    const pieceOnSurface = (view: ViewState, world: Readonly<Rect>, within: Readonly<Rect>): Rect | null => {
+        const cam = view.camera, scale = cam.z * view.viewport.dpr;
+        const left = Math.max(within.x, Math.round((world.x - cam.x) * scale)), top = Math.max(within.y, Math.round((world.y - cam.y) * scale));
+        const right = Math.min(within.x + within.width, Math.round((world.x + world.width - cam.x) * scale));
+        const bottom = Math.min(within.y + within.height, Math.round((world.y + world.height - cam.y) * scale));
+        return right <= left || bottom <= top ? null : { x: left, y: top, width: right - left, height: bottom - top };
+    };
+    /** What the other scales picture of a position with no tile of its own, into `standScratch` (paint order is the caller's sort): the
+     * nearest scale's cells first, then each farther scale only where the nearer ones leave part of the position bare, each cell clipped
+     * to the part it fills, until the position is covered. A cell counts only when every slice of it is composed; a cell composed empty
+     * covers its part with nothing, truly. True when the whole position is pictured. Only the nearest scale was asked before, and a
+     * nearest scale holding a few cells left the rest of the position blank: zooming out of a dense board, whole frames showed nothing
+     * where the coarser tiles had the picture (measured, the 3 MB read-only board pinched out from 456%: 36 frames over 1.5 s with every
+     * stroke missing). */
+    // The world pieces of the position the last standInPicture left bare (the whole position when it found nothing).
+    let pictureRemaining: Rect[] = [];
+    const standInPicture = (view: ViewState, band: PaintBand, scale: number, x: number, y: number, clip: Readonly<Rect>): boolean => {
+        standScratch.length = 0;
+        const world = tileWorld(keyOf(band, scale, x, y, 0));
+        const list = store.standIns(band, world, scale, true);
+        if (!list.length) { pictureRemaining = [world]; return false; }
+        // Pieces narrower than half a device pixel are float error at the seams, not bare picture.
+        const sliver = 0.5 / (view.camera.z * view.viewport.dpr);
+        pictureRemaining = [world];
+        let remaining = pictureRemaining;
+        for (let i = 0; i < list.length && remaining.length;) {
+            const at = list[i].key.scale;
+            let end = i;
+            while (end < list.length && list[end].key.scale === at) end++;
+            for (let k = i; k < end && remaining.length; k++) {
+                const head = list[k];
+                if (head.key.slice !== 0) continue;
+                const slot = slots.get(head);
+                // A cell composed empty that a change has since overtaken says nothing of what is there now (the paint it was composed
+                // from may have held less of the board): it covers nothing. One with content shows the board as it was, still a picture.
+                if (!slot || (slot.count === 0 && head.dirty)) continue;
+                const { x: cx, y: cy } = head.key;
+                let whole = true;
+                for (let s = 1; s < slot.count && whole; s++) {
+                    const entry = entryAt(band, at, cx, cy, s);
+                    whole = !!entry && entry.composed && !!entry.target && slots.has(entry);
+                }
+                if (!whole) continue;
+                const cell = tileWorld(head.key);
+                let reached = false;
+                const next: Rect[] = [];
+                for (const piece of remaining) {
+                    if (!overlapsRect(piece, cell)) { next.push(piece); continue; }
+                    reached = true;
+                    if (slot.count > 0) {
+                        const x0 = Math.max(piece.x, cell.x), y0 = Math.max(piece.y, cell.y);
+                        const x1 = Math.min(piece.x + piece.width, cell.x + cell.width), y1 = Math.min(piece.y + piece.height, cell.y + cell.height);
+                        const pixels = pieceOnSurface(view, { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, clip);
+                        if (pixels) for (let s = 0; s < slot.count; s++) {
+                            const entry = s === 0 ? head : entryAt(band, at, cx, cy, s)!;
+                            standScratch.push({ order: slot.firstOrder[s] ?? Infinity, entry, slot: slots.get(entry)!, clip: pixels });
+                        }
+                    }
+                    for (const rest of subtractRects(piece, [cell])) if (rest.width > sliver && rest.height > sliver) next.push(rest);
+                }
+                if (reached) remaining = next;
+            }
+            i = end;
+        }
+        pictureRemaining = remaining;
+        return remaining.length === 0;
+    };
+
     /** Whether a zoom holds a position at its nearest composed tiles instead of composing it at the exact scale. It holds when those
      * tiles have content and either none of it is geometry (raster only: drawn scaled, not re-rastered) or some of it is CPU raster
      * (the CPU route would raster it afresh each frame). Mixed GPU content composes exact: its text route scales its cached masks. A
@@ -743,7 +862,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         for (let guard = 0; guard < 16; guard++) {
             let victim: TileEntry | null = null;
             for (const entry of standInsOf(band, scale, x, y)) {
-                if (slots.has(entry) && exactUnder(band, scale, entry, span)) { victim = entry; break; }
+                if (entry.key.scale !== floorScale && slots.has(entry) && exactUnder(band, scale, entry, span)) { victim = entry; break; }
             }
             if (!victim) return;
             store.remove(victim.key);
@@ -790,7 +909,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
      * the GPU draws from rastered or decoded pixels, and the CPU raster), which a zoom does not re-raster (gpu's ruling). */
     /** False for a run a zoom-aware route marked inexact (a text stand-in, a path composed on its zoom route): its tile recomposes at rest. */
     const exactRun = (route: ItemRoute, run: PreparedRun): boolean =>
-        route === routes.text ? routes.text.exact(run) : route === routes.path && routes.path.exact ? routes.path.exact(run) : true;
+        route === routes.text ? routes.text.exact(run) : route === routes.path && routes.path.exact ? routes.path.exact(run)
+            : route === routes.inkUnion && routes.inkUnion.exact ? routes.inkUnion.exact(run) : true;
     const isGeometryRoute = (route: ItemRoute): boolean => route === routes.path || route === routes.inkAnalytic || route === routes.inkUnion;
     /** The GPU route for an item, or the CPU route with the reason no GPU route takes it. */
     /** A paint a live-only overlay draws without tiles: every part a plain unclipped 'over' item on a route that draws over the
@@ -865,6 +985,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     /** Hands a run to the CPU route for good, with its reason; any clips it had admitted are released (the raster paints them). */
     const toCpu = (run: Run, why: string, label: string | null): void => {
         run.prepared?.retire();
+        run.route.abandon?.(run.items);
         run.prepared = null; run.clips = null;
         run.route = routes.cpu; run.why = why; run.label = label;
     };
@@ -971,10 +1092,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const cancel = (position: Position): void => {
         editEvent(EDIT_CANCEL);
         for (const slice of position.slices) {
-            for (const run of slice.runs) { run.prepared?.retire(); run.prepared = null; }
+            for (const run of slice.runs) { run.prepared?.retire(); run.prepared = null; run.route.abandon?.(run.items); }
             for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
             slice.admitted.length = 0;
+            // Admission starts over from the slice's first run: kept, a position advanced after its cancel admitted only its later runs,
+            // reported done and was encoded without the earlier ones, a tile with strokes missing that then stood in as a picture.
+            slice.next = 0;
         }
+        position.cursor = 0;
     };
 
     /** Frees this composer's own tiles for a refused position at rest, so it is admitted now instead of waiting on capacity that
@@ -984,7 +1109,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
      * whether any bytes were freed. */
     // The frame in which an own-store free found nothing: every later refusal this frame would scan and find nothing too.
     let freeOwnEmptyFrame = -1;
-    const freeOwn = (view: ViewState, target: number): boolean => {
+    const freeOwn = (view: ViewState, target: number, asking: Position): boolean => {
         if (freeOwnEmptyFrame === frame) return false;
         editEvent(EDIT_FREE);
         if (store.evict(FREE_FOR_REFUSAL, -1, view) > 0) return true;
@@ -993,8 +1118,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         // to fit on WebGL2: 27.6 MB of ink edges, one tile composed in 25 s). Edges used this frame or the last are kept: taken, a
         // deferred admission re-uploaded them every frame (measured: 254 edge buffers created per frame, 10 s of CPU per 10 s).
         if ((options.reclaimRoutes?.(FREE_FOR_REFUSAL, frame) ?? 0) > 0) { auditCount(audit, 'compose:free-own:routes'); return true; }
-        for (const position of building.values()) if (position.lowered) { cancel(position); building.delete(position.key); }
-        for (const band of BANDS) store.dropScalesExcept(target, band);
+        // The other lowered positions in progress go; never the one asking (driven past its own cancel, it finished as a partial tile).
+        for (const position of building.values()) if (position.lowered && position !== asking) { cancel(position); building.delete(position.key); }
+        // The other scales' tiles the last frame laid stay: they are the picture of positions not yet composed, and dropped, the screen
+        // lost them before their own tiles existed (measured, the 3 MB board pinched out: a frame with 1,195 strokes shown, then one with
+        // none, at the same camera).
+        for (const band of BANDS) store.dropScalesExcept(target, band, floorScale, drawsFrame >= 0 ? drawsFrame : Infinity);
         const freed = store.evict(FREE_FOR_REFUSAL, -1, view) > 0;
         if (freed) auditCount(audit, 'compose:free-own:scales');
         else freeOwnEmptyFrame = frame;
@@ -1028,6 +1157,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
      * yet. A lowered position is a stand-in for refused visible cells: once they are composed it covers nothing, and kept for any
      * ring cell it lingered in progress with no pass to finish it (counted 'building:orphan' at every frame after divider drags). */
     const stillWanted = (position: Position, target: number, ring: Span, span: Span): boolean => {
+        if (!position.lowered && floorSpan && position.scale === floorScale && floorScale !== target) return inSpan(floorSpan, position.x, position.y);
         if (!position.lowered) return position.scale === target && inSpan(ring, position.x, position.y);
         if (position.scale * 2 !== target) return false;
         for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
@@ -1054,21 +1184,26 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         let limit = view.moving ? 2 : 8;
         if (options.slowGpu?.()) limit = Math.max(1, limit >> 1);
         // Advances one position. False when this frame's compose is spent (limit, budget, a wait); true when the pass goes on.
-        const drive = (position: Position, key: number, pass: 'held' | 'dirty' | 'missing' | 'ring'): boolean => {
-            // A position parked on a GPU wait ends the pass as its refusal did (see below): a frame that comes meanwhile (another layer's)
-            // must not start positions that take the room it waits for.
-            if (position.parked) { if (waiting) position.drivenFrame = frame; return !(waiting && blockedOnGpu); }
+        const drive = (position: Position, key: number, pass: 'held' | 'dirty' | 'missing' | 'ring' | 'floor'): boolean => {
+            // The ring and the floor are prefetch: admitted only into free room, never lowered, never freeing what the view holds.
+            const prefetch = pass === 'ring' || pass === 'floor';
+            // A parked position waits for the governor's wake; the pass goes on past it. While that wait is for GPU room, work that
+            // would take new room (a missing, ring or floor position) is passed over too, so it cannot take the room waited for; a dirty
+            // or held position recomposes into the target it already has, so an erase or an undo still shows (ended at a parked lowered
+            // position, every compose stopped before the dirty pass until the wake, the erased strokes on screen meanwhile).
+            if (position.parked) { if (waiting) position.drivenFrame = frame; return true; }
+            if (waiting && blockedOnGpu && pass !== 'dirty' && pass !== 'held') { position.drivenFrame = frame; auditCount(audit, `compose:room-wait:${pass}`); return true; }
             position.drivenFrame = frame;
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
             // The count limit is for background recomposes: a foreground compose (a visible tile with no valid cover) is bounded by the budget.
             if (only !== 'foreground' && frameComposed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
             if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return false; }
-            let outcome = advance(position, budget, gpu, pass === 'ring');
+            let outcome = advance(position, budget, gpu, prefetch);
             // At rest a refused or denied position frees this composer's own tiles and is admitted in the same frame, instead of
             // waiting for the governor (see freeOwn). While zooming the stand-ins stay: they are what the zoom shows.
             // Only a GPU refusal frees this composer's own tiles: a CPU denial (path staging) is not a GPU shortage, and evicting
             // tiles for it recomposes what was just freed. A ring position frees nothing: what it would free is the ring itself.
-            if ((outcome === 'refused' || (outcome === 'denied' && blockedOnGpu)) && pass !== 'ring' && !zoomingFrame) {
+            if ((outcome === 'refused' || (outcome === 'denied' && blockedOnGpu)) && !prefetch && !zoomingFrame) {
                 // Refused room for its own picture, the board first gives up laying changed regions live: their covers (every part under
                 // a region, drawn live each frame) are admitted before any compose and hold the room the dirty tiles under them need, so
                 // those tiles never composed, the regions never cleared, and a refused cover left its cut-out tile blank (measured, the
@@ -1088,7 +1223,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 // Freed and still refused, it frees again until nothing of its own is left this frame: freed once per frame, the little a
                 // free found each time was taken back by the retry, the CPU raster below never came, and the refused tile was retried at
                 // every deadline for good (measured, three dense boards after divider drags: 40 free-and-retry rounds per 10 s at rest).
-                for (let rounds = 0; (outcome === 'refused' || (outcome === 'denied' && blockedOnGpu)) && rounds < FREE_RETRY_ROUNDS && freeOwn(view, target); rounds++) {
+                for (let rounds = 0; (outcome === 'refused' || (outcome === 'denied' && blockedOnGpu)) && rounds < FREE_RETRY_ROUNDS && freeOwn(view, target, position); rounds++) {
                     auditCount(audit, `compose:free-retry:${pass}`);
                     outcome = advance(position, budget, gpu);
                 }
@@ -1111,7 +1246,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (only !== 'foreground') frameComposed += position.slices.length;
                 return true;
             }
-            if (outcome === 'refused' && pass !== 'ring' && !position.lowered) {
+            if (outcome === 'refused' && !prefetch && !position.lowered) {
                 // The governor refused a visible position: it composes one level down, at half the scale, which covers this
                 // position and three others. The stand-in keeps it on screen meanwhile; a second refusal waits.
                 const low = lowerTileKey(keyOf(position.band, position.scale, position.x, position.y, 0));
@@ -1137,8 +1272,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // positions that each held part of the room waited on one another for good (measured: five visible positions of a narrow
             // dense pane parked holding 12.7 MB of ink edges, each refused the 1 MB tile it needed; the 5,642-stroke board after a zoom
             // to fit, three holding 27.6 MB). The one refused is reached first again when the governor wakes the composer.
-            if (outcome === 'refused') { refuseTarget(); position.parked = true; if (pass !== 'ring') armRetry(); auditCount(audit, `compose:refused:${pass}`); return false; }
-            if (outcome === 'denied') { position.parked = true; if (pass !== 'ring') armRetry(); auditCount(audit, `compose:denied:${pass}`); return false; }
+            if (outcome === 'refused') { refuseTarget(); position.parked = true; if (!prefetch) armRetry(); auditCount(audit, `compose:refused:${pass}`); return false; }
+            if (outcome === 'denied') { position.parked = true; if (!prefetch) armRetry(); auditCount(audit, `compose:denied:${pass}`); return false; }
             auditCount(audit, `compose:wait:${pass}`);
             return false;
         };
@@ -1178,11 +1313,34 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         }
         // A visible position with no stand-in is foreground work: the foreground (and a single-phase compose) takes the missing pass
         // before the dirty one, so a budget that runs out on dirty positions cannot leave it missing (gpu's ruling).
-        for (const pass of (only === 'background' ? DIRTY_FIRST : MISSING_FIRST)) {
-            // While zooming only the visible positions are composed: the ring is the next view's, and the zoom's compose is its cost.
-            if (pass === 'ring' && (zoomingFrame || only === 'foreground')) continue;
-            // At rest the ring is a viewport each side (bounded): a pan reveals composed tiles, not stand-ins (gpu's ruling).
-            const margin = pass === 'ring' ? ringMargin(span, zoomingFrame) : 0;
+        // At rest, after the ring's first tile each side, the floor (see FLOOR_VIEWS): the coarse picture every later zoom or pan stands
+        // on. A few tiles picture seven viewports across, where the whole ring pictures one viewport each side at full scale: after the
+        // whole ring, a ring that filled the room left no floor (measured, the 450-stroke board at 355%: 72 ring positions, the floor
+        // refused, a zoom out then showed up to 75 strokes missing for 0.6 s); before all of it, a dense board's slow floor kept even the
+        // ring's first tiles from a pan that followed.
+        const composeFloor = (): boolean => {
+            if (!floorSpan) return true;
+            for (const band of BANDS) {
+                for (let y = floorSpan.y0; y < floorSpan.y1; y++) {
+                    for (let x = floorSpan.x0; x < floorSpan.x1; x++) {
+                        const key = positionKey(band, floorScale, x, y);
+                        let position = building.get(key);
+                        if (!position) {
+                            // A floor tile an edit overtook is composed again too: as a stand-in it would show the board before the edit.
+                            if (statusAt(band, floorScale, x, y) === 'ok' || finishedAt(band, floorScale, x, y) || (waiting && blockedOnGpu)) continue;
+                            const started = begin(band, floorScale, x, y, view);
+                            if (!started) continue;
+                            position = started;
+                            building.set(key, position);
+                        }
+                        if (!drive(position, key, 'floor')) return false;
+                    }
+                }
+            }
+            return true;
+        };
+        // One sweep of a pass over the span grown by `margin` (the visible positions, or the ring's outside them). False once cut.
+        const sweep = (pass: 'dirty' | 'missing' | 'ring', margin: number): boolean => {
             for (const band of BANDS) {
                 for (let y = span.y0 - margin; y < span.y1 + margin; y++) {
                     for (let x = span.x0 - margin; x < span.x1 + margin; x++) {
@@ -1202,6 +1360,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         if (!position) {
                             const status = statusAt(band, target, x, y);
                             if (pass === 'dirty' ? status !== 'dirty' : status !== 'missing') continue;
+                            // New room is not taken while a GPU wait stands (see drive): the position is not even begun.
+                            if (pass !== 'dirty' && waiting && blockedOnGpu) continue;
                             // Composed earlier this frame (the held pass takes the positions under a held node first) and still dirty until
                             // its encode: begun again it composed twice per frame (rotate, WebGL2 DPR 2 dark: every position under the
                             // rotated rectangle composed twice in the change frame and the next).
@@ -1215,10 +1375,20 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                             position = started;
                             building.set(key, position);
                         }
-                        if (!drive(position, key, pass)) { composeCut = true; return; }
+                        if (!drive(position, key, pass)) return false;
                     }
                 }
             }
+            return true;
+        };
+        for (const pass of (only === 'background' ? DIRTY_FIRST : MISSING_FIRST)) {
+            // While zooming only the visible positions are composed: the ring is the next view's, and the zoom's compose is its cost.
+            if (pass === 'ring' && (zoomingFrame || only === 'foreground')) continue;
+            if (pass !== 'ring') { if (!sweep(pass, 0)) { composeCut = true; return; } continue; }
+            // At rest the ring is a viewport each side (bounded): a pan reveals composed tiles, not stand-ins (gpu's ruling). Its first tile
+            // each side comes first, then the floor, then the rest of it.
+            const margin = ringMargin(span, zoomingFrame);
+            if (!sweep(pass, Math.min(1, margin)) || !composeFloor() || !sweep(pass, margin)) { composeCut = true; return; }
         }
     };
     const compose = (view: ViewState, budget: FrameBudget, gpu: GfxDevice, target: number, span: Span, only: 'foreground' | 'background' | 'all'): void => {
@@ -1240,7 +1410,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
      * decides after the surface pass: critical refuses the frame, the rest present with layersComplete false) and the next frame is asked. */
     const reportRouteRefusals = (): void => {
         for (const route of routeList) if ((route as RouteWithRefusal).drawRefusedThisFrame?.()) {
-            auditCount(audit, `route:${route.id}:refused-frame`); wantFrame = true; host.markIncomplete(`route:${route.id}:refused`);
+            auditCount(audit, `route:${route.id}:refused-frame`); wantFrame = true; drawRefusedNow = true; host.markIncomplete(`route:${route.id}:refused`);
         }
     };
     const drawEncoded = (): void => {
@@ -1314,7 +1484,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         let admitted: LiveAdmission | null = null;
         const route = isLivePart(item) ? routes.image : routeOf(item).route;
         // The CPU route rasters a tile-sized scratch at the camera origin: it cannot draw a live part over the surface.
-        if (!route || route === routes.cpu) { liveHoleNow = true; auditCount(audit, route ? 'live:dropped:cpu-route' : 'live:dropped:route-absent'); }
+        if (!route || route === routes.cpu) { auditCount(audit, route ? 'live:dropped:cpu-route' : 'live:dropped:route-absent'); }
         else {
             let outcome = route.admit([item], view, blend, budget);
             // Admission is resumable: a deferral while the frame still has time is resumed now, not left for the next frame.
@@ -1327,14 +1497,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (!exactRun(route, outcome.value)) liveInexact = true;
                 if (route === routes.image && routes.image.waits?.(outcome.value)) liveStale = true;
             }
-            else if (outcome.status === 'unsupported') { liveHoleNow = true; auditCount(audit, `live:dropped:${outcome.why}`); }
+            else if (outcome.status === 'unsupported') { auditCount(audit, `live:dropped:${outcome.why}`); }
             else if (outcome.status === 'deferred') {
                 // A deferral is a frame wait: nothing else invalidates the board for it, so the next frame asks again (bounded, below).
                 // Split by route: the admission reports no reason, so the route is the cause the counters can name.
                 liveDeferredNow = true; liveDeferredBy.set(item, budget.phase); auditCount(audit, 'live:dropped:deferred'); auditCount(audit, `live:dropped:deferred:${route.id}`); auditCount(audit, `live:dropped:deferred:${budget.phase}`);
             } else if (outcome.status === 'denied') {
                 // A denial waits on the governor like a tile's: the wake is the capacity change, not a timer, so a steady pool costs nothing.
-                liveHoleNow = true; refuseAdmission(outcome.pool, outcome.bytes, true); auditCount(audit, 'live:dropped:denied');
+                refuseAdmission(outcome.pool, outcome.bytes, true); auditCount(audit, 'live:dropped:denied');
             }
         }
         liveAdmitted.set(item, admitted);
@@ -1503,6 +1673,42 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         return li;
     };
 
+    /** Draws a position no tile pictures from its parts, live and clipped to it: all of them, or none (the frame's bound on live fill
+     * parts, or a part not admitted). True when the position shows all its content (or has none). */
+    // `partial`: with no picture of the position at all, the parts that were admitted are drawn even when some were not: a frame of the
+    // board opening (no tile composed yet) that fell back from a live draw over a deferred part otherwise drew nothing at all there.
+    const fillLive = (band: PaintBand, target: number, x: number, y: number, view: ViewState, budget: FrameBudget, clip: Rect, partial = false): boolean => {
+        const interior = tileWorld(keyOf(band, target, x, y, 0));
+        const pad = GUTTER / target;
+        const gutter: Rect = { x: interior.x - pad, y: interior.y - pad, width: interior.width + 2 * pad, height: interior.height + 2 * pad };
+        const found = parts.partsFor(band, gutter, omitIds ?? undefined);
+        if (!found.length) return true;
+        if (fillParts + found.length > LIVE_FILL_MAX_PARTS) { auditCount(audit, 'fill:live:over-bound'); return false; }
+        liveScratch.length = 0;
+        let whole = true;
+        for (const part of found) {
+            const admitted = admitLive(part.item, part.blend, view, budget);
+            if (!admitted) {
+                whole = false;
+                if (partial) continue;
+                liveScratch.length = 0; auditCount(audit, 'fill:live:not-admitted'); return false;
+            }
+            liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId, item: part.item });
+        }
+        fillParts += found.length;
+        liveBefore(band, Infinity, 0, clip);
+        liveScratch.length = 0;
+        auditCount(audit, whole ? 'fill:live' : 'fill:live:partial');
+        return whole;
+    };
+    /** A visible position whose world the last drawn frame showed, drawn now with no picture of its content (or only part of one): a
+     * regression, the frame would take items off the screen, so it is held (holding). */
+    const noteHole = (band: PaintBand, target: number, x: number, y: number, cause: string): void => {
+        frameHoles++; frameRegressions++; holeCause = cause;
+        auditDrawn('hole', 1, 'geometry', `${audit}-tile-${band}-${cause}`);
+        auditCount(audit, `hole:${cause}`);
+    };
+
     /** The admissions of a live-drawn frame, made in the foreground call (buildLiveDraws reads them back from the per-item cache). */
     const admitLiveFirst = (view: ViewState, budget: FrameBudget): void => {
         setViewRects(view);
@@ -1527,6 +1733,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             auditCount(audit, 'live:items');
             const admitted = admitLive(part.item, part.blend, view, budget);
             if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId, item: part.item });
+            else liveMissed = true;
             if (part.item.kind === 'ink') {
                 if (!admitted) { liveInkDropped.add(part.nodeId); drawnInk.delete(part.nodeId); }
                 else if (!liveInkDropped.has(part.nodeId)) drawnInk.add(part.nodeId);
@@ -1557,7 +1764,18 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         lastCovered.clear(); for (const key of coveredPositions) lastCovered.add(key);
         coveredPositions.clear(); uncoveredPositions.clear();
         coverSignature = 0;
-        if (liveNow) { buildLiveDraws(view, budget); return; }
+        frameHoles = 0; frameRegressions = 0; holeCause = ''; fillParts = 0; liveMissed = false; curHoles.length = 0;
+        if (liveNow) {
+            buildLiveDraws(view, budget);
+            if (!liveMissed) return;
+            // A part of the view was not admitted (its upload deferred to a later frame, or denied): drawn live, the frame would show the
+            // view without it, a blink of the item (measured, a 16-stroke board pinched at 120 Hz: 15 of 16 strokes gone for 2-3 frames;
+            // 450 strokes: ~330 gone for 1-7 frames). It draws from tiles instead, as a zoom of a dense board does: each position's exact
+            // tile, or the other scales' picture of it, or its parts live where it has neither.
+            auditCount(audit, 'live:fallback:tiles');
+            drawCount = 0; plannedLive.underlay.clear(); plannedLive.content.clear();
+            zooming = true;
+        }
         const span = spanAt(view, target);
         const clipAt = (x: number, y: number): Rect | null => clipOnSurface(view, target, x, y);
         for (const band of BANDS) {
@@ -1573,7 +1791,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     if (!finishedAt(band, target, x, y)) complete = false;
                 }
             }
-            if (!zooming && complete && held && store.dropScalesExcept(target, band) > 0) editEvent(EDIT_SCALES);
+            if (!zooming && complete && held && store.dropScalesExcept(target, band, floorScale) > 0) editEvent(EDIT_SCALES);
             for (let y = span.y0; y < span.y1; y++) {
                 for (let x = span.x0; x < span.x1; x++) {
                     const status = statusAt(band, target, x, y);
@@ -1594,7 +1812,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         auditCount(audit, 'tile:encoding');
                         continue;
                     }
-                    const exact = status !== 'missing' && (zooming || complete || standInsOf(band, target, x, y).length === 0);
+                    const at = clipAt(x, y);
+                    // A position with its own tile draws it, except at rest while the band still swaps: then the other scales' picture
+                    // is drawn until every position of the band has its tile (one swap), when that picture is whole.
+                    let pictured = false, exact = status !== 'missing' && (zooming || complete);
+                    if (status !== 'missing' && !exact) exact = !at || !(pictured = standInPicture(view, band, target, x, y, at));
                     if (exact) {
                         const first = entryAt(band, target, x, y, 0);
                         const slot0 = first ? slots.get(first) : undefined;
@@ -1647,30 +1869,40 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     }
                     // The stand-in's clip is the part of its position on the surface: a scissor outside the surface, or with a
                     // negative origin, is refused by the device (measured: 'invalid-input' on open).
-                    const clip = clipAt(x, y);
+                    const clip = at;
                     if (!clip) continue;
-                    // The stand-in's entries are drawn in paint order, so its live parts interleave as they do in an exact tile
-                    // (the list is in position order, which is not paint order).
-                    standScratch.length = 0;
-                    for (const entry of standInsOf(band, target, x, y)) {
-                        const slot = slots.get(entry);
-                        if (slot) standScratch.push({ order: slot.firstOrder[entry.key.slice] ?? Infinity, entry, slot });
+                    if (!pictured) pictured = standInPicture(view, band, target, x, y, clip);
+                    if (!pictured) {
+                        // No tile of any scale pictures all of it. While the view moves, or where the last frame showed this world, its parts
+                        // are drawn live (when few enough and admitted); otherwise it is a hole: held where the screen showed it (holding),
+                        // presented as still loading elsewhere.
+                        // Judged on the bare pieces alone: a position a zoom out grew past the last view keeps the part it showed, and its
+                        // new part showed nothing before (taken whole, every edge position of a zoom out read as taking ink off the screen).
+                        const bare = pictureRemaining;
+                        const wasShown = shownValid && bare.some(piece => overlapsRect(piece, shownWorld) && !lastHoles.some(hole => covers(hole, piece)));
+                        if ((wasShown || zooming || panned || liveNow) && fillLive(band, target, x, y, view, budget, clip)) continue;
+                        // Nothing of any scale pictures it: what was admitted of its parts is drawn (a part picture is not worse than none).
+                        if (!standScratch.length && (wasShown || zooming || panned || liveNow)) fillLive(band, target, x, y, view, budget, clip, true);
+                        if (wasShown) noteHole(band, target, x, y, standScratch.length ? 'partial' : 'none');
+                        else { frameHoles++; auditDrawn('hole', 1, 'geometry', `${audit}-tile-${band}-unshown`); auditCount(audit, zooming || panned || liveNow ? 'hole:revealed' : 'hole:loading'); }
+                        for (const piece of bare) curHoles.push(piece);
                     }
+                    // The stand-ins are drawn in paint order, so the position's live parts interleave as they do in an exact tile (the list
+                    // is in scale and position order, which is not paint order).
                     standScratch.sort((a, b) => a.order - b.order);
                     collectLive(band, target, x, y, view, budget, paintHasLive, standScratch);
                     let li = 0;
                     for (const item of standScratch) {
                         li = liveBefore(band, item.order, li, clip);
-                        addDraw(band, item.entry, item.slot, clip);
+                        addDraw(band, item.entry, item.slot, item.clip);
                     }
                     liveBefore(band, Infinity, li, clip);
-                    // What this position shows: its stand-in's entries (drawn above), or nothing at all, a hole the audit counts. Its origin
-                    // is geometry when any stand-in holds geometry, which a zoom must draw exact (the audit counts it apart).
+                    // Its origin is geometry when any stand-in holds geometry, which a zoom must draw exact (the audit counts it apart).
                     if (standScratch.length) {
                         const geometry = standScratch.some(item => item.slot.geometry);
                         auditDrawn('stand-in', 1, geometry ? 'geometry' : 'raster', `${audit}-tile-${band}-${status}${zooming ? '-zoom' : panned ? '-pan' : ''}`);
                         if (zooming) auditCount(audit, geometry ? 'zoom:draw:standin:geometry' : 'zoom:draw:standin:raster');
-                    } else auditDrawn('hole', 1, 'geometry', `${audit}-tile-${band}-${status}`);
+                    }
                     auditCount(audit, 'tile:standin');
                 }
             }
@@ -1727,7 +1959,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     encodeDraw.pass = null; encodeDraw.route = null; encodeDraw.run = null;
                 }
                 pass.end();
-                if (refused) { store.remove(slice.key); wantFrame = true; host.markIncomplete('encode-refused'); continue; }
+                if (refused) { store.remove(slice.key); wantFrame = true; drawRefusedNow = true; host.markIncomplete('encode-refused'); continue; }
                 auditCount(audit, 'tile:compose', 1, { px: target.size * target.size });
                 composedUnsettled.push(slice.key);
                 entry.dirty = false; entry.composed = true; entry.revision = validRevision;
@@ -1770,6 +2002,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         denied = false; waiting = false; blockedOnGpu = false; retryAt = 0; retryDelay = GPU_RETRY_MS; retryMisses = 0; settled = false; presenting = false; drawnInk.clear(); drawnInkFrame = -1;
         visibleWait = 0; liveWait = 0; liveWaitFrame = -1;
         heldNodes.clear();
+        floorScale = 0; floorSpan = null; floorChecked.scale = 0; floorChecked.revision = -1; shownValid = false; holdSince = -1; frameHoles = 0; frameRegressions = 0;
         // The routes let go of the paint's resources at release; the next prepare scans its paint and hands them over again.
         resourcesSeen = null; paintScanned = null;
     };
@@ -1809,7 +2042,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 building.clear(); scaleIndexes.clear();
             }
             denied = false; settled = false;
-            liveDeferredFrames = liveDeferredNow ? liveDeferredFrames + 1 : 0; liveDeferredNow = false; liveHoleNow = false;
+            refusedBefore = drawRefusedNow; drawRefusedNow = false;
+            if (!liveDeferredNow) { liveDeferredFrames = 0; liveAdmittedBest = 0; }
+            else if (liveAdmittedNow > liveAdmittedBest) { liveDeferredFrames = 0; liveAdmittedBest = liveAdmittedNow; }
+            else liveDeferredFrames++;
+            liveDeferredNow = false;
             const demand = view.camera.z * view.viewport.dpr;
             device = host.device();
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
@@ -1969,6 +2206,31 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 const span = spanAt(view, target);
                 const margin = ringMargin(span, zooming);
                 const ring: Span = { x0: span.x0 - margin, y0: span.y0 - margin, x1: span.x1 + margin, y1: span.y1 + margin };
+                // The floor follows the view only at rest; a zoom or a pan stands on the one the last rest composed.
+                if (!zooming && !panned && !liveNow) {
+                    const cam = view.camera, w = view.viewport.width / cam.z, h = view.viewport.height / cam.z;
+                    const region: Rect = { x: cam.x - FLOOR_VIEWS * w, y: cam.y - FLOOR_VIEWS * h, width: (2 * FLOOR_VIEWS + 1) * w, height: (2 * FLOOR_VIEWS + 1) * h };
+                    const scale = 2 ** Math.floor(Math.log2(FLOOR_PIXELS / Math.max(region.width, region.height)));
+                    // A view already that coarse needs no floor: its ring is the picture a zoom stands on.
+                    if (Number.isFinite(scale) && scale > 0 && scale <= target / 4) {
+                        const at = exactScale(scale);
+                        const x0 = Math.floor(region.x * at / EDGE), y0 = Math.floor(region.y * at / EDGE);
+                        const x1 = Math.ceil((region.x + region.width) * at / EDGE), y1 = Math.ceil((region.y + region.height) * at / EDGE);
+                        const c = floorChecked;
+                        if (at !== c.scale || x0 !== c.x0 || y0 !== c.y0 || x1 !== c.x1 || y1 !== c.y1 || validRevision !== c.revision) {
+                            c.scale = at; c.x0 = x0; c.y0 = y0; c.x1 = x1; c.y1 = y1; c.revision = validRevision;
+                            // A region holding more parts than FLOOR_MAX_PARTS has no floor: composing it costs every one of them again at
+                            // the coarse scale, and a dense board's never finished, framing at rest (measured, the 3 MB board: the floor
+                            // still admitting after 90 frames, its CPU prefetch refused 13,000 times in one gesture).
+                            let count = 0;
+                            const spanned: Rect = { x: x0 * EDGE / at, y: y0 * EDGE / at, width: (x1 - x0) * EDGE / at, height: (y1 - y0) * EDGE / at };
+                            for (const band of BANDS) count += parts.partsFor(band, spanned, omitIds ?? undefined).length;
+                            const fits = count <= FLOOR_MAX_PARTS && [x0, y0, x1, y1].every(Number.isSafeInteger);
+                            floorScale = fits ? at : 0; floorSpan = fits ? { x0, y0, x1, y1 } : null;
+                            if (!fits) auditCount(audit, 'floor:off:dense');
+                        }
+                    } else { floorScale = 0; floorSpan = null; }
+                }
                 staleScratch.length = 0;
                 for (const position of building.values()) if (invalidated || !stillWanted(position, target, ring, span)) staleScratch.push(position);
                 for (const position of staleScratch) { cancel(position); building.delete(position.key); }
@@ -2047,11 +2309,16 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 // A held node stays live while a tile under it is dirty, or a visible one under it has nothing yet.
                 for (const id of heldNodes.keys()) if (!heldStillMissing(id, target, frameSpan)) heldNodes.delete(id);
             }
-            settleVisibleWait(frameSpan);
             // Each position draws its exact tile where it is there, and otherwise its nearest composed tiles, clipped to it. No frame
             // waits for the compose: a zoom shows what exists (gpu's ruling: geometry exact, raster scaled).
             drawnTarget = target;
             buildDraws(view, target, zooming, budget);
+            liveAdmittedNow = liveRuns.length;
+            // A held frame asks for the next one: the hole fills as its tiles compose and its parts are admitted, frame by frame.
+            if (frameRegressions > 0) wantFrame = true;
+            else if (!refusedBefore) holdSince = -1;
+            // After the draw list: a live part it denied (a fill, a fallback, a cover) is visible work waiting too, counted this frame.
+            settleVisibleWait(frameSpan);
             if (isolationNeed) reserveIsolationNeed(isolationNeed);
             // A settling frame is drawn live but owes its tiles: it is settled only once they are exact, so the composer keeps asking.
             const exact = allExact(view, target);
@@ -2146,6 +2413,20 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (drawnInkFrame !== frame) { drawnInkFrame = frame; drawnInk.clear(); }
+            if (shownFrame !== frame && presenting && listUsable(view)) {
+                // What this frame lays is what the screen shows next: its view's world, less its own holes (the next frame's regression test).
+                shownFrame = frame;
+                const cam = view.camera;
+                shownWorld.x = cam.x; shownWorld.y = cam.y; shownWorld.width = view.viewport.width / cam.z; shownWorld.height = view.viewport.height / cam.z;
+                shownValid = true;
+                const swapHoles = lastHoles; lastHoles = curHoles; curHoles = swapHoles; curHoles.length = 0;
+                // Every frame laid with an in-view item missing is counted by why: a regression laid past its hold, content revealed by the
+                // move that no tile or live part could show yet, or content still loading at rest (the board then says it is working).
+                if (frameHoles > 0 && missingCounted !== frame) {
+                    missingCounted = frame;
+                    auditCount(audit, frameRegressions > 0 ? 'present:missing:hold-expired' : zoomingFrame || panned || liveNow ? 'present:missing:revealed' : 'present:missing:loading', frameHoles);
+                }
+            }
             // Cleared where the set is filled, not at prepare: the base layer reads it between the overlay's prepare and its draw. Cleared
             // at prepare, the base read an empty set on every frame of a drag, so it never omitted the dragged node's original (measured:
             // the overlay planned the node, drawn=0 at each base read, base omission none; the original stayed on screen until release).
@@ -2179,7 +2460,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         catch (error) {
                             // A budget refusal is counted and the frame asks again; any other error is reported and thrown.
                             if (!isBudgetRefusal(error)) { auditGpuError(audit, 'live-clip', error); throw error; }
-                            auditCount(audit, 'draw:refused'); noteShortfall(error); wantFrame = true; liveRefusedSerial++; host.markIncomplete('live-draw-refused');
+                            auditCount(audit, 'draw:refused'); noteShortfall(error); wantFrame = true; drawRefusedNow = true; liveRefusedSerial++; host.markIncomplete('live-draw-refused');
                         }
                         finally { pass.popClip(clip); }
                     }
@@ -2238,8 +2519,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // A draw list that cannot be drawn for this view is a hole: the frame is incomplete (the board is critical while it is).
             if (drawCount && !listUsable(view)) { wantFrame = true; return { complete: false, sharp: false }; }
             const exact = exactScale(view.camera.z * view.viewport.dpr);
-            // A live part this frame could not admit is a hole: the picture is not complete (the next frame asks again).
-            if (liveNow && !indexing) return { complete: !liveDeferredNow && !liveHoleNow, sharp: preparedSharp && drawnTarget === exact };
+            // A live frame drew every part of the view, or fell back to tiles (liveMissed) and is judged as a tile frame below.
+            if (liveNow && !indexing && !liveMissed) return { complete: true, sharp: preparedSharp && drawnTarget === exact };
             const target = drawnTarget;
             const span = spanAt(view, target);
             // A position with any picture (its tile at the drawn scale, a dirty one, or a stand-in of another scale) is
@@ -2248,7 +2529,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // While zooming, a position with nothing is a hole the compose pass is filling, and it does not hold the frame: the
             // compositor refused 58 of 141 zoom frames for holes waiting on upload allowance (the audit's board-underlay:incomplete,
             // equal to compositor:refuse:coverage). PLAN 3.1: a zoom presents what exists, scaled, every frame.
-            let complete = true, sharp = !indexing && preparedSharp && target === exact, stale = indexing;
+            // A position with no picture (frameHoles, from the draw list itself) or a draw refused this frame leaves the frame incomplete,
+            // zooming or not: the hold (holding) decides whether it may still be presented.
+            let complete = frameHoles === 0 && !drawRefusedNow, sharp = !indexing && preparedSharp && target === exact && !liveMissed, stale = indexing;
             for (const band of BANDS) {
                 for (let y = span.y0; y < span.y1; y++) {
                     for (let x = span.x0; x < span.x1; x++) {
@@ -2262,7 +2545,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         if (status === 'dirty' && coveredPositions.has(positionKey(band, target, x, y))) continue;
                         sharp = false;
                         if (status === 'dirty') { stale = true; continue; }
-                        if (!zoomingFrame && !standInsOf(band, target, x, y).length) complete = false;
+                        if (!zoomingFrame && !liveNow && !standInsOf(band, target, x, y).length) complete = false;
                     }
                 }
             }
@@ -2307,6 +2590,21 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         memoryBlocked(): boolean {
             return !disposed && waiting && blockedOnGpu && !indexing && finished.length === 0;
+        },
+        incomplete(): boolean { return !disposed && presenting && (frameHoles > 0 || drawRefusedNow); },
+        holding(): boolean {
+            if (disposed || !presenting || (frameRegressions === 0 && !drawRefusedNow)) return false;
+            // Judged once per frame (the compositor reads critical more than once): the first held frame starts the hold's clock.
+            if (holdFrame !== frame || holdRefused !== drawRefusedNow) {
+                holdFrame = frame; holdRefused = drawRefusedNow;
+                const now = performance.now();
+                if (holdSince < 0) holdSince = now;
+                holdNow = now - holdSince <= HOLE_HOLD_MS;
+                auditCount(audit, holdNow ? `hold:${drawRefusedNow ? 'draw-refused' : holeCause}` : 'hold:expired');
+                // A refused draw past its hold is presented without what it planned: counted as a frame laid with an item missing.
+                if (!holdNow && drawRefusedNow) auditCount(audit, 'present:missing:draw-refused');
+            }
+            return holdNow;
         },
         needsFrame(): boolean {
             if (disposed || !presenting) return false;

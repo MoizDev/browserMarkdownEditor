@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { execFileSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { pdfiumAssets } from './build/pdfiumAssets'
@@ -13,7 +13,12 @@ import { thirdPartyNotices } from './build/thirdPartyNotices'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 const regenerateFrame = () => execFileSync(process.execPath, ['src/epub/build-frame.mjs'], { cwd: root, stdio: 'pipe' })
-const buildId = randomUUID()
+// The deployed build's identity, read by an open tab's version poll (utils/versionPoll.ts). It is a hash of what the
+// build EMITTED and lives only in version.json and an index.html meta tag, never in a hashed chunk. Compiled into the
+// entry chunk as a random id, it renamed 139 of 371 chunks on every build of the same commit (119 chunks import the
+// entry by its hashed name), so every redeploy — of identical code too — 404'd the lazy loads of every open tab.
+// Derived from the output, the same commit built twice is the same build: same chunk names, and no update notice.
+const BUILD_ID_SLOT = 'bme-build-id-slot'
 
 export default defineConfig({
   // Index workers share split modules; Chromium-only module workers support ES chunks.
@@ -27,13 +32,29 @@ export default defineConfig({
     name: 'benchmark-build-constant',
     config(_config, { command, mode }) {
       return {
-        define: { __BME_BENCH__: JSON.stringify(command === 'build' && mode === 'benchmark'), __BME_BUILD_ID__: JSON.stringify(buildId) },
+        define: { __BME_BENCH__: JSON.stringify(command === 'build' && mode === 'benchmark') },
         // Vite's client define may follow the initial TS transform, too late for its dead-code elimination.
         ...(command === 'serve' ? { esbuild: { define: { __BME_BENCH__: 'false' }, treeShaking: true, minifySyntax: true } } : {}),
       }
     },
-    generateBundle() {
-      this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify({ version: buildId }) })
+  }, {
+    name: 'build-identity',
+    apply: 'build',
+    // After every other plugin's output (Vite's HTML and the notices/frames assets included), so the hash covers it all.
+    enforce: 'post',
+    transformIndexHtml: () => [{ tag: 'meta', attrs: { name: 'bme-build', content: BUILD_ID_SLOT }, injectTo: 'head' }],
+    generateBundle(_options, bundle) {
+      const hash = createHash('sha256')
+      for (const name of Object.keys(bundle).sort()) {
+        if (name === 'index.html') continue
+        const item = bundle[name]
+        hash.update(`${name}\0`).update(item.type === 'chunk' ? item.code : item.source).update('\0')
+      }
+      const id = hash.digest('hex').slice(0, 24)
+      const html = bundle['index.html']
+      if (html?.type !== 'asset' || !String(html.source).includes(BUILD_ID_SLOT)) this.error('index.html lost its build-identity meta tag')
+      html.source = String(html.source).replace(BUILD_ID_SLOT, id)
+      this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify({ version: id }) })
     },
   }, {
     name: 'contained-epub-frame',

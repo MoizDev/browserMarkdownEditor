@@ -160,7 +160,15 @@ draws differently because a GPU exists.
   focus weight (2:1). A position past its pane's share is composed one level down, never trimmed from the screen.
 - CPU target: `8 MB·N + 12 B·devicePixels`, raised to `Σ visible cpuMandatoryBytes / 0.8` (the trim line, so a trim never
   cuts into a floor), floor 32 MB, inside the device ceiling. Without it one DPR 2 PDF was refused its own floor.
+- **The CPU floor invariant** (what keeps a pane from waiting forever): every visible pane's floor (`cpuMandatoryBytes`, what it
+  must hold to present at its current quality, declared before it allocates) is grantable, because the target covers Σ floors /
+  0.8 inside the device ceiling; everything a pane holds above its floor is reclaimable, either admitted as `prefetch` or given
+  back by its owner before its own refusal counts as pressure (`quiet`, shed, then a normal ask). Bytes that are neither are how
+  a pool fills with nothing that can give way, and the next floor request then waits for good. Check it at rest:
+  `__bmeRenderAudit.caches()` — no cache holds a waiter, and each pane's charge is within its `panes[].cpuNeedBytes`.
 - `ReserveOptions.quiet`: a first ask the owner can answer from its own idle residency; a refusal is not pressure.
+- `prefetch` stops at the trim target on the CPU (always) and on the GPU while quality is down: under each pool's cool line, so
+  caches admitted ahead of need never hold the pool off cool (stuck 'trimming', quality never stepping back up).
 - Pressure is app-wide: refusals trim before quality (`q`) drops; recovery waits for sustained low use and no
   gesture. `trouble()` gives a layer `'slow-gpu'` (timing, never memory: shed per-frame work) or `'pressure'`.
 - A cache filling its budget is not a leak: it must plateau under the target and give back everything above the view

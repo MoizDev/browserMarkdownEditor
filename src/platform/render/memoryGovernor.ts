@@ -693,13 +693,15 @@ export class MemoryGovernor {
     /** Render audit only: every cache's charge with its pane, and each pane's grant. */
     auditCaches(): { caches: { id: string; pane: string | null; pool: MemoryPool; kind: MemoryKind; bytes: number; hidden: boolean;
         waiters: number; refused: number | null }[];
-        grants: { pane: string; cpuBytes: number; gpuCacheBytes: number }[] } {
+        grants: { pane: string; cpuBytes: number; gpuCacheBytes: number }[]; panes: readonly PaneMemoryDemand[];
+        target: { gpu: number; cpu: number } } {
         return {
             caches: [...this.caches.values()].filter(cache => cache.bytes > 0).map(cache => ({ id: cache.registration.id,
                 pane: cache.registration.paneId ?? null, pool: cache.registration.pool, kind: cache.registration.kind,
                 bytes: cache.bytes, hidden: cache.activity.hiddenAt !== null,
                 waiters: this.capacityWaiters.get(cache)?.size ?? 0, refused: cache.refusal?.bytes ?? null })),
             grants: [...this.grants].map(([pane, grant]) => ({ pane, cpuBytes: grant.cpuBytes, gpuCacheBytes: grant.gpuCacheBytes })),
+            panes: this.panes, target: { ...this.target },
         };
     }
 
@@ -763,7 +765,11 @@ export class MemoryGovernor {
         // the PDF's visible exact tiles were refused for good, the page on stand-ins).
         // While the quality is down, GPU prefetch stops at the line the step back up needs (cool, under the trim target): admitted to
         // the soft line, a board's ring held the pool between the two and the pane at 0.8 (recoverRoom).
-        const prefetchLine = pool === 'gpu' && this.belowFull() ? POLICY.memoryTrimTargetRatio : POLICY.memorySoftPressureRatio;
+        // CPU prefetch always stops at the trim target, under the CPU's cool line (its soft line, cool()): caches admitted ahead of need
+        // up to the soft line parked the pool on it, so it was never cool, the governor stayed 'trimming' at rest (layers read
+        // 'pressure') and a lowered quality never stepped back up (measured: an old notebook's node buffer and geometry held the CPU
+        // pool at 30.2 of 33.6 MB for good, "Rendering quality was reduced" up for the session).
+        const prefetchLine = pool === 'cpu' || this.belowFull() ? POLICY.memoryTrimTargetRatio : POLICY.memorySoftPressureRatio;
         if (options?.prefetch && (!allowed() || this.charged[pool] + bytes > this.target[pool] * prefetchLine ||
             this.paneNeedWaiting(cache, pool))) {
             auditCount('governor', `prefetch-refused:${pool}`, 1, { bytes });

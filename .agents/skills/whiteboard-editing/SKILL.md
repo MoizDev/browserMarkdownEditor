@@ -73,6 +73,10 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   The creation tools (figure, frame, connector, polyline, text/sticky placement) follow the same rule: released shapes land
   in the order drawn (`creationTurn`), each prepared again on a moved revision (`CreationGesture.rebase`); an undo while
   work settles cancels only the latest undoable one; an arrow key waits behind settling work, then nudges or pans.
+- **No press before a presented frame.** A press is placed through a presented frame's mapping (`input/pointer.ts`
+  `MappingHistory`), so a view takes input only once it has presented one since it was shown (`nativeViewLease.ts`
+  `inputReady`, `viewer/inputHost.ts` `connect`); until then the surface shows the `progress` cursor. Accepting input
+  earlier raised "No presented input mapping" and lost the strokes drawn during "Loading drawing…".
 - **One gesture owner at a time** (`input/router.ts`, `InputRouter`): tools receive normalised `RealSample`s only,
   stamped with an `InputToken` (vault epoch, tab, session and view generations). A replaced view cannot finish its
   successor's contact; check the token before acting on anything async.

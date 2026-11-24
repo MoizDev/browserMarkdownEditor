@@ -65,7 +65,6 @@ function inspectionRefusal(inspection: Exclude<PdfInkInspection, { kind: 'native
         case 'signed': return 'signed';
         case 'encrypted': return 'encrypted';
         case 'unsafe-policy': return 'unsafe-policy';
-        case 'notebook-source': return 'notebook-source';
         case 'unsupported-format': case 'invalid-marker': return 'newer-annotations';
         case 'invalid-write-mark': return 'foreign-change';
         default: return 'missing-attachment';

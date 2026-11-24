@@ -170,7 +170,6 @@ function rotationRefusal(cause: RotationRefusal | undefined): string {
       return `This PDF's annotations were saved by another build of this app's PDF engine, so this version cannot move them with the pages. ${LEFT_AS_IT_IS}`;
     case 'foreign-change':
       return `This PDF was changed by another program after its annotations were saved here, and turning its pages would overwrite that change. ${LEFT_AS_IT_IS}`;
-    case 'notebook-source': return 'This PDF was exported from a notebook. Turn the pages in the notebook and export it again.';
     case 'missing-attachment':
       return `The annotations saved inside this PDF are incomplete or damaged, and turning its pages could lose them. ${LEFT_AS_IT_IS}`;
     case 'unsupported-rotation': return `This PDF has a page at an angle that is not a quarter turn, so its pages were not turned. ${LEFT_AS_IT_IS}`;

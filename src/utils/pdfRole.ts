@@ -34,7 +34,11 @@ export interface PdfAnnotationPreflight { role: EditablePdfRole; version: DiskVe
 export function isEditablePdfRole(role: PdfRole): role is EditablePdfRole {
     return (role.kind === 'plain' || role.kind === 'annotated') && role.writeSafety?.kind === 'safe';
 }
-export function canRotatePdfRole(role: PdfRole): boolean { return role.kind === 'plain' && role.writeSafety?.kind === 'safe'; }
+/** A PDF exported from a notebook turns like a plain one: the turn appends page dictionaries only, so its notebook pointer
+ * stays, and exporting the notebook again asks before replacing a PDF changed since (app/notebookExport.ts). */
+export function canRotatePdfRole(role: PdfRole): boolean {
+    return (role.kind === 'plain' || role.kind === 'notebookExport') && role.writeSafety?.kind === 'safe';
+}
 
 // The canvas parks this exact Uint8Array in pdfRenderCache. Refused roles never
 // own an original at all, and cannot manufacture a save capability by name.

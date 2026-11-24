@@ -20,7 +20,7 @@ function outputBytes(value: unknown): ArrayBuffer {
     if (!(value instanceof ArrayBuffer) || value.byteLength < 1 || value.byteLength > MAX_FILE) invalidPdfReply();
     return value; // Transferred non-shared bytes are already owned by the privileged host.
 }
-const ROTATION_REFUSALS = new Set(['signed', 'encrypted', 'legacy-annotations', 'newer-annotations', 'other-engine', 'foreign-change', 'notebook-source', 'missing-attachment', 'unsafe-policy', 'unsupported-format', 'unsupported-rotation']);
+const ROTATION_REFUSALS = new Set(['signed', 'encrypted', 'legacy-annotations', 'newer-annotations', 'other-engine', 'foreign-change', 'missing-attachment', 'unsafe-policy', 'unsupported-format', 'unsupported-rotation']);
 function quarters(value: unknown, count: number): boolean {
     return Array.isArray(value) && value.length === count && value.every(angle => angle === 0 || angle === 90 || angle === 180 || angle === 270);
 }

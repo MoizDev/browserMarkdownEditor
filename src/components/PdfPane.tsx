@@ -314,20 +314,22 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const legacyOffer = tiled && mode === 'edit' && source?.kind === 'annotated';
     const plainNativeOffer = tiled && mode === 'edit' && source?.kind === 'plain';
     const liveNativeIdentity = nativeCanvasHost?.identity(documentId);
+    // The bytes are pinned by the native identity's bytesGeneration. `reading.identity.byteGeneration` is the tab's
+    // reload counter, a different count that only agrees with the session's at 0: requiring them equal kept Annotate
+    // on the Original view for good after a plain PDF was turned (measured: reader 0, session 1, 90 s with no board).
     const canConvertLegacy = !!(legacyOffer && source.writeSafety.kind === 'safe' && !disk && !isDirty && !flushing
         && pdfEngineAvailableInBuild() && nativeCanvasHost && attachCanvasSession && reading && appSession && liveNativeIdentity
         && liveNativeIdentity.kind === 'pdfInk' && liveNativeIdentity.documentId === documentId
         && liveNativeIdentity.session === appSession.serial && liveNativeIdentity.bytesGeneration === appSession.bytesGeneration
         && liveNativeIdentity.vaultActivation === reading.identity.vaultEpoch && reading.identity.documentId === documentId
-        && reading.identity.path === file.path && reading.identity.byteGeneration === appSession.bytesGeneration
-        && nativeCanvasHost.isCurrent(liveNativeIdentity));
+        && reading.identity.path === file.path && nativeCanvasHost.isCurrent(liveNativeIdentity));
     const legacyConversion = legacyConversionEntry === annotateEntry && canConvertLegacy;
     const nativePlain = !!(plainNativeOffer && source.writeSafety.kind === 'safe' && !disk && !isDirty && !flushing
         && appSession && reading && liveNativeIdentity && nativeCanvasHost && liveNativeIdentity.kind === 'pdfInk'
         && liveNativeIdentity.documentId === documentId && liveNativeIdentity.session === appSession.serial
         && liveNativeIdentity.bytesGeneration === appSession.bytesGeneration && liveNativeIdentity.vaultActivation === reading.identity.vaultEpoch
         && reading.identity.documentId === documentId && reading.identity.path === file.path
-        && reading.identity.byteGeneration === appSession.bytesGeneration && nativeCanvasHost.isCurrent(liveNativeIdentity));
+        && nativeCanvasHost.isCurrent(liveNativeIdentity));
     const retainedIdentity = nativeCanvasHost?.identity(documentId), retainedSource = getPdfInkSourceState(documentId);
     const retainedToken = retainedSource?.getSnapshot().token;
     // Dirty ink and a saved-byte rebind change the outer role entry, not the acquired

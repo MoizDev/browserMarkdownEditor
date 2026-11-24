@@ -38,6 +38,8 @@ const GPU_RETRY_MAX_MS = 4000;
 /** Misses with no capacity change before the retries stop: the position then waits for the governor's wake (a real capacity change),
  * not a timer. A refusal the pool can never admit is counted (compose:retry:stopped) and draws its stand-in. */
 const GPU_RETRY_LIMIT = 12;
+/** The most own-frees a refused position at rest makes in one frame before it is rastered on the CPU or waits (drive). */
+const FREE_RETRY_ROUNDS = 8;
 // A live part's admission is tried again within the frame while its budget has time: 4 tries at most, so a route that stays deferred
 // costs a bounded share of the frame.
 const LIVE_ADMIT_ATTEMPTS = 4;
@@ -620,7 +622,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const wake = (): void => {
         for (const position of building.values()) position.parked = false;
         waiting = false; blockedOnGpu = false;
-        retryDelay = GPU_RETRY_MS; retryMisses = 0;
+        // The back-off is not reset here, only by a compose that lands: a wake comes for any release that fits the size waited for,
+        // the refused position's own frees included, and reset by each, the retry ran every 250 ms for good.
         if (retryAt !== 0) { retryAt = 0; host.wakeAt(null); }
         host.invalidate('tile-composer-capacity');
     };
@@ -1082,7 +1085,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     auditCount(audit, 'compose:cancel-others', staleScratch.length);
                     staleScratch.length = 0;
                 }
-                if (freeOwn(view, target)) {
+                // Freed and still refused, it frees again until nothing of its own is left this frame: freed once per frame, the little a
+                // free found each time was taken back by the retry, the CPU raster below never came, and the refused tile was retried at
+                // every deadline for good (measured, three dense boards after divider drags: 40 free-and-retry rounds per 10 s at rest).
+                for (let rounds = 0; (outcome === 'refused' || (outcome === 'denied' && blockedOnGpu)) && rounds < FREE_RETRY_ROUNDS && freeOwn(view, target); rounds++) {
                     auditCount(audit, `compose:free-retry:${pass}`);
                     outcome = advance(position, budget, gpu);
                 }
@@ -1097,6 +1103,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             if (outcome === 'done') {
                 editEvent(EDIT_DONE);
+                retryDelay = GPU_RETRY_MS; retryMisses = 0;
                 for (const slice of position.slices) if (slice.entry) entryGen.set(slice.entry, ++genCounter);
                 auditCount(audit, `compose:done:${pass}`);
                 building.delete(key);

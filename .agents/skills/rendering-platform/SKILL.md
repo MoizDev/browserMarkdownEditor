@@ -69,6 +69,8 @@ Constants are in `types.ts` (`RenderConstants`, documented per field) with value
   waiting on a bridge that could not fit the CPU pool left 'Updating' up for good. The GPU's next present on its own display
   gives back what a skipped bridge allocated (`Pane2DPresenter.holdsSurface`/`releaseSurface`, counted `bridge:released`): kept,
   three panes held 18.5 MB of `canvas-working`/`surface-scratch` at rest and the GPU pool never cooled.
+  Only a pane whose own size changed is bridged: a backing change at the same size is a quality step, drawn at once from the
+  GPU's kept tiles (`bridge:none:quality`); bridged, each raise rastered a dense board on the CPU, was refused, and stepped back down.
 - A governor refusal of a resize is pressure, not a fallback: the pane keeps its picture and waits, sized
   (`SurfaceBackingOptions.wake`): a pane behind its 2D picture asks no frame of its own, so unwoken nothing retried it.
 - Hiding zeroes the GPU canvas and stages its backing (`GpuPaneCandidate.zeroed`): shown again, the kept GPU rebuilds as

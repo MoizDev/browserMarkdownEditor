@@ -102,6 +102,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let shownPresented = false;
     /** The 2D bridge of a GPU resize: when it began (null when none is pending), whether this resize skipped it, and its wake. */
     let bridgeSince: number | null = null, bridgeSkipped = false, bridgeTimer: ReturnType<typeof setTimeout> | null = null;
+    /** The pane size (physical pixels) the GPU surface was last committed for: a backing change at the same size is a quality step. */
+    let gpuPhysical: { width: number; height: number } | null = null;
     // The visible-context cap is full: this pane draws on canvas2d until a slot frees (the broker's budget fallback). The person is
     // told once it has lasted BUDGET_NOTICE_DELAY_MS, and the notice is withdrawn at the pane's first GPU present.
     let budgetNoticeTimer: ReturnType<typeof setTimeout> | null = null, budgetNoticeShown = false;
@@ -510,8 +512,16 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         let planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
                         // The pane has a drawable size: its GPU is asked for now, not after the first 2D picture (see onReady).
                         if (drawing === compositor && !gpuRequested && planned.kind === 'ready') queueMicrotask(requestGpu);
-                        if (!bridgeSkipped && drawing !== compositor && surfaceHost.current === drawing && planned.kind === 'ready' &&
-                            (drawing.surface.width !== planned.backingWidth || drawing.surface.height !== planned.backingHeight)) {
+                        // Only a pane whose own size changed is bridged. A backing that changes with the pane's size unchanged is a quality step:
+                        // the GPU draws the new backing at once from the tiles it keeps, and a bridge then rastered a dense board on the CPU,
+                        // was refused, and that refusal stepped the quality down again, so every raise was undone (measured, three dense boards
+                        // on WebGL2 after divider drags: 7 bridges and 27 unmet CPU trims per 10 s at rest, quality 0.64; at deviceMemory 2,
+                        // 13 bridges, 363 presents and 13 s of CPU per 10 s).
+                        const resized = gpuPhysical === null || gpuPhysical.width !== size.physical.width || gpuPhysical.height !== size.physical.height;
+                        const backingChanges = drawing !== compositor && planned.kind === 'ready' &&
+                            (drawing.surface.width !== planned.backingWidth || drawing.surface.height !== planned.backingHeight);
+                        if (backingChanges && !resized && surfaceHost.current === drawing) auditCount('pane', 'bridge:none:quality');
+                        if (!bridgeSkipped && resized && backingChanges && surfaceHost.current === drawing && planned.kind === 'ready') {
                             // Resizing a displayed GL canvas destroys its last complete pixels before
                             // layers can prepare the new viewport. Build the normal CPU bridge detached,
                             // then resize/rebuild this SAME kept GPU behind that complete picture.
@@ -536,6 +546,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         }
                         const result = activeMetrics().commit(frameId, size.generation, planned, drawing.target);
                         if (result?.kind === 'ready') drawing.setMetrics(result.metrics);
+                        if (result?.kind === 'ready' && drawing !== compositor) gpuPhysical = { width: size.physical.width, height: size.physical.height };
                         if (result?.kind !== 'failed') return result;
                         // A governor refusal is pressure the governor has already answered with its own quality step. The pane keeps
                         // its complete picture and waits for capacity; it is neither a framebuffer fault nor a reason to fall back to

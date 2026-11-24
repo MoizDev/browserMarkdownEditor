@@ -417,10 +417,9 @@ export function createCanvasPaintAdapter(
             }
             if (presented && !sameToken(presented.frame, frame)) { releaseSnapshot(presented); presented = null; }
             // A snapshot with outlines serves a frame that needs none; one without cannot serve a 2D draw. An outlined build still in
-            // progress is let go by a device frame the presented snapshot already serves: only a 2D draw (a resize bridge since skipped)
-            // wanted its outlines, and finished it would only be shed again.
-            const presentedServes = !!presented && presented.frame === frame && presented.scale === scale;
-            if (staged && (staged.frame !== frame || staged.scale !== scale || (vectors && !staged.vectors) || (!vectors && staged.vectors && presentedServes))) {
+            // progress is let go by a device frame: only a 2D draw (a resize bridge since skipped) wanted its outlines, and finished on the
+            // device they cost the CPU that the outlines take and were shed again (measured: 346 such builds per 10 s at deviceMemory 2).
+            if (staged && (staged.frame !== frame || staged.scale !== scale || (vectors && !staged.vectors) || (!vectors && staged.vectors))) {
                 releaseSnapshot(staged); staged = null;
             }
             // A presented snapshot that skipped pictures for want of memory is redone, paced, until they draw: nothing else would ask

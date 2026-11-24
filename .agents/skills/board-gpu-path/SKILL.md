@@ -122,6 +122,7 @@ and the platform alone picks the device.
   At rest a refused position first frees its own tiles and is admitted in the same frame (`freeOwn`). Refused at rest, it
   first lets go of what holds its room: the pending regions' live covers (`live:region:dropped-memory`), the other positions in
   progress (`compose:cancel-others`) and the routes' admission caches from before the last frame (`compose:free-own:routes`).
+  It frees and retries until nothing of its own is left that frame (`FREE_RETRY_ROUNDS`).
   Still refused with nothing of its own left, its slice is rastered by the CPU route (`compose:cpu-for-memory:<pass>`, counted
   `fallback:item-cpu:…:memory`), which needs the tile target alone; its pictures stay on the image route (their bitmaps are
   released once uploaded). The visible work a refusal parks is the pane's pinned demand (`mandatoryBytes`: its missing tiles and
@@ -203,7 +204,8 @@ refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF wri
 - CPU bytes on a device are the direct build's leases in 64 KiB chunks (`DIRECT_CHUNK`).
 - A refused reservation waits once, sized: `awaitSizedCapacity(host, wake, { pool, bytes })`
   (`budgetRefusal.ts`); the governor wakes it only when the bytes fit. The composer's GPU retry after a visible
-  refusal also arms a 250 ms deadline (`GPU_RETRY_MS`) that only invalidates, only while the wait stands, and a deadline that
+  refusal also arms a 250 ms deadline (`GPU_RETRY_MS`, backing off; reset only by a compose that lands, never by a capacity
+  wake, which its own frees can cause) that only invalidates, only while the wait stands, and a deadline that
   passes is cleared whether or not the wait is (the adapter's one wake slot re-sent a stale one with every store deadline: a
   frame per vsync at rest). `needsFrame` is false while a GPU
   admission is refused (no per-frame retry). The size waited for is the reservation that was refused, never the item's own

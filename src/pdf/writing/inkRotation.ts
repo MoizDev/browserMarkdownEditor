@@ -67,7 +67,10 @@ function inspectionRefusal(inspection: Exclude<PdfInkInspection, { kind: 'native
         case 'unsafe-policy': return 'unsafe-policy';
         case 'unsupported-format': case 'invalid-marker': return 'newer-annotations';
         case 'invalid-write-mark': return 'foreign-change';
-        default: return 'missing-attachment';
+        case 'missing-attachment': return 'missing-attachment';
+        // Too large to inspect, two candidates, a nested source, an inspection that failed: none of these says the
+        // annotations are damaged, and "incomplete or damaged" sent a person looking for a loss that had not happened.
+        default: return 'unverified';
     }
 }
 
@@ -306,7 +309,9 @@ export async function planInkRotation(runtime: PdfiumRuntime, bytes: Uint8Array,
 }
 
 /**
- * The independent proof of an annotated turn, by a fresh writer, before App may write it. Besides the page
+ * The proof of an annotated turn, by a fresh writer, before App may write it. Independent for the file (it is
+ * re-read as opening it will, by the inspector, pdf-lib and PDFium); for the board it recomputes the turn with the
+ * planner's own `turnBoardText`, so it proves the bytes written are the bytes planned, not the map itself. Besides the page
  * proof a plain turn gets (nativeRotate.ts verifyPageTurn: exact prefix, section shape, pdf-lib and PDFium
  * re-reads), with the three attachment streams as the only other objects the section may redefine:
  *   - the whole result inspects as an annotated PDF of this app, as opening it will (write mark, board

@@ -180,6 +180,8 @@ come back to either.
   geometry of the turned pristine (what `inkHost.ts` validHost compares) and swapped `migration.previousFrames`.
   Refused: opaque nodes on a turned page (`newer-annotations`), another geometry engine (`other-engine`), a foreign
   write mark (`foreign-change`), Classic annotations (`legacy-annotations`; converted-but-unsaved asks for one change).
+  An inspection that could not decide (too large, ambiguous, nested, failed) is `unverified`, never `missing-attachment`:
+  that one tells the person their annotations are damaged.
   The verifier re-inspects the result as acquisition will and recomputes board and pristine byte for byte. App
   saves pending ink first (`saveInkBeforeTurn`), and a retained Annotate owner is replaced (history starts afresh).
 - A turn shows at the press (`utils/pdfRotationStandIn.ts`): the view draws its mirrored tiles turned into the turned

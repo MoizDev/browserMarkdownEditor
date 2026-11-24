@@ -170,9 +170,13 @@ function rotationRefusal(cause: RotationRefusal | undefined): string {
     case 'other-engine':
       return `This PDF's annotations were saved by another build of this app's PDF engine, so this version cannot move them with the pages. ${LEFT_AS_IT_IS}`;
     case 'foreign-change':
-      return `This PDF was changed by another program after its annotations were saved here, and turning its pages would overwrite that change. ${LEFT_AS_IT_IS}`;
+      // What a turn would really do: seal the file as this app's own, so the next annotation save rebuilds the pages
+      // from the embedded original and the other program's change is gone. A newer version's mark reads the same here.
+      return `This PDF was changed by another program after its annotations were saved here, or saved by a newer version of this app. Turning its pages now would let the next annotation save discard that change. ${LEFT_AS_IT_IS}`;
     case 'missing-attachment':
       return `The annotations saved inside this PDF are incomplete or damaged, and turning its pages could lose them. ${LEFT_AS_IT_IS}`;
+    case 'unverified':
+      return `The annotations saved inside this PDF could not be checked with certainty, so its pages were not turned. ${LEFT_AS_IT_IS}`;
     case 'unsupported-rotation': return `This PDF has a page at an angle that is not a quarter turn, so its pages were not turned. ${LEFT_AS_IT_IS}`;
     case 'unsafe-policy': case 'unsupported-format':
       return `This PDF has parts this app cannot rewrite with certainty (forms, permissions or an unusual structure), so its pages were not turned. ${LEFT_AS_IT_IS}`;

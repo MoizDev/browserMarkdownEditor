@@ -28,7 +28,8 @@ export async function rotateNativePdf(runtime: PdfiumRuntime, args: Rotate['args
     if (safety.kind === 'encrypted' || role.kind === 'unreadable' && role.reason === 'encrypted') return refusal('encrypted');
     // Classic (tldraw-era) annotations: their marks are in a format this writer does not rewrite. Annotate converts them.
     if (role.kind === 'annotated') return refusal('legacy-annotations');
-    if (role.kind === 'unreadable' || role.kind === 'ambiguous') return refusal('missing-attachment');
+    if (role.kind === 'unreadable') return refusal('missing-attachment');
+    if (role.kind === 'ambiguous') return refusal('unverified');
     if (safety.kind !== 'safe') return refusal('unsafe-policy');
     // The role reader names every board attachment of this build 'newer' (it predates them); the ink inspection decides.
     if (role.kind === 'newer') return planInkRotation(runtime, bytes, args.turns, context);

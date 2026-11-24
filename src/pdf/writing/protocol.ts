@@ -73,7 +73,7 @@ export interface StagedWriterResult {
 /** Each save gets a separate mutable writer session; a session id is not a native pointer. */
 /** Why the writer would not turn a PDF's pages; App words each one for the person. */
 export type RotationRefusal = 'signed' | 'encrypted' | 'legacy-annotations' | 'newer-annotations' | 'other-engine' | 'foreign-change'
-    | 'missing-attachment' | 'unsafe-policy' | 'unsupported-format' | 'unsupported-rotation';
+    | 'missing-attachment' | 'unverified' | 'unsafe-policy' | 'unsupported-format' | 'unsupported-rotation';
 
 export interface WriterOperations {
     'writer.prepareSource': {

@@ -43,7 +43,7 @@ interface Owner {
     readonly sensitiveMayMeet?: (world: Readonly<Rect>, nodes: ReadonlySet<string>) => boolean;
     readonly mayPaint?: (world: Readonly<Rect>) => boolean;
     readonly occupiedRoot?: Readonly<Rect>;
-    readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal, resolved?: ResolvedNodeCache) => Promise<ScenePaintNodeStream>;
+    readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal, resolved?: ResolvedNodeCache | null) => Promise<ScenePaintNodeStream>;
     readonly liveOnly?: true;
     isCurrent(): boolean;
     release(): void | Promise<void>;

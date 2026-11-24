@@ -40,6 +40,9 @@ export interface StreamingDenseTileOptions {
     /** While true, a finished read-ahead slice starts the next one itself (yielding to the event loop between slices)
      * instead of waiting for a frame: a first picture is otherwise paced at one short read per frame. */
     readonly eager?: () => boolean;
+    /** Gives back what the owner holds ahead of need (its plan's node buffer and resolved nodes) and returns the bytes released. A
+     * refused run or path asks this before its refusal is pressure: the room the tile needs may be held by its own plan's caches. */
+    readonly shed?: () => number;
 }
 /** One rasterized sub-run of a tile: a single blend, drawn by the frame before `end`. The receiver
  * owns `bitmap` and `bytesLease` and must release both through `releaseDenseTilePart`. */
@@ -172,9 +175,20 @@ export class StreamingDenseTileJob {
         this.adapter = null; this.pathLease = null; this.item = null; this.bounds = null;
         try { adapter?.dispose(); } finally { if (lease) this.options.host.allocator.cpu.release(lease); }
     }
+    /** The tile's own working memory: first a quiet ask, then, when the owner gave back what it held ahead of need, a quiet ask again,
+     * and only then a normal one, whose refusal is pressure. The owner's caches sit in the same pane cache as these runs, which the
+     * governor never evicts while its layer is mid-frame, so only the owner can take them back for the tile (measured: a 1 MB run
+     * refused for good with 29 MB of the same plan's cached nodes in the 33.6 MB pool). */
     private reserve(bytes: number): ByteLease | null {
         if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Streaming dense path estimate overflows');
-        return this.options.host.allocator.cpu.reserve(Math.max(1, bytes));
+        const cpu = this.options.host.allocator.cpu, size = Math.max(1, bytes);
+        const quiet = cpu.reserve(size, { quiet: true });
+        if (quiet) return quiet;
+        if ((this.options.shed?.() ?? 0) > 0) {
+            const shed = cpu.reserve(size, { quiet: true });
+            if (shed) return shed;
+        }
+        return cpu.reserve(size);
     }
     /** Discards a sub-run's pixels and returns both of its leases. */
     private releaseRun(run: Run): void {

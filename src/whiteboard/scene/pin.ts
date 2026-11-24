@@ -51,7 +51,7 @@ export function createSceneSnapshot(options: {
     changedNodes?: (from: number) => ReadonlySet<string> | null;
     renderer?: { release(): void };
     prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder) => Promise<PaintNodeSource>;
-    prepareStream?: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, resolved?: ResolvedNodeCache) => ScenePaintNodeStream;
+    prepareStream?: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, resolved?: ResolvedNodeCache | null) => ScenePaintNodeStream;
     cooperate?: () => Promise<void>;
     onError?: (error: unknown) => void;
 }): SceneSnapshot {
@@ -271,7 +271,7 @@ export function createSceneSnapshot(options: {
             })());
             return waitFor(work, signal);
         },
-        ...(options.prepareStream ? { async paintStream(request: ScenePaintRequest, signal?: AbortSignal, resolved?: ResolvedNodeCache) {
+        ...(options.prepareStream ? { async paintStream(request: ScenePaintRequest, signal?: AbortSignal, resolved?: ResolvedNodeCache | null) {
             check(); signal?.throwIfAborted();
             const pinnedRequest = copyRequest(request), local = new AbortController();
             const combined = AbortSignal.any(signal ? [controller.signal, local.signal, signal] : [controller.signal, local.signal]);

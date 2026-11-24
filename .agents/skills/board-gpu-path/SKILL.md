@@ -169,6 +169,11 @@ refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF wri
   (`budgetRefusal.ts`); the governor wakes it only when the bytes fit. The composer's GPU retry after a visible
   refusal also arms a 250 ms deadline (`GPU_RETRY_MS`) that only invalidates. `needsFrame` is false while a GPU
   admission is refused (no per-frame retry).
+- **What only saves later work is admitted as `prefetch` and charged once**: a dense plan's node buffer and resolved nodes
+  (`planNodeBuffer.ts`, `resolvedNodeCache.ts`; the buffer's own read resolves into no cache, `openTile(…, null)`) and the
+  session's idle geometry (`services.ts` `admit`). The plan reports them in `memory()`, never in its floor, and sheds them before
+  any of its own reservations is refused as pressure (`reserveNeed`, the tile job's `shed`). Charged twice and as pressure, a
+  454-stroke notebook held 29 MB of the 33.6 MB pool in them, every tile run was refused and it waited for memory for good.
 - **Unsized waits still exist** (`grep -rn whenAvailable src/whiteboard`): `boardLayers.ts` (per-pool refusal waiter),
   `densePlan.ts` (four CPU sites), `streamingDenseTile.ts`, `analyticInkBatch.ts` and `gpu/imageTextures.ts` (both
   pools), `frameAssembler.ts`, and `gpu/tileStore.ts`. Sizing one needs its thrower to report the bytes refused.

@@ -33,7 +33,7 @@ export interface SessionSceneOptions {
     retainRenderer?(): { release(): void };
     realize(node: Readonly<Node>, signal: AbortSignal): Promise<LocalGeometryBounds>;
     preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder): Promise<PaintNodeSource>;
-    preparePaintStream?(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, resolved?: ResolvedNodeCache): ScenePaintNodeStream;
+    preparePaintStream?(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, resolved?: ResolvedNodeCache | null): ScenePaintNodeStream;
     /** Requests bounded platform work; never starts a private animation loop. */
     invalidate(): void;
     onError(error: unknown): void;

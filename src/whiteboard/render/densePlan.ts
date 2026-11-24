@@ -11,6 +11,7 @@ import type { DenseRasterBorrow, DenseRasterTicket, SessionDenseRasters } from '
 import { createStreamingDenseTileJob, releaseDenseTilePart, type DenseTilePart, type StreamingDenseTileJob } from './streamingDenseTile';
 import { ResolvedNodeCache } from './resolvedNodeCache';
 import { MemoryRetryGate } from './memoryRetryGate';
+import { auditCount } from '../../platform/render/renderAudit';
 import { FilteredInk } from './nodeSets';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { bandItemsOf, PaintWindowBuilder, refBytesOf, rootOf, windowsOfSource, type PaintRoot, type PaintWindow } from './paintWindows';
@@ -195,6 +196,23 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     };
     const plans = new Set<Plan>();
     const working = (p: Plan) => p.bitmapBytes + (p.job?.memoryBytes ?? 0) + (p.lease?.bytes ?? 0) + p.directLeased + (p.windowLease?.bytes ?? 0);
+    /** What a plan holds ahead of need: its node buffer and resolved nodes. Held, so `memory()` reports it; never the floor
+     * (`cpuWorkingSet`), since `shed` gives it all back. Left out of both, the pane cache held 29 MB its layer reported as 0.1. */
+    const cached = (p: Plan) => p.resolved.chargedBytes + (p.nodes?.chargedBytes ?? 0);
+    /** Gives back every plan's cached nodes, now, and returns the bytes released. Later passes stream their own aprons, each bounded
+     * by the nodes that meet one tile, so a board whose resolved set exceeds the pool still draws, tile by tile. */
+    const shed = (): number => {
+        let freed = 0;
+        for (const p of plans) freed += (p.nodes?.shed() ?? 0) + p.resolved.evict();
+        if (freed > 0) auditCount('board-dense', 'shed', 1, { bytes: freed });
+        return freed;
+    };
+    /** A reservation the plan cannot go on without, asked as the tile runs ask (streamingDenseTile reserve): quiet, then quiet again
+     * after shedding the plans' cached nodes, and only then as pressure. */
+    const reserveNeed = (bytes: number): ByteLease | null => {
+        const cpu = host.allocator.cpu;
+        return cpu.reserve(bytes, { quiet: true }) ?? (shed() > 0 ? cpu.reserve(bytes, { quiet: true }) : null) ?? cpu.reserve(bytes);
+    };
     const finishRetirement = (p: Plan) => { if (p.retired && !p.pending) plans.delete(p); };
     /** Pinned residency: every live plan's tiles and the view last prepared. */
     const pinnedRects = (view: ViewState | null): Rect[] => {
@@ -268,7 +286,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const x1 = Math.ceil((view.camera.x + view.viewport.width / view.camera.z) / side);
         const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) / side);
         if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Dense viewport grid overflows');
-        const lease = host.allocator.cpu.reserve(BLOCK);
+        const lease = reserveNeed(BLOCK);
         // A denied plan start waits for a real capacity change: the wake re-runs the frame, nothing polls.
         if (!lease) { denied = true; refuse(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return null; }
         gate.admitted();
@@ -296,7 +314,10 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             const margin = 4 / scale;
             if (frame.openTile) p.nodes = new PlanNodeBuffer({ memory: host.allocator.cpu,
                 world: { x: x0 * side - margin, y: y0 * side - margin, width: (x1 - x0) * side + 2 * margin, height: (y1 - y0) * side + 2 * margin },
-                open: (world, signal) => frame.openTile!(world, signal, p.resolved) });
+                // `null`: the buffer keeps what it reads, so no resolved cache keeps it too. Resolved into the plan's cache as well, every
+                // node of an old 454-stroke notebook was charged twice (14.5 MB each), and with the session's idle geometry of the same
+                // ink, three times over the 33.6 MB pool. Passes the buffer cannot serve still share `p.resolved`.
+                open: (world, signal) => frame.openTile!(world, signal, null) });
             plans.add(p); return p;
         } catch (error) { host.allocator.cpu.release(lease); throw error; }
     };
@@ -408,7 +429,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 p.job = createStreamingDenseTileJob({ open: (apron, signal) => openPass(p, apron, signal),
                     rect: target.rect, scale: target.scale, band: target.band, barriers: NO_LIVE, token: p.source.token,
                     revision: p.source.sceneRevision, isCurrent: () => !p.retired && resources.frames.isCurrent(p.source),
-                    images: p.resources.images, host, onError: report });
+                    images: p.resources.images, host, onError: report, shed });
             }
             p.job.prepare(view, budget);
             if (p.job.blocked) refuse();
@@ -475,7 +496,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             rect, scale: p.scale, band, barriers: p.live ?? NO_LIVE, eager: () => ready === null, sensitive: p.source.sensitiveNodes, token: p.source.token, revision: p.source.sceneRevision,
             isCurrent: () => !p.retired && resources.frames.isCurrent(p.source), images: p.resources.images,
             // A failed tile is retried by tileFailed; reporting it would turn one transient open into a fatal canvas error.
-            host, onError: error => { if (!p.job?.failed) report(error); } });
+            host, onError: error => { if (!p.job?.failed) report(error); }, shed });
         p.job.prepare(view, budget);
         if (p.job.blocked) refuse();
         if (p.job.failed) { tileFailed(p); return; }
@@ -547,7 +568,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const windowBytes = refBytesOf(finished);
         if (windowBytes > (p.windowLease?.bytes ?? 0)) {
             // A denied reservation keeps the current picture and waits for a real capacity change.
-            const lease = host.allocator.cpu.reserve(windowBytes);
+            const lease = reserveNeed(windowBytes);
             if (!lease) { p.blocked = true; refuse(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
             gate.admitted();
             if (p.windowLease) host.allocator.cpu.release(p.windowLease);
@@ -643,7 +664,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                         // until memory frees, and a huge live set streams through the adapter instead of reserving
                         // an up-front estimate of every item.
                         while (adapter.memory().cpuBytes + DIRECT_CHUNK > p.directLeased) {
-                            const lease = host.allocator.cpu.reserve(DIRECT_CHUNK);
+                            const lease = reserveNeed(DIRECT_CHUNK);
                             if (!lease) { p.blocked = true; refuse(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
                             gate.admitted();
                             p.directLeases.push(lease); p.directLeased += lease.bytes;
@@ -720,7 +741,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             if (!pending) return held + (session?.memoryBytes ?? 0) + next;
             return held + (session?.memoryBytes ?? 0) + next + BLOCK + nativePathUpperBound + (session ? 4096 : 0);
         },
-        memory() { let cpuBytes = 0; for (const p of plans) cpuBytes += working(p); return { gpuBytes: 0, cpuBytes }; },
+        memory() { let cpuBytes = 0; for (const p of plans) cpuBytes += working(p) + cached(p); return { gpuBytes: 0, cpuBytes }; },
         needsFrame() {
             if (disposed || denied || staged?.blocked || inBackoff()) return false;
             // A plan drawn with standins because memory was denied waits for the next invalidation instead of spinning.
@@ -736,7 +757,10 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         },
         reclaim(bytes) {
             const view = lastView, session = !disposed && view ? sessionOf() : null;
-            if (session && view && session.cache.evictUnused(usableBitmaps(session.variant, pinnedRects(view)), bytes) > 0) host.demandChanged?.();
+            const freed = session && view ? session.cache.evictUnused(usableBitmaps(session.variant, pinnedRects(view)), bytes) : 0;
+            if (freed > 0) host.demandChanged?.();
+            // Then what the plans hold ahead of need: bitmaps the view cannot draw cost a pan to rebuild, cached nodes cost each tile its own stream.
+            if (freed < bytes && !disposed) shed();
         },
         dropUnused(view) {
             if (disposed) return false;

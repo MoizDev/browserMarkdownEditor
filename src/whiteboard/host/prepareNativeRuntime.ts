@@ -164,7 +164,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                 owner: token, pool: 'cpu', kind: 'working', class: 'redundant-level', hiddenAt: null,
                 lastVisibleAt: now, lastUsedAt: now, memory: () => ({ live, retiring: 0 }), evict });
             return {
-                reserve(bytes: number) { const lease = cache.reserve(bytes); if (lease) live += lease.bytes; return lease; },
+                reserve(bytes: number, reserveOptions?: Parameters<typeof cache.reserve>[1]) { const lease = cache.reserve(bytes, reserveOptions); if (lease) live += lease.bytes; return lease; },
                 release(lease: Parameters<typeof cache.release>[0]) { cache.release(lease); live -= lease.bytes; },
                 close: () => cache.close(),
             };

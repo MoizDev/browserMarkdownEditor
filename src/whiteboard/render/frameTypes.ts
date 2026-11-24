@@ -22,7 +22,7 @@ export interface PinnedPaintStream {
     release(): void | Promise<void>;
     /** Opens another bounded stream of this same pin over `world`, with this frame's request
      * identity (precision, sensitivity). Dense tiles use it; the pin stays owned by the frame. */
-    open?(world: Readonly<Rect>, signal: AbortSignal, resolved?: ResolvedNodeCache): Promise<ScenePaintNodeStream>;
+    open?(world: Readonly<Rect>, signal: AbortSignal, resolved?: ResolvedNodeCache | null): Promise<ScenePaintNodeStream>;
     /** The frame holds only the live nodes named by `sensitiveNodes` (a dense frame). */
     readonly liveOnly?: true;
 }

@@ -42,7 +42,7 @@ export interface PlanNodeBufferOptions {
  * read broke or overflowed, or the apron lies outside the world), and the caller then opens its own stream as before. */
 export class PlanNodeBuffer {
     private readonly controller = new AbortController();
-    private readonly nodes: PaintNode[] = [];
+    private nodes: PaintNode[] = [];
     private readonly leases: ByteLease[] = [];
     private readonly maxBytes: number;
     private stream: ScenePaintNodeStream | null = null;
@@ -90,24 +90,47 @@ export class PlanNodeBuffer {
         return next;
     }
 
-    /** Keeps `node` while the byte bound and the memory grant allow it. The first refusal stops keeping for good. */
+    /** Keeps `node` while the byte bound and the pool allow it. The first refusal stops keeping for good and gives back what was
+     * kept: a buffer that stopped keeping serves no pass again (see serve), so its nodes would only hold the pool.
+     * Admitted as work ahead of need (`prefetch`): the buffer only saves later passes their own stream, so a refusal is no pressure
+     * and the room is the tile runs' first. Asked as a normal reservation it held the pool beside the plan's own resolved copy of the
+     * same nodes, every next tile run was refused for room nothing gave back, and an old 454-stroke notebook stayed on "Waiting for
+     * memory to draw this board…" for good (measured, CfT 157, one pane at 1280x820: buffer 14.5 MB, resolved 14.5 MB, pool 33.6 MB). */
     keep(node: PaintNode): void {
         if (!this.keeping) return;
         const needed = this.bytes + paintNodeBytes(node);
-        if (needed > this.maxBytes) { this.keeping = false; return; }
+        if (needed > this.maxBytes) { this.shed(); return; }
         if (needed > this.leased) {
-            const lease = this.options.memory.reserve(Math.max(CHUNK, needed - this.leased));
-            if (!lease) { this.keeping = false; return; }
+            const lease = this.options.memory.reserve(Math.max(CHUNK, needed - this.leased), { prefetch: true });
+            if (!lease) { this.shed(); return; }
             this.leases.push(lease); this.leased += lease.bytes;
         }
         this.bytes = needed;
         this.nodes.push(node);
     }
 
-    /** Whether the owner keeps nodes. Stops for good once the bound or the grant refuses one. */
+    /** Stops keeping for good and returns every kept node's charge now; returns the bytes released. Later passes open their own
+     * streams, as after a refusal. A pass already replaying keeps the list it started on (see snapshot) until it ends: the charge
+     * goes now, as a retained source item keeps evicted geometry by reference, because the plan sheds this buffer to make room for
+     * the very pass that may be replaying it, and a release deferred to that pass's end would wait on itself. */
+    shed(): number {
+        const freed = this.leased;
+        this.keeping = false;
+        this.nodes = [];
+        this.bytes = 0;
+        this.leased = 0;
+        for (const lease of this.leases.splice(0)) this.options.memory.release(lease);
+        return freed;
+    }
+
+    /** Whether the owner keeps nodes. Stops for good once the bound or the pool refuses one, or the plan sheds it. */
     isKeeping(): boolean { return this.keeping; }
+    /** The bytes the kept nodes are charged: work ahead of need, never part of the plan's floor. */
+    get chargedBytes(): number { return this.leased; }
     count(): number { return this.nodes.length; }
     at(index: number): PaintNode { return this.nodes[index]!; }
+    /** The complete kept list a replaying pass reads; a later shed leaves this list to that pass. */
+    snapshot(): readonly PaintNode[] { return this.nodes; }
 
     finish(): void { this.ended = true; this.owner = null; }
 
@@ -125,7 +148,7 @@ export class PlanNodeBuffer {
         if (this.disposed) return Promise.resolve();
         this.disposed = true; this.broken = true; this.owner = null;
         this.controller.abort();
-        this.nodes.length = 0;
+        this.nodes = [];
         for (const lease of this.leases.splice(0)) this.options.memory.release(lease);
         this.leased = 0; this.bytes = 0;
         const stream = this.stream;
@@ -156,8 +179,12 @@ class Reader implements ScenePaintNodeStream {
     readonly mayPaint: ScenePaintNodeStream['mayPaint'];
     readonly occupiedRoot: ScenePaintNodeStream['occupiedRoot'];
 
+    /** A replaying pass's list, taken when it starts; the owner reads the buffer's own list as it grows. */
+    private readonly replay: readonly PaintNode[] | null;
+
     constructor(private readonly buffer: PlanNodeBuffer, private readonly source: ScenePaintNodeStream,
         private readonly apron: Readonly<Rect>, private readonly signal: AbortSignal, private readonly owns: boolean) {
+        this.replay = owns ? null : buffer.snapshot();
         this.token = source.token; this.theme = source.theme; this.sceneRevision = source.sceneRevision; this.sourceDoc = source.sourceDoc;
         this.sensitiveNodes = source.sensitiveNodes; this.sessionRasters = source.sessionRasters; this.rasterVariant = source.rasterVariant;
         this.sourceWorld = source.sourceWorld; this.regionChangesSince = source.regionChangesSince;
@@ -171,13 +198,17 @@ class Reader implements ScenePaintNodeStream {
         if (this.released) return null;
         this.signal.throwIfAborted();
         for (;;) {
+            if (this.replay) {
+                if (this.cursor >= this.replay.length) return null;
+                const node = this.replay[this.cursor++]!;
+                if (PlanNodeBuffer.meets(node, this.apron)) return node;
+                continue;
+            }
             if (this.cursor < this.buffer.count()) {
                 const node = this.buffer.at(this.cursor++);
                 if (PlanNodeBuffer.meets(node, this.apron)) return node;
                 continue;
             }
-            // A replaying pass ends with the kept nodes; only the owner reads past them.
-            if (!this.owns) return null;
             const node = await this.buffer.pull(this.source);
             if (node === null) { this.buffer.finish(); return null; }
             if (this.buffer.isKeeping()) this.buffer.keep(node);

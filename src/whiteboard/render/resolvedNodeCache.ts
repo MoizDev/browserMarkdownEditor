@@ -35,7 +35,9 @@ export class ResolvedNodeCache {
         const bytes = paintNodeBytes(node), old = this.#nodes.get(id);
         const used = this.#used - (old?.bytes ?? 0) + bytes;
         if (used > this.#leased) {
-            const lease = this.memory.reserve(Math.max(CHUNK, used - this.#leased));
+            // Work ahead of need: the cache only saves a later resolve, so a refusal is not pressure and never trims the frame's own
+            // working memory (see ReserveOptions.prefetch; the plan's node buffer is admitted the same way, planNodeBuffer.ts).
+            const lease = this.memory.reserve(Math.max(CHUNK, used - this.#leased), { prefetch: true });
             if (!lease) return;
             this.#leases.push(lease); this.#leased += lease.bytes;
         }
@@ -43,6 +45,9 @@ export class ResolvedNodeCache {
         this.#nodes.set(id, { sensitive, node, bytes });
         this.#used = used;
     }
+
+    /** The bytes the resolved nodes are charged: rebuildable, never part of a floor. */
+    get chargedBytes(): number { return this.#leased; }
 
     /** Drops every resolved node and returns the bytes released; the cache stays usable (the governor's trim of a session's cache). */
     evict(): number {

@@ -120,7 +120,7 @@ export interface PaintFrameRoot {
     readonly mayPaint?: (world: Readonly<Rect>) => boolean;
     readonly occupiedRoot?: Readonly<Rect>;
     /** Reopens this frame's pinned scene as a bounded stream over a tile apron; absent when not reopenable. */
-    readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal, resolved?: ResolvedNodeCache) => Promise<ScenePaintNodeStream>;
+    readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal, resolved?: ResolvedNodeCache | null) => Promise<ScenePaintNodeStream>;
     readonly token: RenderToken;
     readonly sceneRevision: number;
     readonly inkNodeIds: ReadonlySet<string>;

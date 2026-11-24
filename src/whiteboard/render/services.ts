@@ -273,7 +273,9 @@ export function createBoardRenderServices(options: {
     };
     const admit = (charged: number): { readonly lease: ByteLease | null } | null => {
         if (!derived) return { lease: null };
-        const lease = derived.reserve(charged);
+        // Work ahead of need (ReserveOptions.prefetch): idle geometry only saves a rebuild. Asked as a normal reservation, its refusal
+        // was pool pressure: it trimmed the frame's own working memory and stepped the app's quality down for a cache insert.
+        const lease = derived.reserve(charged, { prefetch: true });
         return lease ? { lease } : null;
     };
     /** Stores a prepared geometry as the newest idle entry. Its stroke ladder counts toward the budget too. A charge the
@@ -572,14 +574,15 @@ export function createBoardRenderServices(options: {
         palettes[doc.kind === 'whiteboard' ? request.theme : 'light'].revision, text.fonts.epoch,
     ]);
     /** The resolution a paint shares: the caller's dense-plan cache when it names one, else the session's cache of this revision. */
-    const sharedResolution = (doc: BoardDoc, request: ScenePaintRequest, sourceToken: RenderToken, given?: ResolvedNodeCache): SharedResolution | undefined => {
-        const cache = given ?? sessionResolved;
+    /** `null`: the caller keeps what it reads itself (a dense plan's node buffer), so no cache also holds it. */
+    const sharedResolution = (doc: BoardDoc, request: ScenePaintRequest, sourceToken: RenderToken, given?: ResolvedNodeCache | null): SharedResolution | undefined => {
+        const cache = given === null ? undefined : given ?? sessionResolved;
         return cache ? { cache, variant: resolutionVariant(doc, request, sourceToken) } : undefined;
     };
     // Frame identity matches `paint`: the variant is withdrawn if the font epoch moved while the
     // stream was being consumed, so a frame never claims a raster from a superseded face set.
     const paintStream = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder,
-        sourceToken: RenderToken = options.token, resolved?: ResolvedNodeCache): ScenePaintNodeStream => {
+        sourceToken: RenderToken = options.token, resolved?: ResolvedNodeCache | null): ScenePaintNodeStream => {
         const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch, sourceToken);
         const world = request.world ? Object.freeze({ ...request.world }) : undefined;
         const shared = sharedResolution(doc, request, sourceToken, resolved);
@@ -800,7 +803,7 @@ export function createBoardRenderServices(options: {
                 || captured.bytesGeneration < options.token.bytesGeneration) throw new TypeError('Paint binding is not the same document source');
             return Object.freeze({
                 token: captured, retainRenderer,
-                preparePaintStream: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder, resolved?: ResolvedNodeCache) =>
+                preparePaintStream: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder, resolved?: ResolvedNodeCache | null) =>
                     paintStream(doc, request, signal, order, captured, resolved),
                 preparePaint: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => paint(doc, request, signal, order, captured),
                 prepareOverlay: (doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId> | undefined, signal: AbortSignal) => paint(doc, request, signal, ids, captured),
@@ -875,7 +878,7 @@ export function createBoardRenderServices(options: {
         encoderLocal: localEnvelope,
         retainNode: (node: Readonly<Node>) => retainPaintNodeResources(node, options.samples, options.media),
         async realize(node: Readonly<Node>, signal: AbortSignal) { return (await prepare(node, options.doc, signal)).bounds; },
-        preparePaint: paint, preparePaintStream: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder, resolved?: ResolvedNodeCache) =>
+        preparePaint: paint, preparePaintStream: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder, resolved?: ResolvedNodeCache | null) =>
             paintStream(doc, request, signal, order, undefined, resolved),
         prepareOverlay(doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId>, signal: AbortSignal) {
             return paint(doc, request, signal, ids);

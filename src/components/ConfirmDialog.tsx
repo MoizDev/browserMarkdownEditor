@@ -91,6 +91,9 @@ interface ConfirmDialogProps {
     onAlt?: () => void;
 }
 
+/** Every dialog on screen, oldest first: the last one has the keyboard (see the key listener below). */
+const openDialogs: object[] = [];
+
 export default function ConfirmDialog({ questionId = 0, title, children, confirmLabel, cancelLabel, danger, input, onConfirm, onCancel, altLabel, onAlt }: ConfirmDialogProps) {
     const titleId = useId();
     const inputId = useId();
@@ -130,7 +133,13 @@ export default function ConfirmDialog({ questionId = 0, title, children, confirm
     // still be sitting in a pane behind this. Same treatment as EditorPane's
     // divider drag, for the same reason.
     useEffect(() => {
+        // Two dialogs can be up at once (an app message arriving over a pane's question). Each listens on the window, so
+        // without an order both answered every key: Escape dismissed both, and Tab was pulled back to the older one's
+        // first control. The newest one open has the keyboard.
+        const token = {};
+        openDialogs.push(token);
         const onKeyDown = (e: KeyboardEvent) => {
+            if (openDialogs[openDialogs.length - 1] !== token) return;
             // The dialog is modal, so the keyboard stays in it: Tab from its last control (or from anywhere outside it)
             // goes to its first, Shift+Tab the other way. Tab walked out of it into the tab strip and the note behind,
             // where a keypress acted on a document the question was still holding up.
@@ -152,7 +161,11 @@ export default function ConfirmDialog({ questionId = 0, title, children, confirm
             dismissRef.current();
         };
         window.addEventListener('keydown', onKeyDown, true);
-        return () => window.removeEventListener('keydown', onKeyDown, true);
+        return () => {
+            window.removeEventListener('keydown', onKeyDown, true);
+            const at = openDialogs.indexOf(token);
+            if (at >= 0) openDialogs.splice(at, 1);
+        };
     }, []);
 
     // Take the keyboard, and hand it back on the way out — `confirm()` did both,

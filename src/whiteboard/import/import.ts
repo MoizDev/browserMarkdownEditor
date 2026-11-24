@@ -101,6 +101,12 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
             const fields = new Map<string, RawJson>();
             if (Object.keys(draft.envelope.extras).length) fields.set('legacyEnvelope', parseJson(JSON.stringify(draft.envelope.extras)).raw());
             if (Object.keys(draft.envelope.documentExtras).length) fields.set('legacyDocument', parseJson(JSON.stringify(draft.envelope.documentExtras)).raw());
+            // A drawing or notebook is no longer converted in place: what is built from one is only ever shown read-only
+            // or written as an editable COPY, whose old board stays where it is. The header says so, or the copy read as a
+            // board an earlier version converted in place and offered to restore a Trash backup that never existed
+            // (utils/conversionRestore.ts; measured on a notebook's copy, which keeps the `.notebook` name). A PDF's ink
+            // is still converted in place and is not marked.
+            if (host.kind !== 'pdf-ink') fields.set('legacyCopy', parseJson('true').raw());
             const ui = readLegacyUi(draft.envelope.ui);
             const preserved = { version: NATIVE_VERSION, fields, records: draft.preservedRecords, end: null };
             const preservedMediaRefs = new Map<MediaId, number>();

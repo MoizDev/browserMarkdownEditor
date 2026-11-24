@@ -78,8 +78,9 @@ export async function restoreBeforeConversion(deps: Pick<ConversionRestoreDeps,
       try {
         const file = await handleIO.file(item.handle as FileSystemFileHandle);
         if (evidence) {
-          const text = await file.text();
-          if (!startsAsOldBoard(text.slice(0, 512), item.name) || !matchesConversionEvidence(evidence, text)) continue;
+          // The first bytes say whether it is an old board at all, before the whole file is read and parsed.
+          if (!startsAsOldBoard(await file.slice(0, 512).text(), item.name)) continue;
+          if (!matchesConversionEvidence(evidence, await file.text())) continue;
           const hash = await fingerprintSnapshot(file, controller.signal);
           if (!found.has(hash)) found.set(hash, item);
           if (keptHere(item) && !foundHere.has(hash)) foundHere.set(hash, item);
@@ -93,7 +94,8 @@ export async function restoreBeforeConversion(deps: Pick<ConversionRestoreDeps,
     if (evidence) {
       // Two different files that both fit, in the same standing, are two versions of the board (one trashed by hand):
       // which one was converted is not known, so none is chosen for the person.
-      const candidates = foundHere.size ? foundHere : found;
+      // Evidence that is not the board's alone is trusted only where the earlier version put the backup (ConversionEvidence.distinctive).
+      const candidates = foundHere.size || !evidence.distinctive ? foundHere : found;
       if (candidates.size > 1) {
         notify(`${candidates.size} files in Trash could each be this ${isNotebookFile(node.name) ? 'notebook' : 'drawing'}'s copy from before conversion, so none was restored. Open Trash to restore the one you want.`);
         return;

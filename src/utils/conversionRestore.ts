@@ -37,6 +37,13 @@ export interface ConversionEvidence {
     readonly shapeIds: readonly string[];
     /** The old records the board kept as written, by their original id. */
     readonly records: ReadonlyMap<string, Json>;
+    /**
+     * Whether anything here is the board's alone: an original shape id, or a kept record with an id of its own. Without
+     * one, what is left is the envelope and the `document`/`user` records, which every old board saved unpanned, with
+     * nothing selected and the Draw tool chosen shares — so such a board is matched only by where its backup was put
+     * (measured: a converted board emptied of its shapes "restored" an unrelated board from the same Trash).
+     */
+    readonly distinctive: boolean;
 }
 
 const isObject = (value: unknown): value is { readonly [key: string]: Json } =>
@@ -56,7 +63,9 @@ function sameJson(a: Json | undefined, b: Json | undefined): boolean {
 export function startsAsConvertedBoard(start: string, name: string): boolean {
     if (sniffCanvas(start, name).format !== 'native') return false;
     const header = start.split('"records"', 1)[0];
-    return /"(legacyDocument|legacyEnvelope|legacyOriginalSha256)":/.test(header);
+    // An editable copy of an old board carries the same fields and says it is one (import.ts `legacyCopy`): its old
+    // board was never converted, and is beside it or wherever the person put it — not a backup to look for in Trash.
+    return /"(legacyDocument|legacyEnvelope|legacyOriginalSha256)":/.test(header) && !/"legacyCopy":/.test(header);
 }
 
 /** What a board made from an old one kept of it, or null for a board that was not (or that keeps nothing to go by). */
@@ -64,7 +73,7 @@ export function conversionEvidenceFromText(text: string, name: string): Conversi
     if (sniffCanvas(text, name).format !== 'native') return null;
     let board: unknown;
     try { board = JSON.parse(text); } catch { return null; }
-    if (!isObject(board) || !Array.isArray(board.records) || !('legacyDocument' in board || 'legacyEnvelope' in board)) return null;
+    if (!isObject(board) || !Array.isArray(board.records) || !('legacyDocument' in board || 'legacyEnvelope' in board) || 'legacyCopy' in board) return null;
     const shapeIds: string[] = [], records = new Map<string, Json>();
     for (const record of board.records) {
         if (!isObject(record) || typeof record.type !== 'string' || typeof record.id !== 'string') continue;
@@ -74,9 +83,10 @@ export function conversionEvidenceFromText(text: string, name: string): Conversi
         else if (record.type.startsWith('legacy-') && record.type !== 'legacy-orphan-asset' && !record.id.includes('~duplicate')
             && isObject(record.record)) records.set(record.id, record.record);
     }
-    const evidence = { envelope: board.legacyEnvelope ?? {}, document: board.legacyDocument ?? {}, shapeIds, records };
-    const kept = [...records.keys()].some(id => !id.startsWith('document:') && !id.startsWith('user:'));
-    return Object.keys(evidence.envelope as object).length || shapeIds.length || kept ? evidence : null;
+    const kept = [...records.keys()].some(id => !id.startsWith('document:') && !id.startsWith('user:') && id !== 'page:page');
+    const evidence = { envelope: board.legacyEnvelope ?? {}, document: board.legacyDocument ?? {}, shapeIds, records,
+        distinctive: shapeIds.length > 0 || kept };
+    return Object.keys(evidence.envelope as object).length || evidence.distinctive ? evidence : null;
 }
 
 /** Whether an old board's text is the file `evidence` was made from (see above). */

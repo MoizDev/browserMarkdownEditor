@@ -11,6 +11,8 @@ type NumericKey = 'x' | 'y' | 'rotation' | 'opacity' | 'w' | 'h' | 'width' | 'sx
     | 'growY' | 'time' | 'scale' | 'labelScale' | 'fit' | 'bend' | 'elbowMid' | 'labelAt'
     | 'geomVersion' | 'fairTol';
 const TAU = Math.PI * 2;
+/** Below this a sticky's text would be under a quarter of a pixel at its largest size: unreadable at any zoom the board allows. */
+const STICKY_FIT_MIN = 0.01;
 const clamp = (value: number, min: number, max: number, fallback: number): number =>
     Number.isNaN(value) ? fallback : Math.max(min, Math.min(max, value));
 
@@ -81,7 +83,13 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
                 if (rMin !== node.widthModel.rMin || rMax !== node.widthModel.rMax) set('widthModel', { ...node.widthModel, rMin, rMax });
             }
         }
-        if (node.kind === 'sticky' && node.fit !== null) range('fit', Number.MIN_VALUE, 100, 1);
+        // The earlier version's in-place conversions stored tldraw's `fontSizeAdjustment` here, which is 0 until tldraw
+        // has measured the note; this pass then clamped 0 up to the smallest positive number, and the next save wrote
+        // that into the file (measured on a board that version converted: `"fit":5e-324`, an orange square with no
+        // text, and every export of the board failing). A multiplier that small is not a size anyone chose — nothing
+        // in this app sets one at all — so it is read as no stated fit, which fits the text to the note.
+        if (node.kind === 'sticky' && node.fit !== null && !(node.fit >= STICKY_FIT_MIN)) set('fit', null);
+        else if (node.kind === 'sticky' && node.fit !== null) range('fit', STICKY_FIT_MIN, 100, 1);
         if (node.kind === 'clip') range('time', 0, Number.MAX_VALUE, 0);
         if (node.kind === 'connector') {
             range('bend', -1_000_000, 1_000_000, 0);

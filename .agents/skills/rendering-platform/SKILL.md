@@ -166,6 +166,9 @@ draws differently because a GPU exists.
   back by its owner before its own refusal counts as pressure (`quiet`, shed, then a normal ask). Bytes that are neither are how
   a pool fills with nothing that can give way, and the next floor request then waits for good. Check it at rest:
   `__bmeRenderAudit.caches()` — no cache holds a waiter, and each pane's charge is within its `panes[].cpuNeedBytes`.
+  A floor that grows with a request (a whole-frame estimate) is re-collected (`refreshDemandNow`) BEFORE that reserve: asked
+  against the old grant, the refusal is pool pressure and steps quality (S2000 canvas2d: degraded for good, a raise/drop every
+  5 s). `caches().recovery` and the `governor:degrade:*` counters say why a quality has not stepped back up.
 - `ReserveOptions.quiet`: a first ask the owner can answer from its own idle residency; a refusal is not pressure.
 - `prefetch` stops at the trim target on the CPU (always) and on the GPU while quality is down: under each pool's cool line, so
   caches admitted ahead of need never hold the pool off cool (stuck 'trimming', quality never stepping back up).

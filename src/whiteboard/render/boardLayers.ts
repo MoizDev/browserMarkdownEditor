@@ -132,7 +132,6 @@ interface Estimate {
     maxItemBytes: number;
     segments: number;
     items: number;
-    demandPublished: boolean;
     done: boolean;
 }
 export function sameToken(a: RenderToken, b: RenderToken): boolean {
@@ -427,6 +426,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         return result;
     };
     const reservations = new Map<PaintSource, ByteLease[]>(), known = new Set<PaintSource>();
+    // canvas2d direct frames whose estimate lease was swapped for their measured charge (trueUpDirect).
+    const truedUp = new WeakSet<PaintSource>();
     let reserved = 0;
     const activeHost = () => hosts.get('underlay') ?? hosts.get('content');
     let lastError: string | null = null, lastProgress: PaintProgress | null = null;
@@ -667,7 +668,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const startEstimate = (frame: PaintSource) => {
         if (estimate?.frame === frame) return;
         known.add(frame);
-        estimate = { frame, walk: paintItemsOf(frame), current: null, clip: 0, chunk: 0, arc: -1, bytes: 0, itemBytes: 0, maxItemBytes: 0, segments: 0, items: 0, demandPublished: false, done: false };
+        estimate = { frame, walk: paintItemsOf(frame), current: null, clip: 0, chunk: 0, arc: -1, bytes: 0, itemBytes: 0, maxItemBytes: 0, segments: 0, items: 0, done: false };
         denied = false;
     };
     const prune = (requested: PaintSource, ready: PaintSource | null) => {
@@ -705,6 +706,27 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             leases.push(lease); reserved += lease.bytes; held += lease.bytes;
         }
         denied = false; return true;
+    };
+    /** canvas2d's direct frame is admitted on its estimate (it cannot be built and then refused), and charged what it measures once
+     * built: the estimate's whole-frame lease is swapped for the adapter's own count in DIRECT_CHUNK leases, which then follow
+     * it as the device's do (chargeDirect). The estimate is an upper bound, never a measure: it charges the scene's own input
+     * arrays again and a cubic's worth of commands per ink primitive (3,200 B, the adapter's outline is ~32 B a command), so
+     * held as the frame's charge it raised the pane's floor and the CPU target for the life of the frame (measured: a 450-stroke
+     * drawing held 114 MB of a 131 MB target, a picture board 164 of 189 MB). Swapped only while the build is the presented one:
+     * a staged build is still growing toward the estimate. */
+    const trueUpDirect = (frame: PaintSource): void => {
+        if (adapter?.readyFrame() !== frame || allocatorHost?.device()) return;
+        if (truedUp.has(frame)) { chargeDirect(frame); return; }
+        truedUp.add(frame);
+        const leases = reservations.get(frame);
+        if (!leases?.length) return;
+        const estimated = leases.reduce((sum, lease) => sum + lease.bytes, 0);
+        // A release before the chunks: nothing runs between the two, so the room the estimate held is the chunks' own.
+        releaseFrame(frame);
+        const charged = chargeDirect(frame);
+        const held = (reservations.get(frame) ?? []).reduce((sum, lease) => sum + lease.bytes, 0);
+        auditCount(options.auditSurface ?? 'board', charged ? 'direct:trued-up' : 'direct:true-up-refused', 1, { bytes: estimated - held });
+        allocatorHost?.demandChanged?.();
     };
     // Returns nothing on every path, which the Layer contract reads as changed: the composer's prepare reports nothing, and no
     // path here proves the band's picture unchanged from the last presented frame (the view, the frame and the composer's
@@ -919,22 +941,19 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             // Three actual decision frames avoid allocating a whole-scene Path2D cache just
             // before dense mode would throw it away. No timer or stationary RAF is introduced.
             if (!useDense && density.pending()) { denied = false; return; }
-            // A live overlay frame is replaced by the next pointer move, so the demand round trip (one whole frame that
-            // builds nothing) would be paid for every move and the overlay would never build: it reserves at once, and a
-            // refused reservation still re-collects the demand below before it latches.
-            if (!useDense && !options.optional && !reservations.has(frame) && !estimate!.demandPublished && estimate!.bytes) {
-                estimate!.demandPublished = true;
-                allocatorHost!.invalidate('board-native-demand-ready'); return;
-            }
             if (!useDense && !reservations.has(frame)) {
                 const bytes = estimate!.bytes;
                 if (bytes) {
                     // Inside a refusal's back-off the whole-frame estimate is not asked again.
                     if (memoryGate.closed()) { denied = true; return; }
-                    // The pane's grant may still be the floor from before this estimate was known (the demand is collected
-                    // on refresh). Re-collect it now and retry once; only a refusal against the refreshed grant latches.
-                    let lease = allocatorHost!.allocator.cpu.reserve(bytes);
-                    if (!lease) { allocatorHost!.refreshDemandNow?.(); lease = allocatorHost!.allocator.cpu.reserve(bytes); }
+                    // The pane's grant is the floor from before this estimate was known: the pane collects its demand when what
+                    // its layers hold moves, and an estimate is held by no one yet. It is re-collected (cpuMandatory now counts
+                    // it) before the reserve, so a refusal is a real shortage. Reserved first and re-collected only on refusal,
+                    // every new direct frame of a canvas2d board was refused against the old grant, and that refusal is pool
+                    // pressure: S2000 at rest was stepped from each raised quality back to 0.5 every 5 s, its back-off growing,
+                    // 'degraded' for good with the pool at 22 of 63 MB (measured: the refused 24.6 MB against a 25.8 MB demand).
+                    allocatorHost!.refreshDemandNow?.();
+                    const lease = allocatorHost!.allocator.cpu.reserve(bytes);
                     if (!lease) {
                         memoryGate.refused();
                         allocatorHost!.demandChanged?.();
@@ -949,6 +968,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             }
             denied = false;
             adapter.prepare(view, budget);
+            if (!useDense) trueUpDirect(frame);
             prepareGpu(view, budget, frame);
             if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }
             prune(frame, adapter.readyFrame());

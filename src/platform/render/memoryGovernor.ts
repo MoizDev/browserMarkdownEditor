@@ -561,7 +561,7 @@ export class MemoryGovernor {
         }
         // Over budget steps down unless a resume holds pressure: the rebuild after a return is charged at once, and stepping on it stacked
         // the quality down (1.0 -> 0.8 -> 0.64), which the recovery window then held for five seconds.
-        if (unmet && now >= this.pressureHoldUntil) this.degrade();
+        if (unmet && now >= this.pressureHoldUntil) { auditCount('governor', 'degrade:unmet'); this.degrade(); }
         this.trimPanesOverGrant();
         if (!liveGesture) this.recoverRoom();
         const cool = this.cool() && !liveGesture;
@@ -621,6 +621,7 @@ export class MemoryGovernor {
         for (const pool of ['gpu', 'cpu'] as const) {
             this.trimPool(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio));
         }
+        auditCount('governor', `degrade:trouble:${reason}`);
         this.degrade();
     }
 
@@ -694,7 +695,7 @@ export class MemoryGovernor {
     auditCaches(): { caches: { id: string; pane: string | null; pool: MemoryPool; kind: MemoryKind; bytes: number; hidden: boolean;
         waiters: number; refused: number | null }[];
         grants: { pane: string; cpuBytes: number; gpuCacheBytes: number }[]; panes: readonly PaneMemoryDemand[];
-        target: { gpu: number; cpu: number } } {
+        target: { gpu: number; cpu: number }; recovery: Record<string, unknown> } {
         return {
             caches: [...this.caches.values()].filter(cache => cache.bytes > 0).map(cache => ({ id: cache.registration.id,
                 pane: cache.registration.paneId ?? null, pool: cache.registration.pool, kind: cache.registration.kind,
@@ -702,6 +703,10 @@ export class MemoryGovernor {
                 waiters: this.capacityWaiters.get(cache)?.size ?? 0, refused: cache.refusal?.bytes ?? null })),
             grants: [...this.grants].map(([pane, grant]) => ({ pane, cpuBytes: grant.cpuBytes, gpuCacheBytes: grant.gpuCacheBytes })),
             panes: this.panes, target: { ...this.target },
+            // Why a lowered quality has or has not stepped back up: every input advance() reads for the raise.
+            recovery: { now: this.now, quality: this.qualityLimit, ceilings: Object.fromEntries(this.paneCeiling), charged: { ...this.charged },
+                cool: this.cool(), belowRecoverySince: this.belowRecoverySince, delay: this.recoveryDelay(), failedQuality: this.failedQuality,
+                failedUntil: this.failedUntil, wake: this.wake, state: this.state, madeRoom: this.madeRoom },
         };
     }
 
@@ -822,7 +827,10 @@ export class MemoryGovernor {
                 // Only a pool that cannot hold the request is pressure. A refusal at the pane's own grant is that
                 // pane's back-pressure: degrading the whole app for it held the GPU quality at 0.51-0.8 for good,
                 // so no webgl2 PDF frame was ever sharp and its editing cover never dropped.
-                if (this.charged[pool] + bytes > this.target[pool]) this.refuseReservation(pool);
+                if (this.charged[pool] + bytes > this.target[pool]) {
+                    auditCount('governor', `degrade:refused:${pool}:${cache.registration.id.split(':')[0]}:${cache.registration.kind}`, 1, { bytes });
+                    this.refuseReservation(pool);
+                }
                 cache.refusal = { epoch: this.capacityEpoch, bytes };
                 this.refusedFloor[pool] = Math.min(this.refusedFloor[pool], bytes);
                 return null;

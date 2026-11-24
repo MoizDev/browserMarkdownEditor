@@ -34,7 +34,9 @@ This is the board's own route. Editing (tools, selection, text) is `whiteboard-e
    - On canvas2d: the reference adapter draws directly (`direct` mode), or, past the density hysteresis
      (`density.ts`), CPU tiles (`dense` mode: `densePlan.ts`, `streamingDenseTile.ts`). The dense adapter is built
      the first time a board enters dense mode (`ensureDense`), so a device never builds one. A route change resets
-     the other route's state. A board hidden while dense reports `direct` via `onDensityMode`.
+     the other route's state. A board hidden while dense reports `direct` via `onDensityMode`. A direct frame is
+     admitted on its estimate (an upper bound, ~10x the built outlines on ink) and, once presented, trued up to the
+     adapter's measured bytes in DIRECT_CHUNK leases (`trueUpDirect`, then `chargeDirect` as on a device).
 
 **Layer stack** (bottom up, `makeSnapshot` in `attachView.ts`): backdrops (a PDF's page layers) → notebook paper →
 board underlay band → preview underlay → interaction underlay (wet ink) → board content band → preview content →

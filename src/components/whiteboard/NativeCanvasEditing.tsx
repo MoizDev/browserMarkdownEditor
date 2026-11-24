@@ -30,11 +30,12 @@ import { useNativeBoardDialogs } from './useNativeBoardDialogs';
 import { useNativeBoardLanguage } from './useNativeBoardLanguage';
 import { isCancellation } from '../../platform/workers/envelope';
 import { useBoardNotices, type BoardNotices } from './boardNotices';
+import { DISK_CHANGED_BOARD_NOTICE, DISK_DELETED_BOARD_NOTICE } from '../../utils/diskHeldNotice';
 
 
 type Links = ReturnType<typeof createNativeLinkOperations>;
 type Styles = ReturnType<typeof createBoardStyleControls>;
-export type NativeEditingViewProps = Pick<NativeCanvasEntryProps, 'identity' | 'nativeCanvasHost' | 'isVisible' | 'isFocused' | 'theme'>;
+export type NativeEditingViewProps = Pick<NativeCanvasEntryProps, 'identity' | 'nativeCanvasHost' | 'isVisible' | 'isFocused' | 'theme' | 'diskHeld'>;
 export type NativeEditingViewOptions = NonNullable<Parameters<typeof createNativeViewLease>[0]['editing']>;
 export interface NativeEditingRenderContext {
     readonly lease: NativeViewLease;
@@ -78,6 +79,11 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const dismissImport = useCallback((message: string) => { if (importNotice && message === importNotice.text) importNotice.dismiss(); }, [importNotice]);
     const notices = useBoardNotices(importNotice && !importNotice.isDismissed() ? [importNotice.text] : [], dismissImport);
     const setNotice = notices.show, clearNotice = notices.clear;
+    // The DiskBar's question answered, what the board said about it no longer holds (utils/diskHeldNotice.ts).
+    const diskHeld = props.diskHeld;
+    useEffect(() => {
+        if (!diskHeld) { clearNotice(DISK_CHANGED_BOARD_NOTICE); clearNotice(DISK_DELETED_BOARD_NOTICE); }
+    }, [diskHeld, clearNotice]);
     const [localInverted, setLocalInverted] = useState(false);
     const inverted = inversion?.value ?? localInverted, setInverted = inversion?.set ?? setLocalInverted;
     const [lease, setLease] = useState<NativeViewLease | null>(null), [clipboard, setClipboard] = useState<NativeClipboardService | null>(null);

@@ -18,6 +18,7 @@ import type { DiskHold, NativePolicy, RecoveryEvent, RecoveryJournal } from './t
 import { byteReadMs, withinFileDeadline } from '../utils/fileReadDeadline';
 import { loadChunk } from '../platform/chunkLoad';
 import { oldBoardReadOnlyReason } from '../utils/oldBoards';
+import { DISK_CHANGED_BOARD_NOTICE, DISK_DELETED_BOARD_NOTICE } from '../utils/diskHeldNotice';
 
 /** What the native-canvas host hook reads from App. */
 export interface UseNativeCanvasHostDeps {
@@ -86,8 +87,7 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
       if (!hasHostedNativeOwner(entry, identity.documentId)) return 'The native canvas has no active editor.';
       if (!getBaseline(identity.documentId)) return 'The file has no disk baseline yet.';
       const held = diskStateRef.current.get(identity.documentId);
-      if (held) return held === 'deleted' ? 'This file was deleted on disk. Choose Save again or Close in the bar above.'
-        : 'This file changed on disk. Choose Reload or Keep mine in the bar above to go on editing.';
+      if (held) return held === 'deleted' ? DISK_DELETED_BOARD_NOTICE : DISK_CHANGED_BOARD_NOTICE;
       if (identity.kind === 'pdfInk' && policy.pdfWriteAuthority?.canWriteSource() !== true) return 'The PDF source is locked for writing.';
       return null;
     };

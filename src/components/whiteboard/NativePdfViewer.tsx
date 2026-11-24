@@ -49,6 +49,8 @@ export interface NativePdfViewerProps {
     readonly file: ActiveFile;
     readonly isVisible: boolean;
     readonly isFocused: boolean;
+    /** The pane's DiskBar is up (NativeCanvasEntryProps.diskHeld). */
+    readonly diskHeld: boolean;
     readonly theme: Theme;
     readonly emphasisEnabled: boolean;
     readonly zoomLimits: ViewOptions['limits'];
@@ -292,7 +294,7 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
     const renderView = useCallback((context: NativeEditingRenderContext) => <PdfEditingAttached props={{ ...latest.current, theme }}
         context={context} updating={updating || awaitingPresentation} rebind={rebind} />, [updating, awaitingPresentation, rebind, theme]);
     return <NativeCanvasEditing key={viewGeneration} props={{ identity: props.identity, nativeCanvasHost: props.host, isVisible: props.isVisible,
-        isFocused: props.isFocused, theme: props.theme }} board={props.board} adapter={props.adapter}
+        isFocused: props.isFocused, theme: props.theme, diskHeld: props.diskHeld }} board={props.board} adapter={props.adapter}
         factory={props.host.createEditingCapabilities} createLease={createLease} renderView={renderView}
         inversion={{ value: inverted, set: setInverted }} onError={props.onError} onUnavailable={editingUnavailable} />;
 }

@@ -67,6 +67,8 @@ export interface NativeCanvasEntryProps {
     readonly isFocused: boolean;
     readonly theme: Theme;
     readonly emergencyReadOnly: boolean;
+    /** The pane's DiskBar is up: the file changed or went on disk and the person has not chosen yet. */
+    readonly diskHeld: boolean;
     readonly zoomLimits: ZoomLimits;
     readonly insets: ViewportInsets;
     readonly zMax: number;

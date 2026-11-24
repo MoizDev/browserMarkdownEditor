@@ -6,6 +6,7 @@ import { sourceIsNewer, type ContentSource, type DocumentBufferStore } from '../
 import type { DocumentSessionStore } from '../utils/documentSessions';
 import type { DiskVersion } from '../utils/diskVersion';
 import { hashBytes } from '../utils/diskVersion';
+import { fingerprintSnapshot } from '../utils/snapshotFingerprint';
 import { authorizeKeptPdfRole } from '../utils/pdfRole';
 import { recordFileWritten } from '../utils/fileTimes';
 import { getBaseline, setBaseline } from '../utils/docBaselines';
@@ -203,7 +204,8 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
       // Bytes equal to the disk's are not a second version to keep (hashed only at the same size: a PDF can be hundreds of MB).
       const same = typeof keep === 'string' ? keep === read.text
         : !!keep && (keep instanceof Blob ? keep.size : keep.byteLength) === read.version.size
-          && await hashBytes(keep instanceof Blob ? new Uint8Array(await keep.arrayBuffer()) : keep) === read.version.hash;
+          // A Blob (a PDF, possibly hundreds of MB) goes through the chunked worker hash, never one whole-file buffer here.
+          && (keep instanceof Blob ? await fingerprintSnapshot(keep) : await hashBytes(keep)) === read.version.hash;
       if (__BME_BENCH__) {
         try {
           if (keep !== null && !same) reportVault({ op: 'write', path, caller: 'disk-reload-conflict' });
@@ -225,8 +227,12 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
     // 'keep': theirs goes beside the file, then mine is written — against the version just read, so a disk that moved
     // AGAIN in between raises the conflict again rather than being overwritten.
     await drain(id);
-    const reader = isPdf && !nativeConflict ? await readerMine() : null;
-    if (isPdf && !nativeConflict && !reader) {
+    // The reader's copy is the tab's version only while nothing is unsaved: a board that is not live (emergency read-only,
+    // a generation it no longer matches) can still hold unsaved ink in its buffer, and writing the last SAVED bytes
+    // would call that version kept. Unsaved bytes go the save funnel's way below, which says so if it cannot write them.
+    const unsaved = documentBuffers.isDirty(id);
+    const reader = isPdf && !nativeConflict && !unsaved ? await readerMine() : null;
+    if (isPdf && !nativeConflict && !unsaved && !reader) {
       // Nothing to write back: offering Keep mine would leave the other program's file under a tab that claims otherwise.
       setTabs(prev => prev.map(t => t.id === id ? { ...t, diskMineLost: true } : t));
       return;
@@ -255,8 +261,15 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
     const entry = pdfRebuildRef.current.get(id);
     if (entry) { entry.baseline = disk.version; entry.copyName = undefined; }
     setDiskState(id, null);
+    // Nothing was written: the file is still theirs. Put the question back rather than call it kept.
+    const putBack = () => {
+      if (baselineBefore) setBaseline(id, baselineBefore);
+      if (entry && baselineBefore) entry.baseline = baselineBefore;
+      setDiskState(id, 'conflict');
+      void tell({ title: 'Your version was not saved', confirmLabel: 'OK', body: <>Could not write your version of <strong>{file.name}</strong>, so the file is still the one on disk. A copy of that one was kept as “{shortName(copy)}”.</> });
+    };
     if (entry?.value.role.kind === 'annotated' && entry.value.role.writeMark.kind === 'foreign') {
-      if (!await keepPdfBaseline(entry) || !authorizeKeptPdfRole(entry.value.role, entry.value.version.hash)) return;
+      if (!await keepPdfBaseline(entry) || !authorizeKeptPdfRole(entry.value.role, entry.value.version.hash)) { putBack(); return; }
       entry.approved = true;
       setPdfRebuildNotice(id, { state: 'kept', generation: entry.value.role.generation, approved: true, copyName: entry.copyName });
     }
@@ -275,13 +288,7 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
       }
       announce(`The version on disk was kept as “${shortName(copy)}”.`);
     } else if (outcome === 'changed') announce(`“${file.name}” changed on disk again. The earlier version was kept as “${shortName(copy)}”.`);
-    else if (outcome !== 'deleted') {
-      // Nothing was written: the file is still theirs. Put the question back rather than call it kept.
-      if (baselineBefore) setBaseline(id, baselineBefore);
-      if (entry && baselineBefore) entry.baseline = baselineBefore;
-      setDiskState(id, 'conflict');
-      void tell({ title: 'Your version was not saved', confirmLabel: 'OK', body: <>Could not write your version of <strong>{file.name}</strong>, so the file is still the one on disk. A copy of that one was kept as “{shortName(copy)}”.</> });
-    }
+    else if (outcome !== 'deleted') putBack();
   } catch (err) {
     console.error('Could not resolve a document’s disk state:', path, action, err);
     void tell({ title: 'That did not work', confirmLabel: 'OK', body: <>Could not finish for <strong>{file.name}</strong>: {describeReadError(err)}</> });

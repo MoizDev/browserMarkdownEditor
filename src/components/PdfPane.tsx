@@ -781,7 +781,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                             if (currentEntry.current === annotateEntry) { setLegacyConversionEntry(null); tiledNotify(message); }
                         }}
                         attachCanvasSession={attachCanvasSession} onNativeCanvasReady={onNativeCanvasReady}
-                        isVisible={isVisible} isFocused={isFocused} theme={theme} emergencyReadOnly={routeEngines('pdfInk').canvas.pdfInk.emergencyReadOnly}
+                        isVisible={isVisible} isFocused={isFocused} theme={theme} emergencyReadOnly={routeEngines('pdfInk').canvas.pdfInk.emergencyReadOnly} diskHeld={!!disk}
                         zoomLimits={NATIVE_PDF_ZOOM} insets={NATIVE_PDF_INSETS} zMax={100} deadlineMs={30_000}
                         registerKeyboardTarget={reading.registerKeyboardTarget} onFocusPane={onFocusPane}
                         emphasisEnabled={reading.emphasisEnabled} onNotice={reading.onNotify}

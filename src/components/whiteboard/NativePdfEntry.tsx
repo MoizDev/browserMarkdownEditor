@@ -87,7 +87,7 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
     if (!acquired || !source) return <div role="status">{phase === 'waiting' ? 'Opening PDF annotations: waiting for another document to finish opening…'
         : 'Preparing PDF annotations…'}</div>;
     return <NativePdfViewer adapter={acquired.adapter} board={acquired.adapter.board} identity={identity} host={nativeCanvasHost} sourceState={source}
-        file={props.file} isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme}
+        file={props.file} isVisible={props.isVisible} isFocused={props.isFocused} diskHeld={props.diskHeld} theme={props.theme}
         emphasisEnabled={props.emphasisEnabled} zoomLimits={props.zoomLimits} insets={props.insets}
         registerKeyboardTarget={props.registerKeyboardTarget} onFocusPane={props.onFocusPane} onNotice={props.onNotice} onError={onError} />;
 }

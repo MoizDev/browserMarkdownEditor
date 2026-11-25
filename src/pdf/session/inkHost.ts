@@ -104,10 +104,13 @@ export function readPdfInkLegacyDigest(acq: PdfEditableInkSource, host: HostBloc
     return migration ? migrationValue(migration, acq.pages).legacyOuterFingerprint : null;
 }
 
-/** Plain PDFs alone may start a new board; native boards must retain their loaded host. */
+/** Plain PDFs alone may start a new board; native boards must retain their loaded host.
+ *  The new board is a pure function of the PDF: its write id is only a placeholder until the first save pins a fresh one
+ *  (`pinPdfInkHostForSave`), so it is taken from the source's fingerprint. A random one made every open's empty board
+ *  differ, and Recover of strokes never saved to a PDF answered "Recovery baseline differs" on the next open, always. */
 export function createPdfInkHost(acq: PdfEditableInkSource): PdfHost {
     if (acq.kind !== 'plain' || !acq.isCurrent()) throw new Error('A current plain PDF is required for a new ink board');
-    const host: PdfHost = { kind: 'pdf-ink', pdf: metadata(acq, newPdfWriteId()),
+    const host: PdfHost = { kind: 'pdf-ink', pdf: metadata(acq, acq.source.pristineFingerprint.slice(0, 32)),
         pages: acq.pages.map(page => [page.width, page.height] as const), ext: null };
     if (!validHost(acq, host, false)) throw new Error('Invalid PDF ink host geometry');
     return host;

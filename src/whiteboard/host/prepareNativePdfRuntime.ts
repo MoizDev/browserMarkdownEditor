@@ -15,7 +15,7 @@ import { mediaExtension } from '../media/ingest';
 import { hashMedia } from '../media/sha256';
 import { MediaStore, type MediaLease } from '../media/store';
 import { MEDIA_MIMES, type MediaId, type MediaMime } from '../model/media';
-import type { NodeId } from '../model/ids';
+import { sheetId, type NodeId } from '../model/ids';
 import { createBoardRenderServices } from '../render/services';
 import { createBoardEncoderBounds } from './encoderBounds';
 import { createEmptyNativeBytes } from './emptyNative';
@@ -99,7 +99,11 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
     };
     try {
         check();
-        const bytes = accepted.kind === 'plain' ? createEmptyNativeBytes('pdf-ink', { pdfHost: options.createHost(accepted) }) : accepted.board;
+        // A plain PDF's empty ink board comes out the same on every open (its sheet id and placeholder write id are taken
+        // from the PDF itself): the recovery journal pins the board it started from, and Recover after a reload or crash
+        // applies only onto that same board.
+        const bytes = accepted.kind === 'plain' ? createEmptyNativeBytes('pdf-ink', { pdfHost: options.createHost(accepted),
+            sheetId: sheetId(`pdf${accepted.source.pristineFingerprint.slice(0, 12)}`) }) : accepted.board;
         acquired = await acquireNativeBoard({ bytes, kind: 'pdf-ink', signal, deadlineMs: options.deadlineMs,
             pdfPages: accepted.pages.map(page => [page.width, page.height] as const),
             identity: { session: `${identity.documentId}:${identity.session}`, epoch: identity.vaultActivation, generation: identity.bytesGeneration } });

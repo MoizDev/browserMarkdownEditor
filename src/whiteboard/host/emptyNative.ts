@@ -5,7 +5,7 @@ import { NATIVE_VERSION } from '../format/schema';
 import type { WriteResult } from '../format/writeTypes';
 import { createBoardDoc, type BoardKind, type HostBlock, type ViewFlags } from '../model/doc';
 import { UI_DEFAULTS, VIEW_DEFAULTS } from '../model/defaults';
-import { newSheetId } from '../model/ids';
+import { newSheetId, type SheetId } from '../model/ids';
 import { keyBetween } from '../model/orderKey';
 import type { UiBlock } from '../model/styles';
 import { validateLoadedRoot } from '../model/validate';
@@ -17,6 +17,8 @@ export interface EmptyNativeOptions {
     readonly sheetName?: string;
     /** A PDF ink board never invents a pristine source or physical-page geometry. */
     readonly pdfHost?: Extract<HostBlock, { kind: 'pdf-ink' }>;
+    /** The first sheet's id, for a board that must come out the same each time it is made (a plain PDF's ink). */
+    readonly sheetId?: SheetId;
 }
 function value<T>(result: WriteResult<T>): T {
     if (!result.ok) throw new Error(`Cannot create an empty native board: ${result.error.reason}`);
@@ -29,7 +31,7 @@ export function createEmptyNativeBytes(kind: BoardKind, options: EmptyNativeOpti
     const host: HostBlock = kind === 'whiteboard' ? { kind }
         : kind === 'notebook' ? { kind, paper: { ...options.paper ?? DEFAULT_PAPER }, ext: null }
         : options.pdfHost ?? (() => { throw new Error('Empty PDF ink requires its real PDF host'); })();
-    const id = newSheetId({ nodes: new Map(), sheets: new Map() });
+    const id = options.sheetId ?? newSheetId({ nodes: new Map(), sheets: new Map() });
     const ui = options.ui ?? UI_DEFAULTS;
     const doc = createBoardDoc({ kind, host, sheets: [{ id, name: options.sheetName ?? 'Sheet 1', order: keyBetween(null, null), ext: null }],
         ui: { ...ui, next: { ...ui.next } }, view: { ...options.view ?? VIEW_DEFAULTS },

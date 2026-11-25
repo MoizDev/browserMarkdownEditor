@@ -9,6 +9,14 @@ import { useNativeClipboard } from './useNativeClipboard';
 import './NativeCanvasEntry.css';
 import { isCancellation } from '../../platform/workers/envelope';
 import { BoardNoticeStack } from './BoardNoticeStack';
+import { getPdfInverted, setPdfInverted, subscribePdfInverted } from '../../utils/pdfViewState';
+
+// Inversion is the PDF's one app-wide view preference (utils/pdfViewState.ts), the one the Original view reads. Annotate kept
+// its own, starting at false: an inverted PDF came up white on entering Annotate (measured: luminance 0 in Original, 255 in
+// Annotate), and a press there was neither stored nor shown in Original on leaving it.
+function usePdfInversion(): readonly [boolean, (value: boolean) => void] {
+    return [useSyncExternalStore(subscribePdfInverted, getPdfInverted), setPdfInverted];
+}
 
 const VIEW_REASON = 'PDF annotation tools are unavailable in this view.';
 type ViewOptions = Parameters<typeof createNativeViewLease>[0];
@@ -63,7 +71,7 @@ export interface NativePdfViewerProps {
 
 function PdfView({ props, sourceState }: { props: NativePdfViewerProps; sourceState: NativePdfViewerSource }) {
     const [generation, setGeneration] = useState(0), [awaitingPresentation, setAwaitingPresentation] = useState(false);
-    const [inverted, setInverted] = useState(false);
+    const [inverted, setInverted] = usePdfInversion();
     const handoff = useRef<ReturnType<NativeViewLease['takeCameraForRebind']> | null>(null);
     useEffect(() => {
         if (!props.isVisible) { handoff.current?.dispose(); handoff.current = null; }
@@ -228,7 +236,7 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
     const latest = useRef(props);
     useLayoutEffect(() => { latest.current = props; }, [props]);
     const [updating, setUpdating] = useState(false), [viewGeneration, setViewGeneration] = useState(0);
-    const [awaitingPresentation, setAwaitingPresentation] = useState(true), [inverted, setInverted] = useState(false);
+    const [awaitingPresentation, setAwaitingPresentation] = useState(true), [inverted, setInverted] = usePdfInversion();
     const invertedRef = useRef(inverted);
     useLayoutEffect(() => { invertedRef.current = inverted; }, [inverted]);
     const handoff = useRef<ReturnType<NativeViewLease['takeCameraForRebind']> | null>(null);

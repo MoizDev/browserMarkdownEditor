@@ -25,7 +25,7 @@ const BRIDGE_WAIT_MS = 300;
 const BUDGET_NOTICE_DELAY_MS = 1000;
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
 import type { CameraConstraint } from './camera';
-import type { CompositorBackend, CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
+import type { CompositorAppearance, CompositorBackend, CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
 import { RENDER_CONSTANTS } from './constants';
 import { createLayerHost } from './layerHost';
 import type { MemoryCacheHandle } from './memoryGovernor';
@@ -85,7 +85,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     /** What the last real present reported, for the frames that skip it (see presentUnchanged). Cleared whenever the pane stops presenting. */
     let lastReport: { frameId: number; revision: string; backend: PaneCompositor['backend']; complete: boolean; sharp: boolean;
         staleVersion: boolean | undefined; camera: { x: number; y: number; z: number }; drawn: { x: number; y: number; z: number };
-        geometry: number | undefined } | null = null;
+        geometry: number | undefined; appearance: CompositorAppearance } | null = null;
     // Audit only: the camera scale of the previous mirrored present, for the present's zooming flag.
     let lastMirroredScale: number | null = null;
     let sampledCamera = { ...camera.camera };
@@ -705,7 +705,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 }
                                 lastReport = { frameId: frame.frameId, revision, backend: drawing.backend, complete, sharp, staleVersion,
                                     camera: { x: liveCamera.x, y: liveCamera.y, z: liveCamera.z },
-                                    drawn: { x: frame.view.camera.x, y: frame.view.camera.y, z: frame.view.camera.z }, geometry: geometry?.generation };
+                                    drawn: { x: frame.view.camera.x, y: frame.view.camera.y, z: frame.view.camera.z }, geometry: geometry?.generation,
+                                    appearance: options.readAppearance() };
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,
                                     complete, sharp, staleVersion,
                                     viewEpoch: frame.view.epoch, revision, drawnFrameId: frame.frameId });
@@ -732,6 +733,16 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         if (!current || !sameFrame(current, frame.token) || options.revision() !== last.revision ||
                             drawn.x !== last.drawn.x || drawn.y !== last.drawn.y || drawn.z !== last.drawn.z ||
                             observer.current?.generation !== last.geometry) return false;
+                        // Inversion and the surround are the compositor's, not a layer's: every layer answers unchanged when only they
+                        // move, so the frame was skipped and the picture on screen kept the old colours (measured, Annotate: Invert
+                        // pressed 6 times, aria-pressed flipped, page luminance 255 at 1.5 s each time on both backends; WebGL2 counted
+                        // draws-changed:inverted and no present; it showed only when a scroll repainted). Such a frame is encoded.
+                        const appearance = options.readAppearance();
+                        if (appearance.inverted !== last.appearance.inverted
+                            || appearance.background.some((value, i) => value !== last.appearance.background[i])) {
+                            if (renderAuditEnabled()) auditCount('pane', 'present-kept:appearance');
+                            return false;
+                        }
                         // The camera has moved past this frame (input after its snapshot): a real present at a stale camera reports nothing
                         // either (see the present path), so this one skips and reports nothing. Refused, it presented the picture already on
                         // screen (measured, doc12 paced pan: 1 redundant present, unchanged-refused:camera with every layer unchanged).

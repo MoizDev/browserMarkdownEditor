@@ -155,18 +155,25 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         if (idle !== undefined) cancelIdleCallback(idle);
         idle = undefined; background?.abort(); background = undefined;
     };
+    // This copy is prepared ahead only so that ⌘C has it at once; it measures every selected item exactly, which on a large
+    // selection is far more work than anything the person asked for (measured: 4,000 strokes, about 60 s of main thread). It
+    // ran in 3 ms turns beside the person's own work and took most of the thread from it: a keyboard nudge of those strokes
+    // took 72 s instead of 4.5 s, so closing the tab or reloading meanwhile found the nudge unfinished and refused, and Export
+    // to PDF right after took 73 s instead of 13 s. So it runs only when the browser is idle, and stops for a gesture (a
+    // nudge, a drag) and starts again once that has landed.
+    const idleTurn = () => new Promise<void>(resolve => { requestIdleCallback(() => resolve()); });
     const prepareSettledSelection = () => {
         cancelBackground();
         if (textAuthority) return;
         selectedProduct = undefined; copy.setSelection(null);
-        if (!current() || !runtime.selection.getSnapshot().selected.length) return;
+        if (!current() || !runtime.selection.getSnapshot().selected.length || board.isGestureActive) return;
         const state = runtime.selection.getSnapshot(), revision = board.doc.rev, epoch = runtime.render.text.fonts.epoch;
         idle = requestIdleCallback(() => {
             idle = undefined;
             const controller = new AbortController(); background = controller;
             const valid = () => current() && !controller.signal.aborted && board.doc.rev === revision &&
                 runtime.selection.getSnapshot() === state && runtime.render.text.fonts.epoch === epoch;
-            void createBoardCopySnapshot({ runtime, memory: options.memory, current: valid, signal: controller.signal }).then(snapshot => {
+            void createBoardCopySnapshot({ runtime, memory: options.memory, current: valid, signal: controller.signal, cooperate: idleTurn }).then(snapshot => {
                 if (!valid()) { for (const lease of snapshot.leases) lease.release(); return; }
                 publishSelection(ownMedia({ snapshot, cutReceipt: null }));
             }).catch(() => {
@@ -177,6 +184,12 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
     };
     const stopSelection = runtime.selection.subscribe(prepareSettledSelection), stopChanges = board.onChange(prepareSettledSelection);
     const stopGeometry = runtime.render.subscribeInvalidation(prepareSettledSelection);
+    // A copy already made stays; one still being prepared gives way to the gesture and is prepared again once it has landed.
+    const stopGesture = board.subscribeGesture(() => {
+        if (board.isGestureActive) { cancelBackground(); return; }
+        const made = selectedProduct?.snapshot;
+        if (!made || !snapshotCurrent(made)) prepareSettledSelection();
+    });
     prepareSettledSelection();
     const run = async (work: () => Promise<void>) => {
         try { await work(); } catch (error) { options.onError(error); }
@@ -277,7 +290,7 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         exportJson: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => exportJson(route, signal))),
         exportPng: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => download('png', route, signal))),
         exportSvg: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => download('svg', route, signal))),
-        dispose() { if (!disposed) { disposed = true; cancelBackground(); stopSelection(); stopChanges(); stopGeometry();
+        dispose() { if (!disposed) { disposed = true; cancelBackground(); stopSelection(); stopChanges(); stopGeometry(); stopGesture();
             // Captured read-only jobs own their source leases. Retiring the
             // document stops new work, not a clipboard write already in flight.
             selectedProduct = undefined; textAuthority = undefined; copy.dispose(); } },

@@ -46,6 +46,9 @@ export interface SessionSceneOptions {
     subscribeInvalidation?(listener: (ids: ReadonlySet<NodeId>) => void): () => void;
 }
 
+/** Slots one rebuild step visits; the frame's deadline bounds how many slices a frame runs. */
+const REBUILD_SLICE = 1024;
+
 /** Session-owned Scene, independent of pane lifetime. Publication is blocked while
  * an incremental order splice is in progress; no query observes half of a move. */
 export class SessionScene implements SceneSpatial {
@@ -178,7 +181,11 @@ export class SessionScene implements SceneSpatial {
         while (work++ < maxWork && (work === 1 || performance.now() < deadline)) {
             if (!this.active) {
                 if (!this.pendingNodes.size && !this.pendingSheets.size && !this.pages && this.state.revision === this.options.doc.rev) {
-                    this.rebuild.step(Math.max(1, maxWork - work));
+                    // The rebuild's passes are stepped in slices up to the same deadline: the view now asks for as many units as the
+                    // frame has time for (attachView), and one call with that whole count would visit every slot past the deadline.
+                    for (let units = Math.max(1, maxWork - work); units > 0; units -= REBUILD_SLICE) {
+                        if (this.rebuild.step(Math.min(units, REBUILD_SLICE)) !== 'pending' || performance.now() >= deadline) break;
+                    }
                     if (this.state.index.needsRebuild) this.rebuild.start(this.controller.signal);
                     return 'complete';
                 }

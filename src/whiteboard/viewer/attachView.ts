@@ -43,6 +43,9 @@ class SelectionIds implements ReadonlySet<string> {
 /** What a view publish changed: the view's state, or only the paint progress its snapshot reports. */
 export type ViewChange = 'state' | 'paint';
 
+/** The scene units one frame may step (each a bounded generator step); the prepare deadline is the real bound. */
+const SCENE_STEP_UNITS = 1_000_000;
+
 /** Attaches view resources only. The admitted model, scene, selection/history and
  * journal belong to the exact App-owned runtime and survive this view's disposal. */
 export const attachView: AttachView = options => {
@@ -233,10 +236,12 @@ export const attachView: AttachView = options => {
         },
         beforePrepare(current, budget) {
             runtime.flushFrame(budget.frameId);
-            // A Scene still behind the document is stepped one slice per frame: without another invalidation
-            // nothing would wake the view once the frame that began the work has been drawn.
+            // A Scene still behind the document is stepped until the frame's prepare deadline, at least one unit: without another
+            // invalidation nothing would wake the view once the frame that began the work has been drawn. Eight units a frame
+            // whatever the time left kept 'Updating…' up with the main thread mostly idle (measured, select-all + Delete: 4,000
+            // strokes settled 13.3 s after the key, 5,600 strokes 20.0 s; stepped to the deadline, both settled by the save, 1.5 s and 2.0 s).
             if (runtime.scene && !runtime.scene.ready) {
-                runtime.scene.step(8, budget.prepareDeadline);
+                runtime.scene.step(SCENE_STEP_UNITS, budget.prepareDeadline);
                 if (!runtime.scene.ready) layers.invalidate('board-scene-step');
             }
             if (paintWhenReady && runtime.scene?.ready) requestPaint();

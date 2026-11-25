@@ -9,6 +9,8 @@ import { registerReadingSurface } from '../utils/documentReading';
 import { dismissOnEscape } from '../utils/escapeDismiss';
 import '../components/EpubReader/reader.css';
 import { isCancellation } from '../platform/workers/envelope';
+import { isAppReplaced } from '../platform/chunkLoad';
+import { PartFailure } from './ErrorBoundary';
 export interface EpubPaneProps {
  identity:ReaderIdentity;snapshot:ReadOnlyFileSnapshot;initialRecord?:EpubReadingRecord;isFocused:boolean;
  onReaderVersion(token:ReaderToken,version:DiskVersion):void;
@@ -41,6 +43,8 @@ function bookErrorMessage(error:unknown):string {
 
 function EpubPane(props:EpubPaneProps){
  const {identity,snapshot}=props,host=useRef<HTMLDivElement>(null),pane=useRef<HTMLDivElement>(null),latest=useRef(props),adapter=useRef<ReaderAdapter|null>(null),sessionRef=useRef<Awaited<ReturnType<typeof openEpubSession>>|null>(null),version=useRef(''),searchAbort=useRef<AbortController|null>(null),opener=useRef<HTMLElement|null>(null);
+ // The reader's code is gone from the server (a newer version replaced this one): Retry cannot fetch it, Reload can.
+ const [replaced,setReplaced]=useState<unknown>(null);
  const [status,setStatus]=useState<ReaderStatus>({phase:'loading'}),[metadata,setMetadata]=useState<EpubMetadata|null>(null),[caps,setCaps]=useState<ReaderCapabilities|null>(null),[panel,setPanel]=useState<Panel>(null),[query,setQuery]=useState(''),[results,setResults]=useState<FindBatch|null>(null),[searching,setSearching]=useState(false),[section,setSection]=useState(0),[canReturn,setCanReturn]=useState(false),[external,setExternal]=useState<string|null>(null),[flow,setFlow]=useState(props.initialRecord?.requestedLayout??'scroll'),[localPrefs,setLocalPrefs]=useState<ReaderPreferences>(DEFAULT_PREFERENCES);
  useEffect(()=>{latest.current=props});
  const [fixedPrefs,setFixedPrefs]=useState<ReaderPreferences['fixed']>({...DEFAULT_PREFERENCES.fixed!,zoom:props.initialRecord?.locator.kind==='fixed'?props.initialRecord.locator.viewport.zoom:1});
@@ -56,7 +60,7 @@ function EpubPane(props:EpubPaneProps){
  function showPanel(next:Panel,event?:React.MouseEvent<HTMLElement>){if(event)opener.current=event.currentTarget;setPanel(p=>p===next?null:next)}
  useEffect(()=>{
   const controller=new AbortController();let live=true;let unregisterSurface:(()=>void)|undefined;const token={...identity},container=host.current!;
-  setStatus({phase:'loading',message:'Opening book locally…'});setCaps(null);setMetadata(null);version.current='';setCanReturn(false);setExternal(null);setFlow(latest.current.initialRecord?.requestedLayout??'scroll');setFixedPrefs({...DEFAULT_PREFERENCES.fixed!,zoom:latest.current.initialRecord?.locator.kind==='fixed'?latest.current.initialRecord.locator.viewport.zoom:1});
+  setStatus({phase:'loading',message:'Opening book locally…'});setReplaced(null);setCaps(null);setMetadata(null);version.current='';setCanReturn(false);setExternal(null);setFlow(latest.current.initialRecord?.requestedLayout??'scroll');setFixedPrefs({...DEFAULT_PREFERENCES.fixed!,zoom:latest.current.initialRecord?.locator.kind==='fixed'?latest.current.initialRecord.locator.viewport.zoom:1});
   const report=(value:ReaderStatus)=>{if(!live)return;setStatus(value);latest.current.onReaderStatus(token,value)};
   report({phase:'loading',message:'Opening book locally…'});
   void (async()=>{
@@ -76,7 +80,7 @@ function EpubPane(props:EpubPaneProps){
      showBookPanel:next=>{opener.current=pane.current?.closest('.editor-slot')?.querySelector<HTMLElement>('.editor-slot-actions [aria-haspopup=menu]')??null;setPanel(next)},bookFlow:()=>flowRef.current,setBookFlow:next=>setFlow(next),
      async captureReading(){let timer:ReturnType<typeof setTimeout>|undefined;const locator=await Promise.race([reader.captureAnchor(),new Promise<null>(resolve=>{timer=setTimeout(()=>resolve(null),400)})]).finally(()=>clearTimeout(timer));if(live&&locator&&version.current)latest.current.onReaderLocation(token,{kind:'epub',value:{v:1,kind:'epub',rawFingerprint:version.current,parserSchema:1,sanitizerSchema:1,projectionSchema:1,requestedLayout:flowRef.current,locator}},'user-scroll')},
     });await reader.configure({...readingPreferencesRef.current,flow:flowRef.current});
-   }catch(error){if(live&&!controller.signal.aborted)report({phase:'error',message:bookErrorMessage(error)})}
+   }catch(error){if(live&&!controller.signal.aborted){if(isAppReplaced(error))setReplaced(error);report({phase:'error',message:bookErrorMessage(error)})}}
   })();
   return ()=>{live=false;unregisterSurface?.();latest.current.onReaderAdapter?.(token,null);searchAbort.current?.abort();controller.abort();sessionRef.current?.dispose();sessionRef.current=null;adapter.current=null;closeContextMenu()};
   // Snapshot and full generation determine all resources. App callback identities are
@@ -114,7 +118,8 @@ function EpubPane(props:EpubPaneProps){
   <div className="epub-reader-body">
    <div className="epub-frame-host" ref={host}/>
    {status.phase==='loading'&&!metadata&&<div className="epub-state" role="status" aria-live="polite"><strong>Opening book…</strong><p>Reading and checking this EPUB on your device.</p></div>}
-   {status.phase==='error'&&<div className="epub-state" role="alert"><strong>{status.message?.includes('DRM')?'Protected book':status.message?.includes('UNSUPPORTED')?'Unsupported EPUB feature':'Could not open this book'}</strong><p>{status.message}</p><button onClick={()=>run(props.onRetryRead(identity.path))}>Retry</button><button onClick={()=>props.onReaderCommand(identity,'close-document')}>Close book</button></div>}
+   {status.phase==='error'&&replaced!==null&&<div className="pdf-pane-message unread-pane part-failure epub-state-replaced" role="alert"><PartFailure error={replaced} retry={()=>run(props.onRetryRead(identity.path))} what={<strong>{identity.path.split('/').pop()}</strong>}/></div>}
+   {status.phase==='error'&&replaced===null&&<div className="epub-state" role="alert"><strong>{status.message?.includes('DRM')?'Protected book':status.message?.includes('UNSUPPORTED')?'Unsupported EPUB feature':'Could not open this book'}</strong><p>{status.message}</p><button onClick={()=>run(props.onRetryRead(identity.path))}>Retry</button><button onClick={()=>props.onReaderCommand(identity,'close-document')}>Close book</button></div>}
    {panel&&<aside className="epub-panel" role="dialog" aria-label={panel==='contents'?'Book contents':panel==='search'?'Find in book':'Reading appearance'}>
     <div className="epub-panel-header"><span>{panel==='contents'?'Contents':panel==='search'?'Find in book':'Reading appearance'}</span><button aria-label="Close reader panel" onClick={closePanel}>×</button></div>
     {panel==='contents'&&metadata&&<><strong>{metadata.title}</strong><p>{metadata.author}</p>{contents(metadata.contents)}{metadata.pageList.length>0&&<><h3>Print pages</h3>{contents(metadata.pageList)}</>}{metadata.landmarks.length>0&&<><h3>Landmarks</h3>{contents(metadata.landmarks)}</>}</>}

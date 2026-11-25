@@ -19,6 +19,8 @@
 .epub-panel label{display:flex;flex-direction:column;gap:5px;margin:14px 0}.epub-panel p{font:12px/1.5 system-ui;opacity:.8}
 .epub-search-hits{list-style:none;padding:0!important}.epub-search-hits button{white-space:normal}
 .epub-state{position:absolute;z-index:4;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:32px;background:var(--background-primary,#202124);gap:12px;font:14px/1.6 system-ui}
+/* The app's own failure form (ErrorBoundary's PartFailure) where only a reload helps, in the box the reader's state uses. */
+.epub-state-replaced{position:absolute;z-index:4;inset:0;background:var(--background-primary,#202124)}
 .epub-state p{max-width:42ch}.epub-warning{font:12px/1.5 system-ui;padding:5px 12px;background:var(--background-secondary,#333)}
 .epub-external{position:absolute;z-index:10;inset:20% 12%;padding:20px;background:var(--background-secondary,#303136);border:1px solid var(--background-modifier-border,#555);border-radius:10px;box-shadow:0 8px 30px #0006;overflow-wrap:anywhere}
 

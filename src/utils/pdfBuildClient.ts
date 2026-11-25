@@ -9,7 +9,7 @@ import type { PageOverlay } from './pdfOverlay';
 import type { PdfBuildRequest, PdfBuildResponse } from './pdfBuild.worker';
 import { PDF_EDITABLE_JSON_LIMIT, PDF_PRISTINE_LIMIT, pdfOuterForSource, type PdfRole, type PdfWriteSafety } from './pdfRole';
 import { PdfBuildRefused, pdfSnapshotRefusal, type PdfBuildRefusal } from './pdfBuildRefusal';
-import { workerScript } from '../platform/workers/script';
+import { startFailure, workerScript } from '../platform/workers/script';
 import pdfBuildWorkerUrl from './pdfBuild.worker.ts?worker&url';
 
 // Kept (platform/workers/script.ts): an annotated PDF's saves keep working after a newer version replaced this one on
@@ -141,7 +141,9 @@ function post(request: PdfBuildRequest, transfer: Transferable[] = []): void {
 }
 
 function listen(started: Worker): Worker {
+    let answered = false;
     started.onmessage = (e: MessageEvent<PdfBuildResponse>) => {
+        answered = true;
         const { id, bytes, aliases, error, role, refusal } = e.data;
         const inspection = rolePending.get(id);
         if (inspection) {
@@ -183,7 +185,11 @@ function listen(started: Worker): Worker {
     started.onerror = (e) => {
         // A worker-level failure kills every in-flight build; fail them all
         // rather than leave saves hanging forever.
-        failWorker(new Error(`PDF worker failed: ${e.message}`));
+        if (answered) { failWorker(new Error(`PDF worker failed: ${e.message}`)); return; }
+        // Before its first answer: its script may not have loaded (gone, unreachable, or a kept copy that would not run,
+        // which is then dropped so the next start fetches it again: platform/workers/script.ts). Said in plain words.
+        started.onerror = null;
+        void startFailure(started, e).then(cause => { if (worker === started) failWorker(cause ?? new Error(`PDF worker failed: ${e.message}`)); });
     };
     started.onmessageerror = () => failWorker(new Error('PDF worker response could not be read'));
     return started;

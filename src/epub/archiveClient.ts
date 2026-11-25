@@ -1,4 +1,4 @@
-import { workerScript } from '../platform/workers/script';
+import { startFailure, workerScript } from '../platform/workers/script';
 import { reserveDecode } from './budgets';
 import type { ArchiveInfo, ResourceData } from './types';
 import { EPUB_LIMITS as L } from './types';
@@ -27,8 +27,11 @@ export class ArchiveClient {
  constructor(signal?:AbortSignal,private onBudgetWait?:(waiting:boolean)=>void){
   this.started=archiveWorker.start().then(worker=>{
    if(this.lifetime.signal.aborted){worker.terminate();throw this.lifetime.signal.reason}
-   worker.onmessage=({data:m})=>{const task=this.pending.get(m?.id);if(!task)return;this.pending.delete(m.id);clearTimeout(task.timer);task.release();if(typeof m.error==='string')task.reject(Error(m.error));else task.resolve(m.result)};
-   worker.onerror=()=>this.dispose(Error('EPUB_WORKER_ERROR'));
+   let answered=false;
+   worker.onmessage=({data:m})=>{answered=true;const task=this.pending.get(m?.id);if(!task)return;this.pending.delete(m.id);clearTimeout(task.timer);task.release();if(typeof m.error==='string')task.reject(Error(m.error));else task.resolve(m.result)};
+   // Before its first answer its script may not have loaded: the reader ends with that reason in plain words, and a kept
+   // copy that would not run is dropped so Retry fetches it again (platform/workers/script.ts).
+   worker.onerror=event=>{if(answered){this.dispose(Error('EPUB_WORKER_ERROR'));return}worker.onerror=null;void startFailure(worker,event).then(cause=>this.dispose(cause??Error('EPUB_WORKER_ERROR')))};
    return this.worker=worker;
   });
   // A script that could not be fetched ends the reader with that reason (a ChunkLoadError: gone, or unreachable).

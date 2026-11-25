@@ -1,5 +1,5 @@
 import { answeredGone, classifyMissingFile, fileGone, fileUnreachable, type ChunkLoadError } from '../chunkLoad';
-import { SELF_CONTAINED_WORKER } from './scriptMarker';
+import { SELF_CONTAINED_WORKER, SELF_CONTAINED_WORKER_END } from './scriptMarker';
 
 // Where every worker the app starts gets its script — the clients through `createWorkerClient` and the few raw ones.
 //
@@ -27,7 +27,16 @@ type Script = { kind: 'kept'; url: string } | { kind: 'network' };
 
 const FETCH_MS = 15_000;
 const scripts = new Map<string, Promise<Script>>();
-const networkStarted = new WeakMap<object, string>();
+/** Scripts whose kept copy would not start: every later copy starts from the network, exactly as before kept copies.
+ *  Measured with a script whose answer was cut short: kept for good, the worker could not start again until a reload,
+ *  and the person's Retry never worked. A browser policy or extension that refuses blob workers lands here too. */
+const networkOnly = new Set<string>();
+/** Blob workers are refused on this page (a browser policy or an extension): a kept copy failed to load, or creating one
+ *  threw. From then on every script starts from the network — exactly the behaviour from before kept copies. */
+let blobRefused = false;
+/** Each started worker's script, and the Blob URL it started from when it was a kept copy. */
+const started = new WeakMap<object, { script: string; href: string; blob?: string }>();
+const inWorker = typeof window === 'undefined';
 
 function fetchScript(url: string): Promise<Script> {
     const known = scripts.get(url);
@@ -49,6 +58,12 @@ function fetchScript(url: string): Promise<Script> {
             console.warn(`${href} is no longer self-contained: its workers start from the network, and stop starting once a newer version replaces this one.`);
             return { kind: 'network' };
         }
+        // The one check worth its cost: a body cut short (a dropped connection a server still answered 200 for, with a
+        // length to match) still starts with the mark but has lost the end one. Not kept, and not remembered: the next
+        // start fetches again. A hash of the whole file would add little over TLS's own integrity, and a copy damaged in
+        // some other way is caught when it fails to start (`startFailure`), after which the script starts from the network.
+        // (The bundle ends the file with a newline after the mark, so trailing whitespace is not part of the check.)
+        if (!text.trimEnd().endsWith(SELF_CONTAINED_WORKER_END)) throw fileUnreachable(href, 'unreachable', new Error('The worker script arrived cut short'));
         // Named after the file it came from, so a stack trace still says which worker it was.
         const blob = new Blob([text, `\n//# sourceURL=${href}\n`], { type: 'text/javascript' });
         return { kind: 'kept', url: URL.createObjectURL(blob) };
@@ -71,26 +86,76 @@ export interface WorkerScript {
 
 /**
  * One worker script, declared beside the code that starts it, from a `?worker&url` import (Vite builds the worker and
- * gives its URL). `keep` says the worker imports nothing, so its bytes are fetched at the next idle moment and every
- * copy starts from them; without it each start fetches the script from the network.
+ * gives its URL). `keep` says the worker imports nothing, so its bytes are fetched once and every copy starts from them;
+ * without it each start fetches the script from the network.
+ *
+ * On the page itself a kept script is fetched at the next idle moment after its code loads, because that is what lets a
+ * document opened before a deploy start its next worker after it. Inside a worker (the vault index bundles the agent
+ * matcher's client; the board parser bundles the board workers' clients) it is fetched by its first start instead: the
+ * idle fetch there cost every page load a download of scripts those workers seldom or never start (measured: the index
+ * worker fetched the matcher once per page load).
  */
 export function workerScript(url: string, { keep }: { keep: boolean }): WorkerScript {
-    if (keep && import.meta.env.PROD) whenIdle(() => { void fetchScript(url).catch(() => {}); });
+    if (keep && import.meta.env.PROD && !inWorker) whenIdle(() => { void fetchScript(url).catch(() => {}); });
     return {
         async start(options = { type: 'module' }) {
-            const script = keep ? await fetchScript(url) : { kind: 'network' } as const;
-            if (script.kind === 'kept') return new Worker(script.url, options);
+            const script = keep && !blobRefused && !networkOnly.has(url) ? await fetchScript(url) : { kind: 'network' } as const;
+            const href = new URL(url, location.href).href;
+            if (script.kind === 'kept' && !blobRefused) {
+                try {
+                    const worker = new Worker(script.url, options);
+                    started.set(worker, { script: url, href, blob: script.url });
+                    return worker;
+                } catch (error) {
+                    blobRefused = true;
+                    console.warn('Blob workers are refused here; every worker now starts from the network:', error);
+                }
+            }
             const worker = new Worker(url, options);
-            networkStarted.set(worker, new URL(url, location.href).href);
+            started.set(worker, { script: url, href });
             return worker;
         },
     };
 }
 
-/** Why a worker failed before it answered: a `ChunkLoadError` when its script came from the network and could not be
- *  loaded (gone from the server, or unreachable), or null for a worker of its own failure (an exception at start). */
+/** The error a worker fired says its script did not load or parse — not an exception its own code threw once running
+ *  (an ErrorEvent other than a SyntaxError), which a fresh copy of the same bytes would throw again. */
+function notLoaded(event: Event): boolean {
+    return !(event instanceof ErrorEvent) || /SyntaxError/.test(event.message);
+}
+
+/**
+ * A worker started from a kept copy failed to load before it answered: drop that copy (its Blob URL is revoked; workers
+ * already running from it are unaffected), so this script's next start, and every later one, goes to the network. True
+ * when a copy was dropped — the caller may start again at once, and that start is the old behaviour exactly.
+ */
+export function dropKeptCopy(worker: object, event: Event): boolean {
+    const start = started.get(worker);
+    if (!start?.blob || networkOnly.has(start.script) || !notLoaded(event)) return false;
+    // A copy that would not even load (a bare error event) is blob workers being refused, which holds for every script;
+    // one that would not parse (a SyntaxError) is this script's bytes, and only it goes back to the network.
+    if (!(event instanceof ErrorEvent)) blobRefused = true;
+    networkOnly.add(start.script);
+    void scripts.get(start.script)?.then(script => { if (script.kind === 'kept' && script.url === start.blob) scripts.delete(start.script); }, () => {});
+    URL.revokeObjectURL(start.blob);
+    return true;
+}
+
+/** Why a worker failed before it answered, said in the person's words: a `ChunkLoadError` for a script that could not be
+ *  loaded (gone from the server, unreachable, or a kept copy that would not run — dropped here, so Retry starts it from
+ *  the network), or null for a worker of its own failure (an exception thrown by a script that did arrive). */
 export async function startFailure(worker: object, event: Event): Promise<ChunkLoadError | null> {
-    const url = networkStarted.get(worker);
-    if (!url || event instanceof ErrorEvent) return null;
-    return classifyMissingFile(url, event);
+    const start = started.get(worker);
+    if (!start) return null;
+    if (!notLoaded(event)) return null;
+    if (start.blob) { dropKeptCopy(worker, event); return fileUnreachable(start.href, 'unreachable', event); }
+    if (event instanceof ErrorEvent) return null;
+    return classifyMissingFile(start.href, event);
+}
+
+/** A worker that never said hello: when its script came from the network, the script did not arrive in time (a worker
+ *  says hello as its module first runs, platform/workers/serve.ts) — said as a download that is taking too long. */
+export function helloTimedOut(worker: object): ChunkLoadError | null {
+    const start = started.get(worker);
+    return start && !start.blob ? fileUnreachable(start.href, 'timeout', new Error('No hello in time')) : null;
 }

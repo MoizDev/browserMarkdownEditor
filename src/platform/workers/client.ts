@@ -2,7 +2,7 @@ import { now, watchClock } from './clock';
 import { assertPayload, isPriority, isWorkerMessage, WorkerHostError } from './envelope';
 import { cpuGovernor, workerPermitCounts } from './governor';
 import { reportWorkerOwnedBytes, workerStopped } from './lifecycle';
-import { startFailure } from './script';
+import { dropKeptCopy, helloTimedOut, startFailure } from './script';
 import { chunkFailureOf, type ChunkLoadError } from '../chunkLoad';
 import type { ClientState, ContainedPort, CpuPermit, MainMessage, Priority, RequestOptions, WorkerClient, WorkerMessage, WorkerSpec } from './envelope';
 
@@ -17,6 +17,12 @@ const backoff = [0, 250, 1000, 4000];
 // worker that keeps failing is retried at most once per step and never loops on its own.
 const failedRetryMs = [1_000, 5_000, 30_000, 120_000];
 const failureMemoryMs = 600_000;
+const helloMs = 10_000;
+// While the script is still being fetched (a kept script, platform/workers/script.ts) there is no worker to say hello yet:
+// the fetch's own 15 s deadline speaks first, as "taking too long to download". Timed from spawn, the hello clock
+// fired at 10 s instead and the board said "Could not open canvas: bme-worker-host-v1: Worker hello timed out after 10
+// seconds" (measured with the serializer's script held 20 s). Bounds a spawn that never settles, a contained port's too.
+const spawnPendingMs = 20_000;
 const marker = 'bme-worker-host-v1';
 
 type Job = {
@@ -341,12 +347,17 @@ class Client implements WorkerClient {
                 },
                 hello: false, started: this.spawningAt, sent: new Map(), polling: false, poll: 0, polled: now(), eventsAt: now(), events: 0,
             };
+            // The hello clock starts with the worker itself, not with the fetch of its script.
+            this.spawningAt = connection.started = now();
             const message = (event: MessageEvent<unknown>) => this.receive(connection, event.data);
             const messageerror = () => this.crash(connection, 'Worker message could not be deserialised');
             const error = (event: Event) => {
                 if (this.connection !== connection) return;
                 event.preventDefault();
                 if (connection.hello) { this.crash(connection, 'Worker error'); return; }
+                // A kept copy of its script would not run (damaged bytes, or blob workers refused by a policy or an
+                // extension): the copy is dropped and the worker starts again at once from the network, as it always did.
+                if (dropKeptCopy(endpoint, event)) { this.disconnect(); this.spawn(); return; }
                 // Its script may be gone from the server (a newer version replaced this one): only the server can say.
                 void startFailure(endpoint, event).then(cause => {
                     if (this.connection === connection && !connection.hello) this.fail('Worker failed before its hello', cause);
@@ -461,7 +472,10 @@ class Client implements WorkerClient {
         }
         if (suspended) return;
         if (this.state === 'backoff' && time >= this.respawnAt) { this.spawn(); return; }
-        if (this.state === 'starting' && !connection?.hello && time - this.spawningAt >= 10000) { this.fail('Worker hello timed out after 10 seconds'); return; }
+        if (this.state === 'starting' && !connection?.hello && time - this.spawningAt >= (connection ? helloMs : spawnPendingMs)) {
+            this.fail('Worker hello timed out after 10 seconds', connection ? helloTimedOut(connection.endpoint) : null);
+            return;
+        }
         if (!connection) return;
         if (connection.killAt !== undefined) {
             if (time >= connection.killAt) this.crash(connection, 'Worker hung');

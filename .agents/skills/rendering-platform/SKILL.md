@@ -266,11 +266,14 @@ draws differently because a GPU exists.
 - The terminal's context reservation goes through the import-free telemetry seam (`platform/terminalContext.ts`);
   never import xterm to count it.
 - Every worker starts through `platform/workers/script.ts` `workerScript(url, { keep })`, its URL from a `?worker&url`
-  import (lint bans `new Worker`). `keep: true` fetches the script once when its code loads and starts every copy from
-  those bytes, so an open board, PDF or book keeps working after a deploy 404s this build's files; only a script that
-  imports nothing can be kept (`build/selfContainedWorkers.ts` marks it from the bundle graph; unmarked, it starts from
-  the network). A script that cannot be had fails the client with a `ChunkLoadError` as the error's `cause`:
-  `isAppReplaced(error)` (`gone`) means only a reload helps, and the pane shows `PartFailure`'s Reload.
+  import (lint bans `Worker` as a value in `src/`). `keep: true` fetches the script once (on the page: at idle when its
+  code loads; inside a worker: at its first start) and starts every copy from those bytes, so an open board, PDF or book
+  keeps working after a deploy 404s this build's files. Only a script that needs nothing from its own URL can be kept
+  (`build/selfContainedWorkers.ts` marks its first and last bytes from the bundle; unmarked, it starts from the
+  network). A body cut short is not kept; a kept copy that fails to load is dropped and that script (every script, when
+  blob workers are refused) starts from the network after it. A start that fails says why through a `ChunkLoadError` as
+  the error's `cause`: `gone` (`isAppReplaced`) gets `PartFailure`'s Reload, `unreachable`/`timeout` a Retry that works.
+  A raw client calls `startFailure`/`dropKeptCopy` on an error before the worker's first answer.
 
 ## Audit, benchmark build, kits
 

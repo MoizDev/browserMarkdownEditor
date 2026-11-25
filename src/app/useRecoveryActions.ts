@@ -33,6 +33,8 @@ export interface UseRecoveryActionsDeps {
   contentOf: (path: string) => string | undefined;
   // useOutsideChanges
   hasUnsaved: (tab: OpenTab) => boolean;
+  /** Switches a tab between reading and editing (useTabLifecycle): Recover opens a PDF's Annotate to recover into it. */
+  changeTabMode: (path: string | null, mode?: 'read' | 'edit') => void;
 }
 
 export function useRecoveryActions(deps: UseRecoveryActionsDeps) {
@@ -40,7 +42,7 @@ export function useRecoveryActions(deps: UseRecoveryActionsDeps) {
     getVaultActivation, rootHandle, currentVaultId, recentVaults, handleIO, resolveFileHandle,
     resolveVaultFile, readFileSnapshot, readBoardAsset, putBoardAsset, writeConflictCopy, writeFileVersioned,
     rootHandleRef, currentVaultIdRef, announce, tabsRef, documentBuffers, markdownSessions, contentOf,
-    hasUnsaved,
+    hasUnsaved, changeTabMode,
   } = deps;
 
   const inspectRecovery = useCallback(async (entry: RecoveryEntry): Promise<RecoveryInspection> =>
@@ -55,10 +57,10 @@ export function useRecoveryActions(deps: UseRecoveryActionsDeps) {
   const recoverEntry = useCallback(async (entry: RecoveryEntry) =>
     (await loadChunk(() => import('./recoveryActions'))).recoverEntry({
       inspectRecovery, getVaultActivation, rootHandleRef, currentVaultIdRef, tabsRef, documentBuffers,
-      markdownSessions, contentOf, hasUnsaved,
+      markdownSessions, contentOf, hasUnsaved, changeTabMode,
     }, entry), [
       hasUnsaved, inspectRecovery, contentOf, documentBuffers, markdownSessions, getVaultActivation,
-      currentVaultIdRef, rootHandleRef, tabsRef,
+      currentVaultIdRef, rootHandleRef, tabsRef, changeTabMode,
     ]);
 
   const saveRecoveryCopy = useCallback(async (entry: RecoveryEntry) =>

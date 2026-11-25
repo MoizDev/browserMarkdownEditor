@@ -53,7 +53,7 @@ export function createBoardSessionAdapter<S extends BoardSessionPort>(
         ...(board.mediaReferences ? { mediaReferences: () => live() ? board.mediaReferences!() : undefined } : {}),
         ...(board.mediaReferenceIssues ? { mediaReferenceIssues: () => live() ? board.mediaReferenceIssues!() : undefined } : {}),
         ...(board.journalDelta ? { journalDelta: () => live() ? board.journalDelta!() : undefined } : {}),
-        ...(board.recover ? { recover: (payload: unknown) => {
+        ...(board.recover ? { canRecover: () => live() && !board.isReadOnly, recover: (payload: unknown) => {
             if (!live()) throw new DOMException('Board session ended', 'AbortError');
             if (board.isReadOnly) throw new Error(board.readOnlyReason ?? 'Board is read-only');
             return board.recover!(payload);

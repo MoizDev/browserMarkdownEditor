@@ -43,6 +43,9 @@ export function attachCanvasSession<A extends SessionAdapter>(
  * adapter upgrades that one identity in place; it never creates a parallel
  * document or changes the session serial and its resource slots.
  */
+/** How long a recovery waits for the document's editor to open (a PDF switched from Original to Annotate for it). */
+const RECOVER_READY_MS = 20_000;
+
 export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => ContentSource): CanvasSessionBridge {
     let adapter: SessionAdapter | undefined;
     let unsubscribe: (() => void) | undefined;
@@ -162,7 +165,14 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
         mediaReferenceIssues() { return adapter?.mediaReferenceIssues?.(); },
         journalDelta() { return adapter?.journalDelta?.(); },
         async recover(payload) {
-            if (!adapter?.recover) throw new Error('Canvas session is not ready for recovery');
+            // A PDF reopened in Original has no editor yet: Recover opens Annotate (recoveryActions.ts) and waits here
+            // until it can take the changes — attached, and its editing view open (a board stays read-only until then).
+            // Thrown at once, it answered "Canvas session is not ready for recovery"; taken at attach, "PDF annotation
+            // tools are unavailable in this view"; either way nothing was written. A person who opened Annotate first
+            // and then chose Recover had it work (measured).
+            const ready = () => !!adapter?.recover && (adapter.canRecover?.() ?? true);
+            for (const until = Date.now() + RECOVER_READY_MS; !ready() && !disposed && Date.now() < until;) await new Promise(resolve => setTimeout(resolve, 100));
+            if (!adapter?.recover) throw new Error('The document’s editor did not open in time. Open it for editing, then choose Recover again.');
             await adapter.recover(payload);
         },
         onPending(listener) {

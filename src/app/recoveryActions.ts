@@ -78,12 +78,12 @@ export async function inspectRecovery(deps: Pick<RecoveryActionsDeps,
 
 export async function recoverEntry(deps: Pick<RecoveryActionsDeps,
   'inspectRecovery' | 'getVaultActivation' | 'rootHandleRef' | 'currentVaultIdRef' | 'tabsRef' |
-  'documentBuffers' | 'markdownSessions' | 'contentOf' | 'hasUnsaved'
+  'documentBuffers' | 'markdownSessions' | 'contentOf' | 'hasUnsaved' | 'changeTabMode'
 >, entry: RecoveryEntry) {
   const {
     inspectRecovery,
     getVaultActivation, rootHandleRef, currentVaultIdRef, tabsRef, documentBuffers, markdownSessions,
-    contentOf, hasUnsaved,
+    contentOf, hasUnsaved, changeTabMode,
   } = deps;
   const activation = getVaultActivation();
   const root = rootHandleRef.current;
@@ -95,6 +95,9 @@ export async function recoverEntry(deps: Pick<RecoveryActionsDeps,
   const live = current();
   if (!live || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
   const adapter = recoveryAdapter(tab.id);
+  // A PDF's ink is recovered into its Annotate session, which a PDF reopened in Original does not have yet (after a
+  // browser reload it reopens there): open Annotate, and the recovery waits for it (utils/canvasSessionBridge.ts).
+  if (adapter?.recover && live.representation.loadedKind === 'pdf' && live.mode !== 'edit') changeTabMode(live.file.path, 'edit');
   if (adapter?.recover) {
     await adapter.recover(typeof entry.payload === 'string' ? { kind: 'markdown', text: entry.payload } : entry.payload);
     return;

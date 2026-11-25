@@ -26,6 +26,8 @@ export interface SessionAdapter {
     journalDelta?(): JournalCapture | undefined;
     /** Apply a validated, matching-baseline recovery as one undoable change. */
     recover?(payload: unknown): void | Promise<void>;
+    /** False while a recovery would be refused for now (a board whose editing view has not opened yet). */
+    canRecover?(): boolean;
     /** Entry release only, after detaching; never called when a pane hides or unmounts. */
     dispose?(): void | Promise<void>;
     /** App subscribes once when the session is created; reload metadata stays with its source. */

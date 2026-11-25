@@ -511,7 +511,7 @@ export default function App() {
     getVaultActivation, rootHandle, currentVaultId, recentVaults, handleIO, resolveFileHandle,
     resolveVaultFile, readFileSnapshot, readBoardAsset, putBoardAsset, writeConflictCopy,
     writeFileVersioned, rootHandleRef, currentVaultIdRef, announce, tabsRef, documentBuffers,
-    markdownSessions, contentOf, hasUnsaved
+    markdownSessions, contentOf, hasUnsaved, changeTabMode
   });
 
   // The welcome screen can report a refused open too; returning before the

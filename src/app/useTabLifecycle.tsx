@@ -19,7 +19,7 @@ import { notifySearchChanges } from '../utils/searchChanges';
 import { canChangeTabMode, getReadingSurface, representationFor } from '../utils/documentReading';
 import { closePath, openTab as openTabIn } from '../utils/tabPanes';
 import { collectFiles } from '../utils/tree';
-import { drain } from '../utils/unloadCoordinator';
+import { drain, isLanding, settle } from '../utils/unloadCoordinator';
 import { getView } from '../utils/viewRegistry';
 import { isCanvasFile, isNativeDrawingFile } from '../utils/fileTypes';
 import { describeReadError, isNotFound } from './readErrors';
@@ -31,6 +31,12 @@ import { loadHelpDoc } from '../utils/helpDocLoader';
  *  bounded: a long session closes hundreds of tabs and nobody reaches past a
  *  handful, while an unbounded list would pin a path per close for the day. */
 const CLOSED_TAB_MEMORY = 20;
+/** How long closing a board waits for its last change to land (a nudge of 4,000 strokes measured 4.4 s), and how long
+ *  before the status line says so. */
+const CLOSE_SETTLE_MS = 15_000;
+const CLOSE_SETTLE_QUIET_MS = 400;
+/** How long after a close that could not save the save is tried again. */
+const CLOSE_RETRY_MS = 2000;
 
 /**
  * Every way one document stops being open: its release (buffers, sessions,
@@ -79,6 +85,7 @@ export interface UseTabLifecycleDeps {
   bumpBytesGeneration: (id: string, preserveNative?: boolean) => void;
   seedDocumentBuffer: (id: string, path: string, content: string, readable: boolean) => void;
   setDiskState: SetDiskState;
+  showStatus: (message: string, ms: number) => void;
 }
 
 export function useTabLifecycle(deps: UseTabLifecycleDeps) {
@@ -90,7 +97,7 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     reopenedClosingRef, rootHandleRef, readerEpochRef, setClosingDocumentIds, notifyRef, tell,
     preparePdfDeparture, fileTreeRef, handleFileClick, retryUnreadTabRef, rememberAssetRefs,
     readFileVersioned, readBytesVersioned, resolveFileHandle, bumpBytesGeneration, seedDocumentBuffer,
-    setDiskState,
+    setDiskState, showStatus,
   } = deps;
 
   /** Everything that has to happen for ONE document to stop being open, short
@@ -203,6 +210,16 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     closedPathsRef.current = stack.slice(-CLOSED_TAB_MEMORY);
   }, []);
 
+  // A close that could not save tries once more on its own after this long: told "your next change tries again", the
+  // person had nothing left to change, and the close had already failed once.
+  const retryClosingSave = useCallback((tab: OpenTab) => {
+    setTimeout(() => {
+      const now = tabsRef.current.find(t => t.id === tab.id);
+      if (!now || closingRef.current.has(tab.id) || diskStateRef.current.has(tab.id) || !documentBuffers.isDirty(tab.id)) return;
+      void flushTab(now.file.path).catch(error => console.error('Could not save again after a close:', error));
+    }, CLOSE_RETRY_MS);
+  }, [documentBuffers, flushTab, closingRef, diskStateRef, tabsRef]);
+
   const closeDocuments = useCallback((paths: readonly string[], hide: () => void) => {
     const docs = paths.flatMap(path => {
       const tab = tabsRef.current.find(t => t.file.path === path);
@@ -212,48 +229,76 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     const root = rootHandleRef.current;
     for (const tab of docs) closingRef.current.add(tab.id);
     setClosingDocumentIds(new Set(closingRef.current));
-    rememberClosed(docs.map(tab => tab.file.path));
-    hide();
-    for (const tab of docs) void (async () => {
-      const path = tab.file.path;
-      try {
-        await getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.().catch(() => {});
-        if (tab.representation.loadedKind === 'pdf' && !await preparePdfDeparture([path])) {
-          setLayout(l => openTabIn(l, path));
-          return;
-        }
-        await drain(tab.id);
-        if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
-        const result = await flushTab(path);
-        // A board's acknowledged write still finishes its after-write step as tracked work; checking before
-        // it settles misreads a clean board as pending (seen closing a written drawing beside a PDF pane).
-        if (result === 'written') await drain(tab.id);
-        const pending = documentSessions.hasPendingEdits(tab.id);
-        if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
-        // The tab as it is NOW: the one captured when the close began may still say dirty for a write that has since landed.
-        const dirtyNow = tabsRef.current.find(t => t.id === tab.id)?.dirty ?? tab.dirty;
-        if (result === 'failed' || result === 'changed' || result === 'deleted' || (result === 'skipped' && (pending || (tab.representation.loadedKind !== 'pdf' && dirtyNow))) || pending) {
-          setLayout(l => openTabIn(l, path));
-          notifyRef.current(`Could not save “${tab.file.name}”; its tab remains open.`);
-          return;
-        }
-        // Reopening while the save was in flight reuses this very document.
-        if (reopenedClosingRef.current.has(tab.id)) return;
-        releaseTab(path);
-        setTabs(prev => prev.filter(t => t.id !== tab.id));
-      } catch (error) {
-        console.error('Could not close document:', error);
-        if (rootHandleRef.current === root && tabsRef.current.some(t => t.id === tab.id)) {
-          setLayout(l => openTabIn(l, path));
-          notifyRef.current(`Could not save “${tab.file.name}”; its tab remains open.`);
-        }
-      } finally {
-        closingRef.current.delete(tab.id);
-        reopenedClosingRef.current.delete(tab.id);
-        setClosingDocumentIds(new Set(closingRef.current));
-      }
+    const stopClosing = (tab: OpenTab) => {
+      closingRef.current.delete(tab.id);
+      reopenedClosingRef.current.delete(tab.id);
+      setClosingDocumentIds(new Set(closingRef.current));
+    };
+    const leave = () => {
+      rememberClosed(docs.map(tab => tab.file.path));
+      hide();
+      for (const tab of docs) void (async () => {
+        const path = tab.file.path;
+        try {
+          await getReadingSurface({vaultId:currentVaultIdRef.current??'',vaultEpoch:readerEpochRef.current.epoch,documentId:tab.id,byteGeneration:tab.representation.generation})?.captureReading?.().catch(() => {});
+          if (tab.representation.loadedKind === 'pdf' && !await preparePdfDeparture([path])) {
+            setLayout(l => openTabIn(l, path));
+            retryClosingSave(tab);
+            return;
+          }
+          await drain(tab.id);
+          if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
+          const result = await flushTab(path);
+          // A board's acknowledged write still finishes its after-write step as tracked work; checking before
+          // it settles misreads a clean board as pending (seen closing a written drawing beside a PDF pane).
+          if (result === 'written') await drain(tab.id);
+          const pending = documentSessions.hasPendingEdits(tab.id);
+          if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
+          // The tab as it is NOW: the one captured when the close began may still say dirty for a write that has since landed.
+          const dirtyNow = tabsRef.current.find(t => t.id === tab.id)?.dirty ?? tab.dirty;
+          if (result === 'changed' || result === 'deleted') {
+            setLayout(l => openTabIn(l, path));
+            notifyRef.current(`“${tab.file.name}” changed on disk while it was closing, so its tab stays open.`);
+            return;
+          }
+          if (result === 'failed' || (result === 'skipped' && (pending || (tab.representation.loadedKind !== 'pdf' && dirtyNow))) || pending) {
+            setLayout(l => openTabIn(l, path));
+            notifyRef.current(`“${tab.file.name}” could not be saved yet, so its tab stays open with your changes. It is saved again in a moment; close it once it shows “Saved”.`);
+            retryClosingSave(tab);
+            return;
+          }
+          // Reopening while the save was in flight reuses this very document.
+          if (reopenedClosingRef.current.has(tab.id)) return;
+          releaseTab(path);
+          setTabs(prev => prev.filter(t => t.id !== tab.id));
+        } catch (error) {
+          console.error('Could not close document:', error);
+          if (rootHandleRef.current === root && tabsRef.current.some(t => t.id === tab.id)) {
+            setLayout(l => openTabIn(l, path));
+            notifyRef.current(`“${tab.file.name}” could not be saved yet, so its tab stays open with your changes. It is saved again in a moment; close it once it shows “Saved”.`);
+            retryClosingSave(tab);
+          }
+        } finally { stopClosing(tab); }
+      })();
+    };
+    // Hiding a board cancels a change still being prepared for it (a nudge, a paste, a delete of many items), so the close
+    // waits, with the board on screen, for what the person already did to land. Measured: a select-all nudge of 220 PDF
+    // annotations closed 80 ms after the key was dropped, and the close said it could not save; nothing reached the file.
+    if (!docs.some(tab => isLanding(tab.id))) { leave(); return; }
+    void (async () => {
+      let told = false;
+      const telling = setTimeout(() => { told = true; showStatus('Finishing your last change before closing…', CLOSE_SETTLE_MS); }, CLOSE_SETTLE_QUIET_MS);
+      let landed: boolean[];
+      try { landed = await Promise.all(docs.map(tab => settle(tab.id, CLOSE_SETTLE_MS))); }
+      finally { clearTimeout(telling); if (told) showStatus('', 0); }
+      if (rootHandleRef.current === root && landed.every(Boolean)) { leave(); return; }
+      for (const tab of docs) stopClosing(tab);
+      if (rootHandleRef.current !== root) return;
+      // Closed now, the change would be lost; open, it lands and is saved by itself.
+      const late = docs.filter((_, i) => !landed[i]).map(tab => `“${tab.file.name}”`).join(', ');
+      notifyRef.current(`${late} is still applying your last change, so it stays open. Close it again once that change shows.`);
     })();
-  }, [flushTab, releaseTab, rememberClosed, preparePdfDeparture, documentSessions, closingRef, currentVaultIdRef, notifyRef, readerEpochRef, reopenedClosingRef, rootHandleRef, setClosingDocumentIds, setLayout, setTabs, tabsRef]);
+  }, [flushTab, releaseTab, rememberClosed, preparePdfDeparture, retryClosingSave, showStatus, documentSessions, closingRef, currentVaultIdRef, notifyRef, readerEpochRef, reopenedClosingRef, rootHandleRef, setClosingDocumentIds, setLayout, setTabs, tabsRef]);
 
   const closeTab = useCallback((path: string) => {
     closeDocuments([path], () => setLayout(l => closePath(l, path)));

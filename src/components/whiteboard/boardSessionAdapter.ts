@@ -49,6 +49,7 @@ export function createBoardSessionAdapter<S extends BoardSessionPort>(
         },
         acknowledge(revision, outcome) { if (live()) board.acknowledge(revision, outcome); },
         ...(board.drain ? { drain: () => live() ? board.drain!() : Promise.resolve() } : {}),
+        ...(board.settle ? { settle: () => live() ? board.settle!() : Promise.resolve() } : {}),
         ...(board.onPending ? { onPending: (listener: () => void) => board.onPending!(() => { if (live()) listener(); }) } : {}),
         ...(board.mediaReferences ? { mediaReferences: () => live() ? board.mediaReferences!() : undefined } : {}),
         ...(board.mediaReferenceIssues ? { mediaReferenceIssues: () => live() ? board.mediaReferenceIssues!() : undefined } : {}),

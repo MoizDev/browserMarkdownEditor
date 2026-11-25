@@ -371,7 +371,7 @@ export default function App() {
     reopenedClosingRef, rootHandleRef, readerEpochRef, setClosingDocumentIds, notifyRef, tell,
     preparePdfDeparture, fileTreeRef, handleFileClick, retryUnreadTabRef, rememberAssetRefs,
     readFileVersioned, readBytesVersioned, resolveFileHandle, bumpBytesGeneration, seedDocumentBuffer,
-    setDiskState
+    setDiskState, showStatus
   });
 
   useEditableCopy({

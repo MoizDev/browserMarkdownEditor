@@ -18,6 +18,10 @@ export interface SessionAdapter {
      *  Before E4's journal, a miss keeps the edit in the buffer, the tab dirty and the leave prompt
      *  armed; a later save retries. It never abandons the edit or marks it saved. */
     drain?(): Promise<void>;
+    /** Resolves once the edits the person has already made have landed: a pressed key or a released gesture whose change
+     *  is still being prepared (a nudge, a paste, a delete), and a contact still held. At once when there is none. The
+     *  caller bounds the wait (unloadCoordinator `settle`). */
+    settle?(): Promise<void>;
     /** Current resolved asset names, or undefined while the engine cannot provide them. */
     mediaReferences?(): readonly string[] | undefined;
     /** Unresolved media ids conservatively block asset retirement. */

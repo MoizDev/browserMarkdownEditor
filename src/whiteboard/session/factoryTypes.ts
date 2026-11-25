@@ -77,6 +77,11 @@ export type ComposedBoardSession = BoardSession & SessionAdapter & {
     pageHide(): void;
     hidden(): void;
     setComposition(active: boolean): void;
+    /** An edit the person asked for that lands later (a paste, a duplicate): pending, and waited for by `settle` and
+     * `drain`, until it settles. It must not wait for either. */
+    trackEdit<T>(work: Promise<T>): Promise<T>;
+    /** Resolves once no gesture hold is open and no tracked edit is running (SessionAdapter `settle`). */
+    settle(): Promise<void>;
     /** Revokes at once; resolves when retirement has settled every build that could read a released source. */
     dispose(): Promise<void>;
 };

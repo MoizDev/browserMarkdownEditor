@@ -609,7 +609,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cursor, navigation: services.keyboardNavigation ? navigationNow : undefined, gestureActive: () => router.activeOwner !== null || zoomHeld,
     typeText: text => !!services.textInput?.type(text),
     modifierChanged: modifiers => modifierRelease.update(modifiers),
-    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; shiftHeld = false; overview.leave(); showZoomCursor(); cursor.escape(); pointer.interrupt('flush'); modifierRelease.releaseAll(); services.clearLatches?.() },
+    // Focus leaving the board ends what is held, not what a key already started: with no gesture in the router and a hold
+    // open, a key's change is still landing (a nudge, a delete, a style or a turn of many items) and is left to land.
+    // Cancelled, a nudge of 220 PDF annotations followed by a click on the vault switcher was dropped, and the switch
+    // then found nothing to save (measured: aborted 57 ms after the key, the file never changed).
+    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); if (router.activeOwner || !session.isGestureActive) services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; shiftHeld = false; overview.leave(); showZoomCursor(); cursor.escape(); pointer.interrupt('flush'); modifierRelease.releaseAll(); services.clearLatches?.() },
     run(id, event) {
       if (!current()) return false
       if (!router.activeOwner && session.isGestureActive && !session.isInputGestureActive) {

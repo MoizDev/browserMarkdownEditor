@@ -191,7 +191,7 @@ Each pane's tabs are its own, and you switch between them by clicking, exactly a
 
 A pane's **+** opens its new note in that pane, and its **⌄** lists that pane's tabs.
 
-Closing a tab with its × closes just that document. Closing a pane's **last** tab closes the pane too, and the columns beside it share out the room it was using.
+Closing a tab with its × closes just that document. Closing a pane's **last** tab closes the pane too, and the columns beside it share out the room it was using. A drawing, notebook or annotated PDF closed right after a change — a nudge with the arrow keys, a paste, a delete of many items — first lets that change land, with its tab still open (the status line says **Finishing your last change before closing…** if that takes a moment), then saves and closes. If it cannot be saved, the tab stays open with your changes, the app saves it again by itself a moment later, and it tells you; close it once it shows **Saved**.
 
 ### The Pane Header
 Under each pane's tabs is a row belonging to that pane: its file's name in the middle, a note's without the \`.md\` as in the tab strip.

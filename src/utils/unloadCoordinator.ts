@@ -90,9 +90,10 @@ async function drainRegistered(documentId?: string): Promise<void> {
     }
     for (const entry of sessionBinding?.store.entries() ?? []) {
         if (documentId !== undefined && entry.documentId !== documentId) continue;
-        try {
-            if (entry.adapter.drain) work.push(Promise.resolve(entry.adapter.drain()));
-        } catch (error) { failures.push(error); }
+        const { adapter } = entry;
+        // The edits already made land first: a nudge still being prepared had nothing to drain yet, so a Reload right after
+        // one checkpointed nothing and was refused, and its save landed 1.3 s later.
+        if (adapter.settle || adapter.drain) work.push((async () => { await adapter.settle?.(); await adapter.drain?.(); })());
     }
     if (work.length) {
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -126,6 +127,30 @@ function enqueueDrain(documentId?: string): Promise<void> {
 }
 
 export function drainAll(): Promise<void> { return enqueueDrain(); }
+
+/**
+ * Wait, at most `deadlineMs`, for the edits already made in this document to land (SessionAdapter `settle`), while its
+ * view is still on screen. Closing a tab hides its board, and hiding cancels a change that is still being prepared: a
+ * nudge of 220 PDF annotations pressed just before the close was dropped, and the close said it could not save. True when
+ * nothing is left landing.
+ */
+export async function settle(documentId: string, deadlineMs: number): Promise<boolean> {
+    const entry = [...(sessionBinding?.store.entries() ?? [])].find(item => item.documentId === documentId);
+    if (!entry?.adapter.settle) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            entry.adapter.settle().then(() => true),
+            new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), deadlineMs); }),
+        ]);
+    } finally { clearTimeout(timer); }
+}
+
+/** True while this document may have a change still landing, so a close must `settle` it before hiding its view. */
+export function isLanding(documentId: string): boolean {
+    const entry = [...(sessionBinding?.store.entries() ?? [])].find(item => item.documentId === documentId);
+    try { return !!entry?.adapter.settle && entry.adapter.hasPendingEdits(); } catch { return true; }
+}
 
 /** Drain the current reporter for this document without draining other panes. */
 export function drain(documentId: string): Promise<void> { return enqueueDrain(documentId); }

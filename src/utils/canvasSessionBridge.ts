@@ -134,6 +134,7 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
         },
         acknowledge(revision, outcome) { adapter?.acknowledge(revision, outcome); },
         async drain() { await adapter?.drain?.(); },
+        async settle() { await adapter?.settle?.(); },
         dispose() {
             if (releaseWork) return releaseWork;
             disposed = true;

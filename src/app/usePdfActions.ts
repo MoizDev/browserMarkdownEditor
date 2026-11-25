@@ -156,7 +156,12 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
         const outcome = await flushTab(path, !!needsSave, true, undefined, trashOwned);
         const now = tabsRef.current.find(t => t.id === tab.id);
         if (!now || now.file.path !== path || now.representation.generation !== tab.representation.generation) return false;
-        if (outcome === 'failed' || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || getView(path)?.hasPendingEdits?.() ||
+        // After a write, whatever is still unsaved is newer than it. The revision taken before the flush is not that test:
+        // the flush itself reports the board's last change when its 150 ms hand-off has not run yet, so a close right after
+        // a change wrote it and then refused as if a newer one had come, and the tab came back with no word (measured: a
+        // nudge of 220 annotations, written 0.25 s after the close, tab back at 0.5 s).
+        const changedSince = outcome === 'written' ? documentBuffers.isDirty(tab.id) : documentBuffers.revisionForDocument(tab.id)?.revision !== revision;
+        if (outcome === 'failed' || changedSince || getView(path)?.hasPendingEdits?.() ||
             // Unsaved bytes only: now.dirty also counts native session journalling, which
             // refused every trash/close of an annotated PDF whose ink had already been written.
             outcome === 'skipped' && documentBuffers.isDirty(now.id)) {

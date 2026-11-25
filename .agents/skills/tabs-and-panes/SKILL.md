@@ -82,9 +82,12 @@ Three structures, each with one job:
   `disk:'deleted'`. `diskStateRef` mirrors `OpenTab.disk` synchronously and is the gate: a held tab is never
   autosaved. With `closing` (close, trash, vault switch) a write the file cannot take becomes a `(conflict)`
   copy, announced in a dialog — nobody is left to ask.
-- A save captures immediately; only leaving a document **drains** its session first (2 s deadline). Close
-  removes the path from the layout at once but keeps the document (and a PDF's canvas) mounted until drain and
-  write settle; a failed save restores the tab.
+- A save captures immediately; only leaving a document **drains** its session first (2 s deadline), and a drain first
+  **settles** it (`SessionAdapter.settle`: a board's gesture holds and tracked edits — a nudge, a paste — land first).
+  Hiding a board cancels a change still being prepared, so close settles a board WHILE IT IS ON SCREEN
+  (`unloadCoordinator.settle`, 15 s; too slow → the tab stays, said), then removes the path from the layout and keeps the
+  document (and a PDF's canvas) mounted until drain and write settle; a failed save restores the tab and saves once more
+  by itself.
 - A `readError` tab's buffer is **not the file** — ⌘S force-flushes the focused tab and would write `''`.
   `flushTab`, the funnel, mode toggles, search (reads disk instead), the asset neighbour scan and restore seeding
   all guard it; a new reader of a tab's content joins that list.

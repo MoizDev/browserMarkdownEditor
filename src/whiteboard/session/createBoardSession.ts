@@ -78,6 +78,8 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         void work.then(settled, settled);
         return work;
     };
+    // The person's edits still on their way in (a subset of `outstanding`, which also holds builds): what `settle` waits for.
+    const edits = new Set<Promise<unknown>>();
     const readonlyReason = () => options.readOnlyReason() ?? (applyController.isReadOnly ? 'The board cannot be saved safely; reload to continue.' : null);
     const guardLive = () => {
         if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
@@ -286,6 +288,23 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
                 await scheduler.drain();
                 await journal.drain();
             } while (outstanding.size);
+        },
+        trackEdit<T>(work: Promise<T>): Promise<T> {
+            edits.add(work);
+            const settled = () => { edits.delete(work); };
+            void work.then(settled, settled);
+            return track(work);
+        },
+        async settle() {
+            // A held gesture or a queued key lands through the gesture queue: an empty task runs once every hold has let go.
+            // Refused (the session ended or turned read-only), nothing more will land.
+            for (;;) {
+                if (disposed) return;
+                if (queue.isGestureActive) {
+                    try { await queue.enqueueAfterGesture(lifetime.signal, () => undefined); } catch { return; }
+                } else if (edits.size) await Promise.allSettled([...edits]);
+                else return;
+            }
         },
         onChange(listener: (source: ContentSource) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
         journalDelta() { if (disposed) return undefined; capture(); return journal.delta(cachedSource!.context); },

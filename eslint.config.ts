@@ -45,15 +45,17 @@ const tooltipRestrictions = [
   },
 ]
 
-// Every worker starts from a script declared through platform/workers/script.ts (`workerScript`): a raw
+// Every worker of the app starts from a script declared through platform/workers/script.ts (`workerScript`): a raw
 // `new Worker(url)` stops starting once a newer version replaces this one on the server, in a tab that was working
-// (measured: an open drawing stopped saving, PDF Annotate stopped saving, an open book stopped opening).
+// (measured: an open drawing stopped saving, PDF Annotate stopped saving, an open book stopped opening). The global
+// itself is banned as a value (`new Worker`, and an alias such as `const W = Worker`; a `Worker` type is fine), and so is
+// reaching it through an object (`new window.Worker`, `new globalThis.SharedWorker`). The app only: the helper's
+// Bun workers have no deploy to outlive.
+const workerAdvice = 'Start workers through workerScript (platform/workers/script.ts) with a `?worker&url` import, never new Worker().'
 const workerRestrictions = [
-  {
-    selector: 'NewExpression[callee.name=/^(Shared)?Worker$/]',
-    message: 'Start workers through workerScript (platform/workers/script.ts) with a `?worker&url` import, never new Worker().',
-  },
+  { selector: 'NewExpression[callee.property.name=/^(Shared)?Worker$/]', message: workerAdvice },
 ]
+const workerGlobals = [{ name: 'Worker', message: workerAdvice }, { name: 'SharedWorker', message: workerAdvice }]
 
 export default defineConfig([
   // `planning/` is git-ignored and exists only in the main checkout: its evidence
@@ -94,14 +96,18 @@ export default defineConfig([
       // it, late and unthemed. Intrinsic elements only (lowercase name): a
       // component's `title` prop (ConfirmDialog's) is data, and an SVG `<title>` is a
       // child, not an attribute. `document.title` is the tab title, not a tooltip.
-      'no-restricted-syntax': ['error', ...tooltipRestrictions, ...workerRestrictions],
+      'no-restricted-syntax': ['error', ...tooltipRestrictions],
     },
   },
   {
-    // The one place a worker is made, and the contained PDF frame's runtime, whose engine code arrives from the app as a
-    // Blob that is already in hand.
-    files: ['src/platform/workers/script.ts', 'src/pdf/contained/brokerRuntime.ts'],
-    rules: { 'no-restricted-syntax': ['error', ...tooltipRestrictions] },
+    // Not in the one place a worker is made, nor in the contained PDF frame's runtime, whose engine code arrives from the
+    // app as a Blob that is already in hand.
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/platform/workers/script.ts', 'src/pdf/contained/brokerRuntime.ts'],
+    rules: {
+      'no-restricted-syntax': ['error', ...tooltipRestrictions, ...workerRestrictions],
+      'no-restricted-globals': ['error', ...workerGlobals],
+    },
   },
   {
     // D7 R7: the old optional-break regex backtracked exponentially. PDF find and

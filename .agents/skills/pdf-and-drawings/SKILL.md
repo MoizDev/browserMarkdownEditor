@@ -190,6 +190,8 @@ come back to either.
 - Opaque workers have no WebCrypto digest: marks use the pure SHA-256 in `utils/pdfWriteArtifacts.ts`.
 - Live ink/notebook export uses the incremental sink: one path start, bounded command pieces, one path end/paint.
   Painting each chunk changes joins, winding, fill and alpha.
+- Export to PDF pressed while an old notebook's editable copy is being made waits for it (`oldBoards.ts`
+  `editableCopyOutcome`) and exports the copy; an export the document changed under says so, never nothing.
 - Native notebook output is `buildNativeNotebookFromEmittedPdf` with one frozen write id, then independent
   geometry/pointer/union/hash verification. `finishGeneratedNotebookPdf` (`pdf/writing/client.ts`) is the
   generated-only no-engine route, chosen BEFORE work, never a fallback after a failed native one.

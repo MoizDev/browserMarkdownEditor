@@ -23,7 +23,7 @@ import { isCancellation } from '../../platform/workers/envelope';
 import { isAppReplaced } from '../../platform/chunkLoad';
 import { PartFailureBox } from '../ErrorBoundary';
 import { ReadOnlyBoardChrome } from './ReadOnlyBoardChrome';
-import { isEditableCopyRequested, requestEditableCopy, subscribeEditableCopyRequests, takeCopyNotice, takeEditableCopyRequest } from '../../utils/oldBoards';
+import { isEditableCopyRequested, requestEditableCopy, settleEditableCopy, subscribeEditableCopyRequests, takeCopyNotice, takeEditableCopyRequest } from '../../utils/oldBoards';
 import ViewerHost from './ViewerHost';
 import NativeNotebookThumbnails from './NativeNotebookThumbnails';
 import NativeMinimap, { type NativeMinimapBox, type NativeMinimapThumbnail } from './NativeMinimap';
@@ -104,7 +104,11 @@ function useEditableCopy(adapter: HostedBoardAdapter<BoardSessionPort>, host: Na
                 await host.makeEditableCopy(identity, { source, notice: oldBoard.copyNotice, focus }, signal);
             } catch (error) {
                 if (!(error instanceof DOMException && error.name === 'AbortError')) console.error('Could not make an editable copy:', error);
-            } finally { if (mounted.current) setCopying(false); }
+            } finally {
+                // A made copy has said so already (App's swap); anything else ends without one.
+                settleEditableCopy(documentId, null);
+                if (mounted.current) setCopying(false);
+            }
         })();
     }, [oldBoard, requested, copying, documentId, host, identity, view]);
     const onCopy = useCallback((trigger: HTMLElement) => {
@@ -443,12 +447,12 @@ function NativeCanvasAcquisition({ props, onRetry }: { props: NativeCanvasEntryP
     const opening = useLegacyLoadStatus(documentId, identity.kind, props.isVisible);
     // A copy asked for from the tree before the file's bytes were read (a `.tldraw` an earlier build already converted in
     // place) finds a board that is editable as it is: there is nothing to copy, and the request must not wait for a reload.
-    useEffect(() => { if (acquired && !acquired.adapter.oldBoard) takeEditableCopyRequest(documentId); }, [acquired, documentId]);
+    useEffect(() => { if (acquired && !acquired.adapter.oldBoard && takeEditableCopyRequest(documentId)) settleEditableCopy(documentId, null); }, [acquired, documentId]);
     // A copy is made from the board in memory, so one that did not open has none to make. The request is taken, not left
     // for a later load to run unasked, and the person who pressed "Make a copy" is told (measured: a board whose
     // picture file was missing answered that button with nothing at all).
     const [copyAbandoned, setCopyAbandoned] = useState(false);
-    useEffect(() => { if (error && takeEditableCopyRequest(documentId)) setCopyAbandoned(true); }, [error, documentId]);
+    useEffect(() => { if (error && takeEditableCopyRequest(documentId)) { settleEditableCopy(documentId, null); setCopyAbandoned(true); } }, [error, documentId]);
     if (identity.documentId !== incoming.documentId || identity.session !== incoming.session
         || identity.vaultActivation !== incoming.vaultActivation || identity.bytesGeneration !== incoming.bytesGeneration
         || identity.kind !== incoming.kind) return <div className="canvas-pane-message is-waiting" role="status">Preparing canvas…</div>;

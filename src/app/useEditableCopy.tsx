@@ -11,7 +11,8 @@ import { focusedPath, focusTab, openTab, renamePath } from '../utils/tabPanes';
 import { representationFor } from '../utils/documentReading';
 import { setBaseline } from '../utils/docBaselines';
 import {
-  editableCopyNames, handOffCopyNotice, registerBoardRowPeek, registerEditableCopyOpener, requestEditableCopy, startsAsOldBoard,
+  editableCopyNames, handOffCopyNotice, registerBoardRowPeek, registerEditableCopyOpener, requestEditableCopy, settleEditableCopy,
+  startsAsOldBoard,
 } from '../utils/oldBoards';
 import { isCanvasFile, isNativeDrawingFile } from '../utils/fileTypes';
 import { startsAsConvertedBoard } from '../utils/conversionRestore';
@@ -155,6 +156,7 @@ export function useEditableCopy(deps: UseEditableCopyDeps) {
       setLayout(layout => openTab(layout, written.path));
     }
     if (focused) requestDocumentKeyboard(written.path);
+    settleEditableCopy(original.id, written.path, file.path);
     announce(`Made an editable copy, “${written.name}”. “${name}” is unchanged.`);
   }, [announce, getVaultActivation, layoutRef, nativePoliciesRef, releaseTab, rootHandleRef, seedDocumentBuffer, setLayout, setTabs, tabsRef, tell, writeBoardCopy]);
   useEffect(() => {

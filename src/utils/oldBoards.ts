@@ -65,8 +65,36 @@ const emit = () => { for (const listener of listeners) listener(); };
 
 export function requestEditableCopy(documentId: string): void {
     if (requested.has(documentId)) return;
+    if (!outcomes.has(documentId)) {
+        let resolve!: (path: string | null) => void;
+        const promise = new Promise<string | null>(done => { resolve = done; });
+        outcomes.set(documentId, { promise, resolve });
+    }
     requested.add(documentId);
     emit();
+}
+/* A copy from its request until it has taken the original's tab, resolved with the copy's path, or will not (null).
+ * Export to PDF pressed meanwhile waits for it and exports the copy: it exported nothing, silently, when pressed in the
+ * tenth of a second the swap takes (measured), as its tab was gone by the time the export finished. */
+const outcomes = new Map<string, { readonly promise: Promise<string | null>; readonly resolve: (path: string | null) => void }>();
+/** The copy being made of this document, if one is: its path once it has taken the tab, or null when it was not made. */
+export function editableCopyOutcome(documentId: string): Promise<string | null> | undefined { return outcomes.get(documentId)?.promise; }
+/** Said once per copy, by whichever learns its end first (App's swap with the paths; the pane's failure or abandonment). */
+export function settleEditableCopy(documentId: string, path: string | null, originalPath?: string): void {
+    if (path !== null && originalPath !== undefined) swapped.set(originalPath, { path, at: Date.now() });
+    const outcome = outcomes.get(documentId);
+    if (!outcome) return;
+    outcomes.delete(documentId);
+    outcome.resolve(path);
+}
+/* An original whose tab a copy took a moment ago, by its path: a menu opened on the original and chosen after the swap
+ * still names it. Kept only briefly, and only ever read beside a check that the copy's tab is open. */
+const swapped = new Map<string, { readonly path: string; readonly at: number }>();
+const SWAPPED_MEMORY_MS = 60_000;
+export function recentEditableCopy(originalPath: string): string | undefined {
+    const entry = swapped.get(originalPath);
+    if (entry && Date.now() - entry.at > SWAPPED_MEMORY_MS) swapped.delete(originalPath);
+    return entry && Date.now() - entry.at <= SWAPPED_MEMORY_MS ? entry.path : undefined;
 }
 /** The pane takes the request when it starts the copy; a second press meanwhile is the same copy, not another. */
 export function takeEditableCopyRequest(documentId: string): boolean {

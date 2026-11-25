@@ -2548,7 +2548,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // equal to compositor:refuse:coverage). PLAN 3.1: a zoom presents what exists, scaled, every frame.
             // A position with no picture (frameHoles, from the draw list itself) or a draw refused this frame leaves the frame incomplete,
             // zooming or not: the hold (holding) decides whether it may still be presented.
-            let complete = frameHoles === 0 && !drawRefusedNow, sharp = !indexing && preparedSharp && target === exact && !liveMissed, stale = indexing;
+            // A live frame that fell back to tiles is sharp where every position drew its exact tile: judged unsharp for the fallback alone, the
+            // old Notes4 opened and rested on its exact tiles reported as a stand-in, never sharp (open-to-sharp unset, live frames at rest).
+            let complete = frameHoles === 0 && !drawRefusedNow, sharp = !indexing && preparedSharp && target === exact, stale = indexing;
             for (const band of BANDS) {
                 for (let y = span.y0; y < span.y1; y++) {
                     for (let x = span.x0; x < span.x1; x++) {

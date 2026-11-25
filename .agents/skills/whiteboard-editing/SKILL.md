@@ -239,7 +239,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   `role="status"` element with no place in the layout is in the DOM and nowhere on screen.
 - Board preferences persist in `localStorage['bme.whiteboard.preferences']` (`utils/boardPreferences.ts`).
 - ⌘C's copy is prepared ahead for the selection (`host/clipboardCommands.ts`), idle-only and paused for any gesture: it
-  measures every item exactly (4,000 strokes: ~60 s of main thread, which once made a nudge take 72 s).
+  measures every item exactly (`render/worldBounds.ts`, which skips a stroke piece already inside the measured box: 4,000
+  strokes ~3 s of main thread, ~60 s before it, which once made a nudge take 72 s).
 - Copy/cut/paste are listened on the board surface (`useNativeClipboard.ts`); paste classifies native records,
   legacy, Excalidraw and HTML (`clipboard/paste.ts`), each admitted as an external source. A plain paste of board
   content stays where it was copied when it came from this board and sheet and overlaps the view, else it lands in the view's centre (`clipboard/placement.ts`); a cursor paste takes the deepest unlocked frame under the pointer (`frameUnder`), and Cmd/Ctrl+D repeats the last

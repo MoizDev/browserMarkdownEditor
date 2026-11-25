@@ -8,7 +8,7 @@ import { createClippedTubeBoundsJob, type ClippedTubeClip, type TubeCurve } from
 import { createFillPointJob } from '../geom/fillPoint';
 import type { PathOp, Vec2 } from '../geom/path';
 import { nextDown, nextUp } from '../geom/numeric';
-import { exactAffinePoint } from '../geom/exactAffine';
+import { affineRadiusScale, exactAffinePoint } from '../geom/exactAffine';
 import { exactPoint, exactLineBetween, exactSide, exactPointIntervals, type ExactLine } from '../geom/homogeneous';
 import { inkCoverageChunks, type PaintClip, type PaintItem, type PaintNodeSource } from './paintStream';
 import { yieldToHost } from '../../platform/yieldToHost';
@@ -273,13 +273,50 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
             for (const coverage of inkCoverageChunks(item.coverage)) {
                 const base = coverage.boundsLocal;
                 const clip = envelope ?? (yield* unboundedClip((yield* readPath(rectangle({ x: base.x, y: base.y, width: base.w, height: base.h }))), item.localToWorld, 1));
-                for (let i = 0; i < coverage.segments.length; i += 6) {
-                    const s = coverage.segments;
-                    accept(yield* tube([{ x: s[i], y: s[i + 1] }, { x: s[i + 3], y: s[i + 4] }], [s[i + 2], s[i + 5]], item.localToWorld, clip)); yield* checkpoint();
+                const s = coverage.segments, d = coverage.discs, segments = s.length / 6, count = segments + d.length / 3;
+                // Each piece's certified tube is exact arithmetic, the cost of the whole measure (profiled: a synchronous Cmd+C of
+                // 4,000 notebook strokes, 61 of 63 s in the clipped tube jobs). A piece whose padded outer box already lies inside what
+                // this item has measured cannot move the union, so its job is skipped; the extreme pieces go first so the box is
+                // reached early. The pad (the full tolerance, twice what a job may exceed its tube by) keeps the bounds identical.
+                const boxes = new Float64Array(count * 4), m = item.localToWorld, scale = affineRadiusScale(m).hi;
+                // A piece's tube is measured in world space as discs of its radius times the matrix's largest stretch (the job's
+                // affineRadiusScale), centred on its mapped centre line: this box holds that whole tube.
+                const stretch = Math.abs(m[0]) + Math.abs(m[1]) + Math.abs(m[2]) + Math.abs(m[3]), shift = Math.abs(m[4]) + Math.abs(m[5]);
+                for (let k = 0; k < count; k++) {
+                    const segment = k < segments, i = segment ? k * 6 : (k - segments) * 3, src = segment ? s : d;
+                    const ax = src[i], ay = src[i + 1], ar = src[i + 2] * scale;
+                    const bx = segment ? s[i + 3] : ax, by = segment ? s[i + 4] : ay, br = segment ? s[i + 5] * scale : ar;
+                    const px = m[0] * ax + m[2] * ay + m[4], py = m[1] * ax + m[3] * ay + m[5];
+                    const qx = m[0] * bx + m[2] * by + m[4], qy = m[1] * bx + m[3] * by + m[5];
+                    const x0 = Math.min(px - ar, qx - br), y0 = Math.min(py - ar, qy - br), x1 = Math.max(px + ar, qx + br), y1 = Math.max(py + ar, qy + br);
+                    // Float rounding here is far below 1e-9 of the magnitudes summed; the tolerance covers how far a job's bound may exceed its tube.
+                    const pad = tolerance + 1e-9 * (1 + shift + stretch * (Math.abs(ax) + Math.abs(ay) + Math.abs(bx) + Math.abs(by)) + ar + br);
+                    boxes[k * 4] = x0 - pad; boxes[k * 4 + 1] = y0 - pad; boxes[k * 4 + 2] = x1 + pad; boxes[k * 4 + 3] = y1 + pad;
                 }
-                for (let i = 0; i < coverage.discs.length; i += 3) {
-                    const d = coverage.discs, p = { x: d[i], y: d[i + 1] };
-                    accept(yield* tube([p, p], d[i + 2], item.localToWorld, clip)); yield* checkpoint();
+                const order: number[] = [];
+                for (let side = 0; side < 4; side++) {
+                    let best = -1;
+                    for (let k = 0; k < count; k++) {
+                        const v = boxes[k * 4 + side];
+                        if (best < 0 || (side < 2 ? v < boxes[best * 4 + side] : v > boxes[best * 4 + side])) best = k;
+                    }
+                    if (best >= 0) order.push(best);
+                }
+                for (let k = 0; k < count; k++) order.push(k);
+                const done = new Uint8Array(count);
+                for (const k of order) {
+                    if (done[k]) continue;
+                    done[k] = 1;
+                    const measured = bounds as Box | null;
+                    if (itemPainted && measured && boxes[k * 4] >= measured[0] && boxes[k * 4 + 1] >= measured[1] && boxes[k * 4 + 2] <= measured[2] && boxes[k * 4 + 3] <= measured[3]) continue;
+                    if (k < segments) {
+                        const i = k * 6;
+                        accept(yield* tube([{ x: s[i], y: s[i + 1] }, { x: s[i + 3], y: s[i + 4] }], [s[i + 2], s[i + 5]], m, clip));
+                    } else {
+                        const i = (k - segments) * 3, p = { x: d[i], y: d[i + 1] };
+                        accept(yield* tube([p, p], d[i + 2], m, clip));
+                    }
+                    yield* checkpoint();
                 }
             }
             return;

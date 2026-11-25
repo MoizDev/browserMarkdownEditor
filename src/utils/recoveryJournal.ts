@@ -63,9 +63,42 @@ function requestDurability(): void {
 /** A journal id is independent of both the transient document id and the file's bytes. */
 export function newJournalId(): string { return crypto.randomUUID(); }
 
+/** What this page last learned of each record it wrote: the newest revision stored, and whether another window had
+ *  marked it copy-only. Only a write made while the page is leaving relies on it (`markLeaving`). */
+const known = new Map<string, { revision: number; copyOnly: boolean }>();
+const knownKey = (vaultId: string, journalId: string) => JSON.stringify([vaultId, journalId]);
+let leaving = false;
+
+/**
+ * The page is being left (beforeunload; pagehide): until the current task ends, a journal write is put and committed
+ * at once, with no read first. Measured in the app, reloaded 0 ms after a stroke on a drawing, notebook or PDF: the
+ * write began 3 ms after beforeunload, but its read-then-put transaction had neither answered nor committed when
+ * pagehide came 30-40 ms later, and Chrome dropped it — the stroke was lost with nothing to recover (2 of 3 runs, and
+ * 7 of 9 with an immediate put but no commit). Committed at once it landed in 9 of 9, though the page was gone before
+ * the transaction reported complete. The read's two jobs come from what this page already knows instead: a record is
+ * never put over a newer revision, and one another window marked copy-only stays so — unless that mark was made
+ * after this page's last ordinary write, a fraction of a second earlier, which is the one thing this path can lose.
+ */
+export function markLeaving(): void {
+    leaving = true;
+    setTimeout(() => { leaving = false; });
+}
+
 /** Atomic per-key revision comparison prevents a late checkpoint replacing a newer one. */
 export async function writeRecoveryEntry(entry: RecoveryEntry): Promise<void> {
     const db = await open();
+    const id = knownKey(entry.vaultId, entry.journalId);
+    if (leaving) {
+        const prior = known.get(id);
+        if (prior && prior.revision > entry.revision) return;
+        const tx = db.transaction('entries', 'readwrite');
+        const finished = done(tx);
+        tx.objectStore('entries').put(prior?.copyOnly ? { ...entry, copyOnly: true } : entry);
+        tx.commit();
+        await finished;
+        known.set(id, { revision: entry.revision, copyOnly: !!prior?.copyOnly });
+        return;
+    }
     const tx = db.transaction('entries', 'readwrite');
     const finished = done(tx);
     const store = tx.objectStore('entries');
@@ -73,6 +106,9 @@ export async function writeRecoveryEntry(entry: RecoveryEntry): Promise<void> {
     request.onsuccess = () => {
         const old = request.result as RecoveryEntry | undefined;
         if (!old || old.revision <= entry.revision) store.put(old?.copyOnly ? { ...entry, copyOnly: true } : entry);
+        known.set(id, old && old.revision > entry.revision
+            ? { revision: old.revision, copyOnly: !!old.copyOnly }
+            : { revision: entry.revision, copyOnly: !!old?.copyOnly });
     };
     await finished;
     requestDurability();

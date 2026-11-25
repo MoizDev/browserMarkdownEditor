@@ -93,7 +93,10 @@ Three structures, each with one job:
 - A failed save is never silent: told once per document until a save succeeds, the tab stays dirty. A save a
   newer revision overtook is not a failure. "Saved" shows when the path is **visible** in any column.
 - `beforeunload` is armed while any revision or canvas serializer is pending, until its write is acknowledged
-  (AGENTS.md's sanctioned native prompt). Hide/pagehide checkpoints drain serializers then use the funnel.
+  (AGENTS.md's sanctioned native prompt). Hide/pagehide checkpoints drain serializers then use the funnel, and so
+  does `beforeunload` itself, so a person who chooses Leave right after a change still gets Recover. A journal
+  write made then (`markLeaving`) is put and committed at once with no read first: a read-then-put transaction
+  had not committed when the page went, and Chrome dropped it (measured).
 
 ## Crash recovery (`utils/recovery*.ts`, `RecoveryBar`, `RecoverySurface`)
 Every change also reports through ONE App-lifetime funnel (`useRecoveryJournal` → `createRecoveryFunnel`)
@@ -101,7 +104,9 @@ into an IndexedDB journal keyed by vault and a random window id; the session's `
 immutable capture pinned to its revision, and `recoveryAdapters` binds each document's session. Checkpoints
 are serialized and revision-aware (a late one never replaces a newer one). On open, the Recover bar offers an
 entry **in place only when the path and the raw-byte baseline both match**; other windows' and older entries
-are copy-only (`recoveryCopy`), never applied to the live file.
+are copy-only (`recoveryCopy`), never applied to the live file. A board journals as a change is handed off (150 ms
+after a stroke, at most every 500 ms: a PDF's recipe holds its whole file), and an unsaved plain PDF's empty board
+is made the same on every open, or its baseline never matches and Recover could only save a copy.
 
 ## Outside changes (`useOutsideChanges`, `useDiskBarActions`, `DiskBar`)
 - Every read that fills a tab records a baseline (`handleFileClick`, restore, `retryUnreadTab`, `addTabQuietly`);

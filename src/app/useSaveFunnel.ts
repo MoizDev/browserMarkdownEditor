@@ -23,6 +23,7 @@ import { PdfBuildRefused, pdfSnapshotRefusal } from '../utils/pdfBuildRefusal';
  *  'not saved' it raised 'Could not continue' on every stroke drawn during a converted notebook's first save (round 8 matrix). */
 class SaveSuperseded extends Error {}
 import { anyPending, checkpointSessions, drain, drainAll, subscribePending } from '../utils/unloadCoordinator';
+import { markLeaving } from '../utils/recoveryJournal';
 import { perfRoot, reportVault } from '../utils/perfHooks';
 import type { Notify, Tell } from './useAppDialogs';
 import type { IndexGraphRef, NativePolicy, PdfRebuildEntry, ReconcileJob, RecoveryEvent, SetDiskState, SetTabs } from './types';
@@ -127,9 +128,16 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
   const flushChainsRef = useRef(new Map<string, Promise<unknown>>());
   // Documents whose failed save the person was already told about: told once, until a save of it succeeds again.
   const guardedRef = useRef(false);
+  const checkpointNowRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  // The journal and the save start here, while the page is still alive, not only on pagehide: a person who chose
+  // "Reload" right after a stroke or a keystroke lost it with nothing to recover (measured: drawing, notebook, PDF and
+  // note, 0 ms after the change), and in the pinned Chrome an IndexedDB write begun on pagehide was lost in 31 of 32
+  // runs. Its journal write is committed at once (`markLeaving`). If they stay, it is only an early save.
   const beforeUnload = useCallback((event: BeforeUnloadEvent) => {
     event.preventDefault();
     event.returnValue = '';
+    markLeaving();
+    void checkpointNowRef.current().catch(error => { console.error('Could not save before leaving:', error); });
   }, []);
   const syncExitGuard = useCallback(() => {
     const pending = anyPending() || flushingRef.current.size > 0
@@ -729,11 +737,12 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     void recoveryEvent({ type: 'checkpoint' });
     await checkpointAll();
   }, [checkpointAll, documentBuffers, recoveryEvent, sessionReportRef]);
+  useEffect(() => { checkpointNowRef.current = checkpointNow; }, [checkpointNow]);
   useEffect(() => {
     const unsubscribe = subscribePending(() => { syncExitGuard(); settleCleanTabs(); });
     syncExitGuard();
     const visibility = () => { if (document.visibilityState === 'hidden') { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
-    const pagehide = () => { void checkpointNow(); };
+    const pagehide = () => { markLeaving(); void checkpointNow(); };
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('pagehide', pagehide);
     return () => {

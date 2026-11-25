@@ -32,6 +32,9 @@ export interface SaveScheduler {
 }
 
 const DEBOUNCE_MS = 150;
+// At most one journal append per this interval. Not shortened: each append puts the board's recipe in IndexedDB, and
+// a PDF's recipe holds the whole original file, which IndexedDB copies on every put (measured: an 80 MB file, 70 ms
+// and 80 MB written per append).
 const JOURNAL_MS = 500;
 
 export function createSaveScheduler(callbacks: SaveSchedulerCallbacks): SaveScheduler {
@@ -46,6 +49,7 @@ export function createSaveScheduler(callbacks: SaveSchedulerCallbacks): SaveSche
     let currentJournal: typeof queuedJournal;
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
     let journalTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastJournal = -Infinity;
 
     function clearFlush(): void { clearTimeout(flushTimer); flushTimer = undefined; }
     function clearJournal(): void { clearTimeout(journalTimer); journalTimer = undefined; }
@@ -79,6 +83,7 @@ export function createSaveScheduler(callbacks: SaveSchedulerCallbacks): SaveSche
     }
     function journal(): void {
         if (disposed || !journalPending) return;
+        lastJournal = performance.now();
         try {
             const next = callbacks.captureJournal();
             queuedJournal?.cancel?.();
@@ -92,13 +97,26 @@ export function createSaveScheduler(callbacks: SaveSchedulerCallbacks): SaveSche
         flushing = true;
         // Clear first: an edit made by the callback marks a new, independent batch dirty.
         dirty = false;
-        try { callbacks.flush(); }
+        let handedOff = false;
+        try { callbacks.flush(); handedOff = true; }
         catch (error) { dirty = true; throw error; }
         finally {
             flushing = false;
             if (dirty) scheduleFlush();
-            scheduleJournal();
+            if (handedOff) journalHandedOff();
+            else scheduleJournal();
         }
+    }
+    // A stroke is journaled as it is handed off, 150 ms after it ends, when no append ran in the last JOURNAL_MS; the
+    // timer alone started at the stroke's first change and fired 500 ms after it, so a crash in the first ~600 ms after
+    // a stroke lost it with nothing to recover (measured: drawing, notebook and PDF — killed 300 ms after the stroke,
+    // no Recover; 600 ms, Recover). The rate stays bounded by JOURNAL_MS.
+    function journalHandedOff(): void {
+        if (disposed || !journalPending) return;
+        if (performance.now() - lastJournal < JOURNAL_MS) { scheduleJournal(); return; }
+        clearJournal();
+        journal();
+        scheduleJournal();
     }
     return {
         markDirty() {

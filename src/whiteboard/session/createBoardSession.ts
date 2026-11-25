@@ -228,6 +228,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         get isGestureActive() { return queue.isGestureActive; },
         get gestureHolds() { return queue.gestureHolds; },
         get isInputGestureActive() { return queue.isInputGestureActive; },
+        get isEditLanding() { return queue.isGestureActive || edits.size > 0; },
         apply(transaction: Transaction) { guard(); return applyController.apply(transaction); },
         preflight(transaction: Transaction) { guard(); return applyController.preflight(transaction); },
         begin(origin: TransactionOrigin, label: string) { guard(); return applyController.begin(origin, label); },

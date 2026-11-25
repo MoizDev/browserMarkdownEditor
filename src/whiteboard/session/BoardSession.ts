@@ -55,6 +55,8 @@ export interface BoardSession extends Pick<SessionGestureQueue, 'enqueueAfterGes
     /** The revision of the last dirtying content change. Non-dirtying commits (tool, UI state) advance `doc.rev` but not
      * this, so a build pinned to content stays valid across them; fences compare against this, never raw `doc.rev`. */
     readonly contentRevision: number;
+    /** A change the person already made is still landing: a gesture hold is open, or a tracked edit (a paste) is running. */
+    readonly isEditLanding: boolean;
     apply(transaction: Transaction): Applied;
     preflight(transaction: Transaction): { readonly ops: readonly Op[]; release(): void };
     begin(origin: TransactionOrigin, label: string): TxBuilder;

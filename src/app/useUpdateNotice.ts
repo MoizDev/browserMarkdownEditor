@@ -62,19 +62,23 @@ export function useUpdateNotice(deps: UseUpdateNoticeDeps) {
   const saveAll = useCallback(async () => {
     if (!unsaved()) return true;
     const deadline = Date.now() + SAVE_BEFORE_RELOAD_MS;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        checkpointNow().catch(error => { console.error('Could not save before reloading:', error); }),
-        new Promise<void>(resolve => { timer = setTimeout(resolve, SAVE_BEFORE_RELOAD_MS); }),
-      ]);
-    } finally { clearTimeout(timer); }
-    // A written board's tab is marked clean by a state update (useSaveFunnel's settleCleanTabs), which React commits
-    // after the write resolves — and `tabsRef` with it. Asked in the same task, the tab was still `dirty`, and Reload
-    // was refused ("Finish saving your changes…") with every stroke on disk (measured: the write and the refusal in
-    // the same millisecond, on every board drawn on just before Reload). A document that really is unsaved stays so.
-    const settleUntil = Math.min(deadline, Date.now() + SETTLE_MS);
-    while (unsaved() && Date.now() < settleUntil) await new Promise(resolve => setTimeout(resolve, 50));
+    // Saved again while time is left: a change that lands after one checkpoint (a board's change prepared after the drain's
+    // own deadline) is written by the next, rather than left to an autosave the reload does not wait for.
+    do {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          checkpointNow().catch(error => { console.error('Could not save before reloading:', error); }),
+          new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, deadline - Date.now())); }),
+        ]);
+      } finally { clearTimeout(timer); }
+      // A written board's tab is marked clean by a state update (useSaveFunnel's settleCleanTabs), which React commits
+      // after the write resolves — and `tabsRef` with it. Asked in the same task, the tab was still `dirty`, and Reload
+      // was refused ("Finish saving your changes…") with every stroke on disk (measured: the write and the refusal in
+      // the same millisecond, on every board drawn on just before Reload). A document that really is unsaved stays so.
+      const settleUntil = Math.min(deadline, Date.now() + SETTLE_MS);
+      while (unsaved() && Date.now() < settleUntil) await new Promise(resolve => setTimeout(resolve, 50));
+    } while (unsaved() && Date.now() < deadline);
     return !unsaved();
   }, [checkpointNow, unsaved]);
   const saveAndReload = useCallback(async () => {

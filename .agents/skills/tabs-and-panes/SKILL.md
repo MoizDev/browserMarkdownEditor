@@ -87,7 +87,7 @@ Three structures, each with one job:
   Hiding a board cancels a change still being prepared, so close settles a board WHILE IT IS ON SCREEN
   (`unloadCoordinator.settle`, 15 s; too slow → the tab stays, said), then removes the path from the layout and keeps the
   document (and a PDF's canvas) mounted until drain and write settle; a failed save restores the tab and saves once more
-  by itself.
+  by itself. The app's Reload checkpoints again until its 5 s are up (`useUpdateNotice.saveAll`).
 - A `readError` tab's buffer is **not the file** — ⌘S force-flushes the focused tab and would write `''`.
   `flushTab`, the funnel, mode toggles, search (reads disk instead), the asset neighbour scan and restore seeding
   all guard it; a new reader of a tab's content joins that list.

@@ -220,9 +220,12 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       if (source && typeof source !== 'string' && documentSessions.isLiveOwner(tab.id, source.owner)
         && sourceIsNewer(source, prior)) {
         sessionReportRef.current(tab.id, source);
-        clearSaveTimer(path);
       }
     } catch (error) { console.error('Could not capture document:', error); return 'failed'; }
+    // Also when the checkpoint reported its change itself: a board hands its last change off from inside `checkpoint`,
+    // through the funnel, which armed a save this flush already covers. Left armed, it kept the app's Reload waiting a
+    // second for it after the write had landed (measured: a nudge then Reload, written at 145 ms, reloaded at 1.3 s).
+    clearSaveTimer(path);
     const pendingRevision = documentBuffers.revisionForDocument(tab.id);
     const pending = documentSessions.hasPendingEdits(tab.id);
     const bufferedSource = documentBuffers.get(tab.id)?.source;

@@ -154,6 +154,9 @@ export function createNativeClipboardController(options: NativeClipboardControll
             // refused 4000x3000 picture showed only 'Nothing was pasted from the clipboard.'). A chosen or dropped file is inserted.
             if (!placed.length && !duplicate && !refusedNoticed) options.notice(intent === 'drop' ? 'Nothing was inserted.' : 'Nothing was pasted from the clipboard.');
         }, { signal, deadlineMs: 120_000 });
+        // Pending until it lands, as a stroke is from its press: the app's Reload right after ⌘V or ⌘D found nothing unsaved,
+        // reloaded in 11 ms, and the paste was lost.
+        session.trackEdit(work);
         return work.finally(() => {
             try { stop(); } finally {
                 jobs.delete(controller); controller.abort();

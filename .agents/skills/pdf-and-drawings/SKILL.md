@@ -180,6 +180,11 @@ come back to either.
 
 - Writers are isolated, serialized, role-sealed and never replay a failed write. Rebuild from pristine + current ink +
   preserved attachments, never from already-stamped pages (`whiteboard/host/pdfInkAssembly.ts` for recovery).
+- A page's output never depends on when the save ran. The page writers (`export/incrementalPdf.ts`, `streamPage.ts`)
+  keep only items whose own envelope meets the page (`export/pageReach.ts`): the scene's cull trusts only bounds its idle
+  cache has certified, so a stroke drawn just before a save that does not wait (Reload, a close) passed it on EVERY page
+  (one stroke, 120-page PDF: 109 KB → 6 MB). The annotated save places only pages something paints
+  (`pdfInkExport.ts`); an unplaced page keeps the original's content.
 - Opaque workers have no WebCrypto digest: marks use the pure SHA-256 in `utils/pdfWriteArtifacts.ts`.
 - Live ink/notebook export uses the incremental sink: one path start, bounded command pieces, one path end/paint.
   Painting each chunk changes joins, winding, fill and alpha.

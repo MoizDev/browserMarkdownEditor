@@ -67,7 +67,8 @@ export async function stampNativeInk(destination: WriterNativeDocument, ink: Emi
     const source = WriterNativeDocument.openBytes(runtime, bytes);
     try {
         const count = source.pageCount();
-        if (count !== ink.pages.length) throw new PdfEngineError('InvalidPdf', 'Ink page count does not match its map');
+        // The map may place fewer pages than the ink PDF holds: a page nothing paints is not placed (pdfInkExport.ts).
+        if (ink.pages.length > count) throw new PdfEngineError('InvalidPdf', 'Ink page count does not match its map');
         for (const placement of placements) {
             await cooperate();
             if (placement.inkPage >= count) throw new PdfEngineError('InvalidPdf', 'Ink page is missing');

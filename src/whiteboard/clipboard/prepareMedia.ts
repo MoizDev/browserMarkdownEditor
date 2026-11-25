@@ -9,6 +9,8 @@ import type { InspectedMedia } from '../media/ingest';
 import type { MediaLease } from '../media/store';
 import { isSafeMediaFile, type MediaEntry, type MediaId } from '../model/media';
 import { nodeRawValues } from '../model/rawMedia';
+import type { ExtBag } from '../model/json';
+import { IMPORTED_LEGACY_MEDIA_FIELDS, IMPORTED_LEGACY_NODE_FIELDS } from '../format/legacyRecords';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { JobContext } from '../security/admission';
 import { resolveMediaStorage } from '../media/storage';
@@ -45,9 +47,28 @@ function matches(entry: MediaEntry, info: InspectedMedia, size: number): boolean
     return entry.id === info.id && entry.mime === info.mime && entry.bytes === size && entry.w === info.width && entry.h === info.height
         && entry.animated === info.animated && entry.duration === info.duration;
 }
+/** Data this version cannot interpret, which might name a media file. The old-board importer's own fields are not that
+ * (format/legacyRecords.ts): counted, they refused every paste of an old notebook's pictures into a PDF, whose copy is
+ * stored under another name, with "Cannot remap media with uninterpreted filename dependencies". */
+function uninterpreted(ext: ExtBag | null, known: ReadonlySet<string>): boolean {
+    if (!ext) return false;
+    if (ext.raw.size) return true;
+    for (const key of ext.fields.keys()) if (!known.has(key)) return true;
+    return false;
+}
 function compatible(a: MediaEntry, b: MediaEntry): boolean {
     return a.id === b.id && a.mime === b.mime && a.bytes === b.bytes && a.w === b.w && a.h === b.h
         && a.animated === b.animated && a.duration === b.duration;
+}
+/** A picture that cannot be pasted here: details this version cannot read may name its file, and here it would be stored
+ * under another name. Said in the person's words (the board shows the message as is); the media id is kept for the console. */
+export class ClipboardMediaRefused extends Error {
+    constructor(readonly mediaId: string) {
+        super('A picture in what you pasted carries details this version of the app cannot read, which may depend on its file '
+            + 'name, so it cannot be stored here under a different one. Paste it into a drawing or notebook in the folder you '
+            + 'copied it from, or copy the other items without it.');
+        this.name = 'ClipboardMediaRefused';
+    }
 }
 export function prepareBoardClipboardMedia(options: PrepareClipboardMediaOptions): Promise<PreparedClipboardMedia> {
     return prepareMedia(options);
@@ -111,7 +132,8 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
                 if ((++visits & 255) === 0) await cooperate();
             }
             for (const node of source.nodes.values()) {
-                for (const item of nodeRawValues(node)) if (item !== null) { hasUnknownRaw = true; break; }
+                hasUnknownRaw = uninterpreted(node.ext, IMPORTED_LEGACY_NODE_FIELDS);
+                if (!hasUnknownRaw) for (const item of nodeRawValues({ ...node, ext: null })) if (item !== null) { hasUnknownRaw = true; break; }
                 if (hasUnknownRaw) break;
                 if ((++visits & 255) === 0) await cooperate();
             }
@@ -131,7 +153,7 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
                         // No bytes to store, so nothing is renamed: where unknown data may name the file, the record keeps the
                         // name it was written with (the picture appears if that file is put in this folder's .Assets). Refusing
                         // here lost the whole paste of a board whose picture file was missing ("Cannot remap missing media…").
-                        const keepName = entry.file !== null && (entry.ext && (entry.ext.raw.size || entry.ext.fields.size)
+                        const keepName = entry.file !== null && (uninterpreted(entry.ext, IMPORTED_LEGACY_MEDIA_FIELDS)
                             || (preservedRefs.get(id) ?? 0) > 0 || hasUnknownRaw);
                         ops.push({ t: 'media', op: 'add', entry: keepName ? entry : { ...entry, file: null } });
                         files.set(id, keepName ? entry.file : null);
@@ -151,12 +173,12 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
                 if (receipt) receipts.push(receipt);
                 check();
                 if (!isSafeMediaFile(file)) throw new Error(`Invalid destination media file: ${id}`);
-                const sourceConflict = file !== entry.file && ((entry.ext && (entry.ext.raw.size || entry.ext.fields.size))
+                const sourceConflict = file !== entry.file && (uninterpreted(entry.ext, IMPORTED_LEGACY_MEDIA_FIELDS)
                     || (preservedRefs.get(id) ?? 0) > 0 || (entry.file !== null && hasUnknownRaw));
                 const destinationConflict = !!existing && file !== existingFile
-                    && (!!existing.ext && (existing.ext.raw.size > 0 || existing.ext.fields.size > 0)
+                    && (uninterpreted(existing.ext, IMPORTED_LEGACY_MEDIA_FIELDS)
                         || (runtime.session.doc.preservedMediaRefs.get(id) ?? 0) > 0);
-                if (sourceConflict || destinationConflict) throw new Error(`Cannot remap media with uninterpreted filename dependencies: ${id}`);
+                if (sourceConflict || destinationConflict) throw new ClipboardMediaRefused(id);
                 leases.push(runtime.media.retain(id, 'snapshot'));
                 runtime.media.put(id, blob); blobs.set(id, blob); files.set(id, file);
                 if (!existing) ops.push({ t: 'media', op: 'add', entry: { ...entry, file } });

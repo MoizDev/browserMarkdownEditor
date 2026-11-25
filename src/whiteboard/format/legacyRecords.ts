@@ -34,3 +34,10 @@ export function isImportedLegacyRecord(record: { readonly type: string }): boole
  * nothing is fetched), and the name of a picture's file that was missing (the picture is drawn as it is on screen). */
 export const IMPORTED_LEGACY_NODE_FIELDS: ReadonlySet<string> = new Set(['legacyMeta', 'legacyTextLastEditedBy',
     'legacyBookmarkPreview', 'legacyMissingAsset']);
+
+/** The fields the importer keeps on a picture's media record: the old asset's `meta`, its other properties and record
+ * fields, and the relative address it was read from. All are written while the picture has no stored file of its own
+ * yet (`file: null`), so none of them names the file this app later stores it under, and renaming that file (a paste
+ * into a PDF stores it inside the PDF) leaves them as true as before. */
+export const IMPORTED_LEGACY_MEDIA_FIELDS: ReadonlySet<string> = new Set(['legacyMeta', 'legacyAssetSource', 'legacyAssetProps',
+    'legacyAssetFields']);

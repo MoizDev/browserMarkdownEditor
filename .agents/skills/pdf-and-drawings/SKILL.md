@@ -173,6 +173,8 @@ come back to either.
   only a file over 256 MB is refused, at once. The import never holds a whole board's geometry: bounds are read node by node
   through the renderer's bounded idle cache after the faces are loaded (`loadLegacyFaces`), never under a change-geometry pin. The pane says "Opening drawing…" (or notebook) while it waits or runs, and
   every canvas error offers Try again. Its worker requests use `LEGACY_LOAD_DEADLINE_MS` (a stall is the host watchdog's).
+- The importer's own media fields (`IMPORTED_LEGACY_MEDIA_FIELDS`, `format/legacyRecords.ts`) never name the stored
+  file, so a paste may store such a picture under another name (inside a PDF); unknown ext still refuses that, in words.
 - HOST media projection excludes only validated bookkeeping fields (`pdf/session/inkHostMedia.ts`). Never invent
   media receipts or fall back to the folder's `.Assets` for embedded PDF media.
 

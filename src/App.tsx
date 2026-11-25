@@ -353,7 +353,8 @@ export default function App() {
   // whole purpose is a way on.
   const openOtherVault = useCallback(() => {
     void pickDirectorySafely().then(result => {
-      if (result === 'ok') return;
+      // Refused: the app has already said why this vault cannot be left yet.
+      if (result === 'ok' || result === 'refused') return;
       void tell(result === 'busy'
         ? { title: 'Still opening a folder', body: 'The app is still reading a folder that was picked a moment ago. Wait for it to finish, or reload the app to stop it.', confirmLabel: 'OK' }
         : { title: 'That folder could not be opened', body: 'Nothing was changed. Check that the folder still exists and that this browser may read it, then try again.', confirmLabel: 'OK' });

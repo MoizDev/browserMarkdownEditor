@@ -168,7 +168,8 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
         setOpening(vault.id);
         const result = await onOpen(vault);
         setOpening(null);
-        if (result === 'ok') onClose();
+        // Refused: the app's own dialog says why the vault that is open cannot be left yet; a note here would be a second voice.
+        if (result === 'ok' || result === 'refused') onClose();
         else if (result === 'busy') setError(BUSY_NOTE);
         else setError(messageFor(result, vault));
     }, [currentVaultId, opening, onOpen, onClose]);
@@ -185,6 +186,7 @@ export default function VaultMenu({ anchor, vaults, currentVaultId, onOpen, onFo
         setError(null);
         const result = await onBrowse();
         if (result === 'busy') { setError(BUSY_NOTE); return; }
+        // 'refused' closes too: the app's dialog says why.
         onClose();
     }, [opening, onBrowse, onClose]);
 

@@ -311,8 +311,10 @@ export interface RecentVault extends StoredVault {
  *  'busy' means another vault switch was already walking (see
  *  FileSystemContext's switchInFlightRef): nothing happened and nothing is
  *  wrong, but nothing happening is exactly what a caller with somewhere to say
- *  it must still say — a control that greys and un-greys reads as broken. */
-export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error' | 'busy'
+ *  it must still say — a control that greys and un-greys reads as broken.
+ *  'refused' means the app would not leave the vault that is open (a PDF's annotations are not saved yet) and has
+ *  already said why: the caller adds nothing. */
+export type VaultOpenResult = 'ok' | 'denied' | 'missing' | 'error' | 'busy' | 'refused'
     | { status: 'error'; message: string };
 
 /* ─────────────────────────────────────────────────────────────────────────

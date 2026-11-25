@@ -29,8 +29,9 @@ export function useVaultOpeners(deps: UseVaultOpenersDeps) {
   // Keep the gesture synchronous for the directory picker/permission prompt.
   // A refused PDF revision stays in its current vault instead of being dropped
   // by the workspace reset before an asynchronous refusal can reach it.
-  const pickDirectorySafely = useCallback(() => canLeavePdfVault() ? pickDirectory() : Promise.resolve('busy' as const), [canLeavePdfVault, pickDirectory]);
-  const openRecentVaultSafely = useCallback((vault: Parameters<typeof openRecentVault>[0]) => canLeavePdfVault() ? openRecentVault(vault) : Promise.resolve('busy' as const), [canLeavePdfVault, openRecentVault]);
+  // 'refused', not 'busy': canLeavePdfVault has said why, and 'busy' added "Another vault is still opening" under it.
+  const pickDirectorySafely = useCallback(() => canLeavePdfVault() ? pickDirectory() : Promise.resolve('refused' as const), [canLeavePdfVault, pickDirectory]);
+  const openRecentVaultSafely = useCallback((vault: Parameters<typeof openRecentVault>[0]) => canLeavePdfVault() ? openRecentVault(vault) : Promise.resolve('refused' as const), [canLeavePdfVault, openRecentVault]);
 
   /**
    * Open a folder in the tree as the vault — the file tree's "Open as Vault"

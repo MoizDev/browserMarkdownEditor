@@ -681,6 +681,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         if (retryAt !== 0) { retryAt = 0; host.wakeAt(null); }
         host.invalidate('tile-composer-capacity');
     };
+    /** Ends a position's GPU wait once no position is parked on it: the position it was for was cancelled or dropped (a zoom's
+     * stale positions, a lowered one whose cells composed), and nothing else releases it. Kept, the wait held back every missing
+     * position (drive's room wait) until an unrelated release woke it (measured, the 5,642-stroke board at 1745% then ⇧1: the
+     * position refused during the zoom in was dropped by the fit, and the fit composed nothing for 3.5 s, at rest in 6.1-6.4 s
+     * in 3 of 4 runs against 2.0-2.6 s before). */
+    const releaseOrphanWait = (): void => {
+        if (!waiting || !roomForPosition) return;
+        for (const position of building.values()) if (position.parked) return;
+        waiting = false; blockedOnGpu = false; roomForPosition = false;
+        auditCount(audit, 'compose:wait:orphaned');
+    };
     // Arms the retry deadline for a visible GPU refusal, once: a deadline already armed for later stands.
     const armRetry = (): void => {
         const now = performance.now();
@@ -1410,6 +1421,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     };
     const compose = (view: ViewState, budget: FrameBudget, gpu: GfxDevice, target: number, span: Span, only: 'foreground' | 'background' | 'all'): void => {
         composeCut = false;
+        releaseOrphanWait();
         composePasses(view, budget, gpu, target, span, only);
         // A position in progress that a whole compose at rest neither advanced nor left parked on a governor wait has nothing driving
         // it, yet keeps needsFrame asking ('building') at every vsync. Counted, so such an orphan is named the moment it exists (the
@@ -2637,6 +2649,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (liveDeferredFrames < GPU_RETRY_LIMIT) return true;
                 auditCount(audit, 'live:deferred:stopped');
             }
+            releaseOrphanWait();
             if (waiting) return indexing || finished.length > 0;
             const wants = indexing || !settled || building.size > 0 || finished.length > 0 || inexactPending.size > 0;
             // Which outstanding work keeps the board asking for frames: at rest none may (0 frames), and a count here names it.

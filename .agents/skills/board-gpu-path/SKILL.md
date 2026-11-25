@@ -141,7 +141,8 @@ and the platform alone picks the device.
 - While a position's GPU wait stands (`roomForPosition`), a parked position is passed over and so is any work that would take new
   room (missing, ring, floor); dirty and held positions keep recomposing into the targets they hold, so an erase still shows. A live
   part's refusal is not such a wait: composing the tiles is what ends the live draw. It arms the retry deadline, since the pane's
-  own live draw can hold the room it waits for and no governor release then comes.
+  own live draw can hold the room it waits for and no governor release then comes. A position wait with no parked position left
+  (cancelled or dropped by a zoom) is ended (`compose:wait:orphaned`): kept, a fit composed nothing for 3.5 s.
 - The rest ring (a viewport each side, one tile while zooming; `ringMargin`) is prefetch, reserved with
   `reserve(bytes, { prefetch: true })`: admitted only if it fits, never reclaiming tiles. Two composers' rings that
   reclaimed each other's undrawn tiles recomposed them every frame at rest. Keep the still-wanted test on the same

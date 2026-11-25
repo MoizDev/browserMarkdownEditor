@@ -35,6 +35,8 @@ export class PenContactTransitions {
     private shadowMode: PenContactMode;
     private shadows: { readonly sequence: number; readonly owner: GestureOwner }[] = [];
     private shadow: { readonly sequence: number; readonly owner: GestureOwner } | null = null;
+    /** The current ink run could not be shadowed; its samples still replay from the queue. */
+    private unshadowed = false;
     private readonly dirtyShadows = new Set<{ readonly sequence: number; readonly owner: GestureOwner }>();
     private readonly shadowed = new WeakSet<Batch>();
     constructor(readonly pointerId: number, initial: PenContactMode, private readonly host: PenTransitionHost) {
@@ -63,11 +65,17 @@ export class PenContactTransitions {
         this.shadowed.add(batch);
         for (let i = start; i < batch.samples.length; i++) {
             const sample = batch.samples[i], mode: PenContactMode = (sample.buttons & 32) !== 0 ? 'eraser' : 'ink';
-            if (mode !== this.shadowMode) { this.shadowMode = mode; this.shadow = null; }
-            if (mode !== 'ink') continue;
+            if (mode !== this.shadowMode) { this.shadowMode = mode; this.shadow = null; this.unshadowed = false; }
+            if (mode !== 'ink' || this.unshadowed) continue;
             if (!this.shadow) {
                 const owner = this.host.prepareInk(sample, batch.modifiers, batch.event);
-                if (!owner || owner.kind !== 'ink' || !owner.discard) throw new Error('Pen prefix cannot be preserved');
+                if (!owner || owner.kind !== 'ink' || !owner.discard) {
+                    // The shadow only shows the run early and keeps it through a synchronous barrier; the queue keeps every
+                    // sample, which the ink begun after the sweep replays. Thrown, this ended the contact with its internal
+                    // wording on screen ("Pen prefix cannot be preserved", reported beside a board that took no stroke until a
+                    // reload), and an eraser begun for the refused shadow takes a gesture hold as it begins that nothing released.
+                    owner?.cancel('invalidated'); this.unshadowed = true; continue;
+                }
                 this.shadow = { sequence: sample.sequence, owner }; this.shadows.push(this.shadow);
             } else this.shadow.owner.update([sample], batch.modifiers);
             this.dirtyShadows.add(this.shadow);
@@ -130,13 +138,15 @@ export class PenContactTransitions {
                     // queued raw samples remain owned here while the sweep completes.
                     this.host.finish('tool-change');
                     this.waiting = true;
-                    if (!this.shadowed.has(batch) && !this.shadows.length) { this.shadowMode = this.mode; this.shadow = null; }
+                    if (!this.shadowed.has(batch) && !this.shadows.length) { this.shadowMode = this.mode; this.shadow = null; this.unshadowed = false; }
                     this.stage(batch, start);
                     await this.host.settled(this.controller.signal);
                     this.waiting = false;
                     if (this.closed || this.controller.signal.aborted || !this.host.current()) { this.stop('os-cancel'); return; }
                     if (desired === 'ink') this.discardShadow(batch.samples[start].sequence);
-                    if (!this.host.begin(batch.samples[start], batch.modifiers, batch.event)) throw new Error('Pen contact transition could not start');
+                    // A refused start (the view stopped taking edits, the contact ended under it) ends the contact as a cancel
+                    // does; the next press starts afresh. It was thrown, and showed its internal wording to the person.
+                    if (!this.host.begin(batch.samples[start], batch.modifiers, batch.event)) { this.stop('os-cancel'); return; }
                     this.mode = desired; start++;
                 }
                 if (start < end) this.host.update(batch.samples.slice(start, end), batch.modifiers);

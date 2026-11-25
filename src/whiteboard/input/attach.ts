@@ -294,8 +294,15 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       completeTool = false
       if (sample.source === 'pen' && ((event.type === 'pointerdown' && event.button === 5) || (sample.buttons & 32) !== 0)) {
         if (!editable()) return null
-        // Eraser-end selects Eraser for as long as it is held, separately from the E key and the right button.
-        if (start.active.id !== 'eraser' && services.tools.getRegistration('eraser')) { restoreTool = start.active.id; services.tools.setTool('eraser') }
+        // Eraser-end selects Eraser for as long as it is held, separately from the E key and the right button. Only a press
+        // does: inside a contact (the pen's eraser bit turning on mid-stroke, routed here by penTransitions) a tool choice is a
+        // tool change, which flushes the pointer. That ended the contact while it was starting this eraser, so the eraser began
+        // with nothing left to finish it, its gesture hold refused every later press until a reload, and the displaced Eraser
+        // was saved as the person's tool (measured: ink → eraser bit → ink in one pen contact; every later press "claim
+        // refused", router owner 'erase', Eraser left chosen). The tool chosen stays, so the ink after it resolves to ink again.
+        if (event.type === 'pointerdown' && start.active.id !== 'eraser' && services.tools.getRegistration('eraser')) {
+          restoreTool = start.active.id; services.tools.setTool('eraser')
+        }
         return services.resolveTool({ id: 'eraser' }, sample, modifiers, event)
       }
       if (event.type === 'pointerdown' && event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }

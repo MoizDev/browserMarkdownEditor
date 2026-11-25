@@ -59,11 +59,21 @@ export class PointerRouter<Context> {
                 // A resumed tip starts a fresh segment even if Shift remains held;
                 // resolving continuation here would bridge across the erased gap.
                 const next = options.resolve(point, { ...keys, shift: false }, source)
-                return !!next && options.router.begin(options.token, next.tool, point, keys, next.context)
+                if (!next || this.pen !== transition || !options.router.begin(options.token, next.tool, point, keys, next.context)) return false
+                // Resolving or beginning can end this contact (a tool change flushes it). What began then has no contact left to
+                // finish it, and its gesture hold refused every later press until a reload: it is discarded with its hold.
+                if (this.pen === transition) return true
+                options.router.discardPreview(options.token)
+                return false
               },
               prepareInk: (point, keys, source) => {
                 const next = options.resolve(point, { ...keys, shift: false }, source)
-                return next?.tool.begin(point, keys, next.context) ?? null
+                const owner = next?.tool.begin(point, keys, next.context) ?? null
+                if (!owner || (owner.kind === 'ink' && owner.discard)) return owner
+                // Not ink (an eraser, a pan): it was begun only to be refused, and an eraser takes a gesture hold as it begins.
+                // Dropped without a cancel, that hold refused every later press until a reload.
+                owner.cancel('invalidated')
+                return null
               },
               cancelPending: () => options.cancelPending?.(),
               settled: signal => options.settled!(signal),

@@ -178,8 +178,11 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
       notifyRef.current('A PDF’s pages are still being turned. Keep this vault open until that has finished.');
       return false;
     }
+    // The buffer, not the tab's `dirty`: a PDF tab keeps that until rebuilt (as useUpdateNotice's `unsaved` says), so
+    // asking it refused every switch after any stroke, its ink long on disk (measured: written 1.3 s after the stroke,
+    // four switches over 32 s all refused). The buffer stays dirty until a save of it succeeds.
     const tab = tabsRef.current.find(t => t.representation.loadedKind === 'pdf' &&
-      (t.dirty || documentBuffers.isDirty(t.id) || flushingRef.current.has(t.id) || getView(t.file.path)?.hasPendingEdits?.()));
+      (documentBuffers.isDirty(t.id) || flushingRef.current.has(t.id) || getView(t.file.path)?.hasPendingEdits?.()));
     if (!tab) return true;
     const snapshot = documentBuffers.snapshotForDocument(tab.id)?.data;
     const refusal = typeof snapshot === 'string' ? pdfSnapshotRefusal(snapshot) : undefined;

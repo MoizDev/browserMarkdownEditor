@@ -5,6 +5,7 @@ import { paintItemDisplay } from './displayList'
 import type { ExportImage, ExportText } from './displayList'
 import { createExportTextResolver } from './textResolver'
 import { yieldToHost } from '../../platform/yieldToHost'
+import { paintMayReachPage } from './pageReach'
 
 /** One immutable source per physical page. Never publish a partial list: the caller holds
  * the source's revision/media leases until the resulting page has been handed to the writer. */
@@ -27,6 +28,7 @@ export async function streamPageDisplayList(
       complete = state === 'complete'
       for (const item of chunk) {
         signal.throwIfAborted()
+        if (!await paintMayReachPage(item, world, signal)) continue
         items.push(await paintItemDisplay(item, scale, image, signal, outlineText))
         if (!source.isCurrent()) throw new Error('Paint capture stale')
       }

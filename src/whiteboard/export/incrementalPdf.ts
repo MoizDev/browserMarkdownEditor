@@ -6,6 +6,7 @@ import { capturePaintClips, paintItemDisplay } from './displayList'
 import type { ExportImage } from './displayList'
 import { createStreamingExportTextPieces } from './textStreamResolver'
 import { yieldToHost } from '../../platform/yieldToHost'
+import { paintMayReachPage } from './pageReach'
 
 export type PdfGroupOpen = Omit<Extract<PageDisplayItem, { kind: 'group' }>, 'kind' | 'items'>
 export type PdfPathOpen = Omit<Extract<PageDisplayItem, { kind: 'path' }>, 'd'>
@@ -220,7 +221,7 @@ export async function writeIncrementalPdfPage(page: IncrementalPdfPageSource, in
         const status = job.step(64)
         if (status === 'stale' || status === 'cancelled') throw new Error(`PDF paint capture ${status}`)
         complete = status === 'complete'
-        for (const item of chunk) await writePaint(item, scale, image, sink, sheet, signal, text)
+        for (const item of chunk) if (await paintMayReachPage(item, world, signal)) await writePaint(item, scale, image, sink, sheet, signal, text)
         chunk.length = 0
         if (!complete) await yieldToHost()
       }

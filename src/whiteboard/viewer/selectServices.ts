@@ -104,7 +104,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const scribbleCamera = new Float64Array(3).fill(Number.NaN);
     let scribbleTail: SVGPolylineElement | null = null, scribblePoints: string[] = [];
     let guides: readonly BoardSnapGuide[] = [];
-    let nudgeEpoch = 0, nudgeTail: Promise<void> = Promise.resolve();
+    let nudgeTail: Promise<void> = Promise.resolve();
     const current = () => !disposed && options.current(token);
     const mutable = () => current() && options.canMutateView() && !session.isReadOnly;
     // A refused document command is consumed, not declined: a declined key falls through to the host's global route, which can promote a document change.
@@ -123,7 +123,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     // A sweep's queries belong to the erase or lasso that made them, which cancels them itself. They were aborted here too,
     // so the next press killed a released erase's last query and the erase was lost (the drag looked done, nothing changed).
     const cancelPending = () => {
-        nudgeEpoch++;
         navigation.cancel();
         const work = [...pending], had = work.length > 0;
         pending.clear(); for (const cancel of work) { try { cancel(); } catch (error) { report(error); } }
@@ -149,12 +148,14 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             }
         };
     };
+    // The key edits among them (keyEdit): the view's end leaves them to land on the session, which outlives it.
+    const keyEdits = new Set<() => void>();
     const settled = (): Promise<void> => settling.size
         ? new Promise(wake => { settledWaiters.add({ work: new Set(settling.keys()), wake }); }) : Promise.resolve();
     // An undo takes back ONE step: the latest undoable work still landing. Cancelling every one made a ⌘Z right after two
     // shapes drawn back to back take both. The view's end (undo false) cancels them all.
     const cancelSettling = (undo: boolean): boolean => {
-        const work = [...settling].filter(([, undoable]) => !undo || undoable);
+        const work = [...settling].filter(([cancel, undoable]) => undo ? undoable : !keyEdits.has(cancel));
         const chosen = undo ? work.slice(-1) : work;
         for (const [cancel] of chosen) { try { cancel(); } catch (error) { report(error); } }
         return chosen.length > 0;
@@ -282,35 +283,61 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         },
         onError: report,
     };
+    // A key's edit whose view went out of sight (a tab switch right after the key) has no frame to wait for: it lands without its
+    // preview. Waited for, the preview's frame never came and the edit was dropped with it.
+    const previewIdle = async (signal: AbortSignal): Promise<void> => {
+        if (!current()) return;
+        try { await options.preview.waitUntilIdle(signal); } catch (error) { signal.throwIfAborted(); if (current()) throw error; }
+    };
     const presentAndCommit = async (ops: readonly Op[], signal: AbortSignal, active: () => boolean, commit: () => void) => {
-        if (!ops.length) { commit(); return; }
+        if (!ops.length || !current()) { signal.throwIfAborted(); if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError'); commit(); return; }
         showTransform(ops);
         try {
-            await options.preview.waitUntilReady(signal);
+            try { await options.preview.waitUntilReady(signal); }
+            catch (error) { signal.throwIfAborted(); if (current()) throw error; }
             signal.throwIfAborted(); if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
+            if (!current()) { commit(); return; }
             options.preview.armCommit();
             try { commit(); options.preview.finishCommit(); }
             catch (error) { options.preview.cancelCommit(); throw error; }
         } finally { clearTransform(); }
+    };
+    /** A key's edit (a nudge, a turn, a flip, a stretch, a resize) is finished once the key is pressed: it lands whatever the
+     * person does next, and the session counts it as landing from the press (trackEdit), so a close, a switch or a reload waits for
+     * it. It is released work (registerSettling): a press, a camera move or focus leaving does not cancel it, nor does the view's end
+     * (a tab switch unmounts the board; the edit lands on the session); an undo of it does. Nor is it stale for a selection that
+     * changed or a view that went away meanwhile, only for a document that did (another vault, read-only, content edited under it).
+     * As cancellable pending work, a select-all nudge of 4,000 strokes (4.4 s to land) or a turn followed by a tab switch was
+     * dropped and never saved (measured: both lost, cancelled by the view's dispose). */
+    const keyEdit = (run: (controller: AbortController, active: () => boolean) => Promise<void>): void => {
+        const controller = new AbortController(), cancel = () => controller.abort(), unregister = registerSettling(cancel, true);
+        keyEdits.add(cancel);
+        // The view's own permission is read at the key: once the view is gone (a tab switch) it answers no, and the edit it allowed
+        // would be dropped as stale. The document's is read throughout.
+        const writable = () => !session.isReadOnly && session.doc === doc;
+        const work = nudgeTail.catch(() => {}).then(async () => {
+            if (controller.signal.aborted || !writable()) return;
+            const revision = session.contentRevision, release = session.beginGesture();
+            const active = () => !controller.signal.aborted && writable() && session.contentRevision === revision;
+            try { await run(controller, active); }
+            catch (error) { if (active()) report(error); }
+            finally { release(); }
+        }).finally(() => { keyEdits.delete(cancel); unregister(); });
+        // Repeated key presses queue individual history steps rather than racing immutable snapshots.
+        nudgeTail = work;
+        session.trackEdit(work);
     };
     const nudge = (key: string, coarse: boolean): boolean => {
         const direction: Record<string, Vec2> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 },
             ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
         const delta = direction[key], selection = runtime.selection.getSnapshot();
         if (!mutable() || !delta || !selection.selected.length) return false;
-        const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected];
+        const ids = [...selection.selected];
         const scale = doc.view.grid ? (coarse ? 50 : BOARD_GRID_STEP) : (coarse ? 10 : 1);
-        // Repeated key presses queue individual history steps rather than racing immutable snapshots.
-        nudgeTail = nudgeTail.catch(() => {}).then(async () => {
-            if (epoch !== nudgeEpoch || !mutable() || session.owner !== owner || session.doc !== doc
-                || runtime.selection.getSnapshot() !== selection) return;
-            const revision = doc.rev, controller = new AbortController(), release = session.beginGesture();
-            let unregister: (() => void) | undefined, plan: Awaited<ReturnType<typeof createBoardTranslationPlan>> | undefined;
-            const active = () => !controller.signal.aborted && epoch === nudgeEpoch && mutable() && session.owner === owner
-                && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection;
+        keyEdit(async (controller, active) => {
+            let plan: Awaited<ReturnType<typeof createBoardTranslationPlan>> | undefined;
             try {
-                unregister = registerPending(() => controller.abort());
-                await options.preview.waitUntilIdle(controller.signal);
+                await previewIdle(controller.signal);
                 if (!active()) throw new DOMException('Keyboard nudge became stale', 'AbortError');
                 plan = await createBoardTranslationPlan({ runtime, ids, down: { x: 0, y: 0 }, zoom: () => options.camera().camera.z,
                     alwaysSnap: () => false, current: active, signal: controller.signal, snap: false });
@@ -329,8 +356,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                         }
                     } finally { drop?.release(); }
                 } finally { notebook?.release(); }
-            } catch (error) { if (active()) report(error); }
-            finally { try { plan?.cancel(); } finally { try { unregister?.(); } finally { release(); } } }
+            } finally { plan?.cancel(); }
         });
         return true;
     };
@@ -345,18 +371,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const selection = runtime.selection.getSnapshot();
         if (!mutable()) return viewRefused();
         if (!selection.selected.length) return false;
-        const epoch = nudgeEpoch, owner = session.owner, ids = [...selection.selected];
+        const ids = [...selection.selected];
         // Keyboard transforms share the nudge queue so no two preflights race the same revision.
-        nudgeTail = nudgeTail.catch(() => {}).then(async () => {
-            if (epoch !== nudgeEpoch || !mutable() || session.owner !== owner || session.doc !== doc
-                || runtime.selection.getSnapshot() !== selection) return;
-            const revision = doc.rev, controller = new AbortController(), release = session.beginGesture();
-            let unregister: (() => void) | undefined;
-            const active = () => !controller.signal.aborted && epoch === nudgeEpoch && mutable() && session.owner === owner
-                && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection;
-            try {
-                unregister = registerPending(() => controller.abort());
-                await options.preview.waitUntilIdle(controller.signal);
+        keyEdit(async (controller, active) => {
+            {
+                await previewIdle(controller.signal);
                 if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
                 if (stretch) {
                     await stretchBoardLeaves({ runtime, ids, axis: stretch, current: active, signal: controller.signal, heldGestures: 1 });
@@ -425,8 +444,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                         });
                     } finally { notebook?.release(); }
                 } finally { plan.cancel(); }
-            } catch (error) { if (active()) report(error); }
-            finally { try { unregister?.(); } finally { release(); } }
+            }
         });
         return true;
     };

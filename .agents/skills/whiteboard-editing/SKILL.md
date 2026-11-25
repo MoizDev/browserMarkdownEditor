@@ -76,6 +76,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   The creation tools (figure, frame, connector, polyline, text/sticky placement) follow the same rule: released shapes land
   in the order drawn (`creationTurn`), each prepared again on a moved revision (`CreationGesture.rebase`); an undo while
   work settles cancels only the latest undoable one; an arrow key waits behind settling work, then nudges or pans.
+  A key's edit (nudge, turn, flip, stretch, resize: `selectServices` `keyEdit`) is released work from the press: tracked
+  (`trackEdit`), never cancelled by a press or by the view's end (a tab switch unmounts the board; it lands on the session),
+  stale only for a changed document; out of sight it commits without its preview frame.
 - **No press before a presented frame.** A press is placed through a presented frame's mapping, so `PointerAcquisition`
   takes a new press (and the context menu) only once `MappingHistory.ready()`: a frame presented since the view was last shown
   (`framePresented`, from the lease's `presentedView`); meanwhile the surface shows the `progress` cursor (`inputHost.ts`

@@ -39,6 +39,7 @@ import type { BoardPreview } from './preview';
 import type { createBoardPointQuery } from './pointQuery';
 import { createFormatToolbar, formatStateIn } from './textFormatToolbar';
 import { isCancellation } from '../../platform/workers/envelope';
+import { MULTI_CLICK_MS } from '../input/tool';
 
 export interface BoardTextEditorOptions {
     /** The node whose text is being edited, or null: its paint is exact while the editor holds it. */
@@ -369,7 +370,15 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         try { await prepareMetric(id, controller.signal); if (!current() || revision !== doc.rev || generation !== editingEpoch) return false; return manager.start(id); }
         catch (error) { if (!isCancellation(error)) report(error); return false; }
     };
+    /** The edit the last click on selected text opened, and the caret it put (`openedByClick`). */
+    let clickOpened: { readonly binding: NonNullable<typeof manager.current>; readonly at: number; readonly selection: { readonly anchor: number; readonly focus: number } } | null = null;
     const routedInput = createTextInputBridge({ manager, selected: () => runtime.selection.getSnapshot().active,
+        openedByClick() {
+            const opened = clickOpened, binding = manager.current;
+            if (!opened || !binding || binding !== opened.binding || performance.now() - opened.at > MULTI_CLICK_MS) return false;
+            const now = binding.editor.getSelection();
+            return now.anchor === opened.selection.anchor && now.focus === opened.selection.focus;
+        },
         isCurrent: current, error: report, clientToWorld: clientWorld, worldToClient: worldClient,
         captureHit() {
             const rev = doc.rev, font = render.text.fonts.epoch, cam = { ...camera.camera }, state = runtime.selection.getSnapshot();
@@ -547,8 +556,18 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         return options.ui.stickyNeighbour(direction);
     };
     /** A click on selected text: starts editing, then gives the editor the press so the caret lands where it was (catalogue S§4.2). */
-    const editTextAt = async (id: NodeId, point: { x: number; y: number }, pointerId: number): Promise<void> => {
+    const editTextAt = async (id: NodeId, point: { x: number; y: number }, pointerId: number, clicks = 1): Promise<void> => {
         if (!current()) return;
+        // The second click of a double-click edits all of the text (catalogue S§12). Its click lands once the board has looked at
+        // what it hit, which can be after the double-click itself opened the text: placing a caret then undid the select-all
+        // (measured: a double-click on a text that was not selected always left a caret).
+        if (clicks >= 2) {
+            if (manager.current && active === id) return;
+            const revision = doc.rev, generation = ++editingEpoch;
+            try { await prepareMetric(id, controller.signal); if (current() && revision === doc.rev && generation === editingEpoch) manager.start(id); }
+            catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); }
+            return;
+        }
         const revision = doc.rev, generation = ++editingEpoch;
         try {
             await prepareMetric(id, controller.signal);
@@ -559,6 +578,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             const press = { id: pointerId, kind: 'mouse' as const, x: client.x, y: client.y, clicks: 1, shift: false, accel: false };
             binding.editor.pointerDown(press);
             binding.editor.pointerUp(pointerId);
+            clickOpened = { binding, at: performance.now(), selection: { ...binding.editor.getSelection() } };
         }
         catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); }
     };

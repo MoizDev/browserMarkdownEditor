@@ -26,7 +26,12 @@ export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBr
     function doubleClick(x: number, y: number): boolean {
         cancelPending();
         if (!ports.isCurrent()) return false;
-        if (manager.current && ports.containsActive(x, y)) return true;
+        if (manager.current && ports.containsActive(x, y)) {
+            // The first click of this double-click selected the text and the second opened it with a caret; the double-click
+            // selects all of its words, as on a text that was already selected.
+            if (ports.openedByClick?.()) manager.current.editor.selectAll();
+            return true;
+        }
         const request = new AbortController();
         pending = request;
         const binding = manager.current;
@@ -83,7 +88,7 @@ export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBr
         window.addEventListener('pointerup', release, true);
         window.addEventListener('pointercancel', cancel, true);
     }
-    function pointer(sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<unknown> | null {
+    function pointer(sample: RealSample, modifiers: Modifiers, event: PointerEvent, clicks = 1): PointerRoute<unknown> | null {
         cancelPending();
         const binding = manager.current;
         if (!ports.isCurrent() || !binding) return null;
@@ -101,10 +106,18 @@ export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBr
         // A press the editor keeps keeps focus too: the browser's mousedown default would move it to the board root, and the next
         // press on the text would then read as a blurred editor (measured: a drag inside the label dropped the typing focus).
         if (event.pointerType !== 'touch') event.preventDefault();
+        // The second click of a double-click whose first click opened this edit: a double-click on a text edits all of its words.
+        // Taken as a double-click inside an edit, it selected only the word under the pointer.
+        if (clicks === 2 && !handle && ports.openedByClick?.()) {
+            binding.editor.selectAll();
+            const still: Tool<unknown> = { id: 'text-selection', begin: first => ({ kind: 'node-edit', pointerIds: new Set([first.pointerId]),
+                update() {}, finish() {}, cancel() {} }) };
+            return { tool: still, context: undefined };
+        }
         const convert = (point: RealSample, keys: Modifiers): TextPointer => {
             const client = ports.worldToClient(point.x, point.y);
             return { id: point.pointerId, kind: point.source === 'touch' ? 'touch' : point.source === 'pen' ? 'pen' : 'mouse',
-                x: client.x, y: client.y, clicks: event.detail, shift: keys.shift, accel: keys.accel };
+                x: client.x, y: client.y, clicks, shift: keys.shift, accel: keys.accel };
         };
         const tool: Tool<unknown> = {
             id: 'text-selection',

@@ -217,6 +217,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   quote are `text/edit/rules.ts`; both are skipped inside code and while a backtick is open.
 - The formatting bar above a selection is `viewer/textFormatToolbar.ts`: it shows a format as on only when every
   character of the selection carries it. Its icons are Lucide data (see `PROVENANCE.md`).
+- Click runs are counted by `PointerAcquisition` (`RealSample.clicks` on a press's first sample; `MULTI_CLICK_MS`, wider
+  `MULTI_CLICK_CSS` for a pen): a pointerdown's `detail` is always 0. Inside an edit, 2 selects a word and 3 a paragraph, and a
+  drag or Shift-click after them extends by that unit (`text/edit/pointer.ts`); a double-click that opens a text selects all.
 - Cmd/Ctrl+K in a text edit finishes it and opens the palette (`text/edit/keys.ts`, `commandPalette` port). While editing,
   a press on another shape's text ends the edit and edits that text on release without a drag (`text/edit/inputBridge.ts`,
   `editOnRelease`); a press on the editing shape with focus elsewhere ends the edit so a drag moves the shape (`hasFocus`).

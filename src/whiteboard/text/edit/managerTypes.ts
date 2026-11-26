@@ -31,8 +31,9 @@ export interface TextInputBridge {
     type(text: string): boolean;
     enter(): boolean;
     doubleClick(clientX: number, clientY: number): boolean;
-    /** Close on click-away or return a gesture owner for selection inside the edited text. */
-    pointer(sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<unknown> | null;
+    /** Close on click-away or return a gesture owner for selection inside the edited text. `clicks` is the press's place in a
+     * run of clicks (2 for a double-click), counted by the board: a pointerdown's own `detail` is always 0. */
+    pointer(sample: RealSample, modifiers: Modifiers, event: PointerEvent, clicks?: number): PointerRoute<unknown> | null;
     /** Invalidate a deferred hit without closing an existing editor. */
     cancelPending(): boolean;
     flush(): void;
@@ -49,6 +50,9 @@ export interface TextInputRoutingPorts {
     isCurrent(): boolean;
     error(error: unknown): void;
     containsActive(clientX: number, clientY: number): boolean;
+    /** The open edit was started by a click on the selected text a moment ago and still has the caret that click put: a second
+     * click now completes a double-click on that text, which edits all of its words (catalogue S§12). */
+    openedByClick?(): boolean;
     hitHandle(clientX: number, clientY: number): 'anchor' | 'focus' | null;
     clientToWorld(clientX: number, clientY: number): { readonly x: number; readonly y: number };
     worldToClient(x: number, y: number): { readonly x: number; readonly y: number };

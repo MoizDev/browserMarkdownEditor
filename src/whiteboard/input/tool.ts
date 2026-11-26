@@ -22,6 +22,8 @@ export interface RealSample {
   readonly tiltX: number
   readonly tiltY: number
   readonly twist: number
+  /** On a press's first sample only: its place in a run of clicks (2 for a double-click), counted by `PointerAcquisition`. */
+  readonly clicks?: number
 }
 
 /** Physical samples carry their original surface mapping; keyboard samples use the current camera. */
@@ -70,3 +72,7 @@ export function sameInputToken(a: InputToken, b: InputToken): boolean {
  * measured, trackpad and mouse clicks drift 1-8 px over an 80-300 ms press, and at the old 4 px a
  * Note or Text click became a 2 px drag-created note and a click inside a selection became a move. */
 export const CLICK_SLOP_CSS = 8
+/** Presses within this time of the one before, close enough to it, make one run of clicks (the platforms' default double-click time). */
+export const MULTI_CLICK_MS = 500
+/** How far apart the presses of one run may land, by pointer: a pen's tip lands a few px off on every tap, a finger more. */
+export const MULTI_CLICK_CSS: Readonly<Record<RealSample['source'], number>> = { mouse: CLICK_SLOP_CSS, pen: 16, touch: 24, keyboard: 0 }

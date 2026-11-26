@@ -5,6 +5,7 @@ export interface TextPointer {
     readonly kind: 'mouse' | 'pen' | 'touch';
     readonly x: number;
     readonly y: number;
+    /** 1 for a click, 2 for the second of a double-click, 3 and on for a triple-click (counted by the board, attach.ts). */
     readonly clicks: number;
     readonly shift: boolean;
     readonly accel: boolean;
@@ -30,6 +31,9 @@ export class TextPointerSelection {
     private startY = 0;
     private hold: ReturnType<typeof setTimeout> | null = null;
     private handle: 'anchor' | 'focus' | null = null;
+    /** The word or paragraph a double- or triple-click selected, while that selection stands: a drag from it, or a Shift-click
+     * after it, extends by whole words or paragraphs and always keeps it, as a text field does. */
+    private unit: { readonly granularity: 'word' | 'block'; readonly from: number; readonly to: number; readonly made: EditSelection } | null = null;
     constructor(private readonly services: PointerSelectionServices) {}
 
     down(pointer: TextPointer, handle: 'anchor' | 'focus' | null = null): void {
@@ -46,6 +50,7 @@ export class TextPointerSelection {
             return;
         }
         if (pointer.kind === 'touch') {
+            this.unit = null;
             this.anchor = hit;
             this.services.setSelection({ anchor: hit, focus: hit });
             this.services.touchHandles(false);
@@ -60,25 +65,44 @@ export class TextPointerSelection {
             }, 500);
             return;
         }
-        if (pointer.clicks >= 3) {
-            const selection = this.services.block(hit);
-            this.anchor = selection.anchor;
+        if (pointer.clicks >= 2 && !pointer.shift) {
+            const granularity = pointer.clicks >= 3 ? 'block' : 'word';
+            const selection = granularity === 'block' ? this.services.block(hit) : this.services.word(hit);
+            const from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
+            this.anchor = from;
+            this.unit = { granularity, from, to, made: selection };
             this.services.setSelection(selection);
-        } else if (pointer.clicks === 2) {
-            const selection = this.services.word(hit);
-            this.anchor = selection.anchor;
-            this.services.setSelection(selection);
-        } else {
-            this.anchor = pointer.shift ? this.services.selection().anchor : hit;
-            this.services.setSelection({ anchor: this.anchor, focus: hit });
+            return;
         }
+        // Shift extends what is selected, by the unit it was made with while that selection still stands.
+        const kept = pointer.shift ? this.standingUnit() : null;
+        if (kept) { this.unit = kept; this.extend(hit); return; }
+        this.unit = null;
+        this.anchor = pointer.shift ? this.services.selection().anchor : hit;
+        this.services.setSelection({ anchor: this.anchor, focus: hit });
+    }
+    /** The unit, while what is selected is still what the multi-click (or a drag or Shift-click from it) selected last. */
+    private standingUnit() {
+        const unit = this.unit, now = this.services.selection();
+        return unit && now.anchor === unit.made.anchor && now.focus === unit.made.focus ? unit : null;
+    }
+    /** From the unit first selected to the whole unit at `hit`, anchored at the first unit's far side. */
+    private extend(hit: number): void {
+        const unit = this.unit!;
+        const there = unit.granularity === 'block' ? this.services.block(hit) : this.services.word(hit);
+        const thereFrom = Math.min(there.anchor, there.focus), thereTo = Math.max(there.anchor, there.focus);
+        const selection = hit < unit.from ? { anchor: unit.to, focus: Math.min(thereFrom, unit.from) } : { anchor: unit.from, focus: Math.max(thereTo, unit.to) };
+        this.anchor = selection.anchor;
+        this.unit = { ...unit, made: selection };
+        this.services.setSelection(selection);
     }
 
     move(pointer: TextPointer): void {
         if (pointer.id !== this.active) return;
         if (Math.hypot(pointer.x - this.startX, pointer.y - this.startY) > 5) this.clearHold();
         const focus = this.services.hit(pointer.x, pointer.y);
-        this.services.setSelection(this.handle === 'anchor' ? { anchor: focus, focus: this.anchor } : { anchor: this.anchor, focus });
+        if (this.unit && !this.handle) this.extend(focus);
+        else this.services.setSelection(this.handle === 'anchor' ? { anchor: focus, focus: this.anchor } : { anchor: this.anchor, focus });
         this.services.autoScroll(pointer.x, pointer.y);
     }
 

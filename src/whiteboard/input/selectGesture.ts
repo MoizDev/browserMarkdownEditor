@@ -21,7 +21,8 @@ export interface BoardSelectGestureContext extends SelectToolContext {
     /** A Cmd press on an arrow endpoint or label brushes, even though the node under it is the selected arrow (catalogue S§11.1). */
     brushOverHandle?(sample: RealSample): boolean;
     /** A click, without a drag, on the sole selected text edits it with the caret where the press landed (catalogue S§4.2). */
-    editTextAt?(node: NodeId, point: Vec2, pointerId: number): void | Promise<void>;
+    /** `clicks` is the press's place in a run of clicks: the second click of a double-click edits all the text, not at a caret. */
+    editTextAt?(node: NodeId, point: Vec2, pointerId: number, clicks: number): void | Promise<void>;
     /** The hold a released box keeps until its selection lands (a `settling` gesture hold: the next press is admitted). */
     settle(): () => void;
     /** Finished work that a new press, Escape or another key does not cancel; the view's end does. */
@@ -278,7 +279,7 @@ class BoardSelectGesture implements GestureOwner {
                     else {
                         const sole = this.hit !== null && !this.keys.alt && this.initial.length === 1 && this.initial[0] === this.hit;
                         this.context.selection.replace([this.hit]);
-                        if (sole) void this.context.editTextAt?.(this.hit, { x: this.down.x, y: this.down.y }, this.down.pointerId);
+                        if (sole) void this.context.editTextAt?.(this.hit, { x: this.down.x, y: this.down.y }, this.down.pointerId, this.down.clicks ?? 1);
                     }
                 }
                 this.cleanup(); return;

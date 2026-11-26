@@ -1,4 +1,4 @@
-import type { Modifiers, RealSample } from './tool'
+import { CLICK_SLOP_CSS, MULTI_CLICK_CSS, MULTI_CLICK_MS, type Modifiers, type RealSample } from './tool'
 
 export interface PresentedMapping {
   readonly time: number
@@ -99,6 +99,9 @@ function tuple(event: PointerEvent): string {
 export class PointerAcquisition {
   private readonly contacts = new Map<number, Contact>()
   private sequence = 0
+  /** The last primary press, for counting runs of clicks: a pointerdown's `detail` is always 0 in Chromium, so the board counts
+   * them itself. Read from `detail`, a double- or triple-click inside a text being edited never selected a word or a paragraph. */
+  private press: { readonly id: number; readonly kind: string; readonly x: number; readonly y: number; readonly time: number; readonly clicks: number; dragged: boolean } | null = null
   private readonly previousTouchAction: string
   private disposed = false
 
@@ -190,7 +193,7 @@ export class PointerAcquisition {
     // Only a new press waits; a contact already down keeps its mappings, and the chrome and keys are not involved.
     if (!this.mappings.ready()) return
     try {
-      const sample = this.sample(event)
+      const sample = { ...this.sample(event), clicks: this.clicks(event) }
       if (!this.sink.down(sample, modifiers(event, this.mac), event)) return
       const contact: Contact = { id: event.pointerId, watermark: event.timeStamp, suffix: [tuple(event)], rawSinceMove: new Map() }
       this.contacts.set(event.pointerId, contact)
@@ -198,7 +201,19 @@ export class PointerAcquisition {
     } catch (error) { this.sink.error?.(error, event.pointerId) }
   }
 
+  /** Only a press that stayed a click continues a run; one from another kind of pointer, too late or too far away starts one. */
+  private clicks(event: PointerEvent): number {
+    if (event.button !== 0) return 1
+    const previous = this.press, source = event.pointerType === 'pen' || event.pointerType === 'touch' ? event.pointerType : 'mouse'
+    const run = !!previous && !previous.dragged && previous.kind === source && event.timeStamp >= previous.time
+      && event.timeStamp - previous.time <= MULTI_CLICK_MS && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= MULTI_CLICK_CSS[source]
+    this.press = { id: event.pointerId, kind: source, x: event.clientX, y: event.clientY, time: event.timeStamp, clicks: run ? previous.clicks + 1 : 1, dragged: false }
+    return this.press.clicks
+  }
   private process(event: PointerEvent, raw: boolean): void {
+    const press = this.press
+    if (press && !press.dragged && press.id === event.pointerId && event.buttons
+      && Math.hypot(event.clientX - press.x, event.clientY - press.y) >= CLICK_SLOP_CSS) press.dragged = true
     const contact = this.contacts.get(event.pointerId)
     if (!contact) { if (!raw) this.sink.hover?.(event); return }
     if (raw && event.pointerType !== 'pen' && event.pointerType !== 'mouse') return

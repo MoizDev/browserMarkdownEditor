@@ -80,7 +80,7 @@ export interface BoardSelectServicesOptions {
     readonly inputFrames: { schedule(callback: () => void, onDrop?: () => void): () => void };
     readonly editSticky: (id: NodeId) => void | Promise<void>;
     /** A click on the sole selected text: edits it with the caret at the press (see `BoardSelectGestureContext.editTextAt`). */
-    readonly editTextAt?: (id: NodeId, point: Vec2, pointerId: number) => void | Promise<void>;
+    readonly editTextAt?: (id: NodeId, point: Vec2, pointerId: number, clicks: number) => void | Promise<void>;
     /** The embed and link-card chips' actions; absent, the cards draw no chips. */
     readonly cards?: BoardCardActions | null;
     readonly alwaysSnap?: () => boolean;

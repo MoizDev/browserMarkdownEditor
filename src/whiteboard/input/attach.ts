@@ -343,7 +343,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         return { tool: { id: zoomBrushTool.id, begin: (point, keys) => zoomBrushTool.begin(point, keys, context) }, context: undefined }
       }
       if (editable() && services.editing() && services.textInput) {
-        const textRoute = services.textInput.pointer(sample, modifiers, event)
+        const textRoute = services.textInput.pointer(sample, modifiers, event, sample.clicks ?? 1)
         if (textRoute) return textRoute
       }
       if ((mode === 'view' || (editable() && choice.id === 'select')) && !modifiers.accel && !modifiers.alt && !modifiers.shift) {

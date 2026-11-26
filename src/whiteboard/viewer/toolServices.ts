@@ -138,7 +138,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), canMutateView: () => options.editable() && !runtime.session.isReadOnly,
         inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap, wrapMode: options.wrapMode, cropFromHandle: options.cropFromHandle,
-        editSticky: async id => { await text.editText(id); }, editTextAt: (id, point, pointerId) => text.editTextAt(id, point, pointerId), cards: ui.cards, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu,
+        editSticky: async id => { await text.editText(id); }, editTextAt: (id, point, pointerId, clicks) => text.editTextAt(id, point, pointerId, clicks), cards: ui.cards, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu,
         onKeptLocked: kept => ui.notice?.(keptLockedMessage(kept.length)) });
     // Hover and edit targets from real callbacks: the text editor reports the node it holds, and the
     // pointer's hover is hit-tested by the same point query the select tool uses. Changes invalidate the view.

@@ -141,7 +141,9 @@ draws differently because a GPU exists.
   epoch every frame and cancelled CPU colour jobs forever). Use `pagePresentation`/`projectPage` for paint, overlays
   and measurement alike.
 - `encode`/`submit` may return null: never acknowledge a present or advance overlays without a complete current
-  frame. Budget deferrals requeue; external waits wake on completion or a real deadline, never by polling frames.
+  frame. A layer is acknowledged under the token of the frame it DREW in: canvas2d's inverted picture is drawn band by band
+  over several frames, so its composite names that frame per layer (`PresentedLayerRevision.token`), and that job's own
+  `2d-*` continuation frames never supersede it (`compositor2d.ts` `encode`). Budget deferrals requeue; external waits wake on completion or a real deadline, never by polling frames.
 - **Camera motion is the scheduler's.** `glideTo(target, ms)` is on `PlatformPane` and on the `ScheduledPaneLease`:
   the scheduler's own frame loop moves the camera, and each glide cancels the one before it. `animatePan(delta)` is a
   glide of a pan delta over `GLIDE_MS` (320 ms; the board's Space+arrow paging and its pan use it). Reduced motion, a

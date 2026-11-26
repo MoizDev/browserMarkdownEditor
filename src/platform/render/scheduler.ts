@@ -36,6 +36,9 @@ export interface ScheduledFrame {
 export interface PresentedLayerRevision {
     readonly layer: Layer;
     readonly sceneRevision: number;
+    /** The frame the layer drew this picture under, when it is an earlier one than the frame presenting it (canvas2d's inverted
+     * picture is drawn band by band over several frames): its acknowledgement carries that frame's token, never the present's. */
+    readonly token?: FrameToken;
 }
 
 /** Completion is a nonblocking predicate supplied by the compositor/backend (design:424). */
@@ -1121,7 +1124,8 @@ export class FrameScheduler {
                     }
                     item.work.entry.presented = { token: item.work.frame.token, view: item.work.frame.view, geometry: item.work.geometry };
                     const drawn = Object.freeze(submission.drawn.filter(revision => revision.layer.onFramePresented !== undefined)
-                        .map(revision => Object.freeze({ layer: revision.layer, sceneRevision: revision.sceneRevision })));
+                        .map(revision => Object.freeze({ layer: revision.layer, sceneRevision: revision.sceneRevision,
+                            ...(revision.token ? { token: revision.token } : {}) })));
                     // Preserve a class-backed completion predicate's receiver; object spread would drop
                     // prototype methods and could acknowledge an unfinished submission one frame early.
                     const completed = submission.completed?.bind(submission);
@@ -1400,7 +1404,7 @@ export class FrameScheduler {
                     if (!ack.entry.layers.includes(revision.layer) || !Number.isSafeInteger(revision.sceneRevision) || revision.sceneRevision < 0) {
                         throw new RangeError('Submission revision does not belong to the registered layers');
                     }
-                    revision.layer.onFramePresented?.(revision.sceneRevision, ack.token);
+                    revision.layer.onFramePresented?.(revision.sceneRevision, revision.token ?? ack.token);
                 }
             });
         }

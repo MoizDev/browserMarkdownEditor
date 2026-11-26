@@ -87,6 +87,8 @@ interface ColourJob {
     colour: ColourGroup2d | null;
     admission: FrameBudget | null;
     timer: ReturnType<typeof setTimeout> | null;
+    /** The frame whose preparation the document layers last drew a band under: the picture the job shows is theirs from it. */
+    drawnToken: FrameToken | null;
 }
 const noMirror: MirrorPresentation = Object.freeze({ presented: false, complete: false, sharp: false, usedMirror: false });
 const tileSize = POLICY.tileInteriorPixels;
@@ -184,6 +186,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private presentedKey = '';
     /** Frames whose layers reported a change (see encode): each one repaints, whatever the scene key says. */
     private drawn = 0;
+    /** Whether a document layer needed a frame when this frame's scene was frozen (snapshot). */
+    private documentWork = false;
     private missing = false;
     private busy = 0;
     private cropsPending = 0;
@@ -280,6 +284,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         if (this.scene && this.scene.view.epoch !== view.epoch) this.cancelJob();
         this.scene = { view, layers: this.layers, layout: this.layout, appearance: this.appearance, metrics: this.metrics, serial: this.serial };
         this.budget = null;
+        // Read before any layer prepares: a document layer with work to do this frame may draw a newer picture in it (see encode).
+        this.documentWork = this.layers.some(binding => binding.group === 'document' && binding.layer.needsFrame());
     }
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void {
         this.check();
@@ -461,7 +467,15 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
 
     encode(frame: ScheduledFrame, changed: boolean): ScheduledEncoding | null {
         this.check();
-        if (changed) this.drawn++;
+        // The inversion job's own frames are not a newer picture. One job spans several frames (a band is drawn, coloured between
+        // frames, copied in a later one), each asked for by the job itself and each a change to the scheduler: the full damage its
+        // invalidation carries, and layers that cannot confirm a picture no frame presented. Counted, every job was superseded by
+        // its own frames, presented, and started again (measured, canvas2d inverted PDF: a new job every ~10 frames, 6 presents a
+        // second for good; every frame of a job carried only 2d-image-admission, 2d-document-prepare, 2d-colour-ready). Any other
+        // cause, or a document layer with work of its own this frame, may draw a newer picture, and still supersedes the job.
+        const continuation = !!this.job && this.job.stage !== 'composited' && frame.reasons.length > 0
+            && frame.reasons.every(reason => reason.startsWith('2d-')) && !this.documentWork;
+        if (changed && !continuation) this.drawn++;
         this.lastFrame = frame;
         const snapshot = this.scene;
         const budget = this.budget;
@@ -494,10 +508,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (this.job && (this.job.key !== key || this.job.stage === 'composited' && this.job.paint !== paint)) this.cancelJob();
             // What the presented picture reflects: the paint key of the job that drew it, which can be older than this frame's.
             let shown = paint;
+            // The frame the document layers drew this picture under, when that is an earlier frame than this one (an inverted job's).
+            let documentToken: FrameToken | null = null;
             if (this.presentedKey !== paint) {
                 if (snapshot.appearance.inverted && snapshot.layers.some(layer => layer.group === 'document')) {
                     if (!this.paintInverted(snapshot, frame, back, key, paint)) return null;
                     shown = this.job!.paint;
+                    documentToken = this.job!.drawnToken;
                     // A job that finished at an older paint key shows a picture this frame's paint would repaint: ask for the next
                     // frame now, since nothing else may request one while the scene is idle.
                     if (shown !== paint) this.options.invalidate('2d-paint-superseded');
@@ -533,7 +550,15 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     if (tally) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, view: presentView(frame.view), backend: 'canvas2d',
                         layersComplete: availability.every(item => item.complete), canvas: this.surface, standIns: tally.standIns,
                         standInsRaster: tally.standInsRaster, holes: tally.holes, zooming, refusal: null });
-                    return { drawn: frame.layers.map(item => ({ layer: item.layer, sceneRevision: item.sceneRevision })),
+                    // A composited job's document layers drew its bands in earlier frames, none in this one: each is told the picture
+                    // presented under the frame it drew in. Told under this frame's, the board found no draw of its own there, never
+                    // confirmed a picture, and Annotate stayed under "Loading PDF…" for good (measured, canvas2d inverted PDF: every
+                    // acknowledgement of the board's two bands missed its draw record, the board's presented picture stayed null).
+                    const earlier = documentToken ? { token: documentToken,
+                        layers: new Set(snapshot.layers.filter(binding => binding.group === 'document').map(binding => binding.layer)) } : null;
+                    return { drawn: frame.layers.map(item => earlier?.layers.has(item.layer)
+                        ? { layer: item.layer, sceneRevision: item.sceneRevision, token: earlier.token }
+                        : { layer: item.layer, sceneRevision: item.sceneRevision }),
                         ...(__BME_BENCH__ ? { commitObservation: () => {
                             if (__BME_BENCH__ && benchmarkDomain) benchmarkCanvas?.managers.get(this)?.observe(back.native, frame, benchmarkDomain.benchmarkPaintDomain(snapshot, frame));
                         } } : {}) } satisfies ScheduledSubmission;
@@ -569,6 +594,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
      * never the display: otherwise a multi-tile frame larger than one admission could never progress.
      */
     prepareMirror(frame: MirrorFrame<T>): PreparedMirrorPresentation {
+        // An inversion job drawing the scene owns back, where the mirror's copy is assembled, so that copy cancelled the job in every
+        // frame it ran and the job never passed its first band: Invert pressed in Original, or an inverted PDF opened in a 900×650
+        // window, framed at 60 Hz with the old picture (or none) for good (measured, canvas2d: the copy missed its own canvas and
+        // cancelled the job 117 frames of 117 in 2 s). The job's picture is the current one; the mirror stands in only while none runs.
+        if (this.job && this.job.stage !== 'composited') return { submit: () => noMirror, discard: () => {} };
         const back = this.buffers.get('back');
         const generation = this.generation;
         const key = JSON.stringify([frame.revision, frame.view, this.serial, generation]);
@@ -860,7 +890,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (!band) { this.options.invalidate('2d-document-buffer'); return false; }
             opaque(back.native, snapshot.appearance);
             if (__BME_BENCH__ && benchmarkDomain) benchmarkCanvas?.managers.get(this)?.begin(back.native, benchmarkDomain.benchmarkPaintDomain(snapshot, frame));
-            this.job = { key, paint, snapshot, frame, back, band, y: 0, stage: 'render', colour: null, admission: null, timer: null };
+            this.job = { key, paint, snapshot, frame, back, band, y: 0, stage: 'render', colour: null, admission: null, timer: null, drawnToken: null };
         }
         const job = this.job;
         if (job.stage === 'colour') return false;
@@ -883,6 +913,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             this.clear(job.band, 0, job.y);
             this.paintBindings(snapshot.layers.filter(layer => layer.group === 'document'), job.band, snapshot, frame);
             if (this.missing) { this.options.invalidate('2d-document-prepare'); return false; }
+            job.drawnToken = frame.token;
             job.colour = createColourGroup2d(job.band.native, { x: 0, y: 0, width: job.band.canvas.width, height: job.band.canvas.height });
             job.stage = 'colour'; this.scheduleColour(job);
             return false;
@@ -1058,12 +1089,17 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         if (!back || !(image instanceof ImageBitmap)) return !!back;
         // A larger image is drawn in crops, which have their own preparation.
         if (image.width * image.height > wholeImagePixels) return true;
+        // An inverted scene draws its document layers into the inversion job's band, never into back: the use is the band's. Made in
+        // back, every tile an inverted page asked for was admitted where nothing draws it and missed in the band, so each band waited
+        // on admissions the frame had already spent (measured, canvas2d inverted PDF over 1.5 s: back's uses admitted 72 times and
+        // refused 324, the band's admitted 18 and refused 162; 4,790 refused claims in 6 s).
+        const target = this.scene?.appearance.inverted ? this.buffers.get('document') ?? back : back;
         this.pendingSources.add(image);
-        let use = back.images.get(image);
+        let use = target.images.get(image);
         const made = !use;
         if (!use) {
             use = { source: image, version: '', bytes: image.width * image.height * 4, resident: false, lease: null, admission: null };
-            back.images.set(image, use);
+            target.images.set(image, use);
         }
         if (use.resident || use.admission !== null && use.admission.frameId === this.budget?.frameId) return true;
         // Admitted now when this frame's upload allowance still holds it. The preparation's admission pass runs before the layers, so a

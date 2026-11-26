@@ -1,5 +1,5 @@
 import type { NodeSetOp } from '../change/ops';
-import { SIZES } from '../model/styles';
+import { ARROWHEADS, SIZES } from '../model/styles';
 
 const NUMBER_KEYS = new Set(['x', 'y', 'rotation', 'page', 'w', 'h', 'growY', 'sx', 'sy', 'scale', 'width', 'bend', 'elbowMid', 'labelScale']);
 const BOOLEAN_KEYS = new Set(['flipX', 'flipY', 'autoSize']);
@@ -44,6 +44,12 @@ export async function copyProjectedValue(op: NodeSetOp, tick: () => Promise<void
         const c = value as { x0?: unknown; y0?: unknown; x1?: unknown; y1?: unknown; circle?: unknown };
         if (!finite(c.x0) || !finite(c.y0) || !finite(c.x1) || !finite(c.y1) || typeof c.circle !== 'boolean') throw new TypeError('Invalid projected crop');
         return Object.freeze({ x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1, circle: c.circle });
+    }
+    // An arrowhead changes the arrow's reach (a closed head shortens its body), so a head toggle is projected like its ends.
+    // Refused here, double-clicking an arrow's end handle never changed its head and showed this error instead.
+    if (key === 'headStart' || key === 'headEnd') {
+        if (typeof value !== 'string' || !(ARROWHEADS as readonly string[]).includes(value)) throw new TypeError(`Invalid projected ${key}`);
+        return value;
     }
     if (key === 'startAttach' || key === 'endAttach') return attachment(value);
     if (key === 'start' || key === 'end') {

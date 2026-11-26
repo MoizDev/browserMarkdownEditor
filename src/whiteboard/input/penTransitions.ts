@@ -42,6 +42,8 @@ export class PenContactTransitions {
     constructor(readonly pointerId: number, initial: PenContactMode, private readonly host: PenTransitionHost) {
         this.mode = initial; this.shadowMode = initial;
     }
+    /** The contact has ended (its tip lifted, or it was interrupted) and still holds the input while the work before it lands. */
+    get lifted(): boolean { return this.terminal && !this.closed; }
     move(samples: readonly RealSample[], modifiers: Modifiers, event: PointerEvent): void {
         if (this.terminal || this.closed) return;
         const batch: Batch = { type: 'move', samples, modifiers, event };

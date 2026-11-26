@@ -103,7 +103,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   delegated ink (`delegatedInk.ts`) uses the browser's ink presenter when present. Cmd/Ctrl held over Draw or
   Highlight is a temporary whole-item eraser (`input/attach.ts`, `holdAccelEraser`), never the chosen tool.
 - Pen mode (`ToolState.penMode`, `penTransitions.ts`) routes a stylus to ink or eraser while touch pans. The eraser
-  removes whole items (`input/basicTools.ts`); there is no partial erase.
+  removes whole items (`input/basicTools.ts`); there is no partial erase. A pen contact whose eraser end changed holds the
+  input past its lift until its erase lands; a press meanwhile (not a finger) is queued and replayed in order when it ends,
+  resolved with the tool chosen at the press (`pointerRouter.ts` `queued`), never refused. Its mode starts from the eraser bit.
 - The laser (`input/laserTrail.ts`) is a session fade, never saved; Escape clears a visible trail before it
   returns the tool to Select (`input/attach.ts`).
 - A bar press dragged off the bar goes to `ToolState.beginChromeDrag` → `input/chromeDrag.ts` (router-owned): the

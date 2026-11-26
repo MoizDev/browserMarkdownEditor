@@ -275,7 +275,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const edgeScroll = new EdgeScroll({ surface: view.surface, camera: view.camera, mappings: view.mappings, router, token: view.token,
     mac: services.mac, current, enabled: () => services.edgeScrolling?.() ?? true, cameraChanged: services.cameraChanged,
     onInputFrame: callback => view.wet.onInputFrame(callback), invalidate: () => view.wet.invalidate() })
-  const pointer = new PointerRouter<unknown>({
+  const pointer = new PointerRouter<unknown, ToolStateSnapshot>({
     root: view.surface, mappings: view.mappings, token: view.token, router, mac: services.mac, current,
     sampleChanged: sample => { edgeScroll.sample(sample); services.pointerChanged?.(sample) },
     realEvent: (sample, event) => delegated?.observe(event, sample),
@@ -284,11 +284,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cancelPending: services.cancelPendingGestures,
     hover: services.hover,
     claim, releaseClaim,
-    resolve(sample, modifiers, event) {
+    pressed: () => services.tools.getSnapshot(),
+    resolve(sample, modifiers, event, pressed) {
       if (!current() || (sample.source === 'touch' && !touchAdmission.get(sample.pointerId))) return null
       // Pen mode takes only the pen: a mouse or a palm pressed on the canvas is rejected before any state changes (catalogue I§5.2).
       if (touch.penMode && sample.source !== 'pen') return null
-      start = services.tools.getSnapshot()
+      // A press queued behind a contact still landing is resolved after it, with the tool chosen when it was pressed: a tool picked
+      // from the bar meanwhile would otherwise turn a stroke into whatever that tool does.
+      start = pressed ?? services.tools.getSnapshot()
       activeSource = sample.source
       const choice = start.active
       completeTool = false

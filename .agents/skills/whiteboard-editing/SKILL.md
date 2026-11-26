@@ -77,7 +77,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   **A paste (drop, duplicate) the person asked for always lands**: nothing cancels it but its document's end (the import
   adapter's `cancelPending` only closes the file picker), ⌘V during a gesture is taken, and it has no revision fence. Its
   prepared ops are carried onto the board as it is when they land (`change/insertionLanding.ts` `rebaseInsertion`: on top,
-  ids, frame and pictures re-checked); only what that cannot follow (`InsertionStale`) prepares it again. It selects what it
+  ids, frame and pictures re-checked), and its candidate is measured on the board as it is, again whenever a commit moves the
+  board mid-measure (`measureInsertion`, `landedNodes`); only what that cannot follow (`InsertionStale`) prepares it again. It selects what it
   placed unless the selection changed since ⌘V (`selectLanded`), and pans to it only if the view did not move. Keys pressed
   after it wait for it (`pasteLanding`, any view's), as do the chrome's Undo and Redo (`afterPaste`), and a press queued
   behind such a key waits on `afterKeys`, never on the gesture FIFO alone (that spun in microtasks).

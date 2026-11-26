@@ -1,5 +1,6 @@
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import { acquireBoardGeometryScope } from '../commands/geometryScope';
+import type { BoardGeometryScope } from '../commands/geometryScope';
+import { landedNodes, measureInsertion } from '../change/insertionLanding';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardClipboardAcquisition } from '../host/clipboardAcquisition';
 import { inspectMedia } from '../media/inspect';
@@ -64,7 +65,7 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
     check();
     const projected = await options.frame.projectHTML(options.html, context.signal);
     const leases: MediaLease[] = [];
-    let scope: Awaited<ReturnType<typeof acquireBoardGeometryScope>> | undefined;
+    let scope: BoardGeometryScope | undefined;
     try {
         check();
         const refused = projected.refusedImages.map(item => ({ ...item }));
@@ -116,15 +117,16 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
             color: style.color, size: style.size, font: style.font, align: style.textAlign, autoSize: true, w: 1, scale: 1 }) : undefined;
         let textBounds: { x: number; y: number; width: number; height: number } | undefined;
         if (textNode) {
-            let candidate = createAddedBoardDoc(doc, [textNode]);
-            scope = await acquireBoardGeometryScope(runtime, [textNode.id], { doc: candidate, signal: context.signal, current: () => { check(); return true; }, cooperate }); check();
+            const measure = (node: Node) => measureInsertion(runtime, [node.id], () => createAddedBoardDoc(doc, landedNodes(doc, [node])),
+                { signal: context.signal, check, cooperate });
+            scope = await measure(textNode); check();
             const prepared = runtime.render.text.prepareNow(textNode, { revision: `html:${textNode.id}:${revision}` });
             if (!prepared) throw new Error('HTML text layout is unavailable');
             const width = Math.max(1, prepared.paint.box.w);
             if (!Number.isFinite(width)) throw new Error('HTML text layout is invalid');
             textNode = { ...textNode, ...pastedTextFit(width, textNode.text.blocks.length, target.viewport.w) };
-            scope.release(); scope = undefined; candidate = createAddedBoardDoc(doc, [textNode]);
-            scope = await acquireBoardGeometryScope(runtime, [textNode.id], { doc: candidate, signal: context.signal, current: () => { check(); return true; }, cooperate }); check();
+            scope.release(); scope = undefined;
+            scope = await measure(textNode); check();
             textBounds = scope.logicalBounds(textNode.id); scope.release(); scope = undefined;
         }
         const height = Math.max(textBounds?.height ?? 0, ...images.map(item => item.height));

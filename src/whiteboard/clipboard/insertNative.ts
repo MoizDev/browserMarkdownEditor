@@ -2,8 +2,8 @@ import { pageAt } from '../../platform/render/pageStack';
 import type { Op } from '../change/ops';
 import { normalizedRotation, worldPose } from '../change/coordinates';
 import { isLocked } from '../change/commands';
-import { insertionBasis, rebaseInsertion, selectLanded } from '../change/insertionLanding';
-import { acquireBoardGeometryScope } from '../commands/geometryScope';
+import { InsertionStale, insertionBasis, landedNodes, measureInsertion, rebaseInsertion, selectLanded } from '../change/insertionLanding';
+import type { BoardGeometryScope } from '../commands/geometryScope';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import type { BoardClipboardAcquisition } from '../host/clipboardAcquisition';
 import type { BoardRuntime } from '../host/runtime';
@@ -57,14 +57,15 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
             || !doc.sheets.has(targetSheet) || runtime.selection.getSnapshot().sheet !== targetSheet) throw new DOMException('Clipboard target became stale', 'AbortError');
     };
     const cooperate = async () => { check(); await (options.cooperate?.() ?? yieldToHost()); check(); };
-    let geometry: Awaited<ReturnType<typeof acquireBoardGeometryScope>> | undefined;
+    let geometry: BoardGeometryScope | undefined;
     try {
         if (!(samples instanceof SampleStore) || session.samples !== samples || !(acquisition.samples instanceof SampleStore)) throw new TypeError('Clipboard insertion requires session-owned sample stores');
         check();
         const parent = placement.parent;
         if (!isSheetParent(doc, parent)) {
             const frame = doc.nodes.get(parent as NodeId);
-            if (!frame || frame.kind !== 'frame' || sheetOf(doc, frame.id) !== targetSheet || isLocked(doc, frame)) throw new Error('Clipboard target frame is unavailable');
+            // Its frame removed or locked since the paste was placed (an erase, an undo meanwhile): placed again, on the board as it is.
+            if (!frame || frame.kind !== 'frame' || sheetOf(doc, frame.id) !== targetSheet || isLocked(doc, frame)) throw new InsertionStale('the frame it goes into was removed or locked');
         } else if (parent !== targetSheet) throw new Error('Clipboard target sheet changed');
         const sourceSheet = acquisition.payload.from.sheet;
         const sourceRoots = source.children.get(sourceSheet) ?? [];
@@ -150,12 +151,14 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
         for (const op of media.mediaOps) {
             if (op.t !== 'media') throw new Error('Unexpected clipboard media operation');
             if (op.op === 'add') {
-                if (doc.media.has(op.entry.id) || mediaEntries.has(op.entry.id)) throw new Error('Clipboard media already exists');
+                // A picture added meanwhile (the same picture pasted just before, landing first) is no fault: it is prepared again.
+                if (doc.media.has(op.entry.id)) throw new InsertionStale('a picture it adds is already on the board');
+                if (mediaEntries.has(op.entry.id)) throw new Error('Clipboard media already exists');
                 mediaEntries.set(op.entry.id, op.entry);
                 for (const raw of extRawValues(op.entry.ext)) await rawDelta(raw, 1, op.entry.id);
             } else if (op.op === 'set-file' && !('restoreExt' in op)) {
                 const old = mediaEntries.get(op.id) ?? doc.media.get(op.id);
-                if (!old) throw new Error('Clipboard media location has no entry');
+                if (!old) throw new InsertionStale('a picture it uses was removed');
                 const rawFile = old.ext?.raw.get('file');
                 if (rawFile !== undefined) await rawDelta(rawFile, -1, op.id);
                 let ext = old.ext;
@@ -163,8 +166,9 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
                 mediaEntries.set(op.id, { ...old, file: op.file, ext });
             } else throw new Error('Unexpected clipboard media operation');
         }
-        const candidate = createAddedBoardDoc(doc, additions, [...mediaEntries.values()], preserved);
-        geometry = await acquireBoardGeometryScope(runtime, roots, { doc: candidate, signal, current: () => { check(); return true; }, cooperate });
+        geometry = await measureInsertion(runtime, roots, () => createAddedBoardDoc(doc, landedNodes(doc, additions), [...mediaEntries.values()], preserved),
+            { signal, check, cooperate });
+        const candidate = geometry.doc;
         check();
         let deepest = -Infinity;
         const worldBounds = new Map<NodeId, ReturnType<typeof geometry.logicalBounds>>();

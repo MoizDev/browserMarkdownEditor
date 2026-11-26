@@ -1,9 +1,9 @@
 import { pageAt } from '../../platform/render/pageStack';
 import { normalizedRotation, worldPose } from '../change/coordinates';
 import { isLocked } from '../change/commands';
-import { insertionBasis, rebaseInsertion, selectLanded } from '../change/insertionLanding';
+import { insertionBasis, landedNodes, measureInsertion, rebaseInsertion, selectLanded } from '../change/insertionLanding';
 import type { Op } from '../change/ops';
-import { acquireBoardGeometryScope } from '../commands/geometryScope';
+import type { BoardGeometryScope } from '../commands/geometryScope';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import type { BoardRuntime } from '../host/runtime';
 import { isSheetParent } from '../model/doc';
@@ -75,7 +75,9 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
     };
     const cooperate = async () => { check(); await (options.cooperate?.() ?? yieldToHost()); check(); };
     const style = { ...doc.ui.next }, content = options.content;
-    let scope: Awaited<ReturnType<typeof acquireBoardGeometryScope>> | undefined;
+    let scope: BoardGeometryScope | undefined;
+    const measure = (node: Node, preserved: ReadonlyMap<MediaId, number>) =>
+        measureInsertion(runtime, [node.id], () => createAddedBoardDoc(doc, landedNodes(doc, [node]), [], preserved), { signal, check, cooperate });
     try {
         check();
         if (options.intent === 'duplicate') throw new Error('External content cannot be duplicated');
@@ -150,8 +152,7 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             if (raw === null) await cooperate();
             else { await scanRawMediaIncremental(raw, media => preserved.set(media, (preserved.get(media) ?? 0) + 1), cooperate); check(); }
         }
-        let candidate = createAddedBoardDoc(doc, [node], [], preserved);
-        scope = await acquireBoardGeometryScope(runtime, [id], { doc: candidate, signal, current: () => { check(); return true; }, cooperate });
+        scope = await measure(node, preserved);
         check();
         if (node.kind === 'text') {
             const prepared = runtime.render.text.prepareNow(node, { revision: `clipboard:${id}:${revision}` });
@@ -160,8 +161,7 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             if (!Number.isFinite(width)) throw new RangeError('Clipboard text is too wide');
             node = { ...node, ...pastedTextFit(width, node.text.blocks.length, target.viewport.w) };
             scope.release(); scope = undefined;
-            candidate = createAddedBoardDoc(doc, [node], [], preserved);
-            scope = await acquireBoardGeometryScope(runtime, [id], { doc: candidate, signal, current: () => { check(); return true; }, cooperate });
+            scope = await measure(node, preserved);
             check();
         }
         const measured = scope.logicalBounds(id);
@@ -179,8 +179,7 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             node = { ...node, parent, order, page: -1, x: c * dx + s * dy, y: -s * dx + c * dy, rotation: normalizedRotation(-pose.rotation) };
         }
         scope.release(); scope = undefined;
-        candidate = createAddedBoardDoc(doc, [node], [], preserved);
-        scope = await acquireBoardGeometryScope(runtime, [id], { doc: candidate, signal, current: () => { check(); return true; }, cooperate });
+        scope = await measure(node, preserved);
         check();
         const bounds = scope.logicalBounds(id);
         const growth = doc.host.kind === 'notebook' ? notebookGrowthOp(doc, bounds.y + bounds.height) : undefined;

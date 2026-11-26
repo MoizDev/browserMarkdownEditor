@@ -108,8 +108,10 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   partial erase and no preview. The path is kept in world units; each round asks the stretches drawn since the last one
   against the board as it is by then (`region(…, { at, painted })`, exact, reach `eraserRadiusCss`: 8 CSS px, 12 for a
   finger, the ring cursor `[data-board-cursor="eraser"]` and the trail's width) and deletes what they touch in that task.
-  The whole gesture is one open history step (`history.open('Erase')`; a step already open is marked and rolled back to):
-  release closes it, Escape/undo before release cancels it, any other end keeps what went. Only items whose delete reads
+  The whole gesture is one history step (`history.open('Erase')`; a step already open is marked and rolled back to), open
+  only while the pointer is down: release closes it and each stretch still to land reopens it (`reopenLast`), so a stroke
+  drawn meanwhile is its own step and never part of the erase. Escape/undo before release cancels it, an undo while the
+  last stretch lands undoes it if it is still the latest step (`EraseStep.latest`), any other end keeps what went. Only items whose delete reads
   geometry (containers, attached arrows, group children: `eraseReadsGeometry`) wait for a pin. A camera move does not end
   an erase (`cancelForCamera` skips it). `painted`: an unfilled figure is touched by its outline, its marks and its label
   only (a dashed line whole: `VectorNarrowPart.solid`). With Cmd/Ctrl and the Eraser a stretch takes the top-most item and

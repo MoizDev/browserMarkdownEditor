@@ -11,6 +11,11 @@ export function eraserRadiusCss(source: RealSample['source']): number { return s
 /** One erase gesture's undo step. Items leave the board as the eraser reaches them, and all of them are one step. */
 export interface EraseStep {
   erase(ids: readonly NodeId[], signal: AbortSignal): void | Promise<void>
+  /** The pointer has lifted while the last stretch of the path is still to be asked: what went so far is an undo step from
+   * now, and what the rest takes joins that step for as long as it is the latest one. */
+  release(): void
+  /** After `release`: whether an undo now would take back this erase, nothing else having been done since. */
+  latest(): boolean
   /** The gesture is over: what it erased is one undo step (none, if it erased nothing). */
   close(): void
   /** The gesture is taken back: everything it erased returns, and it leaves no undo step. */
@@ -23,7 +28,8 @@ export interface EraserContext {
   settle(): () => void
   /** Released work still landing: a new press, Escape, a tool change or another key does not cancel it. An undo
    * (`undo` true) takes it back; the view's end (`undo` false) only stops it. */
-  registerSettling(cancel: (undo: boolean) => void, undoable: boolean): () => void
+  /** `cancel` answers false when asked to undo work that is no longer the latest: the undo is then not its own. */
+  registerSettling(cancel: (undo: boolean) => boolean | void, undoable: boolean): () => void
   /** The items a stretch of the eraser's path touches (world points, `radiusCss` around them) on the board as it is now,
    * bottom-most first. */
   touched(points: readonly ErasePoint[], radiusCss: number, signal: AbortSignal): Promise<readonly NodeId[]>
@@ -82,11 +88,15 @@ class EraserGesture implements GestureOwner {
     let settle: (() => void) | null = null
     try {
       settle = this.context.settle()
-      this.unregister = this.context.registerSettling(undo => this.end(undo), true)
+      // An undo while the last stretch lands takes this erase back only while it is the latest thing done. After a stroke
+      // drawn since, the undo is that stroke's: this erase goes on landing and declines (false).
+      this.unregister = this.context.registerSettling(undo => { if (undo && !this.step.latest()) return false; this.end(undo); return true }, true)
     } catch (error) {
       try { settle?.() } finally { this.end(false) }
       throw error
     }
+    // The step is closed before the input is given back: whatever the person does next is its own step (see beginErase).
+    try { this.step.release() } catch (error) { this.context.error(error) }
     const input = this.release
     this.release = settle
     input()

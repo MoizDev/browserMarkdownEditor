@@ -8,6 +8,7 @@ import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
 import type { Camera, ViewState } from '../../platform/types';
 import type { Op } from '../change/ops';
+import type { HistoryController } from '../change/historyTypes';
 import { planDelete } from '../commands/delete';
 import { ApplyRefused } from '../change/errors';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
@@ -132,13 +133,13 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     // Gestures the person has finished (an erase, a box) that are still landing. A new press, Escape, a tool change or
     // another key does not cancel them (cancelPending above leaves them alone); the view's end does, and an undo cancels
     // the ones whose landing would be its undo step. `settled` lets a new gesture's first decision wait for them.
-    const settling = new Map<(undo: boolean) => void, boolean>();
+    const settling = new Map<(undo: boolean) => boolean | void, boolean>();
     // Each waiter waits for the work landing when it asked, never for work registered after: a press released before its own
     // decision registers itself as settling, and waiting for an empty registry made it wait for itself. Measured: two quick clicks
     // on empty canvas of a board holding a frame (whose first hit query is the slower one) left every later press, Escape and
     // ⌘A waiting, still 10 s later.
-    const settledWaiters = new Set<{ readonly work: Set<(undo: boolean) => void>; readonly wake: () => void }>();
-    const registerSettling = (cancel: (undo: boolean) => void, undoable: boolean) => {
+    const settledWaiters = new Set<{ readonly work: Set<(undo: boolean) => boolean | void>; readonly wake: () => void }>();
+    const registerSettling = (cancel: (undo: boolean) => boolean | void, undoable: boolean) => {
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
         settling.set(cancel, undoable);
         return () => {
@@ -150,7 +151,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         };
     };
     // The key edits among them (keyEdit): the view's end leaves them to land on the session, which outlives it.
-    const keyEdits = new Set<(undo: boolean) => void>();
+    const keyEdits = new Set<(undo: boolean) => boolean | void>();
     const settled = (): Promise<void> => settling.size
         ? new Promise(wake => { settledWaiters.add({ work: new Set(settling.keys()), wake }); }) : Promise.resolve();
     // An undo takes back ONE step: the latest undoable work still landing. Cancelling every one made a ⌘Z right after two
@@ -158,8 +159,10 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const cancelSettling = (undo: boolean): boolean => {
         const work = [...settling].filter(([cancel, undoable]) => undo ? undoable : !keyEdits.has(cancel));
         const chosen = undo ? work.slice(-1) : work;
-        for (const [cancel] of chosen) { try { cancel(undo); } catch (error) { report(error); } }
-        return chosen.length > 0;
+        // Work that declines an undo (a released erase with a stroke drawn since) is left to land: the undo is the board's own.
+        let taken = false;
+        for (const [cancel] of chosen) { try { if (cancel(undo) !== false) taken = true; } catch (error) { taken = true; report(error); } }
+        return taken;
     };
     const setGuides = (value: readonly BoardSnapGuide[]) => { guides = value; requestFrame(); };
     // A transform preview draws the moving shape. The committed selection box must not stay behind it, and it follows
@@ -495,25 +498,37 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             return ids;
         },
         beginErase() {
-            const sheet = runtime.selection.getSnapshot().sheet, history = session.history;
+            const sheet = runtime.selection.getSnapshot().sheet, history: HistoryController = session.history;
             // 'own': this gesture opened the step and closes it. 'mark': a step was already open (a style press held through
             // the erase), so the erase is recorded into it and taken back to this mark.
             let step: 'none' | 'own' | { readonly mark: number } = 'none', over = false;
+            // From the release on the step is closed, and each stretch still to land reopens it (`token`) for its own change.
+            // Left open until the last stretch had landed, it took in whatever the person did meanwhile. Where that stretch
+            // is slow to land (5,640 strokes on one spot: seconds, while the picture catches up), Draw chosen from the tool
+            // bar and a stroke drawn 300 ms later became part of the erase: one undo removed the new stroke and brought back
+            // all 193 erased ones (measured; now the stroke is one step and the erase another). A step made since the release
+            // is on top and cannot be joined: what lands after it is a step of its own, undone before it.
+            let released = false, token: number | null = null;
             const apply = (ids: readonly NodeId[]) => {
                 check();
                 if (runtime.selection.getSnapshot().sheet !== sheet) throw new DOMException('The erased page is no longer shown', 'AbortError');
-                if (step === 'none') { if (history.isOpen) step = { mark: history.mark() }; else { history.open('Erase'); step = 'own'; } }
+                let reopened = false;
+                if (released) {
+                    if (!history.isOpen) { if (token === null || !history.reopenLast(token)) history.open('Erase'); reopened = true; }
+                } else if (step === 'none') { if (history.isOpen) step = { mark: history.mark() }; else { history.open('Erase'); step = 'own'; } }
                 // One item that cannot go (preserved content this app cannot make, a page it is not on) must not keep the others.
                 const remove = (roots: readonly NodeId[]) => {
                     const builder = session.begin('tool', 'Erase');
                     try { planDelete(doc, builder, sheet, roots, render.changeGeometry); builder.commit().release(); }
                     catch (error) { builder.abort(); throw error; }
                 };
-                try { remove(ids); }
-                catch (error) {
-                    if (!(error instanceof ApplyRefused) || ids.length < 2) { if (!(error instanceof ApplyRefused)) throw error; return; }
-                    for (const id of ids) { try { if (doc.nodes.has(id)) remove([id]); } catch (one) { if (!(one instanceof ApplyRefused)) throw one; } }
-                }
+                try {
+                    try { remove(ids); }
+                    catch (error) {
+                        if (!(error instanceof ApplyRefused) || ids.length < 2) { if (!(error instanceof ApplyRefused)) throw error; return; }
+                        for (const id of ids) { try { if (doc.nodes.has(id)) remove([id]); } catch (one) { if (!(one instanceof ApplyRefused)) throw one; } }
+                    }
+                } finally { if (reopened && history.isOpen) token = history.close() ?? token; }
             };
             return {
                 async erase(ids, signal) {
@@ -542,14 +557,27 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                         } finally { lease.release(); }
                     }
                 },
+                release() {
+                    if (over || released) return;
+                    released = true;
+                    if (step === 'own' && history.isOpen) token = history.close();
+                },
+                latest() {
+                    if (!released || token === null) return true;
+                    if (history.isOpen || !history.reopenLast(token)) return false;
+                    token = history.close() ?? token;
+                    return true;
+                },
                 close() {
                     if (over) return;
                     over = true;
-                    if (step === 'own' && history.isOpen) history.close();
+                    if (!released && step === 'own' && history.isOpen) history.close();
                 },
                 revert() {
                     if (over) return;
                     over = true;
+                    // Released, the erase is an ordinary step and is taken back as one (`latest` has said it is on top).
+                    if (released) { if (token !== null && !history.isOpen) history.undo(); return; }
                     if (step === 'own') { if (history.isOpen) history.cancel(); }
                     else if (step !== 'none' && history.isOpen) history.rollbackTo(step.mark);
                 },

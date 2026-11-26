@@ -326,11 +326,14 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 // itself is as valid as it was. It is prepared again. Given up instead, the edit was dropped with no sign:
                 // every item selected on a 3,000-stroke board, an arrow key and then R, D, E, A, H or T at once lost the
                 // nudge (measured: 6 of 6, and the third of three nudges; also on the build before the eraser's rewrite).
-                // Bounded only so a board whose tool changes without pause cannot hold the input forever.
+                // Only a revision that moved is a reason to prepare again: any other cancellation would be met again on every
+                // attempt, and every press waits while a key's edit lands. Bounded so a board whose tool changes without pause
+                // cannot hold the input forever.
                 for (let attempt = 1; ; attempt++) {
+                    const prepared = doc.rev;
                     try { await run(controller, active); break; }
                     catch (error) {
-                        if (!isCancellation(error) || !active() || attempt >= KEY_EDIT_ATTEMPTS) throw error;
+                        if (!isCancellation(error) || !active() || doc.rev === prepared || attempt >= KEY_EDIT_ATTEMPTS) throw error;
                     }
                 }
             }

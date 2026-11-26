@@ -24,7 +24,7 @@ import { QuickOverview } from './quickOverview'
 import { ModifierRelease } from './modifierRelease'
 import { oneFingerZoomTool, type OneFingerZoomContext } from './oneFingerZoom'
 import { stepBoardZoom } from './cameraZoom'
-import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample, type Tool } from './tool'
+import { CLICK_SLOP_CSS, sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample, type Tool } from './tool'
 import type { KeyboardNavigationPriority } from './scrollKeysTypes'
 import type { TextInputBridge } from '../text/edit/managerTypes'
 import { isCancellation } from '../../platform/workers/envelope'
@@ -447,6 +447,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (event.pointerType !== 'touch' && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) pointerClient = { x: event.clientX, y: event.clientY }
   }
   const forgetPointer = () => { pointerClient = null; overview.track(null) }
+  // The latest primary press, and whether it travelled past a click: the browser fires `dblclick` on the release of ANY
+  // second press inside the double-click time, dragged or not, and only one that stayed a click is a double-click (below).
+  let press: { readonly id: number; readonly x: number; readonly y: number; dragged: boolean } | null = null
+  const trackPress = (event: PointerEvent) => {
+    if (event.type === 'pointerdown') { if (event.button === 0) press = { id: event.pointerId, x: event.clientX, y: event.clientY, dragged: false }; return }
+    if (press && !press.dragged && press.id === event.pointerId && event.buttons
+      && Math.hypot(event.clientX - press.x, event.clientY - press.y) >= CLICK_SLOP_CSS) press.dragged = true
+  }
   const doubleTap = new TouchDoubleTap({
     eligible: () => current() && !touch.penMode && !services.editing() && !services.modalOpen() && services.tools.getSnapshot().active.id === 'hand',
     zoomIn: zoomInOneStep, changed: services.cameraChanged })
@@ -459,6 +467,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const reconcileModifiers = (event: PointerEvent) => { if (current()) modifierRelease.update(modifiersOf(event)) }
   const down = (event: PointerEvent) => {
     rememberPointer(event)
+    trackPress(event)
     services.textInput?.cancelPending()
     if (!current()) return
     services.cancelMotion?.()
@@ -491,6 +500,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   }
   const move = (event: PointerEvent) => {
     rememberPointer(event)
+    trackPress(event)
     if (event.pointerType !== 'touch' && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) overview.track(view.clientToSurface(event.clientX, event.clientY))
     services.textInput?.cancelPending()
     if (!current()) return
@@ -524,6 +534,15 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     } catch (error) { services.error(error) }
     if (handled) { event.preventDefault(); event.stopPropagation() }
   }
+  // A second press that was dragged is that drag (a box, a stroke, a move), not a double-click, so no double-click listener
+  // of the board hears it (the picture crop's is on this surface too: captured here, it runs after this). Taken as one, a box
+  // made as a trackpad's tap-then-drag (Tap to click), or begun where a click had just landed, selected what it covered while
+  // dragged and then, released over empty paper, started a new text there, which took the selection (measured on a drawing
+  // and on a PDF in Annotate: 4 strokes selected while dragging, 1 after, the new text in edit). With Draw, a tap and then a
+  // stroke from the same spot left a text and no stroke.
+  const draggedDoubleClick = (event: MouseEvent) => {
+    if (press && (press.dragged || Math.hypot(event.clientX - press.x, event.clientY - press.y) >= CLICK_SLOP_CSS)) event.stopImmediatePropagation()
+  }
   const dragover = (event: DragEvent) => { event.preventDefault(); event.stopPropagation() }
   const drop = (event: DragEvent) => { event.preventDefault(); event.stopPropagation(); if (current() && editable()) services.drop?.(event) }
   view.surface.addEventListener('keydown', keyActivity, true)
@@ -531,6 +550,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   view.surface.addEventListener('dragover', dragover)
   view.surface.addEventListener('drop', drop)
   view.surface.addEventListener('auxclick', auxclick)
+  view.surface.addEventListener('dblclick', draggedDoubleClick, true)
   view.surface.addEventListener('dblclick', doubleClick)
   view.surface.addEventListener('pointerdown', down, true)
   view.surface.addEventListener('pointermove', move, true)
@@ -832,6 +852,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     view.surface.removeEventListener('dragover', dragover)
     view.surface.removeEventListener('drop', drop)
     view.surface.removeEventListener('auxclick', auxclick)
+    view.surface.removeEventListener('dblclick', draggedDoubleClick, true)
     view.surface.removeEventListener('dblclick', doubleClick)
     view.surface.removeEventListener('pointerdown', down, true)
     view.surface.removeEventListener('pointermove', move, true)

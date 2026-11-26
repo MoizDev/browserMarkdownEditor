@@ -284,9 +284,20 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         // text, which moves nothing on the page: xterm repositions its hidden
         // input textarea on the very right-click that raises the terminal's menu
         // (measured: after a paste, the menu closed ~4 ms after it opened).
+        // Nor is the scroll of a panel beside what the menu was raised over: only a scroll that moves that (the page, a scroller
+        // holding the opener, or one under the point the menu was raised at) leaves the menu pointing at the wrong place. A
+        // right-click on a board item not yet selected changes the Styles panel's rows, which clamps the panel's scroll, and that
+        // closed the board's menu the moment it opened (measured: every right-click and pen barrel click after Escape).
+        const moves = (target: EventTarget | null): boolean => {
+            if (!(target instanceof Element)) return true;
+            const { opener, x, y } = requestRef.current;
+            if (opener && target.contains(opener)) return true;
+            const box = target.getBoundingClientRect();
+            return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+        };
         const onScroll = (e: Event) => {
             if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
-            if (!inside(e.target)) onClose();
+            if (!inside(e.target) && moves(e.target)) onClose();
         };
 
         document.addEventListener('pointerdown', onPointerDown, true);

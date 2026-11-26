@@ -114,8 +114,10 @@ cannot see it: the reader sends a `dismiss` command and `useReaderIntegration` c
   `ConfirmDialog`.)
 - Outside `pointerdown` (capture, anchor exempt) closes without restoring focus; **any scroll** closes
   it (capture-phase on `document`, so an editor scroll counts) except scrolls inside the menu (it has a
-  `max-height`) and a `<textarea>`/`<input>` scrolling its own text (xterm scrolls its hidden textarea
-  on the raising right-click); a window `resize` closes it.
+  `max-height`), a `<textarea>`/`<input>` scrolling its own text (xterm scrolls its hidden textarea
+  on the raising right-click), and a scroller that neither holds the `opener` nor lies under the raise
+  point (a board right-click re-rows the Styles panel, whose scroll clamp closed the menu at once); a
+  window `resize` closes it.
 - The menu and its flyouts `preventDefault` their own `contextmenu` (or the browser menu opens on top)
   and their own `dragover`/`drop` (an unclaimed desktop file dropped on the menu opened a new browser
   tab).

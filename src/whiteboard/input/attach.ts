@@ -243,6 +243,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     id: 'secondary-pan', holdsNoGesture: true,
     begin(sample, modifiers, press) {
       const origin = physicalSurface(sample)
+      // A pen's tip wanders a few px during a barrel tap, more than a mouse's right click, and a tap taken for a drag opens no menu.
+      const slop = sample.source === 'pen' ? CLICK_SLOP_CSS : 4
       const pan = handTool.begin(sample, modifiers, { ...handContext, flingEnabled: true })
       if (!pan) return null
       rightPressActive = true
@@ -253,7 +255,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         update(samples, nextModifiers) {
           for (const point of samples) {
             const surface = physicalSurface(point)
-            if (!dragging && Math.hypot(surface.x - origin.x, surface.y - origin.y) >= 4) dragging = true
+            if (!dragging && Math.hypot(surface.x - origin.x, surface.y - origin.y) >= slop) dragging = true
             if (dragging) pan.update([point], nextModifiers)
           }
         },
@@ -328,9 +330,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         return services.resolveTool({ id: 'eraser' }, sample, modifiers, event)
       }
       if (event.type === 'pointerdown' && event.button === 1) { event.preventDefault(); return { tool: hand, context: undefined } }
+      // A right press, or a pen's barrel press, pans when dragged and opens the board's menu when released as a click. A barrel
+      // pressed while the pen is drawing belongs to that stroke (F-INPUT-008); it changes the contact's buttons and is no press.
+      // A check here that the pen was drawing read `activeSource`, set from this very press a few lines up, so it refused every
+      // barrel press: a pen with its barrel held could neither pan nor open the menu (measured: the camera stayed, no menu).
       if (event.type === 'pointerdown' && (event.button === 2 || (services.mac && event.button === 0 && event.ctrlKey))) {
-        // A barrel press while the pen is drawing belongs to that stroke: no pan, no menu (F-INPUT-008).
-        if (activeSource === 'pen' && event.button === 2) return null
         return { tool: secondaryPan, context: event }
       }
       if (event.type === 'pointerdown' && event.button !== 0) return null

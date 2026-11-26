@@ -151,6 +151,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   // Cmd/Ctrl held over Draw or Highlight erases until it is released (catalogue T§14). The eraser's own Cmd means "top-most
   // item only", so the temporary eraser takes whole items: accel is stripped from its gestures. The displaced tool returns
   // on release, after a stroke already in progress has ended.
+  /** Keys pressed while released work was landing, which wait for it before they act (see `run`). */
+  let keysWaiting = 0
   let accelHeld = false, accelTool: string | null = null, accelReturn = false
   const releaseAccelEraser = () => {
     const back = accelTool
@@ -283,11 +285,12 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     realEvent: (sample, event) => delegated?.observe(event, sample),
     penTransitions: () => { const id = services.tools.getSnapshot().active.id; return id === 'pen' || id === 'highlighter' },
     settled: signal => session.enqueueAfterGesture(signal, () => undefined),
-    landing: () => services.keyEditLanding?.() === true,
+    landing: () => services.keyEditLanding?.() === true || keysWaiting > 0,
     cancelPending: services.cancelPendingGestures,
     hover: services.hover,
     claim, releaseClaim,
-    pressed: () => services.tools.getSnapshot(),
+    // A press kept behind a key that is still waiting is resolved once that key has acted: the key came first.
+    pressed: () => keysWaiting > 0 ? undefined : services.tools.getSnapshot(),
     resolve(sample, modifiers, event, pressed) {
       if (!current() || (sample.source === 'touch' && !touchAdmission.get(sample.pointerId))) return null
       // Pen mode takes only the pen: a mouse or a palm pressed on the canvas is rejected before any state changes (catalogue I§5.2).
@@ -639,8 +642,15 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         // what the box selected. Each branch below used to cancel that work first (and swallow the key because something
         // was cancelled), so a box then Delete deleted nothing and an erase then a tool key brought the strokes back.
         if (!holdsMode(id)) {
-          void session.enqueueAfterGesture(new AbortController().signal, () => { if (current()) runKey(id, event) })
-            .catch(error => { if (!isCancellation(error)) services.error(error) })
+          // While the key waits, a press is kept behind it (`landing` above) and replayed once it has acted. Taken at once,
+          // the press used the tool the key was leaving: D pressed right after a sweep and a stroke begun before the erase had
+          // landed was an eraser sweep, which drew nothing and erased what the stroke crossed (measured on a 10,000-stroke
+          // board: 130 more strokes gone and no stroke, for a press under 60 ms after the key; seconds on a denser one).
+          let waiting = true
+          const acted = () => { if (waiting) { waiting = false; keysWaiting-- } }
+          keysWaiting++
+          void session.enqueueAfterGesture(new AbortController().signal, () => { acted(); if (current()) runKey(id, event) })
+            .catch(error => { acted(); if (!isCancellation(error)) services.error(error) })
           return true
         }
       }

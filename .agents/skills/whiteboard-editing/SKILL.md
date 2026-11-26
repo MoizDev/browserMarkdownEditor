@@ -81,6 +81,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   (`trackEdit`), never cancelled by a press or by the view's end (a tab switch unmounts the board; it lands on the session),
   stale only for a changed document; out of sight it commits without its preview frame. Its preparation pins `doc.rev`,
   which a tool change moves too (no content): cut off that way it is prepared again (`KEY_EDIT_ATTEMPTS`), never dropped.
+  A press made while a key still waits behind landing work (`attach.ts` `keysWaiting`) is queued behind that key and
+  resolved with the tool the key leaves (`pressed()` undefined): taken at once, D then a stroke right after a sweep erased.
 - **No press before a presented frame.** A press is placed through a presented frame's mapping, so `PointerAcquisition`
   takes a new press (and the context menu) only once `MappingHistory.ready()`: a frame presented since the view was last shown
   (`framePresented`, from the lease's `presentedView`); meanwhile the surface shows the `progress` cursor (`inputHost.ts`

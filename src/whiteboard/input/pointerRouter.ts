@@ -19,13 +19,14 @@ export interface PointerRouterOptions<Context, Pressed = unknown> {
   releaseClaim(): void
   /** What a press is resolved against (the tool chosen), read when it is pressed: a press queued behind a settling contact is
    * resolved later, with this. */
-  pressed?(): Pressed
+  /** What a queued press is resolved with when replayed; undefined resolves it with what holds by then. */
+  pressed?(): Pressed | undefined
   sampleChanged?(sample: RealSample): void
   realEvent?(sample: RealSample, event: PointerEvent): void
   penTransitions?(sample: RealSample): boolean
   settled?(signal: AbortSignal): Promise<void>
-  /** An edit made by a key (a nudge, a turn) is still landing and holds the input: a press now is kept and replayed when it
-   * has landed (see down). */
+  /** An edit made by a key (a nudge, a turn) is still landing and holds the input, or a key is itself still waiting to act:
+   * a press now is kept and replayed when it has landed (see down). */
   landing?(): boolean
   cancelPending?(): void
   resolve(sample: RealSample, modifiers: Modifiers, event: PointerEvent, pressed?: Pressed): PointerRoute<Context> | null

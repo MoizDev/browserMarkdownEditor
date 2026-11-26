@@ -153,6 +153,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     try {
         commands = createNativeClipboardCommands({ runtime, token, memory, cache: host.clipboard, current,
             captureWriteAuthority: () => { const captured = active; return () => !!captured && bindings.has(captured) && captured.writable(); },
+            shown: () => bindings.size > 0,
             prepareExport,
             duplicate: snapshot => {
                 if (!active) return Promise.reject(new Error('The board view is unavailable'));
@@ -257,6 +258,8 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 pinClipboard: () => commands.clipboardCopy.pin(), readMedia, storeMedia, notice: report, onError: fail });
             controllers.add(controller);
             const binding: ViewBinding = { controller, surface, theme, notice, writable: canWriteView }; bindings.add(binding); active = binding;
+            // A view takes input only while it is on screen (ViewerHost), so the bindings are the views being looked at.
+            if (bindings.size === 1) commands.shownChanged();
             const focus = () => { active = binding; };
             const move = (event: PointerEvent) => { focus(); try { pointer = surfaceToWorld(surfacePoint(event.clientX, event.clientY), lease.camera.camera); } catch { pointer = null; } };
             const copy = (event: ClipboardEvent) => { if (!editingText()) { event.preventDefault(); focus(); commands.copyEvent(event); } };
@@ -342,6 +345,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             return { controller, commands, openMenu: menu, focus, detach() {
                 if (detached) return; detached = true;
                 bindings.delete(binding); if (active === binding) active = bindings.values().next().value;
+                if (!bindings.size && !disposed) commands.shownChanged();
                 controller.retire(() => controllers.delete(controller));
                 surface.removeEventListener('focus', focus); surface.removeEventListener('pointermove', move);
                 surface.removeEventListener('copy', copy); surface.removeEventListener('cut', cut); surface.removeEventListener('keydown', keydown);

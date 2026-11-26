@@ -265,7 +265,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 - Board preferences persist in `localStorage['bme.whiteboard.preferences']` (`utils/boardPreferences.ts`).
 - ⌘C's copy is prepared ahead for the selection (`host/clipboardCommands.ts`), idle-only and paused for any gesture: it
   measures every item exactly (`render/worldBounds.ts`, which skips a stroke piece already inside the measured box: 4,000
-  strokes ~3 s of main thread, ~60 s before it, which once made a nudge take 72 s).
+  strokes ~3 s of main thread, ~60 s before it, which once made a nudge take 72 s). Only a board on screen prepares or
+  keeps one (`shown`, `shownChanged`: the service's view bindings): it is charged to the shared CPU pool as `critical`
+  with no evict, and three boards left with large selections starved the visible one until its nudge never landed.
 - Copy/cut/paste are listened on the board surface (`useNativeClipboard.ts`); paste classifies native records,
   legacy, Excalidraw and HTML (`clipboard/paste.ts`), each admitted as an external source. A plain paste of board
   content stays where it was copied when it came from this board and sheet and overlaps the view, else it lands in the view's centre (`clipboard/placement.ts`); a cursor paste takes the deepest unlocked frame under the pointer (`frameUnder`), and Cmd/Ctrl+D repeats the last

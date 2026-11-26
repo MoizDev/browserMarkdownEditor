@@ -44,6 +44,8 @@ export interface NativeClipboardCommandsOptions {
     current(): boolean;
     /** Captures the originating view, so an async cut cannot borrow a different pane's authority. */
     captureWriteAuthority(): () => boolean;
+    /** Whether a view of this document is on screen: only then is a copy prepared ahead, or one kept (see `shownChanged`). */
+    shown(): boolean;
     notice(message: string): void;
     onError(error: unknown): void;
     copyPng(capture: Promise<Readonly<{ image: Blob; privateImage: Blob }>>): Promise<void>;
@@ -166,7 +168,13 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         cancelBackground();
         if (textAuthority) return;
         selectedProduct = undefined; copy.setSelection(null);
-        if (!current() || !runtime.selection.getSnapshot().selected.length || board.isGestureActive) return;
+        // A board nobody is looking at prepares no copy and keeps none: ⌘C cannot reach it, and the copy is charged to the
+        // picture budget every board shares, where nothing can evict it. Kept, each board left with a large selection went on
+        // preparing its copy for about 70 s after its tab was left and then held it for good (3,000 strokes: 7.4 MB of the
+        // 32 MB); with two or three of them the board on screen got no room, and an arrow key there never landed: the
+        // picture stayed unfinished and no key or press did anything again (measured: the seventh of seven such boards, on
+        // this build and on those before it). It is prepared again when the board is shown.
+        if (!options.shown() || !current() || !runtime.selection.getSnapshot().selected.length || board.isGestureActive) return;
         const state = runtime.selection.getSnapshot(), revision = board.doc.rev, epoch = runtime.render.text.fonts.epoch;
         idle = requestIdleCallback(() => {
             idle = undefined;
@@ -263,6 +271,8 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
                 if (!disposed) prepareSettledSelection();
             };
         },
+        /** The document's first view came on screen, or its last one left it. */
+        shownChanged() { if (!disposed) prepareSettledSelection(); },
         matchClipboard: (encoded: string, plain: string) => copy.match(encoded, plain),
         copy: () => run(async () => { prepare(); await copy.copyMenu(); }),
         cut: () => run(async () => { writable(); prepare(true); await copy.copyMenu(true); }),

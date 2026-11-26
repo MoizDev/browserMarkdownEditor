@@ -53,13 +53,14 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
         pointer: options.target.pointer ? Object.freeze({ ...options.target.pointer }) : null });
     const check = () => {
         runtime.jobs.assertContext(context); context.assertCurrent();
-        if (!options.current(target) || runtime.session !== session || session.doc !== doc || doc.rev !== revision
+        // No revision fence: a gesture committed while the paste is prepared is no reason to drop it (change/insertionLanding.ts).
+        if (!options.current(target) || runtime.session !== session || session.doc !== doc
             || session.owner !== owner || session.isReadOnly || runtime.selection.getSnapshot().sheet !== target.sheet) throw new DOMException('HTML paste became stale', 'AbortError');
     };
     const cooperate = async () => { check(); await (options.cooperate?.() ?? yieldToHost()); check(); };
     const identity: BoardJobIdentity = Object.freeze({ session: context.job.session, epoch: context.job.vaultEpoch, revision });
     const current = (job: BoardJobIdentity) => job.session === identity.session && job.epoch === identity.epoch && job.revision === revision
-        && runtime.jobs.isCurrent(context.job) && options.current(target) && session.doc === doc && doc.rev === revision;
+        && runtime.jobs.isCurrent(context.job) && options.current(target) && session.doc === doc;
     check();
     const projected = await options.frame.projectHTML(options.html, context.signal);
     const leases: MediaLease[] = [];

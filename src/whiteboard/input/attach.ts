@@ -90,6 +90,8 @@ export interface BoardInputServices {
   pointerChanged?(sample: RealSample): void
   /** An edit made by a key (a nudge, a turn, a flip) is still landing. */
   keyEditLanding?(): boolean
+  /** Settles once the pastes, drops and duplicates asked for so far have landed; null when none is on its way. */
+  pasteLanding?(): Promise<void> | null
   hover?(event: PointerEvent): void
   contextMenu?(event: MouseEvent): void
   drop?(event: DragEvent): void
@@ -151,8 +153,19 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   // Cmd/Ctrl held over Draw or Highlight erases until it is released (catalogue T§14). The eraser's own Cmd means "top-most
   // item only", so the temporary eraser takes whole items: accel is stripped from its gestures. The displaced tool returns
   // on release, after a stroke already in progress has ended.
-  /** Keys pressed while released work was landing, which wait for it before they act (see `run`). */
+  /** Keys pressed while released work was landing, which wait for it before they act (see `runBound`). */
   let keysWaiting = 0
+  const keysIdle: (() => void)[] = []
+  const keyActed = () => { if (--keysWaiting === 0) for (const resolve of keysIdle.splice(0)) resolve() }
+  /** Once the keys still waiting have acted and every hold has let go: a press queued behind a key is replayed after it. A key
+   * that waits for a paste is in no queue the gesture FIFO knows of, and the FIFO's empty task alone resolved at once while it
+   * still waited: the router asked again, at once, for ever, and the page hung in microtasks. */
+  const afterKeys = (signal: AbortSignal): Promise<void> => keysWaiting === 0 ? session.enqueueAfterGesture(signal, () => undefined)
+    : new Promise<void>((resolve, reject) => {
+      if (signal.aborted) { reject(new DOMException('Cancelled', 'AbortError')); return }
+      keysIdle.push(resolve)
+      signal.addEventListener('abort', () => reject(new DOMException('Cancelled', 'AbortError')), { once: true })
+    }).then(() => afterKeys(signal))
   let accelHeld = false, accelTool: string | null = null, accelReturn = false
   const releaseAccelEraser = () => {
     const back = accelTool
@@ -284,7 +297,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     sampleChanged: sample => { edgeScroll.sample(sample); services.pointerChanged?.(sample) },
     realEvent: (sample, event) => delegated?.observe(event, sample),
     penTransitions: () => { const id = services.tools.getSnapshot().active.id; return id === 'pen' || id === 'highlighter' },
-    settled: signal => session.enqueueAfterGesture(signal, () => undefined),
+    settled: afterKeys,
     landing: () => services.keyEditLanding?.() === true || keysWaiting > 0,
     cancelPending: services.cancelPendingGestures,
     hover: services.hover,
@@ -653,8 +666,19 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     // land. Cancelled, a nudge of 220 PDF annotations followed by a click on the vault switcher was dropped and the switch
     // found nothing to save (aborted 57 ms after the key), and a paste followed by a click on Reload was lost.
     clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); if (router.activeOwner || !session.isEditLanding) services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; shiftHeld = false; overview.leave(); showZoomCursor(); cursor.escape(); pointer.interrupt('flush'); modifierRelease.releaseAll(); services.clearLatches?.() },
-    run(id, event) {
+    run: runBound,
+  }, services.mac)
+  function runBound(id: string, event: KeyboardEvent): boolean {
       if (!current()) return false
+      // A key pressed after ⌘V acts after the paste has landed, as if it had been instant: an undo takes the paste back, not the
+      // step before it, and Delete or Escape act on what the paste selected. The paste itself waits for no key or press.
+      const pasting = !router.activeOwner && !holdsMode(id) ? services.pasteLanding?.() ?? null : null
+      if (pasting) {
+        keysWaiting++
+        void pasting.then(() => { keyActed(); if (current()) runBound(id, event) })
+          .catch(error => { if (!isCancellation(error)) services.error(error) })
+        return true
+      }
       if (!router.activeOwner && session.isGestureActive && !session.isInputGestureActive) {
         // Undo takes back a released erase that has not landed yet: that IS undoing it.
         if (id === 'undo' && editable() && services.undoSettlingGestures?.()) return true
@@ -667,7 +691,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
           // landed was an eraser sweep, which drew nothing and erased what the stroke crossed (measured on a 10,000-stroke
           // board: 130 more strokes gone and no stroke, for a press under 60 ms after the key; seconds on a denser one).
           let waiting = true
-          const acted = () => { if (waiting) { waiting = false; keysWaiting-- } }
+          const acted = () => { if (waiting) { waiting = false; keyActed() } }
           keysWaiting++
           void session.enqueueAfterGesture(new AbortController().signal, () => { acted(); if (current()) runKey(id, event) })
             .catch(error => { acted(); if (!isCancellation(error)) services.error(error) })
@@ -675,8 +699,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         }
       }
       return runKey(id, event)
-    },
-  }, services.mac)
+  }
   // An arrow key pressed while released work is still landing waits for it, like every other key, and only then decides
   // between nudging the selection and panning: read at the press, the box's selection had not landed yet, so the key panned
   // the view instead, or the nudge found the selection changed under it and did nothing.

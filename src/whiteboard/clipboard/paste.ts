@@ -94,13 +94,14 @@ export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, in
     const runtime = host.runtime, session = runtime.session, doc = session.doc, revision = doc.rev;
         const check = () => {
             runtime.jobs.assertContext(context); context.assertCurrent();
-            if (!host.current(captured) || runtime.session !== session || session.doc !== doc || doc.rev !== revision || session.isReadOnly) {
+            // No revision fence: a gesture committed while the paste is prepared is no reason to drop it (change/insertionLanding.ts).
+            if (!host.current(captured) || runtime.session !== session || session.doc !== doc || session.isReadOnly) {
                 throw new DOMException('Clipboard target became stale', 'AbortError');
             }
         };
         const identity: BoardJobIdentity = Object.freeze({ session: context.job.session, epoch: context.job.vaultEpoch, revision });
         const current = (value: BoardJobIdentity) => value.session === identity.session && value.epoch === identity.epoch && value.revision === revision
-            && runtime.jobs.isCurrent(context.job) && host.current(captured) && session.doc === doc && doc.rev === revision;
+            && runtime.jobs.isCurrent(context.job) && host.current(captured) && session.doc === doc;
         check();
         const classification = await classifyClipboard(copied, intent, host.classifier, context.signal);
         try {

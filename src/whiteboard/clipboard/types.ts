@@ -1,6 +1,7 @@
 import type { NodeId, ParentId, SheetId } from '../model/ids';
 import type { RichFragment } from '../text/richText';
 import type { ClipboardBounds } from './snapshot';
+import type { SelectionSnapshot } from '../selection';
 
 /** An event is sampled synchronously; no DataTransfer object survives its event. */
 export interface ClipboardFile {
@@ -26,6 +27,9 @@ export interface ClipboardTarget {
     readonly pointer: ClipboardPoint | null;
     readonly selectedFrame: NodeId | null;
     readonly pasteAtCursor: boolean;
+    /** The selection when the paste was asked for: one changed before it lands is the person's newer choice and is kept
+     * (change/insertionLanding.ts `selectLanded`). Absent, the paste selects what it placed. */
+    readonly selection?: SelectionSnapshot;
 }
 export type ClipboardIntent = 'paste' | 'paste-inverted' | 'paste-plain' | 'paste-plain-inverted' | 'drop' | 'duplicate';
 export interface ClipboardPlacement {

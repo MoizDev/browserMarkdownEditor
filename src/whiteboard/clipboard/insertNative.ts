@@ -2,6 +2,7 @@ import { pageAt } from '../../platform/render/pageStack';
 import type { Op } from '../change/ops';
 import { normalizedRotation, worldPose } from '../change/coordinates';
 import { isLocked } from '../change/commands';
+import { insertionBasis, rebaseInsertion, selectLanded } from '../change/insertionLanding';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import type { BoardClipboardAcquisition } from '../host/clipboardAcquisition';
@@ -45,12 +46,13 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
     const source = acquisition.load.doc, samples = runtime.samples;
     const target = Object.freeze({ ...options.target, viewport: Object.freeze({ ...options.target.viewport }),
         pointer: options.target.pointer ? Object.freeze({ ...options.target.pointer }) : null });
-    const revision = doc.rev, owner = session.owner, targetSheet = target.sheet;
+    const basis = insertionBasis(doc), owner = session.owner, targetSheet = target.sheet;
     const signal = options.signal ?? new AbortController().signal, leases: SampleLease[] = [];
     const check = () => {
         signal.throwIfAborted();
-        if (!options.current(target) || runtime.session !== session || session.owner !== owner || session.doc !== doc || session.isReadOnly || doc.rev !== revision
-            || media.stamp.runtime !== runtime || media.stamp.doc !== doc || media.stamp.revision !== revision
+        // No revision fence: what lands is carried over to the board as it is then (rebaseInsertion).
+        if (!options.current(target) || runtime.session !== session || session.owner !== owner || session.doc !== doc || session.isReadOnly
+            || media.stamp.runtime !== runtime || media.stamp.doc !== doc
             || media.stamp.owner.documentId !== owner.documentId || media.stamp.owner.session !== owner.session
             || !doc.sheets.has(targetSheet) || runtime.selection.getSnapshot().sheet !== targetSheet) throw new DOMException('Clipboard target became stale', 'AbortError');
     };
@@ -195,11 +197,11 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
             check();
             session.history.open('Paste');
             try {
-                const applied = session.apply({ origin: 'paste', label: 'Paste', ops });
+                const applied = session.apply({ origin: 'paste', label: 'Paste', ops: rebaseInsertion(doc, basis, ops) });
                 try {
                     for (const [id, file] of media.files) runtime.media.setFile(id, file);
                     media.committed();
-                    runtime.selection.setScope(parent, roots);
+                    selectLanded(runtime.selection.getSnapshot(), target.selection, () => runtime.selection.setScope(parent, roots));
                 } finally { applied.release(); }
                 return Object.freeze([...roots]);
             } finally { session.history.close(); }

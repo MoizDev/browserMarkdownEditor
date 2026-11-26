@@ -254,7 +254,8 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     && (focused.isContentEditable || focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused.classList.contains('wb-edit-host'));
             };
             const controller = createNativeClipboardController({ runtime, host, identity, memory, ingestor, camera: lease.camera,
-                pasteAtCursor: () => preferences.getSnapshot().session.pasteAtCursor, pointer: () => pointer, surfacePoint, editingText, canWriteView, finishGesture,
+                pasteAtCursor: () => preferences.getSnapshot().session.pasteAtCursor, pointer: () => pointer, surfacePoint, editingText, canWriteView,
+                canWriteDocument: () => current() && host.canWrite(identity),
                 pinClipboard: () => commands.clipboardCopy.pin(), readMedia, storeMedia, notice: report, onError: fail });
             controllers.add(controller);
             const binding: ViewBinding = { controller, surface, theme, notice, writable: canWriteView }; bindings.add(binding); active = binding;

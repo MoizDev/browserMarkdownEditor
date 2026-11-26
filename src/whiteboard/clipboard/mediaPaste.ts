@@ -53,12 +53,12 @@ export interface ClipboardMediaPasteOptions {
     notice?(message: string): void;
 }
 export async function pasteClipboardMediaInJob(options: ClipboardMediaPasteOptions, context: JobContext): Promise<readonly NodeId[]> {
-    const { runtime } = options, session = runtime.session, doc = session.doc, revision = doc.rev;
+    const { runtime } = options, session = runtime.session, doc = session.doc;
     const target = Object.freeze({ ...options.target, viewport: Object.freeze({ ...options.target.viewport }),
         pointer: options.target.pointer ? Object.freeze({ ...options.target.pointer }) : null });
     const check = () => {
         runtime.jobs.assertContext(context); context.assertCurrent();
-        if (runtime.session !== session || session.doc !== doc || doc.rev !== revision || session.isReadOnly || !options.current(target)) {
+        if (runtime.session !== session || session.doc !== doc || session.isReadOnly || !options.current(target)) {
             throw new DOMException('Media paste became stale', 'AbortError');
         }
     };
@@ -81,7 +81,8 @@ export async function pasteClipboardMediaInJob(options: ClipboardMediaPasteOptio
     if (!sources.length) return [];
     const placement = externalMediaPlacement(doc, target, options.intent);
     check();
-    return options.ingestor.ingestInJob(sources, { origin: 'paste', placement, signal: context.signal, noticeRefused: options.noticeRefused }, context);
+    return options.ingestor.ingestInJob(sources, { origin: 'paste', placement, signal: context.signal, noticeRefused: options.noticeRefused,
+        selectionBefore: target.selection }, context);
 }
 export function pasteClipboardMedia(options: ClipboardMediaPasteOptions, signal?: AbortSignal): Promise<readonly NodeId[]> {
     return options.runtime.jobs.run(context => pasteClipboardMediaInJob(options, context), { signal, deadlineMs: 120_000 });

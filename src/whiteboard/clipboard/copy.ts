@@ -20,6 +20,8 @@ export interface ClipboardCut {
 }
 export interface ClipboardCachePin {
     match(encoded: string, plain: string): CachedClipboard | null;
+    /** The payload this window wrote, when `html` is the HTML it wrote with it; null for any other HTML. */
+    ownPayload(html: string): string | null;
     release(): void;
 }
 export interface ClipboardCopyHost {
@@ -135,6 +137,14 @@ export class ClipboardCopy {
                         try { return await entry.readMedia(id, signal); }
                         finally { release(entry.held); }
                     } };
+            },
+            // The HTML this window wrote carries its payload whole, and only that payload is ever returned, never anything read
+            // out of `html`: a match needs no parse. Parsed, a copy of 2,000 strokes (880 KB of HTML) asked the 32 MB pool for
+            // 29 MB to parse it and could never be pasted ("Insufficient memory to parse clipboard HTML"); 1,000 strokes was the
+            // most that pasted. The system may wrap what it hands back, so containing the payload is the test, not equality.
+            ownPayload(html) {
+                const encoded = entry.envelope.encoded;
+                return active && (html === entry.envelope.html || html.length > encoded.length && html.includes(encoded)) ? encoded : null;
             },
             release() { if (active) { active = false; release(entry.held); } },
         };

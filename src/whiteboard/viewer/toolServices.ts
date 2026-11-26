@@ -106,6 +106,8 @@ export interface BoardToolServicesOptions {
         drop(event: DragEvent): void;
         paste(event: ClipboardEvent): void;
         cancelPending(): boolean;
+        /** Settles once the pastes, drops and duplicates on their way have landed; null when there are none. */
+        landing(): Promise<void> | null;
         dispose(): void;
     };
 }
@@ -119,7 +121,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const { runtime, engine, camera, token, inputToken, ui } = options;
     if (engine.session !== runtime.session || !options.imports || typeof options.imports.media !== 'function'
         || typeof options.imports.paste !== 'function' || typeof options.imports.drop !== 'function'
-        || typeof options.imports.cancelPending !== 'function' || typeof options.imports.dispose !== 'function') throw new TypeError('Tool services require the canonical session and import backend');
+        || typeof options.imports.cancelPending !== 'function' || typeof options.imports.landing !== 'function' || typeof options.imports.dispose !== 'function') throw new TypeError('Tool services require the canonical session and import backend');
     let disposed = false;
     const current = () => !disposed && options.visible() && options.current(token);
     const editable = () => current() && options.editable() && !runtime.session.isReadOnly;
@@ -368,6 +370,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         keyboardCursorInitial: ui.keyboardCursorInitial, keyboardCursorVisible: ui.keyboardCursorVisible, keyboardNavigation: ui.keyboardNavigation,
         ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error,
         pointerChanged: sample => { notePointerSource(sample.source); ui.pointerChanged?.(sample); }, keyEditLanding: select.keyEditLanding,
+        pasteLanding: () => options.imports.landing(),
         hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: contextMenuAt, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
         clearLaserTrail: dropTrails,

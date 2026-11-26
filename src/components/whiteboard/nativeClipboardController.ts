@@ -20,8 +20,19 @@ import type { ClipboardInput, ClipboardIntent, ClipboardPoint, ClipboardTarget }
 import type { createBoardMediaIngestor } from '../../whiteboard/host/mediaIngest';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import type { MediaEntry, MediaId } from '../../whiteboard/model/media';
+import type { NodeId } from '../../whiteboard/model/ids';
 import type { StoreMedia } from '../../whiteboard/media/storage.types';
 import type { BoardJobIdentity } from '../../whiteboard/workers/protocol';
+import { InsertionStale } from '../../whiteboard/change/insertionLanding';
+import { isCancellation } from '../../platform/workers/envelope';
+
+/** How many times a paste is prepared again when the board changed under it in a way its landing cannot follow (its frame
+ * removed, its picture added by an undo): each such change needs a gesture of its own, so a third is very unlikely. */
+const PASTE_ATTEMPTS = 3;
+/** A paste, drop or duplicate that could not land, named in the person's words; the board shows its message as is. */
+class PasteNotLanded extends Error {
+    constructor(message: string) { super(message); this.name = 'PasteNotLanded'; }
+}
 
 export interface NativeClipboardControllerOptions {
     readonly runtime: BoardRuntime;
@@ -35,8 +46,10 @@ export interface NativeClipboardControllerOptions {
     readonly pointer: () => ClipboardPoint | null;
     readonly surfacePoint: (clientX: number, clientY: number) => ClipboardPoint;
     readonly editingText: () => boolean;
+    /** This view may take a new paste: attached, on screen, writable. */
     readonly canWriteView: () => boolean;
-    readonly finishGesture: () => void;
+    /** The document may still take a paste already asked for, whether or not its view is still shown. */
+    readonly canWriteDocument: () => boolean;
     readonly pinClipboard: () => ClipboardCachePin | null;
     readonly readMedia: (entry: MediaEntry, signal: AbortSignal) => Promise<Blob | null>;
     readonly storeMedia: StoreMedia;
@@ -48,7 +61,7 @@ export interface NativeClipboardControllerOptions {
 export function createNativeClipboardController(options: NativeClipboardControllerOptions) {
     const { runtime, identity, host } = options, session = runtime.session, doc = session.doc;
     let disposed = false, pending = 0, retired: (() => void) | undefined;
-    const lifetime = new AbortController(), jobs = new Set<AbortController>();
+    const lifetime = new AbortController(), works = new Set<Promise<unknown>>();
     const releaseRetired = () => { if (retired && pending === 0) { const done = retired; retired = undefined; disposed = true; lifetime.abort(); done(); } };
     const current = () => {
         const admitted = host.identity(identity.documentId);
@@ -58,10 +71,10 @@ export function createNativeClipboardController(options: NativeClipboardControll
             && runtime.session === session && session.doc === doc
             && session.owner.documentId === identity.documentId && session.owner.session === identity.session;
     };
+    // A paste asked for during a gesture (⌘V with the pen down, or while a box is still settling) is taken: it lands once the
+    // gesture has ended, like one asked for just before it. Refused here, it showed "Finish the current gesture before pasting."
     const targetNow = (pointer?: ClipboardPoint | null) => {
         if (!current() || !options.canWriteView() || session.isReadOnly) throw new Error(session.readOnlyReason ?? 'Board is not editable');
-        options.finishGesture();
-        if (!current() || !options.canWriteView() || session.isReadOnly || session.isGestureActive) throw new Error('Board is not ready for paste');
         const selection = runtime.selection.getSnapshot(), camera = options.camera.camera, viewport = options.camera.viewport;
         if (!Number.isFinite(camera.z) || camera.z <= 0 || viewport.width <= 0 || viewport.height <= 0) throw new Error('Board viewport is unavailable');
         const chosen = selection.selected.length === 1 ? doc.nodes.get(selection.selected[0]) : undefined;
@@ -70,7 +83,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
             vaultEpoch: identity.vaultActivation, generation: identity.bytesGeneration, sheet: selection.sheet,
             viewport: Object.freeze({ x: camera.x, y: camera.y, w: viewport.width / camera.z, h: viewport.height / camera.z }),
             pointer: location ? Object.freeze({ ...location }) : null, selectedFrame: chosen?.kind === 'frame' ? chosen.id : null,
-            pasteAtCursor: options.pasteAtCursor() });
+            pasteAtCursor: options.pasteAtCursor(), selection });
         return { target, zoom: camera.z };
     };
     // R-21: a paste never changes zoom. Only when the placed centre lies outside the view does the camera pan, at the same
@@ -82,7 +95,9 @@ export function createNativeClipboardController(options: NativeClipboardControll
         if (surface.x >= 0 && surface.y >= 0 && surface.x <= viewport.width && surface.y <= viewport.height) return;
         options.camera.setCamera({ x: point.x - viewport.width / (2 * camera.z), y: point.y - viewport.height / (2 * camera.z), z: camera.z });
     };
-    const targetCurrent = (target: Readonly<ClipboardTarget>) => current() && options.canWriteView() && !session.isReadOnly
+    // The document, not the view: a paste asked for lands even when its pane is hidden or closed meanwhile (leaving the document
+    // waits for it, session.settle()). Tied to the view, switching tabs right after ⌘V lost the paste.
+    const targetCurrent = (target: Readonly<ClipboardTarget>) => current() && options.canWriteDocument() && !session.isReadOnly
         && target.session === `${identity.documentId}:${identity.session}` && target.vaultEpoch === identity.vaultActivation
         && target.generation === identity.bytesGeneration && runtime.selection.getSnapshot().sheet === target.sheet;
     const execute = (input: Promise<ClipboardInput> | null, captured: ReturnType<typeof targetNow>, intent: ClipboardIntent,
@@ -90,25 +105,34 @@ export function createNativeClipboardController(options: NativeClipboardControll
         imageRead?: Promise<ClipboardInput | null>, externalSignal?: AbortSignal, capturedPin?: ClipboardCachePin | null) => {
         const pin = capturedPin === undefined ? (duplicate ? null : options.pinClipboard()) : capturedPin;
         const controller = new AbortController();
-        jobs.add(controller);
+        let sheetChanged = false;
         const stop = runtime.selection.subscribe(() => {
-            if (runtime.selection.getSnapshot().sheet !== captured.target.sheet) controller.abort();
+            if (runtime.selection.getSnapshot().sheet !== captured.target.sheet) { sheetChanged = true; controller.abort(); }
         });
         const signal = AbortSignal.any([lifetime.signal, controller.signal, ...externalSignal ? [externalSignal] : []]);
         pending++;
         const work = runtime.jobs.run(async context => {
+            for (let attempt = 1; ; attempt++) {
+                try { return await attemptPaste(context); }
+                catch (error) { if (!(error instanceof InsertionStale) || attempt >= PASTE_ATTEMPTS) throw error; }
+            }
+        }, { signal, deadlineMs: 120_000 });
+        // No revision fence anywhere in it: a press made while a paste is prepared takes its gesture first, and what that commits
+        // (a stroke, a move, an undo) is no reason to drop the paste; its changes are carried over where they land
+        // (change/insertionLanding.ts). Only a change that landing cannot follow prepares it again.
+        async function attemptPaste(context: Parameters<Parameters<typeof runtime.jobs.run>[0]>[0]): Promise<void> {
             const { target, zoom } = captured, revision = doc.rev;
-            const check = () => { context.assertCurrent(); if (!targetCurrent(target) || doc.rev !== revision) throw new DOMException('Clipboard target changed', 'AbortError'); };
+            const check = () => { context.assertCurrent(); if (!targetCurrent(target)) throw new DOMException('Clipboard target changed', 'AbortError'); };
             check();
             const workerIdentity: BoardJobIdentity = { session: context.job.session, epoch: context.job.vaultEpoch, revision };
             const workerCurrent = (job: BoardJobIdentity) => job.session === workerIdentity.session && job.epoch === workerIdentity.epoch
-                && job.revision === revision && runtime.jobs.isCurrent(context.job) && targetCurrent(target) && doc.rev === revision;
-            const insertAcquisition = async (acquired: BoardClipboardAcquisition, copied?: { snapshot: CopySnapshot; readMedia?: CachedClipboard['readMedia'] }, duplicateOffset?: { x: number; y: number } | null) => {
+                && job.revision === revision && runtime.jobs.isCurrent(context.job) && targetCurrent(target);
+            const insertAcquisition = async (acquired: BoardClipboardAcquisition, copied?: { snapshot: CopySnapshot; readMedia?: CachedClipboard['readMedia'] }, duplicateOffset?: { x: number; y: number } | null): Promise<readonly NodeId[]> => {
                 let staged: Awaited<ReturnType<typeof prepareBoardClipboardMediaInJob>> | undefined, transferred = false;
                 try {
                     check();
                     staged = await prepareBoardClipboardMediaInJob({ runtime, acquisition: acquired, memory: options.memory,
-                        current: () => targetCurrent(target) && doc.rev === revision, signal: context.signal,
+                        current: () => targetCurrent(target), signal: context.signal,
                         readBlob: async (entry, readSignal) => (copied?.readMedia ? await copied.readMedia(entry.id, readSignal)
                             : copied ? readNativeClipboardMedia(copied.snapshot, entry.id) : null) ?? options.readMedia(entry, readSignal),
                         storeMedia: options.storeMedia }, context);
@@ -116,9 +140,10 @@ export function createNativeClipboardController(options: NativeClipboardControll
                     const placement = planBoardClipboardPlacement({ receivingBoardId: identity.documentId, target, source: acquired.payload,
                         containsFrame: [...acquired.load.doc.nodes.values()].some(node => node.kind === 'frame'), doc, cameraZoom: zoom, intent, duplicateOffset });
                     transferred = true;
-                    await insertNativeClipboard({ runtime, acquisition: acquired, media: staged, placement, target,
+                    const roots = await insertNativeClipboard({ runtime, acquisition: acquired, media: staged, placement, target,
                         receivingBoardId: identity.documentId, external: false, current: targetCurrent, signal: context.signal });
-                    if (current()) bringIntoView(placement.worldCentre);
+                    if (current() && options.canWriteView()) bringIntoView(placement.worldCentre);
+                    return roots;
                 } finally { if (!transferred) { staged?.release(); acquired.dispose(); } }
             };
             if (duplicate) {
@@ -127,8 +152,8 @@ export function createNativeClipboardController(options: NativeClipboardControll
                 // The copies the last duplicate left selected, and where its source was: the next Cmd+D repeats their offset.
                 const origin = { x: acquired.payload.bounds.x, y: acquired.payload.bounds.y };
                 const offset = duplicate.repeatFrom ? { x: origin.x - duplicate.repeatFrom.x, y: origin.y - duplicate.repeatFrom.y } : null;
-                await insertAcquisition(acquired, { snapshot: duplicate.snapshot }, offset);
-                rememberDuplicate(runtime.session, runtime.selection.getSnapshot().selected, origin);
+                // What it placed, not the selection: a duplicate that lands after the person chose something else leaves that selected.
+                rememberDuplicate(runtime.session, await insertAcquisition(acquired, { snapshot: duplicate.snapshot }, offset), origin);
                 return;
             }
             if (!input) throw new Error('Clipboard input is unavailable');
@@ -141,7 +166,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
             let refusedNoticed = false;
             const html = createClipboardHtmlFrameHost({ memory: options.memory, identity: workerIdentity, isCurrent: workerCurrent });
             const pasteHost = createBoardClipboardPasteHost({ runtime, memory: options.memory, token: runtime.paintToken, zMax: BOARD_Z_MAX,
-                classifier: { appOrigin: location.origin, markers: html.markers, jsonKind: (text, innerSignal) => classifyClipboardJson({
+                classifier: { appOrigin: location.origin, markers: html.markers, ownPayload: own => pin?.ownPayload(own) ?? null, jsonKind: (text, innerSignal) => classifyClipboardJson({
                     bytes: new Blob([text]), identity: workerIdentity, memory: options.memory, isCurrent: workerCurrent, signal: innerSignal }) },
                 html, ingestor: options.ingestor, receivingBoardId: identity.documentId, cameraZoom: zoom,
                 embedEnvironment: { appOrigin: location.origin }, embedManifest: host.embeds.manifest,
@@ -153,23 +178,31 @@ export function createNativeClipboardController(options: NativeClipboardControll
             // the file and its reason; announcing 'nothing was pasted' after it replaced that notice in the same toast (measured: a
             // refused 4000x3000 picture showed only 'Nothing was pasted from the clipboard.'). A chosen or dropped file is inserted.
             if (!placed.length && !duplicate && !refusedNoticed) options.notice(intent === 'drop' ? 'Nothing was inserted.' : 'Nothing was pasted from the clipboard.');
-        }, { signal, deadlineMs: 120_000 });
+        }
         // Pending until it lands, as a stroke is from its press: the app's Reload right after ⌘V or ⌘D found nothing unsaved,
         // reloaded in 11 ms, and the paste was lost.
         session.trackEdit(work);
-        return work.finally(() => {
+        works.add(work);
+        // Every way it can fail to land is said, in its own words; a document closed or replaced under it needs none (a close
+        // waits for it, session.settle()), and stays a cancellation.
+        const verb = intent === 'drop' ? 'inserted' : intent === 'duplicate' ? 'duplicated' : 'pasted';
+        const explain = (error: unknown): unknown => {
+            if (error instanceof InsertionStale) return new PasteNotLanded(`Nothing was ${verb}: the board kept changing under it. Try again.`);
+            if (!isCancellation(error) || disposed || !current()) return error;
+            if (session.isReadOnly) return new PasteNotLanded(`Nothing was ${verb}: the board became read-only first.`);
+            if (sheetChanged) return new PasteNotLanded(`Nothing was ${verb}: the page was changed first. Try again on this page.`);
+            return new PasteNotLanded(`Nothing was ${verb}: it was interrupted. Try again.`);
+        };
+        return work.catch(error => { throw explain(error); }).finally(() => {
+            works.delete(work);
             try { stop(); } finally {
-                jobs.delete(controller); controller.abort();
+                controller.abort();
                 try { pin?.release(); } finally { pending--; releaseRetired(); }
             }
         });
     };
     const report = (fn: () => void) => { try { fn(); } catch (error) { options.onError(error); } };
-    // An interrupted paste (its target changed, or it was cancelled) used to end silently: say so, and say to paste again.
-    const pasteFailure = (error: unknown) => {
-        if (error instanceof DOMException && error.name === 'AbortError') options.notice('Nothing was pasted: the paste was interrupted. Paste again.');
-        else options.onError(error);
-    };
+    const pasteFailure = (error: unknown) => { if (error instanceof PasteNotLanded) options.notice(error.message); else if (!isCancellation(error)) options.onError(error); };
     const pasteEvent = (event: ClipboardEvent) => {
         if (options.editingText() || !event.clipboardData) return false;
         return (() => { try { const captured = targetNow(), input = captureTransfer(event.clipboardData!); event.preventDefault();
@@ -256,10 +289,10 @@ export function createNativeClipboardController(options: NativeClipboardControll
                 return execute(Promise.resolve(input), target, 'drop');
             } catch (error) { return Promise.reject(error); }
         },
-        cancelPending() {
-            const cancelled = jobs.size > 0;
-            for (const job of jobs) job.abort();
-            return cancelled;
+        /** Settles once every paste, drop and duplicate asked for so far has landed or failed; null when none is on its way. Keys
+         * pressed after ⌘V act after it (attach.ts): an undo then takes the paste back instead of the step before it. */
+        landing(): Promise<void> | null {
+            return works.size ? Promise.allSettled([...works]).then(() => undefined) : null;
         },
         dragover: acceptsBoardDrag,
         drop(event: DragEvent) {

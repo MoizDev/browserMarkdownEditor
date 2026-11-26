@@ -1,6 +1,7 @@
 import { pageAt } from '../../platform/render/pageStack';
 import { normalizedRotation, worldPose } from '../change/coordinates';
 import { isLocked } from '../change/commands';
+import { insertionBasis, rebaseInsertion, selectLanded } from '../change/insertionLanding';
 import type { Op } from '../change/ops';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
@@ -60,14 +61,15 @@ export function pastedTextFit(width: number, lines: number, viewportWidth: numbe
 
 /** Empty text creates no object; whitespace and newline-only text are preserved literally. */
 export async function insertClipboardText(options: InsertClipboardTextOptions): Promise<string | null> {
-    const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
+    const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev, basis = insertionBasis(doc);
     const target = Object.freeze({ ...options.target, viewport: Object.freeze({ ...options.target.viewport }),
         pointer: options.target.pointer ? Object.freeze({ ...options.target.pointer }) : null });
     const signal = options.signal ?? new AbortController().signal;
     const check = () => {
         signal.throwIfAborted();
+        // No revision fence: what lands is carried over to the board as it is then (rebaseInsertion).
         if (!options.current(target) || runtime.session !== session || session.owner !== owner || session.doc !== doc
-            || doc.rev !== revision || session.isReadOnly || runtime.selection.getSnapshot().sheet !== target.sheet) {
+            || session.isReadOnly || runtime.selection.getSnapshot().sheet !== target.sheet) {
             throw new DOMException('Clipboard target became stale', 'AbortError');
         }
     };
@@ -125,7 +127,7 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
                     check();
                     session.history.open('Paste link');
                     try {
-                        const applied = session.apply({ origin: 'paste', label: 'Paste link', ops: [{ t: 'set', id: linked, key: 'url', value } as Op] });
+                        const applied = session.apply({ origin: 'paste', label: 'Paste link', ops: rebaseInsertion(doc, basis, [{ t: 'set', id: linked, key: 'url', value } as Op]) });
                         applied.release();
                         return linked;
                     } finally { session.history.close(); }
@@ -195,8 +197,8 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             check();
             session.history.open('Paste');
             try {
-                const applied = session.apply({ origin: 'paste', label: 'Paste', ops });
-                try { runtime.selection.setScope(parent, [id]); } finally { applied.release(); }
+                const applied = session.apply({ origin: 'paste', label: 'Paste', ops: rebaseInsertion(doc, basis, ops) });
+                try { selectLanded(runtime.selection.getSnapshot(), target.selection, () => runtime.selection.setScope(parent, [id])); } finally { applied.release(); }
                 return id;
             } finally { session.history.close(); }
         });

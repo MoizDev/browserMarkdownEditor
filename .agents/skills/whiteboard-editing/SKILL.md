@@ -74,6 +74,12 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   Leaving the document waits for all of it: `session.settle()` resolves once no hold is open and no `trackEdit`ed work
   (paste, duplicate, drop: they apply through `enqueueAfterGesture`, so they must never hold a gesture) is running, and
   focus leaving the board does not cancel such work (`session.isEditLanding`, `attach.ts` `clearLatches`).
+  **A paste (drop, duplicate) the person asked for always lands**: nothing cancels it but its document's end (the import
+  adapter's `cancelPending` only closes the file picker), ⌘V during a gesture is taken, and it has no revision fence. Its
+  prepared ops are carried onto the board as it is when they land (`change/insertionLanding.ts` `rebaseInsertion`: on top,
+  ids, frame and pictures re-checked); only what that cannot follow (`InsertionStale`) prepares it again. It selects what it
+  placed unless the selection changed since ⌘V (`selectLanded`). Keys pressed after it wait for it (`pasteLanding`), and a
+  press queued behind such a key waits on `afterKeys`, never on the gesture FIFO alone (that spun in microtasks).
   The creation tools (figure, frame, connector, polyline, text/sticky placement) follow the same rule: released shapes land
   in the order drawn (`creationTurn`), each prepared again on a moved revision (`CreationGesture.rebase`); an undo while
   work settles cancels only the latest undoable one; an arrow key waits behind settling work, then nudges or pans.

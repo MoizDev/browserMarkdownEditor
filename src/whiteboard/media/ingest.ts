@@ -17,6 +17,8 @@ import type { BoardJobIdentity } from '../workers/protocol';
 import type { BoardRuntime } from '../host/runtime';
 import type { MediaStorageReceipt, StoreMedia } from './storage.types';
 import { resolveMediaStorage } from './storage';
+import { insertionBasis, rebaseInsertion, selectLanded } from '../change/insertionLanding';
+import type { SelectionSnapshot } from '../selection';
 
 export interface InspectedMedia {
     readonly id: MediaId;
@@ -60,6 +62,8 @@ export interface MediaIngestOptions {
     /** Where this call's refusals are named, in place of the ingestor's own notice: the caller then knows a refusal was shown and
      * does not cover it with 'Nothing was inserted.' (measured: a refused 10.5 MB picture showed only that line). */
     readonly noticeRefused?: (files: readonly { readonly name: string; readonly reason: string }[]) => void;
+    /** The selection when the insertion was asked for (change/insertionLanding.ts `selectLanded`). */
+    readonly selectionBefore?: SelectionSnapshot;
 }
 
 const EXTENSIONS: Record<MediaMime, string> = {
@@ -138,7 +142,9 @@ export class MediaIngestor {
         this.jobs.assertContext(context);
         if (options.signal && options.signal !== context.signal) throw new TypeError('In-job media must use its owning context signal');
         if (!sources.length || sources.length > SECURITY_LIMITS.mediaBatch) return Promise.reject(new RangeError('Select between 1 and 100 media files'));
-        this.host.finishGesture();
+        // A paste or drop already in its job was asked for before any gesture now under way, and lands after it (run's queued
+        // apply): refusing here threw a pasted picture away with "Finish the current gesture before pasting." when a press came
+        // while it was read.
         return this.run(sources, { ...options, signal: context.signal }, context);
     }
 
@@ -213,9 +219,11 @@ export class MediaIngestor {
     }
 
     private async run(sources: readonly MediaSource[], options: MediaIngestOptions, context: JobContext): Promise<readonly NodeId[]> {
-        const signal = context.signal;
+        const signal = context.signal, basis = insertionBasis(this.session.doc);
         const identity: BoardJobIdentity = { session: context.job.session, epoch: context.job.vaultEpoch, revision: this.session.doc.rev };
-        const isCurrent = (): boolean => this.jobs.isCurrent(context.job) && this.host.isCurrent() && this.session.doc.rev === identity.revision;
+        // No revision fence: a stroke or a move committed while the pictures are read and stored is no reason to drop them; what
+        // lands is carried over to the board as it is then (rebaseInsertion).
+        const isCurrent = (): boolean => this.jobs.isCurrent(context.job) && this.host.isCurrent() && this.session.doc === basis.doc;
         const current = (): void => {
             context.assertCurrent();
             if (!isCurrent()) throw new DOMException('Board session ended or changed', 'AbortError');
@@ -327,10 +335,10 @@ export class MediaIngestor {
                 current();
                 this.session.history.open('Insert media');
                 try {
-                    const applied = this.session.apply({ ops, origin: options.origin, label: 'Insert media' });
+                    const applied = this.session.apply({ ops: rebaseInsertion(this.session.doc, basis, ops), origin: options.origin, label: 'Insert media' });
                     try { for (const item of staged) { this.locations.setFile(item.info.id, item.file); item.receipt?.committed(); } }
                     finally { applied.release(); }
-                    this.host.select(ids);
+                    selectLanded(this.runtime.selection.getSnapshot(), options.selectionBefore, () => this.host.select(ids));
                     return ids;
                 } finally { this.session.history.close(); }
             });

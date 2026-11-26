@@ -40,12 +40,13 @@ export async function pastePrivateClipboardInJob(options: PrivateClipboardPasteO
     const identity: BoardJobIdentity = Object.freeze({ session: context.job.session, epoch: context.job.vaultEpoch, revision });
     const check = () => {
         runtime.jobs.assertContext(context); context.assertCurrent();
-        if (!options.current(target) || runtime.session !== session || session.doc !== doc || doc.rev !== revision || session.isReadOnly) {
+        // No revision fence: a gesture committed while the paste is prepared is no reason to drop it (change/insertionLanding.ts).
+        if (!options.current(target) || runtime.session !== session || session.doc !== doc || session.isReadOnly) {
             throw new DOMException('Clipboard target became stale', 'AbortError');
         }
     };
     const current = (value: BoardJobIdentity) => value.session === identity.session && value.epoch === identity.epoch
-        && value.revision === revision && runtime.jobs.isCurrent(context.job) && options.current(target) && session.doc === doc && doc.rev === revision;
+        && value.revision === revision && runtime.jobs.isCurrent(context.job) && options.current(target) && session.doc === doc;
     check();
     const encoded = new Blob([options.encoded], { type: 'text/plain' });
     const decoded = await decodeBoardClipboard({ encoded, identity, memory: options.memory, signal: context.signal, isCurrent: current });

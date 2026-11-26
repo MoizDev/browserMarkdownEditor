@@ -20,6 +20,8 @@ import { yieldToHost } from '../../platform/yieldToHost';
 // Provenance: private clipboard media, session job authority and SEC-W4
 // verification contracts; independent pre-transaction staging, no third-party source.
 export interface PreparedClipboardMedia {
+    /** The board the media was staged for. Not its revision: what a stored picture adds or renames is checked again where it
+     * lands (change/insertionLanding.ts), so a stroke committed meanwhile does not throw the paste away. */
     readonly stamp: Readonly<{ runtime: BoardRuntime; owner: Readonly<SessionOwner>; doc: BoardDoc; revision: number }>;
     readonly mediaOps: readonly Op[];
     readonly files: ReadonlyMap<MediaId, string | null>;
@@ -86,15 +88,15 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
     // copy their metadata cooperatively inside the owning job, not on the event path.
     const sourceInline = options.acquisition.inline;
     const deadlineMs = 180_000;
-    let abortOwned: (() => void) | undefined, stampedRevision = -1;
+    let abortOwned: (() => void) | undefined;
     const work = async (context: JobContext): Promise<PreparedClipboardMedia> => {
         runtime.jobs.assertContext(context);
-        const session = runtime.session, doc = session.doc, revision = doc.rev; stampedRevision = revision;
+        const session = runtime.session, doc = session.doc, revision = doc.rev;
         const owner = Object.freeze({ documentId: session.owner.documentId, session: session.owner.session });
         const stamp = Object.freeze({ runtime, owner, doc, revision });
         const identity: BoardJobIdentity = Object.freeze({ session: context.job.session, epoch: context.job.vaultEpoch, revision });
         const current = (job: BoardJobIdentity) => job.session === identity.session && job.epoch === identity.epoch && job.revision === identity.revision
-            && runtime.jobs.isCurrent(context.job) && options.current() && runtime.session === session && session.doc === doc && doc.rev === revision
+            && runtime.jobs.isCurrent(context.job) && options.current() && runtime.session === session && session.doc === doc
             && session.owner.documentId === owner.documentId && session.owner.session === owner.session;
         const check = () => { runtime.jobs.assertContext(context); context.assertCurrent(); if (!current(identity)) throw new DOMException('Clipboard media staging became stale', 'AbortError'); };
         let steps = 0, sliceStart = performance.now();
@@ -196,7 +198,7 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
     const operation = existingContext ? work(existingContext) : runtime.jobs.run(work, { signal: options.signal, deadlineMs });
     return operation.then(result => {
         options.signal?.throwIfAborted();
-        if (!options.current() || runtime.session.doc !== result.stamp.doc || runtime.session.doc.rev !== stampedRevision
+        if (!options.current() || runtime.session.doc !== result.stamp.doc
             || runtime.session.owner.documentId !== result.stamp.owner.documentId || runtime.session.owner.session !== result.stamp.owner.session) throw new DOMException('Clipboard media staging became stale', 'AbortError');
         abortOwned = undefined;
         return result;

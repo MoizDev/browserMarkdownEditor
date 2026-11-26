@@ -52,7 +52,11 @@ export function createNativeImportAdapter(binding: NativeClipboardBinding, runti
         },
         paste(event) { binding.focus(); binding.controller.pasteEvent(event); },
         drop(event) { binding.focus(); binding.controller.drop(event); },
-        cancelPending() { const pickerCancelled = closePicker(); return binding.controller.cancelPending() || pickerCancelled; },
+        // A paste, drop or duplicate on its way is not a pending gesture: what the person asked for lands, after any gesture begun
+        // meanwhile (nativeClipboardController.ts). Cancelled here, every press, wheel turn, tool key, Escape or undo within the
+        // paste's preparation lost it (measured: a box, click, stroke or drag within 100 ms of ⌘V, every time).
+        cancelPending() { return closePicker(); },
+        landing: () => binding.controller.landing(),
         dispose() { if (!disposed) { disposed = true; closePicker(); } },
     };
     return { imports, open, dispose: imports.dispose };

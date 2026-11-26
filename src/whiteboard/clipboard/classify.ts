@@ -13,6 +13,8 @@ export interface HtmlClipboardMarkers {
 export interface ClipboardClassifierHost {
     /** Opaque, network-denied HTML realm; never parse HTML in the vault origin. */
     markers(html: string, signal: AbortSignal): Promise<HtmlClipboardMarkers>;
+    /** This window's own last copy, recognised without parsing (copy.ts `ownPayload`). */
+    ownPayload?(html: string): string | null;
     /** Bounded worker preflight for large inputs, and JSON shape detection. */
     jsonKind(text: string, signal: AbortSignal): Promise<'excalidraw' | 'native-records' | null>;
     readonly appOrigin: string;
@@ -80,6 +82,8 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     const plainOnly = intent === 'paste-plain' || intent === 'paste-plain-inverted';
     if (plainOnly && input.text !== null && input.text.trim()) return plain(input.text, signal);
     let markers: HtmlClipboardMarkers | null = null;
+    const own = input.html !== null ? host.ownPayload?.(input.html) ?? null : null;
+    if (own !== null) return { kind: 'private', encoded: own };
     if (input.html !== null) {
         if (new Blob([input.html]).size > SECURITY_LIMITS.clipboardHtmlBytes) {
             if (input.text !== null && new Blob([input.text]).size <= 1024 * 1024) return plain(input.text, signal);

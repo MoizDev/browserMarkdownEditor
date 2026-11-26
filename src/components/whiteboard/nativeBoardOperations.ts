@@ -25,6 +25,8 @@ export function createNativeBoardOperations(options: {
     readonly actionLabel: (id: MainAction) => string;
     readonly actionShortcut: (id: MainAction) => string | undefined;
     readonly notice: (message: string) => void;
+    /** The document's pastes still on their way (NativeClipboardService `landing`), or null. */
+    readonly pasteLanding: () => Promise<void> | null;
     readonly keptLockedNotice: (count: number) => string;
     readonly onError: (error: unknown) => void;
 }) {
@@ -77,7 +79,15 @@ export function createNativeBoardOperations(options: {
             } finally { session.history.close(); }
         });
     };
-    const commands: Record<BoardCommand, NativeCommandOperation> = { ...edit, ...arrange,
+    // Undo and Redo from the header, the menu, the Styles panel or the palette act once a paste asked for before them has landed,
+    // as ⌘Z does (attach.ts `runBound`): the paste was asked for first. Taken at once, Undo undid the step before the paste and
+    // the paste then landed and emptied the redo, so that step could not be brought back (measured: 301 objects, ⌘V of all, header
+    // Undo 44 ms later → 601 objects and Redo disabled; ⌘Z → 301 and Redo enabled).
+    const afterPaste = (operation: NativeCommandOperation): NativeCommandOperation => ({ state: operation.state, run() {
+        const pasting = options.pasteLanding();
+        return pasting ? pasting.then(() => operation.run()) : operation.run();
+    } });
+    const commands: Record<BoardCommand, NativeCommandOperation> = { ...edit, ...arrange, undo: afterPaste(edit.undo), redo: afterPaste(edit.redo),
         copy: clipboard('copy', true), cut: clipboard('cut', true), duplicate: clipboard('duplicate', true),
         paste: op(attached, () => { const active = binding(); if (!active) throw new Error('The board input is not attached'); active.controller.paste(); }),
         copyAsPng: clipboard('copyAsPng'), copyAsSvg: clipboard('copyAsSvg'), copyAsJson: clipboard('copyAsJson'),

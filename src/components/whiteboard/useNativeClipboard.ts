@@ -45,6 +45,8 @@ export interface NativeClipboardBinding {
     openMenu(event: MouseEvent): void;
     focus(): void;
     detach(): void;
+    /** The document's pastes on their way, from any of its views (NativeClipboardService `landing`). */
+    landing(): Promise<void> | null;
 }
 export interface NativeClipboardService {
     readonly preferences: BoardPreferenceState;
@@ -64,6 +66,11 @@ export interface NativeClipboardService {
     pagePng(page: number, maxSide: number, signal: AbortSignal): Promise<Blob>;
     /** Saves the focused board's whole sheet as a PDF. False when the board is not current or busy. */
     exportPdf(): boolean;
+    /** Settles once every paste, drop and duplicate asked for on this document so far, from any of its views, has landed or
+     * failed; null when none is on its way. What a person does next waits for it wherever it is asked: an Undo taken at once
+     * undid the step before the paste, which then landed over the emptied redo (measured: header Undo right after ⌘V left the
+     * paste and lost the stroke it undid; ⌘Z, which waited, took the paste back). */
+    landing(): Promise<void> | null;
     /** `print` is the view's own print route (Menu → Print's scope choice); without one, Ctrl/Cmd+P prints the whole document. */
     attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
         inputHandled?: boolean, writable?: () => boolean, print?: () => boolean): NativeClipboardBinding;
@@ -237,6 +244,10 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             return (await pinPagePrint()).print.pngPage(page, signal, maxSide);
         },
         exportPdf: () => startFocusedTask(signal => focusedPdf(signal, false)),
+        landing() {
+            const pending = [...controllers].map(controller => controller.landing()).filter(work => work !== null);
+            return pending.length ? Promise.allSettled(pending).then(() => undefined) : null;
+        },
         attach(surface, lease, theme, notice, inputHandled = false, writable, print) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
             let detached = false;
@@ -345,7 +356,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 surface.addEventListener('paste', paste);
                 surface.addEventListener('dragover', dragover); surface.addEventListener('drop', drop); surface.addEventListener('contextmenu', menu);
             }
-            return { controller, commands, openMenu: menu, focus, detach() {
+            return { controller, commands, openMenu: menu, focus, landing: () => service.landing(), detach() {
                 if (detached) return; detached = true;
                 bindings.delete(binding); if (active === binding) active = bindings.values().next().value;
                 if (!bindings.size && !disposed) commands.shownChanged();

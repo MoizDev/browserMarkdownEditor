@@ -235,11 +235,11 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             frameName: () => 'Frame', flatten: capabilities.flatten, editLink: link.editLink, actions,
             keptLockedNotice: count => translateBoard(language.getSnapshot().table, 'notice.keptLocked', { count }),
             label: labels.commandLabel, shortcut: id => nativeCommandShortcut(id, mac), actionLabel: labels.actionLabel,
-            actionShortcut: id => nativeActionShortcut(id, mac), notice: setNotice, onError: report });
+            actionShortcut: id => nativeActionShortcut(id, mac), notice: setNotice, pasteLanding: () => clipboard.landing(), onError: report });
         const value = { camera, commands }; setOwned(value);
         return () => setOwned(previous => previous === value ? null : previous);
     }, [runtime, lease, current, signal, minimapVisible, setMinimapVisible, capabilities, shortcutsAvailable, openShortcuts, openCommandPalette,
-        language, canWrite, link, mac, setNotice, report, runPrint, runExportPdf]);
+        language, canWrite, link, mac, setNotice, report, runPrint, runExportPdf, clipboard]);
     useLayoutEffect(() => {
         if (!owned) return;
         const { commands, camera } = owned;

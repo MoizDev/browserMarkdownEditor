@@ -88,9 +88,14 @@ export function createNativeClipboardController(options: NativeClipboardControll
     };
     // R-21: a paste never changes zoom. Only when the placed centre lies outside the view does the camera pan, at the same
     // zoom, to centre it; a centre already in view needs no pan. Measured against the camera now, since decoding is async.
-    const bringIntoView = (point: ClipboardPoint) => {
+    // A view the person moved after ⌘V (a scroll, a pan, a page key while the paste was prepared) is theirs, as a selection made
+    // meanwhile is (selectLanded): the paste lands where it was placed and the camera stays. Brought back, the scroll was undone.
+    const bringIntoView = (point: ClipboardPoint, asked: Readonly<ClipboardTarget>['viewport']) => {
         const camera = options.camera.camera, viewport = options.camera.viewport;
         if (viewport.width <= 0 || viewport.height <= 0) return;
+        const moved = Math.abs(camera.x - asked.x) > 1e-6 || Math.abs(camera.y - asked.y) > 1e-6
+            || Math.abs(viewport.width / camera.z - asked.w) > 1e-6 || Math.abs(viewport.height / camera.z - asked.h) > 1e-6;
+        if (moved) return;
         const surface = worldToSurface(point, camera);
         if (surface.x >= 0 && surface.y >= 0 && surface.x <= viewport.width && surface.y <= viewport.height) return;
         options.camera.setCamera({ x: point.x - viewport.width / (2 * camera.z), y: point.y - viewport.height / (2 * camera.z), z: camera.z });
@@ -142,7 +147,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
                     transferred = true;
                     const roots = await insertNativeClipboard({ runtime, acquisition: acquired, media: staged, placement, target,
                         receivingBoardId: identity.documentId, external: false, current: targetCurrent, signal: context.signal });
-                    if (current() && options.canWriteView()) bringIntoView(placement.worldCentre);
+                    if (current() && options.canWriteView()) bringIntoView(placement.worldCentre, target.viewport);
                     return roots;
                 } finally { if (!transferred) { staged?.release(); acquired.dispose(); } }
             };

@@ -205,6 +205,9 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     // The eraser's path while it erases. A pointer that stops consumes its trail from the oldest end over ERASE_TRAIL_MS.
     const ERASE_TRAIL_MS = 350;
     let erasePath: { x: number; y: number; time: number }[] = [];
+    // The eraser's reach around its path, in CSS px: the trail is drawn as wide as what it erases. It was 12 px across under a
+    // 16 px reach, so a stroke beside the trail went with it.
+    let eraseReach = 8;
     const scheduleTrails = () => {
         deadline?.(); deadline = null;
         if ((!laserTrail.active && erasePath.length < 2) || !current()) return;
@@ -222,8 +225,9 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         finish() { laserTrail.finish(); scheduleTrails(); },
         cancel() { laserTrail.cancel(); deadline?.(); deadline = null; invalidate(); },
     };
-    const erasePoint = (p: { x: number; y: number; time: number }) => {
+    const erasePoint = (p: { x: number; y: number; time: number }, radiusCss: number) => {
         if (!current()) return;
+        eraseReach = radiusCss;
         erasePath.push({ x: p.x, y: p.y, time: p.time });
         if (erasePath.length > 512) erasePath.splice(0, erasePath.length - 512);
         invalidate(); scheduleTrails();
@@ -314,9 +318,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         let cancelled = selectionCancelled || textCancelled;
         for (const cancel of [...pending]) { pending.delete(cancel); try { cancel(); } catch (error) { ui.error(error); } cancelled = true; }
         try { if (options.imports.cancelPending()) cancelled = true; } catch (error) { ui.error(error); }
-        // A released erase that is still landing owns the overlay (its strokes, dimmed): clearing it at the next press made
-        // them flash back at full opacity until the erase's frame.
-        if (!text.manager.current && !select.holdsPreview()) preview.clear();
+        if (!text.manager.current) preview.clear();
         brush = null; column = null; laserContext.cancel(); erasePath = []; return cancelled;
     };
     const paste = (event: ClipboardEvent) => {
@@ -405,7 +407,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
             erasePath.forEach((point, i) => { const p = worldToSurface(point, frame.view.camera); d += `${i ? 'L' : 'M'}${p.x} ${p.y}`; });
             const path = document.createElementNS(svgNS, 'path');
             path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke-linecap', 'round'); path.setAttribute('stroke-linejoin', 'round');
-            path.setAttribute('stroke-width', '12'); path.style.stroke = 'var(--text-muted)'; path.setAttribute('opacity', '0.5'); svg.append(path);
+            path.setAttribute('stroke-width', String(eraseReach * 2)); path.style.stroke = 'var(--text-muted)'; path.setAttribute('opacity', '0.35'); svg.append(path);
         }
         if (brush || column) {
             // An auto-size text is created centred on the pointer's height (text/edit/createText.ts), so its mark is too; a dragged

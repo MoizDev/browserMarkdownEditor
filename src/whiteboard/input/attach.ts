@@ -401,10 +401,13 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const unbindChromeDrag = services.tools.bindChromeDrag(view.token, (choice, event, bar) => chromeDrag.begin(choice, event, bar))
   let cancelKeyboardGesture = () => false
   let dismissKeyboardCursor = () => {}
+  // An erase is not among them: its path is in world units and each stretch is asked through the view of that moment, so
+  // a view that moves under it (a palm's pan in pen mode, a wheel turn) changes nothing it erases. Cancelled here, a palm
+  // resting beside the pen ended the erase in the middle of the drag and every item it had touched came back.
   const cancelForCamera = () => {
     cancelContinuations(); services.cancelPendingGestures()
     const active = router.activeOwner
-    if (!active || !['node-edit', 'erase', 'marquee', 'zoom-brush'].includes(active.kind)) return
+    if (!active || !['node-edit', 'marquee', 'zoom-brush'].includes(active.kind)) return
     if (active.pointerIds.has(-1)) cancelKeyboardGesture()
     else pointer.interrupt('os-cancel')
   }
@@ -780,6 +783,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       } catch (error) { services.error(error) }
     }
     if (current()) view.a11y.toolState(snapshot)
+    // The eraser shows its reach on the pointer (viewerHost.css): chosen, held with ⌘ over Draw, or the pen's eraser end alike.
+    // It had the default arrow, which says neither where the eraser is nor how far it reaches.
+    if (editable() && snapshot.active.id === 'eraser') view.surface.dataset.boardCursor = 'eraser'
+    else delete view.surface.dataset.boardCursor
   }
   const stopMirror = services.tools.subscribe(updateMirror)
   const stopSession = session.subscribe(() => {
@@ -802,6 +809,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     // of Annotate holds ⌘ on the board (eraser) and then takes the board away before ⌘ comes up: every later entry, by
     // shortcut or by click, opened on the Eraser and a stroke erased instead of drawing (measured: 3 of 3 re-entries).
     if (accelTool !== null) releaseAccelEraser()
+    delete view.surface.dataset.boardCursor
     window.removeEventListener('pagehide', pagehide)
     stopFlush?.(); delegated?.dispose(); unbindPointer(); unbindChromeDrag(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.(); modifierRelease.dispose()
     pointer.dispose()

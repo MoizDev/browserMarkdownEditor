@@ -103,7 +103,11 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
     // once nested, so most of the wall time was idle and a marquee around two shapes needed about a second; a press
     // in that second cancelled it (measured: no selection, the shapes moved one at a time). A message yield is not clamped.
     const cooperate = options.cooperate ?? yieldToTask;
-    async function region(query: RegionQuery, signal: AbortSignal): Promise<readonly NodeId[]> {
+    /** `at`: the view the query's points were mapped through. Given, the answer is of that view and stands wherever the
+     * live view has gone by the time it is known (an eraser's path is kept in world units, so it loses nothing); absent,
+     * the query reads the live view and is stale once that moves (a marquee is drawn on the screen). */
+    async function region(query: RegionQuery, signal: AbortSignal, how?: { readonly at?: ViewState }): Promise<readonly NodeId[]> {
+        const at = how?.at;
         let cursor: ReturnType<NonNullable<typeof runtime.scene>['spatialCursor']> | undefined;
         try {
             signal.throwIfAborted();
@@ -117,14 +121,14 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
             }
             const pin = scene.pin(); let token: RenderToken;
             try { token = Object.freeze({ ...pin.token }); } finally { pin.release(); }
-            const view = options.camera(), camera = Object.freeze({ ...view.camera }), viewport = Object.freeze({ ...view.viewport });
+            const view = at ?? options.camera(), camera = Object.freeze({ ...view.camera }), viewport = Object.freeze({ ...view.viewport });
             const viewStamp: ViewState = { ...view, camera, viewport }, revision = doc.rev, font = options.fontEpoch();
             const selection = runtime.selection.getSnapshot(), { sheet, focus } = selection;
             const check = () => {
                 signal.throwIfAborted();
                 const next = runtime.selection.getSnapshot();
                 if (!options.current(token) || runtime.scene !== scene || !scene.ready || scene.revision !== revision || doc.rev !== revision
-                    || options.fontEpoch() !== font || !stampView(viewStamp, options.camera()) || next.sheet !== sheet || next.focus !== focus) throw stale();
+                    || options.fontEpoch() !== font || (!at && !stampView(viewStamp, options.camera())) || next.sheet !== sheet || next.focus !== focus) throw stale();
             };
             if (!Number.isFinite(camera.z) || camera.z <= 0 || !Number.isFinite(viewport.dpr) || viewport.dpr <= 0
                 || (query.kind === 'polygon' ? query.points.length < 3 : !query.points.length || !Number.isFinite(query.radiusCss) || query.radiusCss < 0)) throw new RangeError('Invalid board region');

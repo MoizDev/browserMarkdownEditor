@@ -16,6 +16,13 @@
 
 .board-viewer-surface { overflow: hidden; }
 .board-viewer-surface canvas { display: block; }
+/* The eraser's reach, as a ring round the pointer: 8 CSS px, the radius input/basicTools.ts eraserRadiusCss asks with for a
+   mouse or a pen. A dark line over a light one, so it shows on paper, on ink and in dark view alike. The attribute is set
+   on the board's input surface (input/attach.ts); an inline cursor there (the wait before the first frame, the zoom hold)
+   still outranks it. */
+[data-board-cursor="eraser"] {
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'%3E%3Ccircle cx='11' cy='11' r='8' fill='none' stroke='%23fff' stroke-opacity='.9' stroke-width='3'/%3E%3Ccircle cx='11' cy='11' r='8' fill='none' stroke='%23222' stroke-width='1.25'/%3E%3C/svg%3E") 11 11, crosshair;
+}
 .board-viewer-overlay { pointer-events: none; }
 .board-viewer-overlay > * { pointer-events: auto; }
 

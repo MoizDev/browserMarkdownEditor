@@ -9,6 +9,7 @@ import type { RenderToken } from '../../platform/render/types';
 import type { Camera, ViewState } from '../../platform/types';
 import type { Op } from '../change/ops';
 import { planDelete } from '../commands/delete';
+import { ApplyRefused } from '../change/errors';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { flipBoardLeaves } from '../commands/flipLeaves';
 import { stretchBoardLeaves } from '../commands/stretchLeaves';
@@ -131,13 +132,13 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     // Gestures the person has finished (an erase, a box) that are still landing. A new press, Escape, a tool change or
     // another key does not cancel them (cancelPending above leaves them alone); the view's end does, and an undo cancels
     // the ones whose landing would be its undo step. `settled` lets a new gesture's first decision wait for them.
-    const settling = new Map<() => void, boolean>();
+    const settling = new Map<(undo: boolean) => void, boolean>();
     // Each waiter waits for the work landing when it asked, never for work registered after: a press released before its own
     // decision registers itself as settling, and waiting for an empty registry made it wait for itself. Measured: two quick clicks
     // on empty canvas of a board holding a frame (whose first hit query is the slower one) left every later press, Escape and
     // ⌘A waiting, still 10 s later.
-    const settledWaiters = new Set<{ readonly work: Set<() => void>; readonly wake: () => void }>();
-    const registerSettling = (cancel: () => void, undoable: boolean) => {
+    const settledWaiters = new Set<{ readonly work: Set<(undo: boolean) => void>; readonly wake: () => void }>();
+    const registerSettling = (cancel: (undo: boolean) => void, undoable: boolean) => {
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
         settling.set(cancel, undoable);
         return () => {
@@ -149,7 +150,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         };
     };
     // The key edits among them (keyEdit): the view's end leaves them to land on the session, which outlives it.
-    const keyEdits = new Set<() => void>();
+    const keyEdits = new Set<(undo: boolean) => void>();
     const settled = (): Promise<void> => settling.size
         ? new Promise(wake => { settledWaiters.add({ work: new Set(settling.keys()), wake }); }) : Promise.resolve();
     // An undo takes back ONE step: the latest undoable work still landing. Cancelling every one made a ⌘Z right after two
@@ -157,7 +158,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const cancelSettling = (undo: boolean): boolean => {
         const work = [...settling].filter(([cancel, undoable]) => undo ? undoable : !keyEdits.has(cancel));
         const chosen = undo ? work.slice(-1) : work;
-        for (const [cancel] of chosen) { try { cancel(); } catch (error) { report(error); } }
+        for (const [cancel] of chosen) { try { cancel(undo); } catch (error) { report(error); } }
         return chosen.length > 0;
     };
     const setGuides = (value: readonly BoardSnapGuide[]) => { guides = value; requestFrame(); };
@@ -244,17 +245,13 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             cancel() { if (stopped) return; stopped = true; controller.abort(); controllers.delete(controller); waiters.clear(); },
         };
     };
-    const sweep = (eraser: boolean): SweepQueueServices => ({
-        beginSweep: (from, to, topOnly) => beginSweep(from, to, topOnly, eraser ? 8 : 6),
+    const scribble: SweepQueueServices = {
+        beginSweep: (from, to, topOnly) => beginSweep(from, to, topOnly, 6),
         sceneRevision: () => doc.rev, now: () => performance.now(), schedule: (callback, onDrop) => options.inputFrames.schedule(callback, onDrop),
-        preview(ids) {
-            previewIds = new Set(ids);
-            if (eraser) options.preview.showOps([...ids].map(id => ({ t: 'set', id, key: 'opacity', value: 0.5 } as const)));
-            requestFrame();
-        },
-    });
+        preview(ids) { previewIds = new Set(ids); requestFrame(); },
+    };
     const select: SelectToolContext = {
-        selection: runtime.selection, dragThresholdCss: CLICK_SLOP_CSS, scribble: sweep(false),
+        selection: runtime.selection, dragThresholdCss: CLICK_SLOP_CSS, scribble,
         hold: () => session.beginGesture(), registerPending, toSurface, isCurrent: mutable,
         async hit(sample, signal) {
             check(signal); const revision = doc.rev;
@@ -448,71 +445,102 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         });
         return true;
     };
-    const eraserSweep = sweep(true);
-    // Every live erase's strokes, dimmed together: one can be landing while the next is drawn, and the preview is one
-    // overlay. Each erase replaces or removes only its own set (a released erase that found nothing cleared the next
-    // drag's dimming before).
-    const erasing = new Map<object, ReadonlySet<NodeId>>();
-    const showErasing = () => {
-        const ids = new Set<NodeId>();
-        for (const set of erasing.values()) for (const id of set) if (doc.nodes.has(id)) ids.add(id);
-        if (ids.size) options.preview.showOps([...ids].map(id => ({ t: 'set', id, key: 'opacity', value: 0.5 } as const)));
-        else options.preview.clear();
-        requestFrame();
+    // Whether taking an item off the board reads geometry: a container re-places the locked items it leaves behind, an arrow
+    // bound to the item (or the item's own bound end) is let go at the tip it was drawn with, and a group left with one
+    // member dissolves around it. Nothing else does, and that is every pen stroke in a notebook or over a PDF.
+    const eraseReadsGeometry = (id: NodeId): boolean => {
+        const node = doc.nodes.get(id);
+        if (!node) return false;
+        if (node.kind === 'group' || node.kind === 'frame' || doc.attachedTo.get(id)?.size) return true;
+        if (node.kind === 'connector' && (node.start.attach || node.end.attach)) return true;
+        if (node.kind === 'polyline' && (node.startAttach || node.endAttach)) return true;
+        return doc.nodes.get(node.parent as NodeId)?.kind === 'group';
     };
-    // A revision that moves while an erase is prepared is prepared again. These are bounded only so a board that changes
+    // A document that changes while an item's geometry is pinned is pinned again. Bounded only so a board that changes
     // without pause cannot hold an erase forever; each one waits on a real change.
-    const ERASE_ATTEMPTS = 32;
+    const ERASE_PIN_ATTEMPTS = 32;
+    // Released erases finish in the order they were released: the second waits for the first's last stretch.
+    let eraseTail: Promise<void> = Promise.resolve();
     const eraser: EraserContext = {
-        ...eraserSweep, hold: () => session.beginGesture(), settle: () => session.beginGesture('settling'), registerSettling,
-        previewErase(owner, ids) {
-            if (ids.size) erasing.set(owner, ids); else if (!erasing.delete(owner)) return;
-            showErasing();
+        hold: () => session.beginGesture(), settle: () => session.beginGesture('settling'), registerSettling,
+        now: () => performance.now(), wait: ms => new Promise(resolve => { setTimeout(resolve, ms); }), error: report,
+        eraseTurn() {
+            const ready = eraseTail;
+            let done!: () => void;
+            eraseTail = new Promise<void>(resolve => { done = resolve; });
+            return { ready, done };
         },
-        clearPreview(owner) { if (erasing.delete(owner)) showErasing(); },
-        // The sweep's hits are the strokes the person touched, at the revision they saw. A change since (the tool switch
-        // writes ui.tool, the previous erase lands, an undo) does not undo that touch: the strokes still present are erased,
-        // with geometry pinned at the revision they are erased in. It was abandoned as "Erase source changed" before
-        // (measured: erase then an immediate click on Draw kept the strokes in 8 of 10 runs).
-        async commitErase(owner, ids, signal) {
-            const sheet = runtime.selection.getSnapshot().sheet;
-            for (let attempt = 1; ; attempt++) {
-                check(signal);
-                // The previous erase's commit owns the preview until its frame is presented; this one is built after it.
-                await options.preview.waitUntilIdle(signal);
-                check(signal);
+        // The path is kept in world units and mapped through the view as it is when the question is asked, with the reach
+        // that view gives it; the answer then holds wherever the view goes meanwhile (`at`). Mapped once at the press and
+        // checked against the live view, a wheel turn or a palm's pan in the middle of a drag ended the erase.
+        async touched(points, radiusCss, signal) {
+            check(signal);
+            const view = options.camera(), css = points.map(point => worldToSurface(point, view.camera));
+            const ids = await options.region.region({ kind: 'swept', points: css, radiusCss, localToSurface: IDENTITY }, signal, { at: view });
+            check(signal);
+            return ids;
+        },
+        beginErase() {
+            const sheet = runtime.selection.getSnapshot().sheet, history = session.history;
+            // 'own': this gesture opened the step and closes it. 'mark': a step was already open (a style press held through
+            // the erase), so the erase is recorded into it and taken back to this mark.
+            let step: 'none' | 'own' | { readonly mark: number } = 'none', over = false;
+            const apply = (ids: readonly NodeId[]) => {
+                check();
                 if (runtime.selection.getSnapshot().sheet !== sheet) throw new DOMException('The erased page is no longer shown', 'AbortError');
-                const live = new Set<NodeId>();
-                for (const id of ids) if (doc.nodes.has(id)) live.add(id);
-                if (!live.size) return;
-                const revision = doc.rev, owned = session.owner;
-                const active = () => !signal.aborted && mutable() && session.owner === owned && session.doc === doc && doc.rev === revision;
-                let lease: { release(): void } | undefined;
-                try {
-                    lease = await render.pinChangeGeometry(live, signal, doc, active);
-                    if (active()) {
-                        erasing.set(owner, live); showErasing();
-                        await options.preview.waitUntilReady(signal);
-                    }
-                } catch (error) {
-                    lease?.release();
-                    if (!isCancellation(error) || signal.aborted || !mutable() || attempt >= ERASE_ATTEMPTS) throw error;
-                    continue;
+                if (step === 'none') { if (history.isOpen) step = { mark: history.mark() }; else { history.open('Erase'); step = 'own'; } }
+                // One item that cannot go (preserved content this app cannot make, a page it is not on) must not keep the others.
+                const remove = (roots: readonly NodeId[]) => {
+                    const builder = session.begin('tool', 'Erase');
+                    try { planDelete(doc, builder, sheet, roots, render.changeGeometry); builder.commit().release(); }
+                    catch (error) { builder.abort(); throw error; }
+                };
+                try { remove(ids); }
+                catch (error) {
+                    if (!(error instanceof ApplyRefused) || ids.length < 2) { if (!(error instanceof ApplyRefused)) throw error; return; }
+                    for (const id of ids) { try { if (doc.nodes.has(id)) remove([id]); } catch (one) { if (!(one instanceof ApplyRefused)) throw one; } }
                 }
-                try {
-                    if (!active()) { if (attempt >= ERASE_ATTEMPTS) throw new DOMException('The board kept changing', 'AbortError'); continue; }
-                    options.preview.armCommit();
-                    try {
-                        const builder = session.begin('tool', 'Erase');
-                        try { planDelete(doc, builder, sheet, [...live], render.changeGeometry); builder.commit().release(); }
-                        catch (error) { builder.abort(); throw error; }
-                        options.preview.finishCommit();
-                    } catch (error) { options.preview.cancelCommit(); throw error; }
-                    return;
-                } finally { lease!.release(); }
-            }
+            };
+            return {
+                async erase(ids, signal) {
+                    if (over) return;
+                    const plain: NodeId[] = [], reading: NodeId[] = [];
+                    for (const id of ids) if (doc.nodes.has(id)) (eraseReadsGeometry(id) ? reading : plain).push(id);
+                    // Applied in this task: by the time the pointer has moved on, the item is off the board and in the undo
+                    // step. Before, every item waited for the release, then for its geometry and a preview frame.
+                    if (plain.length) apply(plain);
+                    for (let attempt = 1; reading.length; attempt++) {
+                        check(signal);
+                        const live = reading.filter(id => doc.nodes.has(id));
+                        if (!live.length || over) return;
+                        const revision = doc.rev, owned = session.owner;
+                        const active = () => !signal.aborted && mutable() && session.owner === owned && session.doc === doc && doc.rev === revision;
+                        let lease: { release(): void };
+                        try { lease = await render.pinChangeGeometry(live, signal, doc, active); }
+                        catch (error) {
+                            if (!isCancellation(error) || signal.aborted || !mutable() || attempt >= ERASE_PIN_ATTEMPTS) throw error;
+                            continue;
+                        }
+                        try {
+                            if (over || signal.aborted) return;
+                            if (active()) { apply(live); return; }
+                            if (attempt >= ERASE_PIN_ATTEMPTS) throw new DOMException('The board kept changing', 'AbortError');
+                        } finally { lease.release(); }
+                    }
+                },
+                close() {
+                    if (over) return;
+                    over = true;
+                    if (step === 'own' && history.isOpen) history.close();
+                },
+                revert() {
+                    if (over) return;
+                    over = true;
+                    if (step === 'own') { if (history.isOpen) history.cancel(); }
+                    else if (step !== 'none' && history.isOpen) history.rollbackTo(step.mark);
+                },
+            };
         },
-        error: report,
     };
     // Show grid is the lattice snapping uses (boardSnapGrid), drawn under the handles and guides. Its period doubles while one
     // cell is under 8 CSS px, so a zoomed-out board stays legible and the line count stays bounded at every zoom.
@@ -858,8 +886,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
     return { select, tool, eraser, beginHandle, doubleClickHandle, setHover: setHoverOutline, secondarySelect, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, setConnectorTarget: connectorHints.setTarget, setConnectorHover: connectorHints.setHover, setConnectorBinding: connectorHints.setBinding, navigation, writeOverlays: (frame: ScheduledFrame) => auditTimed('select-overlay', () => writeOverlays(frame)), cancelPending, cancelSettling, registerSettling,
-        /** A released erase still landing shows its strokes dimmed: a new press must not clear that overlay. */
-        holdsPreview: () => erasing.size > 0,
+
         dispose() { if (disposed) return; cancelPending(); cancelSettling(false); for (const controller of controllers) controller.abort(); controllers.clear(); disposed = true; stopHoverNotices(); setHoverOutline(null); hoverSvg?.remove(); hoverSvg = null; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); connectorHints.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };

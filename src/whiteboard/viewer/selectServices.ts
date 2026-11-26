@@ -476,7 +476,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         async touched(points, radiusCss, signal) {
             check(signal);
             const view = options.camera(), css = points.map(point => worldToSurface(point, view.camera));
-            const ids = await options.region.region({ kind: 'swept', points: css, radiusCss, localToSurface: IDENTITY }, signal, { at: view });
+            const ids = await options.region.region({ kind: 'swept', points: css, radiusCss, localToSurface: IDENTITY }, signal, { at: view, painted: true });
             check(signal);
             return ids;
         },

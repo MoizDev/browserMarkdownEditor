@@ -13,7 +13,7 @@ import type { PointClipContour } from '../geom/clippedPointPathJob';
 import { createPolygonPathJob } from '../geom/polygonPathJob';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
-import { createVectorRegionJob, vectorNarrowDescriptor } from '../geom/vectorNarrow';
+import { createVectorRegionJob, vectorNarrowDescriptor, type VectorNarrowDescriptor } from '../geom/vectorNarrow';
 import { createClippedVectorRegionJob } from '../geom/clippedVectorRegionJob';
 import { orient2d } from '../geom/predicates';
 import { boardFrameAncestors } from '../geom/ancestorFrames';
@@ -27,7 +27,7 @@ import type { RegionQuery } from '../geom/types';
 import type { BoardRuntime } from '../host/runtime';
 import { InkRegionPickJob } from '../ink/regionPick';
 import type { NodeId } from '../model/ids';
-import type { Attachment, Node } from '../model/nodes';
+import type { Attachment, FigureNode, Node } from '../model/nodes';
 import type { SpatialRef } from '../pick';
 import { BoundsQuality } from '../scene/bounds';
 import type { createBoardRenderServices } from '../render/services';
@@ -96,6 +96,16 @@ function clipPolygon(subject: readonly Vec2[], clip: readonly ExactPoint[]): Vec
     });
 }
 const yieldToTask = yieldToHost;
+/** A figure's narrow parts for a query that touches only what is painted: with no fill, its body is its outline alone. A
+ * dashed or dotted outline is touched along its whole line (its gaps are narrower than an eraser, and a sweep that happened
+ * to cross in one missed). A figure that paints neither fill nor outline keeps its inside: nothing else of it can be touched. */
+function paintedFigure(node: Readonly<FigureNode>, vector: { readonly attachments?: unknown }, descriptor: VectorNarrowDescriptor | undefined): VectorNarrowDescriptor | undefined {
+    if (!descriptor || node.fill !== 'none' || node.dash === 'none') return descriptor;
+    const outline = (vector.attachments as { readonly outline?: readonly PathOp[] } | undefined)?.outline;
+    return { parts: descriptor.parts.map(part => part.part !== 'body' ? part : { ...part,
+        paths: (node.dash === 'dashed' || node.dash === 'dotted') && outline ? [outline] : part.paths,
+        options: { ...part.options, interiorPaths: [] } }) };
+}
 
 export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
     const { runtime } = options;
@@ -105,9 +115,13 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
     const cooperate = options.cooperate ?? yieldToTask;
     /** `at`: the view the query's points were mapped through. Given, the answer is of that view and stands wherever the
      * live view has gone by the time it is known (an eraser's path is kept in world units, so it loses nothing); absent,
-     * the query reads the live view and is stale once that moves (a marquee is drawn on the screen). */
-    async function region(query: RegionQuery, signal: AbortSignal, how?: { readonly at?: ViewState }): Promise<readonly NodeId[]> {
-        const at = how?.at;
+     * the query reads the live view and is stale once that moves (a marquee is drawn on the screen).
+     *
+     * `painted`: only what an item paints counts. A figure with no fill is then touched through its outline and its label,
+     * not through its empty inside, as a selecting query touches it: an eraser taken to a word written inside a drawn box
+     * removed the box with it. */
+    async function region(query: RegionQuery, signal: AbortSignal, how?: { readonly at?: ViewState; readonly painted?: boolean }): Promise<readonly NodeId[]> {
+        const at = how?.at, painted = how?.painted === true;
         let cursor: ReturnType<NonNullable<typeof runtime.scene>['spatialCursor']> | undefined;
         try {
             signal.throwIfAborted();
@@ -271,7 +285,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         } finally { resolvedLine.release(); }
                     }
                     void vector.key;
-                    const descriptor = vectorNarrowDescriptor(vector);
+                    const descriptor = painted && node.kind === 'figure' ? paintedFigure(node, vector, vectorNarrowDescriptor(vector)) : vectorNarrowDescriptor(vector);
                     if (descriptor) {
                         if (decomposedContainment && query.kind === 'polygon') {
                             const job = createNonconvexContainmentJob(descriptor, { ...query, points, localToSurface }, { frames: partialFrame ? frameClips : [] });

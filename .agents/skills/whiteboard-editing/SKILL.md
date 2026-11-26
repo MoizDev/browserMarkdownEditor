@@ -79,7 +79,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   work settles cancels only the latest undoable one; an arrow key waits behind settling work, then nudges or pans.
   A key's edit (nudge, turn, flip, stretch, resize: `selectServices` `keyEdit`) is released work from the press: tracked
   (`trackEdit`), never cancelled by a press or by the view's end (a tab switch unmounts the board; it lands on the session),
-  stale only for a changed document; out of sight it commits without its preview frame.
+  stale only for a changed document; out of sight it commits without its preview frame. Its preparation pins `doc.rev`,
+  which a tool change moves too (no content): cut off that way it is prepared again (`KEY_EDIT_ATTEMPTS`), never dropped.
 - **No press before a presented frame.** A press is placed through a presented frame's mapping, so `PointerAcquisition`
   takes a new press (and the context menu) only once `MappingHistory.ready()`: a frame presented since the view was last shown
   (`framePresented`, from the lease's `presentedView`); meanwhile the surface shows the `progress` cursor (`inputHost.ts`
@@ -110,8 +111,13 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   The whole gesture is one open history step (`history.open('Erase')`; a step already open is marked and rolled back to):
   release closes it, Escape/undo before release cancels it, any other end keeps what went. Only items whose delete reads
   geometry (containers, attached arrows, group children: `eraseReadsGeometry`) wait for a pin. A camera move does not end
-  an erase (`cancelForCamera` skips it). `painted`: an unfilled figure is touched by its outline and label only. With
-  Cmd/Ctrl and the Eraser a stretch takes the top-most item and spares what lay under it for the rest of the gesture.
+  an erase (`cancelForCamera` skips it). `painted`: an unfilled figure is touched by its outline, its marks and its label
+  only (a dashed line whole: `VectorNarrowPart.solid`). With Cmd/Ctrl and the Eraser a stretch takes the top-most item and
+  spares what lay under it for the rest of the gesture. A frame's border or name takes the frame with all it holds.
+- **Inside a frame a region query must still answer** (`viewer/regionQuery.ts`, eraser, box and lasso alike): the scene's
+  bounds of a text, note, arrow or labelled shape stay uncertified on a reopened board (`ColdLayout`), so the frame decision
+  reads the prepared geometry's own bounds, and an item its frame cuts is asked through its clipped parts
+  (`registerClippedNarrow` for kinds with no narrow job). An undecided item is a silent miss: never refuse for missing bounds.
   **Never make the erase wait for a frame**: applied at release behind a preview frame, it never landed on a 10,000-stroke
   board, and pacing rounds by `presented` cost 50-100 ms on a 3,000-stroke one.
 - Pen mode (`ToolState.penMode`, `penTransitions.ts`) routes a stylus to ink or eraser while touch pans. A pen contact whose

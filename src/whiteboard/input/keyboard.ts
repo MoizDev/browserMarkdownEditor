@@ -211,6 +211,11 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
   // releasing Shift mid-hold must not turn a repeating Shift+Arrow into a plain Arrow (K§0.2, K§15.6).
   const started = new Map<string, string>()
   let spaceHeld = false
+  /** On a paged board, the page a Space press moves by, kept until it is known what the press was: released alone it pages; held
+   * while the pointer is pressed it was the hand, and pages nothing. Paged at once on the key-down, a notebook or PDF jumped a
+   * screen and the drag that followed drew a box instead of panning (measured: frame 230 → -185 px, selection dropped). */
+  let spacePage: 'Space' | 'ShiftSpace' | null = null, spacePressed = false, spaceRepeated = false
+  const pressDuringSpace = (): void => { if (spaceHeld) spacePressed = true }
   const keydown = (event: KeyboardEvent): void => {
     if (root.contains(event.target as Node)) {
       const accelDown = mac ? event.metaKey : event.ctrlKey
@@ -252,6 +257,11 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
     if (navigation && !accel && !event.altKey && !cursor?.active) {
       const scrollKey = event.key === ' ' ? (event.shiftKey ? 'ShiftSpace' : 'Space') : event.key
       if (navigation.paged && !actions.gestureActive?.() && (scrollKey === 'PageUp' || scrollKey === 'PageDown' || scrollKey === 'Home' || scrollKey === 'End' || scrollKey === 'Space' || scrollKey === 'ShiftSpace')) {
+        if ((scrollKey === 'Space' || scrollKey === 'ShiftSpace') && actions.shortcutsEnabled?.() !== false) {
+          // Held without a press, its repeats page as before.
+          if (event.repeat) { if (spacePage && !spacePressed) { spaceRepeated = true; navigation.scroll(spacePage) } consume(); return }
+          if (actions.run('pan.hold', event)) { spaceHeld = true; spacePage = scrollKey; spacePressed = false; spaceRepeated = false; consume(); return }
+        }
         if (navigation.scroll(scrollKey)) { consume(); return }
       }
       if (/^Arrow(Left|Right|Up|Down)$/.test(event.key) && actions.shortcutsEnabled?.() !== false) {
@@ -298,11 +308,16 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       const accel = mac ? event.key !== 'Meta' && event.metaKey : event.ctrlKey
       actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel })
     }
-    if (event.key === ' ' || event.code === 'Space') { spaceHeld = false; actions.run('pan.release', event) }
+    if (event.key === ' ' || event.code === 'Space') {
+      const page = spacePage, paged = spacePressed || spaceRepeated
+      spaceHeld = false; spacePage = null; actions.run('pan.release', event)
+      const navigation = page && !paged ? actions.navigation?.() : undefined
+      if (page && navigation?.paged) navigation.scroll(page)
+    }
     if (event.key.toLowerCase() === 'z' || event.code === 'KeyZ') actions.run('zoom.release', event)
     if (event.key === ',' || event.code === 'Comma') actions.run('pointer.release', event)
   }
-  const clear = (): void => { started.clear(); spaceHeld = false; actions.clearLatches() }
+  const clear = (): void => { started.clear(); spaceHeld = false; spacePage = null; actions.clearLatches() }
   const blur = (): void => { clear() }
   // A tab or window hidden with a key held never sees its key-up here (and a hidden tab is not always blurred first).
   const visibility = (): void => { if (document.visibilityState === 'hidden') clear() }
@@ -311,8 +326,9 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
   }
   root.addEventListener('focusout', focusout)
   root.addEventListener('keydown', keydown)
+  root.addEventListener('pointerdown', pressDuringSpace, true)
   window.addEventListener('keyup', keyup)
   window.addEventListener('blur', blur)
   document.addEventListener('visibilitychange', visibility)
-  return () => { root.removeEventListener('focusout', focusout); root.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', visibility); clear() }
+  return () => { root.removeEventListener('focusout', focusout); root.removeEventListener('keydown', keydown); root.removeEventListener('pointerdown', pressDuringSpace, true); window.removeEventListener('keyup', keyup); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', visibility); clear() }
 }

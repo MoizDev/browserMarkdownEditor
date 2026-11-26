@@ -135,6 +135,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   replayed in order when it ends, resolved with the tool chosen at the press (`pointerRouter.ts` `queued`), never refused.
   A press made while a key's edit (a nudge, a turn: `keyEdit`, `keyEditLanding`) still lands is queued the same way. Its
   mode starts from the eraser bit.
+- On a paged board (notebook, PDF) Space pages on release, or on its key repeats, and pans when a press comes while it is
+  held (`keyboard.ts` `spacePage`).
 - The laser (`input/laserTrail.ts`) is a session fade, never saved; Escape clears a visible trail before it
   returns the tool to Select (`input/attach.ts`).
 - A bar press dragged off the bar goes to `ToolState.beginChromeDrag` → `input/chromeDrag.ts` (router-owned): the

@@ -204,7 +204,16 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         frameClips.push({ outline: rectPath(0, 0, ancestor.w, ancestor.h), localToSurface: compose(worldToCss, frameWorld) });
                         const bounds = record && (record.quality === BoundsQuality.Exact || record.quality === BoundsQuality.Conservative)
                             ? record.selectable : null;
-                        if (!toFrame || !bounds) throw new BoardRegionUncertain('Frame-clipped selection has no certified bounds');
+                        if (!toFrame) throw new BoardRegionUncertain('Frame-clipped selection has no certified bounds');
+                        // The bounds only say whether the frame can be left out of the question. Without them the frame is kept
+                        // in it, for every kind whose narrow job takes the frame's clip (the same kinds as below). Refused instead,
+                        // an arrow inside a frame was never touched: its bounds come from its layout and are not certified until
+                        // something asks for them exactly, so an eraser or a lasso drawn across it found nothing (measured: 0 of 3
+                        // sweeps erased it, with no sign; the same arrow outside a frame went every time).
+                        if (!bounds) {
+                            if (node.kind !== 'connector' && node.kind !== 'figure' && !hasCertifiedVector && !prepared.ink) throw new BoardRegionUncertain('Frame-clipped selection has no certified bounds');
+                            partialFrame = true; continue;
+                        }
                         const corners = [{ x: bounds[0], y: bounds[1] }, { x: bounds[2], y: bounds[1] },
                             { x: bounds[2], y: bounds[3] }, { x: bounds[0], y: bounds[3] }].map(p => exactPointIntervals(exactAffinePoint(toFrame, p)));
                         const frame = ancestor;

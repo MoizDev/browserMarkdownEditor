@@ -59,6 +59,12 @@ export function captureBeforeChange(doc: BoardDoc, op: Op, geometry?: ChangeGeom
     for (const id of attached) {
         const node = doc.nodes.get(id);
         if (!node || (node.kind !== 'connector' && node.kind !== 'polyline') || !usableOrigin(node)) continue;
+        // A tip is resolved from every shape the line is bound to. Once one of them is gone (deleted by an earlier op of this
+        // same change, which captured both tips while both shapes stood) the line has no geometry to read, and the read failed
+        // the whole change as a fault of the session: erasing the border of a frame that held two shapes joined by an arrow, or
+        // deleting such a frame or both shapes, put "Could not open canvas: Geometry unavailable … connector target is pending"
+        // in the board's place (measured: 3 of 3, also on the build before the eraser's rewrite). The earlier capture stands.
+        if ((['start', 'end'] as const).some(terminal => { const bound = attachmentOf(node, terminal); return !!bound && !doc.nodes.has(bound.target); })) continue;
         for (const terminal of ['start', 'end'] as const) {
             const attachment = attachmentOf(node, terminal);
             if (!attachment) continue;

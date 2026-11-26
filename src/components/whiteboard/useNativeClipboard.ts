@@ -306,7 +306,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 if (id === null) return;
                 // A double-click's second press is still a gesture when its event fires: the crop opens once that gesture has ended,
                 // because the store refuses to start during one (measured: the open was refused and the double-click did nothing).
-                focus(); void runtime.session.enqueueAfterGesture(cropLifetime.signal, () => crop.open(id)).catch(fail);
+                // The queued task only starts the open: the queue takes synchronous edits only, and handed the open's promise it
+                // reported "Queued canvas edits must be synchronous" beside every crop a double-click opened.
+                focus(); void runtime.session.enqueueAfterGesture(cropLifetime.signal, () => { void crop.open(id).catch(fail); }).catch(fail);
             };
             const dragover = (event: DragEvent) => { if (canWriteView()) controller.dragover(event); };
             const drop = (event: DragEvent) => { if (canWriteView()) { focus(); controller.drop(event); } };

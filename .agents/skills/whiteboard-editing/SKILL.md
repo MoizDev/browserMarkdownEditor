@@ -135,6 +135,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   replayed in order when it ends, resolved with the tool chosen at the press (`pointerRouter.ts` `queued`), never refused.
   A press made while a key's edit (a nudge, a turn: `keyEdit`, `keyEditLanding`) still lands is queued the same way. Its
   mode starts from the eraser bit.
+- A pen is a mouse with its own tolerances: its barrel press is a right press (`secondaryPan`: drag pans, a click opens the
+  menu, with the click slop of a pen), and its double-tap is decided by the board host (`components/whiteboard/penDoubleClick.ts`:
+  one `dblclick` per pen double-tap within 16 px, the browser's own withheld), since Chromium's double-click rectangle is a mouse's.
 - On a paged board (notebook, PDF) Space pages on release, or on its key repeats, and pans when a press comes while it is
   held (`keyboard.ts` `spacePage`).
 - The laser (`input/laserTrail.ts`) is a session fade, never saved; Escape clears a visible trail before it

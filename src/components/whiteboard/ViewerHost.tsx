@@ -5,6 +5,7 @@ import type { PlatformPane } from '../../platform/render/attachPlatformPane.type
 import type { RenderToken } from '../../platform/render/types';
 import BoardPaintStatus, { type BoardNoun, type BoardPaintProgress, type BoardReadiness } from './BoardPaintStatus';
 import { getContextMenu } from '../../utils/contextMenu';
+import { installPenDoubleClick } from './penDoubleClick';
 import './viewerHost.css';
 
 /** The owner keeps the document/session alive across graph view, hidden tabs
@@ -74,6 +75,8 @@ export default function ViewerHost<T extends object>({
         observer.observe(host);
         return () => observer.disconnect();
     }, []);
+    // A pen's double-tap is the board's to decide, for every control on it (penDoubleClick.ts).
+    useLayoutEffect(() => { const host = hostRef.current; return host ? installPenDoubleClick(host) : undefined; }, []);
     const [interaction, setInteraction] = useState<HTMLDivElement | null>(null);
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
     const interactionRef = useRef<HTMLDivElement | null>(null);

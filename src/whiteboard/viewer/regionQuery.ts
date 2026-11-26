@@ -13,7 +13,7 @@ import type { PointClipContour } from '../geom/clippedPointPathJob';
 import { createPolygonPathJob } from '../geom/polygonPathJob';
 import { resolvePolylineAttachments } from '../geom/polylineAttachments';
 import { preparePolylineGeometry } from '../geom/providers';
-import { createVectorRegionJob, vectorNarrowDescriptor, type VectorNarrowDescriptor } from '../geom/vectorNarrow';
+import { clippedNarrowDescriptor, createVectorRegionJob, vectorNarrowDescriptor, type VectorNarrowDescriptor } from '../geom/vectorNarrow';
 import { createClippedVectorRegionJob } from '../geom/clippedVectorRegionJob';
 import { orient2d } from '../geom/predicates';
 import { boardFrameAncestors } from '../geom/ancestorFrames';
@@ -209,16 +209,24 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         // an arrow inside a frame was never touched: its bounds come from its layout and are not certified until
                         // something asks for them exactly, so an eraser or a lasso drawn across it found nothing (measured: 0 of 3
                         // sweeps erased it, with no sign; the same arrow outside a frame went every time).
-                        if (!bounds) {
-                            if (node.kind !== 'connector' && node.kind !== 'figure' && !hasCertifiedVector && !prepared.ink) throw new BoardRegionUncertain('Frame-clipped selection has no certified bounds');
-                            partialFrame = true; continue;
-                        }
-                        const corners = [{ x: bounds[0], y: bounds[1] }, { x: bounds[2], y: bounds[1] },
-                            { x: bounds[2], y: bounds[3] }, { x: bounds[0], y: bounds[3] }].map(p => exactPointIntervals(exactAffinePoint(toFrame, p)));
+                        if (!bounds && (node.kind === 'connector' || node.kind === 'figure' || hasCertifiedVector || prepared.ink)) { partialFrame = true; continue; }
+                        // Every other kind is measured by the geometry just prepared for this very question. The scene's own
+                        // record of a text or a note stays uncertified on a board opened from disk until the item is next changed
+                        // (its box needs a layout, scene/bounds.ts ColdLayout), and refusing for that left every text and note in
+                        // a frame beyond the eraser, a box and a lasso on a reopened board (measured: 0 of 3 each, with no sign).
+                        const own = prepared.bounds.hit ?? prepared.bounds.ink, ink = prepared.bounds.ink;
+                        const box = bounds ?? [Math.min(own[0], ink[0]), Math.min(own[1], ink[1]), Math.max(own[2], ink[2]), Math.max(own[3], ink[3])];
+                        const boxToFrame = bounds ? toFrame : compose(toFrame, ref.localToWorld);
+                        const corners = [{ x: box[0], y: box[1] }, { x: box[2], y: box[1] },
+                            { x: box[2], y: box[3] }, { x: box[0], y: box[3] }].map(p => exactPointIntervals(exactAffinePoint(boxToFrame, p)));
                         const frame = ancestor;
                         const fullyVisible = corners.every(p => p.x.lo > 0 && p.y.lo > 0 && p.x.hi < frame.w && p.y.hi < frame.h);
                         if (!fullyVisible) {
                             if (node.kind === 'connector' || node.kind === 'figure' || hasCertifiedVector || prepared.ink) partialFrame = true;
+                            // A sweep over an item its frame cuts off is asked of the item's parts, clipped to the frame. It was
+                            // refused: the part of a text, a note, a picture or a line still showing at its frame's edge could
+                            // not be erased (measured: 0 of 3 sweeps over such a text; the same sweep took a shape or a stroke).
+                            else if (query.kind === 'swept' && prepared.vector && clippedNarrowDescriptor(prepared.vector)) partialFrame = true;
                             else {
                                 if (query.kind === 'swept' || query.containment) throw new BoardRegionUncertain('Frame-clipped region needs visible-extent certification');
                                 const frameCss = compose(worldToCss, frameWorld), polygon = [{ x: 0, y: 0 }, { x: ancestor.w, y: 0 },
@@ -293,7 +301,8 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         } finally { resolvedLine.release(); }
                     }
                     void vector.key;
-                    const descriptor = painted && node.kind === 'figure' ? paintedFigure(node, vectorNarrowDescriptor(vector)) : vectorNarrowDescriptor(vector);
+                    const descriptor = (painted && node.kind === 'figure' ? paintedFigure(node, vectorNarrowDescriptor(vector)) : vectorNarrowDescriptor(vector))
+                        ?? (partialFrame ? clippedNarrowDescriptor(vector) : undefined);
                     if (descriptor) {
                         if (decomposedContainment && query.kind === 'polygon') {
                             const job = createNonconvexContainmentJob(descriptor, { ...query, points, localToSurface }, { frames: partialFrame ? frameClips : [] });

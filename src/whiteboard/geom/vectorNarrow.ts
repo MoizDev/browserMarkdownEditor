@@ -28,6 +28,14 @@ export function registerVectorNarrow(owner: object, descriptor: VectorNarrowDesc
 }
 export function vectorNarrowDescriptor(owner: object): VectorNarrowDescriptor | undefined { return descriptors.get(owner); }
 
+/** The parts of a kind that answers its own questions (a text, a note, a frame, a picture, a line) rather than through the
+ * jobs here. One question it cannot answer itself: a region cut off by the frame the item sits in, which is asked of these
+ * parts (geom/clippedVectorRegionJob.ts). Kept apart from the descriptors above so that registering them changes no other
+ * answer: a point query, and a region no frame cuts, still go to the provider's own `point` and `region`. */
+const clippable = new WeakMap<object, VectorNarrowDescriptor>();
+export function registerClippedNarrow<T extends object>(owner: T, descriptor: VectorNarrowDescriptor): T { clippable.set(owner, descriptor); return owner; }
+export function clippedNarrowDescriptor(owner: object): VectorNarrowDescriptor | undefined { return descriptors.get(owner) ?? clippable.get(owner); }
+
 /** Higher-priority label/title parts precede body parts; an uncertain higher
  * part cannot be demoted to a lower-priority confirmed hit. */
 export function createVectorPointJob(descriptor: VectorNarrowDescriptor, query: PointQuery): {

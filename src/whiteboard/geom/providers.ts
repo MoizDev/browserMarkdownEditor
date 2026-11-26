@@ -15,7 +15,7 @@ import type { PathOp, Vec2 } from './path';
 import { polylinePath } from './polylines';
 import type { PolylineGeometryOptions } from './polylineTypes';
 import { pointPath, regionPath } from './pick';
-import { registerVectorNarrow } from './vectorNarrow';
+import { registerClippedNarrow, registerVectorNarrow } from './vectorNarrow';
 import type { PathPickOptions } from './pick';
 import { styleGeometryMetrics } from './styleMetrics';
 import type { KindGeometry, NarrowResult } from './types';
@@ -209,8 +209,9 @@ export function preparePolylineGeometry(node: Readonly<PolylineNode>, options: P
     const pickOptions: PathPickOptions = { strokeRadiusLocal: node.width / 2, marginCss: hitMarginCss,
         errorCss: hitErrorCss, maxSegments: maxPieces };
     const paths: FigurePaintPath[] = path.length ? [{ ops: path, role: 'outline', fill: 'none', width: node.width }] : [];
-    return { key: options.key, boxLocal: box, inkBoundsLocal: ink, selectBoundsLocal: ink, paths, text: [], attachments: null,
-        point(query) { return pointPath([path], query, pickOptions); }, region(query) { return regionPath([path], query, pickOptions); } };
+    return registerClippedNarrow({ key: options.key, boxLocal: box, inkBoundsLocal: ink, selectBoundsLocal: ink, paths, text: [], attachments: null,
+        point(query) { return pointPath([path], query, pickOptions); }, region(query) { return regionPath([path], query, pickOptions); } },
+    { parts: [{ part: 'body', paths: path.length ? [path] : [], options: pickOptions }] });
 }
 
 export interface InkGeometry {
@@ -257,10 +258,11 @@ export function prepareTextGeometry(node: Readonly<TextNode>, paint: TextPaint, 
         || box.width < 0 || box.height < 0 || ink.width < 0 || ink.height < 0) throw new RangeError('Invalid text geometry');
     const pickOptions: PathPickOptions = { interiorPaths: regions, strokeRadiusLocal: 0, marginCss: 0,
         errorCss: options.hitErrorCss, maxSegments: options.maxSegments };
-    return { key: options.key, boxLocal: box, inkBoundsLocal: ink, selectBoundsLocal: select, paths: [], text: [label],
+    return registerClippedNarrow({ key: options.key, boxLocal: box, inkBoundsLocal: ink, selectBoundsLocal: select, paths: [], text: [label],
         attachments: { outline, logicalBox: box },
         point(query) { return pointPath([], query, pickOptions); },
-        region(query) { return regionPath([], query, pickOptions); } };
+        region(query) { return regionPath([], query, pickOptions); } },
+    { parts: [{ part: 'body', paths: [], options: pickOptions }] });
 }
 
 export interface ContainerPath { readonly ops: readonly PathOp[]; readonly role: 'surface' | 'outline'; readonly width: number }
@@ -307,7 +309,7 @@ function containerGeometry(box: Rect, outline: readonly PathOp[], border: number
     const textOptions: PathPickOptions = { interiorPaths: textPath ? [textPath] : [], strokeRadiusLocal: 0,
         marginCss: 0, errorCss: hitErrorCss, maxSegments: maxPieces };
     const paths: ContainerPath[] = [{ ops: outline, role: selectInterior ? 'surface' : 'outline', width: border }];
-    return { key, boxLocal: box, inkBoundsLocal: allBounds, selectBoundsLocal: allBounds, paths, text: text ? [text] : [],
+    return registerClippedNarrow({ key, boxLocal: box, inkBoundsLocal: allBounds, selectBoundsLocal: allBounds, paths, text: text ? [text] : [],
         attachments: { outline, logicalBox: box },
         point(query) {
             if (textPath && pointPath([], query, textOptions).hit) return { hit: true, distanceCss: 0, part: selectInterior ? 'label' : 'title' };
@@ -319,7 +321,11 @@ function containerGeometry(box: Rect, outline: readonly PathOp[], border: number
             const textHit = regionPath([], query, textOptions);
             if (query.kind === 'polygon' && query.containment) return body.hit && textHit.hit ? body : { hit: false, distanceCss: Infinity, part: 'none' };
             return textHit.hit ? { hit: true, distanceCss: 0, part: selectInterior ? 'label' : 'title' } : body;
-        } };
+        } },
+    // The same parts `region` reads, in its order. A surface with no border is its filled inside alone: its outline
+    // drawn with no width adds nothing a touch could reach that the fill does not already hold.
+    { parts: [...(textPath ? [{ part: selectInterior ? 'label' as const : 'title' as const, paths: [], options: textOptions }] : []),
+        { part: 'body', paths: selectInterior && !border ? [] : [outline], options: bodyOptions }] });
 }
 
 export function prepareStickyGeometry(node: Readonly<StickyNode>, options: ContainerGeometryOptions & Readonly<{ cornerRadius?: number }>): ContainerGeometry | undefined {

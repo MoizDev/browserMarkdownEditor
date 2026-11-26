@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import LucideGlyph from '../LucideGlyph';
 import { worldToSurface } from '../../platform/render/camera';
 import { worldPose } from '../../whiteboard/change/coordinates';
@@ -12,6 +12,7 @@ import type { NativeViewLease } from './nativeViewLease';
 import type { BoardTextQuestion } from './useNativeBoardDialogs';
 import { chooseReplacementImage } from './nativeMediaRows';
 import { returnBoardFocusIfLost } from './chrome/boardFocus';
+import { useFloatingBar, type FloatingAnchor } from './floatingBar';
 
 type Translate = (key: string) => string;
 
@@ -35,9 +36,10 @@ export interface PictureFrame {
     readonly fullH: number;
     readonly cropX0: number;
     readonly cropY0: number;
-    /** The top edge's centre on screen, for the bars that sit above the picture. */
+    /** The top edge's centre on screen, for the bars that sit above the picture, and its lowest point, for when they go below. */
     readonly anchorX: number;
     readonly anchorY: number;
+    readonly anchorBottom: number;
     readonly id: NodeId;
     readonly media: { readonly width: number; readonly height: number };
 }
@@ -64,10 +66,10 @@ function frameOf(lease: NativeViewLease, id: NodeId): PictureFrame | null {
         x: origin.x + (cos * x - sin * y) * zoom, y: origin.y + (sin * x + cos * y) * zoom,
     }));
     const anchorX = corners.reduce((sum, point) => sum + point.x, 0) / 4;
-    const anchorY = Math.min(...corners.map(point => point.y));
+    const anchorY = Math.min(...corners.map(point => point.y)), anchorBottom = Math.max(...corners.map(point => point.y));
     return Object.freeze({ originX: origin.x, originY: origin.y, degrees: pose.rotation * 180 / Math.PI, radians: pose.rotation, zoom,
         flipX: node.flipX, flipY: node.flipY, w: node.w, h: node.h, fullW: node.w / cropW, fullH: node.h / cropH,
-        cropX0: crop.x0, cropY0: crop.y0, anchorX, anchorY, id: node.id, media });
+        cropX0: crop.x0, cropY0: crop.y0, anchorX, anchorY, anchorBottom, id: node.id, media });
 }
 
 /** Re-reads the frame each animation frame while active, and re-renders only when something it draws has moved. */
@@ -191,6 +193,16 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
         };
     }, [sessionOpen, store]);
 
+    // The board's own selection frame stays drawn under the crop, and its turn handle, outside the picture, showed beside the
+    // crop's handles though it does nothing there: the board's overlay is hidden for as long as the crop is drawn.
+    const cropping = !!session && !!frame;
+    useEffect(() => {
+        if (!cropping) return;
+        const host = root.current?.closest<HTMLElement>('.board-viewer-host');
+        host?.setAttribute('data-cropping', '');
+        return () => host?.removeAttribute('data-cropping');
+    }, [cropping]);
+
     if (!session || !frame) return null;
     const win = session.window;
     const move = (event: ReactPointerEvent<HTMLElement>) => {
@@ -251,7 +263,7 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
                 </div>
             </div>
         </div>
-        <CropBar left={frame.anchorX} top={frame.anchorY} t={t} aspect={session.aspect}
+        <CropBar anchor={{ x: frame.anchorX, top: frame.anchorY, bottom: frame.anchorBottom }} t={t} aspect={session.aspect}
             zoom={zoom} onAspect={next => store.setAspect(next)} onZoom={value => store.setZoom(value)}
             onFit={() => store.setWindow(fitWhole(session.aspect, session.width, session.height))} onApply={() => leave(true)}
             aspectOptions={aspectOptions} />
@@ -260,8 +272,7 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
 }
 
 interface CropBarProps {
-    readonly left: number;
-    readonly top: number;
+    readonly anchor: FloatingAnchor;
     readonly t: Translate;
     readonly aspect: CropAspect;
     readonly zoom: number;
@@ -272,10 +283,12 @@ interface CropBarProps {
     readonly onApply: () => void;
 }
 
-/** The crop bar: aspect presets, a zoom slider, Fit and Apply. It sits above the picture, in the picture's own rotation-free frame. */
-function CropBar({ left, top, t, aspect, zoom, aspectOptions, onAspect, onZoom, onFit, onApply }: CropBarProps) {
+/** The crop bar: aspect presets, a zoom slider, Fit and Apply. It sits above the picture, unturned, clear of the chrome (floatingBar.ts). */
+function CropBar({ anchor, t, aspect, zoom, aspectOptions, onAspect, onZoom, onFit, onApply }: CropBarProps) {
+    const bar = useRef<HTMLDivElement>(null);
+    useFloatingBar(bar, anchor);
     return (
-        <div className="crop-bar" role="toolbar" aria-label={t('crop.aspect')} style={{ left, top }}
+        <div ref={bar} className="crop-bar" role="toolbar" aria-label={t('crop.aspect')}
             onPointerDown={event => event.stopPropagation()}>
             <label className="crop-field">
                 <span className="visually-hidden">{t('crop.aspect')}</span>
@@ -286,6 +299,7 @@ function CropBar({ left, top, t, aspect, zoom, aspectOptions, onAspect, onZoom, 
             <label className="crop-field crop-zoom">
                 <span className="visually-hidden">{t('crop.zoom')}</span>
                 <input className="crop-range" type="range" min={1} max={CROP_ZOOM_MAX} step={0.01} value={zoom}
+                    style={{ '--crop-zoom-fill': `${(zoom - 1) / (CROP_ZOOM_MAX - 1) * 100}%` } as CSSProperties}
                     aria-label={t('crop.zoom')} onChange={event => onZoom(Number(event.target.value))} />
             </label>
             <button type="button" className="crop-bar-btn" data-tooltip={t('crop.fit')} aria-label={t('crop.fit')} onClick={onFit}>
@@ -319,6 +333,8 @@ export function NativePictureToolbar({ lease, media, store, t, isVisible, writab
     const picture = selection.selected.length === 1 ? media.selection(writable()) : null;
     const id = picture && picture.kind === 'picture' && picture.blocked === null ? picture.id : null;
     const frame = useFrame(lease, id ?? ('' as NodeId), id !== null && isVisible && !sessionOpen);
+    const bar = useRef<HTMLDivElement>(null);
+    useFloatingBar(bar, frame && { x: frame.anchorX, top: frame.anchorY, bottom: frame.anchorBottom });
     if (!id || !frame || !picture) return null;
     const run = (action: () => void | Promise<void>) => () => {
         // The picture the toolbar was drawn over must still be the one selected; otherwise the press does nothing.
@@ -335,7 +351,7 @@ export function NativePictureToolbar({ lease, media, store, t, isVisible, writab
         if (value !== null && value !== initial) media.setAlt(id, value);
     });
     return (
-        <div className="picture-toolbar" role="toolbar" aria-label={t('chrome.cropImage')} style={{ left: frame.anchorX, top: frame.anchorY }}>
+        <div ref={bar} className="picture-toolbar" role="toolbar" aria-label={t('chrome.cropImage')}>
             {picture.replaceable && <button type="button" className="picture-toolbar-btn" data-tooltip={t('chrome.replaceMedia')} aria-label={t('chrome.replaceMedia')} onClick={replace}>
                 <LucideGlyph nodes={pictureIcons.replace} size={18} /></button>}
             <button type="button" className="picture-toolbar-btn" data-tooltip={t('chrome.cropImage')} aria-label={t('chrome.cropImage')} onClick={crop}>

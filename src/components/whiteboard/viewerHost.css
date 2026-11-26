@@ -288,7 +288,13 @@
 .crop-handle-sw { left: 0; top: 100%; cursor: nesw-resize; }
 .crop-handle-w { left: 0; top: 50%; cursor: ew-resize; }
 
-/* The crop bar and the picture toolbar float above the picture's top edge, centred on it, in the same chrome as the other bars. */
+/* NativePictureCrop: the board's overlay (its selection frame and turn handle) is not drawn beside the crop's own handles. */
+.board-viewer-host[data-cropping] .board-viewer-overlay {
+    visibility: hidden;
+}
+
+/* The crop bar and the picture toolbar float above the picture's top edge, centred on it, in the same chrome as the other bars.
+   Where they sit is decided by floatingBar.ts, clear of the pane's edges and of the chrome. */
 .crop-bar,
 .picture-toolbar {
     position: absolute;
@@ -297,7 +303,6 @@
     align-items: center;
     gap: 4px;
     padding: 4px;
-    transform: translate(-50%, calc(-100% - 10px));
     border: 1px solid var(--board-bar-border, transparent);
     border-radius: 12px;
     background: var(--board-bar-bg, var(--background-primary));
@@ -309,6 +314,13 @@
 
 .crop-bar {
     padding: 4px 6px;
+    /* Its aspect menu is a native control: in the dark theme its list opened light over the dark bar. It takes the theme the
+       bar is drawn in (absent = dark). */
+    color-scheme: dark;
+}
+
+:root[data-theme="light"] .crop-bar {
+    color-scheme: light;
 }
 
 .crop-field {
@@ -329,9 +341,30 @@
     border-radius: 6px;
 }
 
+/* Drawn like the app's own sliders (index.css .settings-slider): the native track stayed white on the dark bar whatever its
+   color-scheme, and a filled part shows how far in it is zoomed. */
 .crop-zoom .crop-range {
+    -webkit-appearance: none;
+    appearance: none;
     width: 96px;
-    accent-color: var(--text-accent);
+    height: 4px;
+    margin: 0 4px;
+    border-radius: 2px;
+    background: linear-gradient(to right, var(--text-accent) var(--crop-zoom-fill, 0%), var(--background-modifier-border) var(--crop-zoom-fill, 0%));
+    outline-offset: 4px;
+    cursor: pointer;
+}
+
+.crop-zoom .crop-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--board-bar-bg, var(--background-primary));
+    border-radius: 50%;
+    background: var(--text-accent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-accent) 40%, transparent);
+    cursor: pointer;
 }
 
 .crop-bar-btn,

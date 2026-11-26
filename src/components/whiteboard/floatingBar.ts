@@ -41,11 +41,15 @@ export function placeFloatingBar(anchor: FloatingAnchor, size: { readonly w: num
 }
 
 /** Keeps `ref`'s bar placed by `placeFloatingBar` while it is shown, following the item and the chrome as either moves. Checked
- * each frame: the Styles panel opens and folds, notices come and go and the camera moves, none of which re-renders the bar. */
+ * each frame while shown: the Styles panel opens and folds, notices come and go and the camera moves, none of which re-renders
+ * the bar. Only while shown: every board pane mounts a picture toolbar, and run from mount it kept a frame callback going 60
+ * times a second on every board, idle, hidden or with no picture on it (measured: 60 rAF/s on an idle board, 0 before). */
 export function useFloatingBar(ref: RefObject<HTMLElement | null>, anchor: FloatingAnchor | null): void {
     const latest = useRef(anchor);
     useLayoutEffect(() => { latest.current = anchor; });
+    const shown = anchor !== null;
     useLayoutEffect(() => {
+        if (!shown) return;
         let raf = 0, last = '';
         const place = () => {
             const bar = ref.current, at = latest.current, parent = bar?.offsetParent;
@@ -65,5 +69,5 @@ export function useFloatingBar(ref: RefObject<HTMLElement | null>, anchor: Float
         };
         place();
         return () => cancelAnimationFrame(raf);
-    }, [ref]);
+    }, [ref, shown]);
 }

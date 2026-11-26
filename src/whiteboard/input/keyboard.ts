@@ -204,6 +204,9 @@ function textOwned(target: EventTarget | null, root: HTMLElement): boolean {
 }
 
 // The browser's zoom keys belong to the page, so the board takes them while it has the keyboard (catalogue I§1.5).
+/** How far the pointer moves over a paged board while Space is held before the hold counts as reaching to pan (`spaceMoved`):
+ * past a pen's hover tremor and a resting mouse's drift. */
+const SPACE_REACH_CSS = 8
 const BROWSER_ZOOM_KEYS: ReadonlySet<string> = new Set(['+', '0'])
 
 export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac: boolean): () => void {
@@ -215,7 +218,18 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
    * while the pointer is pressed it was the hand, and pages nothing. Paged at once on the key-down, a notebook or PDF jumped a
    * screen and the drag that followed drew a box instead of panning (measured: frame 230 → -185 px, selection dropped). */
   let spacePage: 'Space' | 'ShiftSpace' | null = null, spacePressed = false, spaceRepeated = false
+  /** What else the hold was used for. A Space+arrow page or a wheel turn made it a modifier, not a page tap: paged again on
+   * release, Space+↓ moved two pages (measured on a PDF: 576 px for the arrow, then 518 more on release). A pointer moving over
+   * the board is a hand reaching to pan: from then on its repeats page nothing, or a pen landing after the key-repeat delay
+   * (about half a second) found the page it meant to grab gone. */
+  let spaceUsed = false, spaceMoved = false, spaceRepeatSeen = false, spaceFrom: { x: number, y: number } | null = null
   const pressDuringSpace = (): void => { if (spaceHeld) spacePressed = true }
+  const wheelDuringSpace = (): void => { if (spaceHeld) spaceUsed = true }
+  const moveDuringSpace = (event: PointerEvent): void => {
+    if (!spacePage || spaceMoved) return
+    if (!spaceFrom) { spaceFrom = { x: event.clientX, y: event.clientY }; return }
+    if (Math.hypot(event.clientX - spaceFrom.x, event.clientY - spaceFrom.y) >= SPACE_REACH_CSS) spaceMoved = true
+  }
   const keydown = (event: KeyboardEvent): void => {
     if (root.contains(event.target as Node)) {
       const accelDown = mac ? event.metaKey : event.ctrlKey
@@ -259,8 +273,16 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       if (navigation.paged && !actions.gestureActive?.() && (scrollKey === 'PageUp' || scrollKey === 'PageDown' || scrollKey === 'Home' || scrollKey === 'End' || scrollKey === 'Space' || scrollKey === 'ShiftSpace')) {
         if ((scrollKey === 'Space' || scrollKey === 'ShiftSpace') && actions.shortcutsEnabled?.() !== false) {
           // Held without a press, its repeats page as before.
-          if (event.repeat) { if (spacePage && !spacePressed) { spaceRepeated = true; navigation.scroll(spacePage) } consume(); return }
-          if (actions.run('pan.hold', event)) { spaceHeld = true; spacePage = scrollKey; spacePressed = false; spaceRepeated = false; consume(); return }
+          if (event.repeat) {
+            spaceRepeatSeen = true
+            if (spacePage && !spacePressed && !spaceUsed && !spaceMoved) { spaceRepeated = true; navigation.scroll(spacePage) }
+            consume(); return
+          }
+          if (actions.run('pan.hold', event)) {
+            spaceHeld = true; spacePage = scrollKey; spacePressed = false; spaceRepeated = false
+            spaceUsed = false; spaceMoved = false; spaceRepeatSeen = false; spaceFrom = null
+            consume(); return
+          }
         }
         if (navigation.scroll(scrollKey)) { consume(); return }
       }
@@ -271,7 +293,7 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
         if (!mayRepeat(id)) { consume(); return }
         const handled = paging ? navigation.page!(event.key)
           : navigation.hasSelection && actions.enabled() ? navigation.nudge(event.key, event.shiftKey) : navigation.pan(event.key, event.shiftKey)
-        if (handled) { fired(id); return }
+        if (handled) { if (paging) spaceUsed = true; fired(id); return }
       }
     }
     const physical: Record<string, string> = { Period: '.', Comma: ',', Equal: '=', Minus: '-', Slash: '/', Quote: "'", BracketLeft: '[', BracketRight: ']' }
@@ -309,15 +331,16 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel })
     }
     if (event.key === ' ' || event.code === 'Space') {
-      const page = spacePage, paged = spacePressed || spaceRepeated
-      spaceHeld = false; spacePage = null; actions.run('pan.release', event)
+      // Released after reaching to pan (held past its first repeat with the pointer moving) it pages nothing either.
+      const page = spacePage, paged = spacePressed || spaceRepeated || spaceUsed || spaceMoved && spaceRepeatSeen
+      spaceHeld = false; spacePage = null; spaceFrom = null; actions.run('pan.release', event)
       const navigation = page && !paged ? actions.navigation?.() : undefined
       if (page && navigation?.paged) navigation.scroll(page)
     }
     if (event.key.toLowerCase() === 'z' || event.code === 'KeyZ') actions.run('zoom.release', event)
     if (event.key === ',' || event.code === 'Comma') actions.run('pointer.release', event)
   }
-  const clear = (): void => { started.clear(); spaceHeld = false; spacePage = null; actions.clearLatches() }
+  const clear = (): void => { started.clear(); spaceHeld = false; spacePage = null; spaceFrom = null; actions.clearLatches() }
   const blur = (): void => { clear() }
   // A tab or window hidden with a key held never sees its key-up here (and a hidden tab is not always blurred first).
   const visibility = (): void => { if (document.visibilityState === 'hidden') clear() }
@@ -327,8 +350,10 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
   root.addEventListener('focusout', focusout)
   root.addEventListener('keydown', keydown)
   root.addEventListener('pointerdown', pressDuringSpace, true)
+  root.addEventListener('pointermove', moveDuringSpace, true)
+  root.addEventListener('wheel', wheelDuringSpace, { capture: true, passive: true })
   window.addEventListener('keyup', keyup)
   window.addEventListener('blur', blur)
   document.addEventListener('visibilitychange', visibility)
-  return () => { root.removeEventListener('focusout', focusout); root.removeEventListener('keydown', keydown); root.removeEventListener('pointerdown', pressDuringSpace, true); window.removeEventListener('keyup', keyup); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', visibility); clear() }
+  return () => { root.removeEventListener('focusout', focusout); root.removeEventListener('keydown', keydown); root.removeEventListener('pointerdown', pressDuringSpace, true); root.removeEventListener('pointermove', moveDuringSpace, true); root.removeEventListener('wheel', wheelDuringSpace, true); window.removeEventListener('keyup', keyup); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', visibility); clear() }
 }

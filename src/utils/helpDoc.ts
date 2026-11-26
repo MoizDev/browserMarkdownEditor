@@ -443,7 +443,7 @@ Elbow connectors from earlier versions keep their ends, their attachments, their
 ### Notebooks
 A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing here to a paper pad, and what to reach for when you are doing an assignment by hand rather than taking notes in Markdown.
 
-A notebook scrolls like a PDF: swipe up and down to move through the pages, and pinch to zoom. At full width the page fills the screen edge to edge, and the pages can never be swiped off screen. \`Page Up\` / \`Page Down\`, \`Space\` / \`Shift + Space\`, \`Home\` and \`End\` move by pages. \`Space\` moves when you let it go, or keeps paging while you hold it; hold it and drag instead, with the mouse or the pen, to pan.
+A notebook scrolls like a PDF: swipe up and down to move through the pages, and pinch to zoom. At full width the page fills the screen edge to edge, and the pages can never be swiped off screen. \`Page Up\` / \`Page Down\`, \`Space\` / \`Shift + Space\`, \`Home\` and \`End\` move by pages. \`Space\` moves when you let it go, or keeps paging while you hold it; hold it and drag instead, with the mouse or the pen, to pan. Once you move the pointer or the pen over the page while holding \`Space\`, it stops paging and waits for your drag. \`Space\` with an arrow key moves one screen that way, and nothing more when you let \`Space\` go.
 
 The bar across the top of a notebook is its paper:
 

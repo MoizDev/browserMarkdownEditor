@@ -141,7 +141,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   menu, with the click slop of a pen), and its double-tap is decided by the board host (`components/whiteboard/penDoubleClick.ts`:
   one `dblclick` per pen double-tap within 16 px, the browser's own withheld), since Chromium's double-click rectangle is a mouse's.
 - On a paged board (notebook, PDF) Space pages on release, or on its key repeats, and pans when a press comes while it is
-  held (`keyboard.ts` `spacePage`).
+  held (`keyboard.ts` `spacePage`); a Space+arrow page or a wheel turn uses the hold up (no page on release), and a pointer
+  moving over the board while it is held stops its repeats (`spaceMoved`: a pen reaching to pan).
 - The laser (`input/laserTrail.ts`) is a session fade, never saved; Escape clears a visible trail before it
   returns the tool to Select (`input/attach.ts`).
 - A bar press dragged off the bar goes to `ToolState.beginChromeDrag` → `input/chromeDrag.ts` (router-owned): the

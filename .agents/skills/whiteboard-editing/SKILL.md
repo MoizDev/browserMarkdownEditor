@@ -139,7 +139,7 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   mode starts from the eraser bit.
 - A pen is a mouse with its own tolerances: its barrel press is a right press (`secondaryPan`: drag pans, a click opens the
   menu, with the click slop of a pen), and its double-tap is decided by the board host (`components/whiteboard/penDoubleClick.ts`:
-  one `dblclick` per pen double-tap within 16 px, the browser's own withheld), since Chromium's double-click rectangle is a mouse's.
+  one `dblclick` per pen double-tap within 16 px on one element, the browser's own withheld), since Chromium's double-click rectangle is a mouse's.
 - On a paged board (notebook, PDF) Space pages on release, or on its key repeats, and pans when a press comes while it is
   held (`keyboard.ts` `spacePage`); a Space+arrow page or a wheel turn uses the hold up (no page on release), and a pointer
   moving over the board while it is held stops its repeats (`spaceMoved`: a pen reaching to pan).

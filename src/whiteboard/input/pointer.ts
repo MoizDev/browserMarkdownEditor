@@ -254,7 +254,11 @@ export class PointerAcquisition {
     try { this.sink.cancel(id, reason) }
     finally { try { if (this.root.hasPointerCapture(id)) this.root.releasePointerCapture(id) } catch { /* Capture may have ended already. */ } }
   }
-  private cancel = (event: PointerEvent): void => { this.end(event.pointerId, 'cancel') }
+  private cancel = (event: PointerEvent): void => {
+    // A press the system took back (palm rejection, a system gesture) was no click: the next press starts a new run.
+    if (this.press?.id === event.pointerId) this.press.dragged = true
+    this.end(event.pointerId, 'cancel')
+  }
   private got = (event: PointerEvent): void => { if (this.contacts.has(event.pointerId)) this.sink.captured?.(event.pointerId) }
   private lost = (event: PointerEvent): void => { this.end(event.pointerId, 'capture-lost') }
   private hover = (event: PointerEvent): void => { this.sink.hover?.(event) }

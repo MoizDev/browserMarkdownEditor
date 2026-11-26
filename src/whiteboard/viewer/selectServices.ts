@@ -306,6 +306,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
      * changed or a view that went away meanwhile, only for a document that did (another vault, read-only, content edited under it).
      * As cancellable pending work, a select-all nudge of 4,000 strokes (4.4 s to land) or a turn followed by a tab switch was
      * dropped and never saved (measured: both lost, cancelled by the view's dispose). */
+    const KEY_EDIT_ATTEMPTS = 32;
     const keyEdit = (run: (controller: AbortController, active: () => boolean) => Promise<void>): void => {
         const controller = new AbortController(), cancel = () => controller.abort(), unregister = registerSettling(cancel, true);
         keyEdits.add(cancel);
@@ -316,7 +317,20 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             if (controller.signal.aborted || !writable()) return;
             const revision = session.contentRevision, release = session.beginGesture();
             const active = () => !controller.signal.aborted && writable() && session.contentRevision === revision;
-            try { await run(controller, active); }
+            try {
+                // The edit is prepared against the document's revision, which a change of no content moves too: choosing a
+                // tool writes the tool, and the preparation then stops as stale ("Selection roots changed") while the edit
+                // itself is as valid as it was. It is prepared again. Given up instead, the edit was dropped with no sign:
+                // every item selected on a 3,000-stroke board, an arrow key and then R, D, E, A, H or T at once lost the
+                // nudge (measured: 6 of 6, and the third of three nudges; also on the build before the eraser's rewrite).
+                // Bounded only so a board whose tool changes without pause cannot hold the input forever.
+                for (let attempt = 1; ; attempt++) {
+                    try { await run(controller, active); break; }
+                    catch (error) {
+                        if (!isCancellation(error) || !active() || attempt >= KEY_EDIT_ATTEMPTS) throw error;
+                    }
+                }
+            }
             catch (error) { if (active()) report(error); }
             finally { release(); }
         }).finally(() => { keyEdits.delete(cancel); unregister(); });

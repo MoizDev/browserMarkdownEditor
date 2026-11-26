@@ -130,7 +130,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   (`registerClippedNarrow` for kinds with no narrow job). An undecided item is a silent miss: never refuse for missing bounds.
   **Never make the erase wait for a frame**: applied at release behind a preview frame, it never landed on a 10,000-stroke
   board, and pacing rounds by `presented` cost 50-100 ms on a 3,000-stroke one.
-- Pen mode (`ToolState.penMode`, `penTransitions.ts`) routes a stylus to ink or eraser while touch pans. A pen contact whose
+- Pen mode (`ToolState.penMode`, `penTransitions.ts`) routes a stylus to ink or eraser while touch pans; it rejects touch only,
+  never the mouse (it starts on any touchscreen machine, external tablet included). A pen contact whose
   eraser end changed holds the input past its lift until its erase lands; a press meanwhile (not a finger) is queued and
   replayed in order when it ends, resolved with the tool chosen at the press (`pointerRouter.ts` `queued`), never refused.
   A press made while a key's edit (a nudge, a turn: `keyEdit`, `keyEditLanding`) still lands is queued the same way. Its

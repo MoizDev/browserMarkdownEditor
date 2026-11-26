@@ -308,8 +308,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     pressed: () => keysWaiting > 0 ? undefined : services.tools.getSnapshot(),
     resolve(sample, modifiers, event, pressed) {
       if (!current() || (sample.source === 'touch' && !touchAdmission.get(sample.pointerId))) return null
-      // Pen mode takes only the pen: a mouse or a palm pressed on the canvas is rejected before any state changes (catalogue I§5.2).
-      if (touch.penMode && sample.source !== 'pen') return null
+      // Pen mode keeps a palm or a finger from drawing: a touch pressed on the canvas is rejected before any state changes
+      // (catalogue I§5.2). A mouse is never a palm, and it was rejected too: pen mode starts at a pen's first press on any machine
+      // with a touchscreen (isDirectPen reads only that), so a laptop's touchscreen beside a drawing tablet left the mouse unable
+      // to select, drag or draw on the board after the first pen stroke.
+      if (touch.penMode && sample.source === 'touch') return null
       // A press queued behind a contact still landing is resolved after it, with the tool chosen when it was pressed: a tool picked
       // from the bar meanwhile would otherwise turn a stroke into whatever that tool does.
       start = pressed ?? services.tools.getSnapshot()
@@ -416,8 +419,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   // A bar tool pressed on the chrome: the board's router owns the drag once the pointer leaves the bar (see ChromeToolDrag).
   const chromeDrag = new ChromeToolDrag<unknown>({ token: view.token, router, mappings: view.mappings, mac: services.mac, current, editable,
     claim, releaseClaim,
-    // Pen mode takes only the pen on the board, so a finger dragged off the bar creates nothing (catalogue I§5.2); its tap still selects.
-    resolve: (choice, sample, modifiers) => touch.penMode && sample.source !== 'pen' ? null : services.resolveChromeDrag?.(choice, sample, modifiers) ?? null,
+    // In pen mode a finger dragged off the bar creates nothing (catalogue I§5.2); its tap still selects. A mouse drags as ever.
+    resolve: (choice, sample, modifiers) => touch.penMode && sample.source === 'touch' ? null : services.resolveChromeDrag?.(choice, sample, modifiers) ?? null,
     select: choice => services.tools.setTool(choice.id, choice.variant), snapshot: () => services.tools.getSnapshot(),
     complete: start => services.tools.complete(start),
     focus: () => view.surface.closest<HTMLElement>('.board-interaction-root')?.focus({ preventScroll: true }), error: services.error })

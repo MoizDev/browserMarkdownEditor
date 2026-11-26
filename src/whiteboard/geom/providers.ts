@@ -405,7 +405,7 @@ export function prepareFigureGeometry(node: Readonly<FigureNode>, options: Figur
         get key() {
             registerVectorNarrow(this, { parts: [
                 ...(labelPath ? [{ part: 'label' as const, paths: [], options: labelOptions }] : []),
-                { part: 'body', paths: strokes, options: optionsForBody },
+                { part: 'body', paths: strokes, ...(metrics ? { solid: drawn } : {}), options: optionsForBody },
             ] });
             return options.key;
         },

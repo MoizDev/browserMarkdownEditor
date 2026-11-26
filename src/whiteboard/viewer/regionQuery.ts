@@ -96,15 +96,14 @@ function clipPolygon(subject: readonly Vec2[], clip: readonly ExactPoint[]): Vec
     });
 }
 const yieldToTask = yieldToHost;
-/** A figure's narrow parts for a query that touches only what is painted: with no fill, its body is its outline alone. A
- * dashed or dotted outline is touched along its whole line (its gaps are narrower than an eraser, and a sweep that happened
- * to cross in one missed). A figure that paints neither fill nor outline keeps its inside: nothing else of it can be touched. */
-function paintedFigure(node: Readonly<FigureNode>, vector: { readonly attachments?: unknown }, descriptor: VectorNarrowDescriptor | undefined): VectorNarrowDescriptor | undefined {
+/** A figure's narrow parts for a query that touches only what is painted: with no fill, its body is its lines alone. Dashed
+ * or dotted lines are touched along their whole length, the marks inside the shape (an x-box's cross) as well as its outline:
+ * their gaps are narrower than an eraser, and a sweep that happened to cross in one missed. A figure that paints neither fill
+ * nor outline keeps its inside: nothing else of it can be touched. */
+function paintedFigure(node: Readonly<FigureNode>, descriptor: VectorNarrowDescriptor | undefined): VectorNarrowDescriptor | undefined {
     if (!descriptor || node.fill !== 'none' || node.dash === 'none') return descriptor;
-    const outline = (vector.attachments as { readonly outline?: readonly PathOp[] } | undefined)?.outline;
-    return { parts: descriptor.parts.map(part => part.part !== 'body' ? part : { ...part,
-        paths: (node.dash === 'dashed' || node.dash === 'dotted') && outline ? [outline] : part.paths,
-        options: { ...part.options, interiorPaths: [] } }) };
+    return { parts: descriptor.parts.map(part => part.part !== 'body' ? part
+        : { ...part, paths: part.solid ?? part.paths, options: { ...part.options, interiorPaths: [] } }) };
 }
 
 export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
@@ -294,7 +293,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         } finally { resolvedLine.release(); }
                     }
                     void vector.key;
-                    const descriptor = painted && node.kind === 'figure' ? paintedFigure(node, vector, vectorNarrowDescriptor(vector)) : vectorNarrowDescriptor(vector);
+                    const descriptor = painted && node.kind === 'figure' ? paintedFigure(node, vectorNarrowDescriptor(vector)) : vectorNarrowDescriptor(vector);
                     if (descriptor) {
                         if (decomposedContainment && query.kind === 'polygon') {
                             const job = createNonconvexContainmentJob(descriptor, { ...query, points, localToSurface }, { frames: partialFrame ? frameClips : [] });

@@ -9,6 +9,9 @@ import type { NarrowResult, PointQuery, RegionQuery } from './types';
 export interface VectorNarrowPart {
     readonly part: NarrowResult['part'];
     readonly paths: readonly (readonly PathOp[])[];
+    /** The same lines before a dash pattern cut them into pieces, where that differs: a query that takes a dashed line whole
+     * (the eraser's, viewer/regionQuery.ts `paintedFigure`) reads these. */
+    readonly solid?: readonly (readonly PathOp[])[];
     readonly options: PathPickOptions;
 }
 export interface VectorNarrowDescriptor { readonly parts: readonly VectorNarrowPart[] }

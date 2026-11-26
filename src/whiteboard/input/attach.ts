@@ -88,6 +88,8 @@ export interface BoardInputServices {
   /** A glide of the camera by a screen-space delta (Space+arrow pages one screen). */
   error(error: unknown): void
   pointerChanged?(sample: RealSample): void
+  /** An edit made by a key (a nudge, a turn, a flip) is still landing. */
+  keyEditLanding?(): boolean
   hover?(event: PointerEvent): void
   contextMenu?(event: MouseEvent): void
   drop?(event: DragEvent): void
@@ -281,6 +283,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     realEvent: (sample, event) => delegated?.observe(event, sample),
     penTransitions: () => { const id = services.tools.getSnapshot().active.id; return id === 'pen' || id === 'highlighter' },
     settled: signal => session.enqueueAfterGesture(signal, () => undefined),
+    landing: () => services.keyEditLanding?.() === true,
     cancelPending: services.cancelPendingGestures,
     hover: services.hover,
     claim, releaseClaim,

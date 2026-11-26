@@ -367,7 +367,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), resolveChromeDrag, zoomBrush: () => zoom,
         keyboardCursorInitial: ui.keyboardCursorInitial, keyboardCursorVisible: ui.keyboardCursorVisible, keyboardNavigation: ui.keyboardNavigation,
         ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error,
-        pointerChanged: sample => { notePointerSource(sample.source); ui.pointerChanged?.(sample); },
+        pointerChanged: sample => { notePointerSource(sample.source); ui.pointerChanged?.(sample); }, keyEditLanding: select.keyEditLanding,
         hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: contextMenuAt, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
         clearLaserTrail: dropTrails,

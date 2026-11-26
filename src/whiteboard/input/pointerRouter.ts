@@ -24,6 +24,9 @@ export interface PointerRouterOptions<Context, Pressed = unknown> {
   realEvent?(sample: RealSample, event: PointerEvent): void
   penTransitions?(sample: RealSample): boolean
   settled?(signal: AbortSignal): Promise<void>
+  /** An edit made by a key (a nudge, a turn) is still landing and holds the input: a press now is kept and replayed when it
+   * has landed (see down). */
+  landing?(): boolean
   cancelPending?(): void
   resolve(sample: RealSample, modifiers: Modifiers, event: PointerEvent, pressed?: Pressed): PointerRoute<Context> | null
   ended(reason: FinishReason): void
@@ -32,7 +35,8 @@ export interface PointerRouterOptions<Context, Pressed = unknown> {
   error?(error: unknown, id: number): void
 }
 
-/** A press taken while the contact before it had lifted but was still landing, with everything its pointer did since. */
+/** A press taken while the contact before it had lifted but was still landing, or while a key's edit was, with everything its
+ * pointer did since. */
 interface QueuedContact<Pressed> {
   readonly pointerId: number
   readonly pressed: Pressed | undefined
@@ -50,10 +54,12 @@ export class PointerRouter<Context, Pressed = unknown> {
   private pen: PenContactTransitions | null = null
   private pointerId: number | null = null
   private disposed = false
-  /** Presses made while a lifted pen contact still lands (see down), oldest first; replayed in order once it has ended. */
+  /** Presses made while a lifted pen contact or a key's edit still lands (see down), oldest first; replayed in order once it has. */
   private readonly queued: QueuedContact<Pressed>[] = []
   /** Pointers whose queued press was refused when replayed: the rest of that contact is theirs to ignore. */
   private readonly refused = new Set<number>()
+  /** The wait for a key's edit to land, after which the presses queued behind it are replayed. */
+  private landed: AbortController | null = null
   constructor(private readonly options: PointerRouterOptions<Context, Pressed>) {
     const sink: PointerSink = {
       down: (sample, modifiers, event) => {
@@ -67,9 +73,16 @@ export class PointerRouter<Context, Pressed = unknown> {
         // ends, resolved with the tool chosen when it was pressed: drawn, never dropped, landing after what came before it. A second
         // pointer while a queued one is still down is refused, as it would be beside a live contact; so is a finger, whose admission
         // and camera gestures are decided live (attach.ts touchAdmission, TouchArbiter) and cannot be replayed later.
-        if (this.pen?.lifted || this.queued.length) {
+        //
+        // An edit made by a key holds the input the same way while it lands, with no contact to end: a press then was refused with
+        // no sign too, whatever the tool (measured: three arrow-key nudges, E and a sweep over the stroke erased nothing when the
+        // press came within 20 ms of the key, and erased it from 50 ms on; a select-all nudge of thousands of strokes lands for
+        // seconds). It is kept the same way and replayed once the edit has landed.
+        const landing = !this.pen && this.pointerId === null && !!options.settled && options.landing?.() === true
+        if (this.pen?.lifted || this.queued.length || landing) {
           if (sample.source === 'touch' || this.queued.some(contact => !contact.lifted)) return false
           this.queued.push({ pointerId: sample.pointerId, pressed: options.pressed?.(), events: [{ type: 'down', sample, modifiers, event }], lifted: false })
+          if (landing) this.replayWhenLanded()
           return true
         }
         return this.press(sample, modifiers, event, undefined)
@@ -128,6 +141,19 @@ export class PointerRouter<Context, Pressed = unknown> {
         }
       } catch (error) { this.options.error?.(error, contact.pointerId) }
     }
+  }
+  /** Replays the queued presses once the key's edit they wait for has landed (every hold on the board released). */
+  private replayWhenLanded(): void {
+    if (this.landed || !this.options.settled) return
+    const controller = this.landed = new AbortController()
+    void this.options.settled(controller.signal).catch(() => undefined).then(() => {
+      if (this.landed !== controller) return
+      this.landed = null
+      if (this.disposed) return
+      // Another key was pressed meanwhile: its edit lands first, as the keys and the press were made.
+      if (this.options.landing?.() === true && this.queued.length) { this.replayWhenLanded(); return }
+      this.replay()
+    })
   }
   /** Gives the input back after a contact ended, then lets the presses queued behind it in. */
   private released(reason: FinishReason): void {
@@ -234,7 +260,7 @@ export class PointerRouter<Context, Pressed = unknown> {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    this.queued.length = 0; this.refused.clear()
+    this.queued.length = 0; this.refused.clear(); this.landed?.abort(); this.landed = null
     this.interrupt('flush')
     this.acquisition.dispose()
     this.options.router.detach(this.options.token)

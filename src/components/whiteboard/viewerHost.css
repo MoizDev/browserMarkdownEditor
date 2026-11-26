@@ -315,12 +315,18 @@
 .crop-bar {
     padding: 4px 6px;
     /* Its aspect menu is a native control: in the dark theme its list opened light over the dark bar. It takes the theme the
-       bar is drawn in (absent = dark). */
+       bar is drawn in: the app's (absent = dark), or a drawing's own board theme (CanvasPane `data-board-theme`), which can
+       differ from it and is what --board-bar-bg follows. */
     color-scheme: dark;
 }
 
-:root[data-theme="light"] .crop-bar {
+:root[data-theme="light"] .crop-bar,
+.canvas-pane[data-board-theme="light"] .crop-bar {
     color-scheme: light;
+}
+
+.canvas-pane[data-board-theme="dark"] .crop-bar {
+    color-scheme: dark;
 }
 
 .crop-field {

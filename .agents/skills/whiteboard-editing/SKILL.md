@@ -64,7 +64,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   keeps a placed keyboard cursor (only a gesture the cursor owns ends), and the keyboard cursor does not complete the tool
   for a `completesTool` route (`keyboardCompletes`), which completes itself once it lands.
 - A tool whose work lands after pointer-up returns to Select itself (`completesTool` in `input/pointerRouter.ts`).
-- **A released gesture lands; it is not pending work.** After pointer-up an erase or a box keeps a `settling` session hold
+- **A released gesture lands; it is not pending work.** After pointer-up a box (and an erase, for the last stretch of its
+  path) keeps a `settling` session hold
   (`session.beginGesture('settling')`, and so does the preview's commit hold) and registers with `registerSettling`, not
   `registerPending`: the next press is admitted (`claimInput` reads `isInputGestureActive`), Escape/Delete/tool keys wait for it
   (`attach.ts` queues them with `enqueueAfterGesture`), only the view's end or — for an erase — an undo cancels it, and a
@@ -102,10 +103,22 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   last stroke), `straightInk.ts` (Shift: a straight run whose direction snaps to 15°; Cmd/Ctrl turns the snap off);
   delegated ink (`delegatedInk.ts`) uses the browser's ink presenter when present. Cmd/Ctrl held over Draw or
   Highlight is a temporary whole-item eraser (`input/attach.ts`, `holdAccelEraser`), never the chosen tool.
-- Pen mode (`ToolState.penMode`, `penTransitions.ts`) routes a stylus to ink or eraser while touch pans. The eraser
-  removes whole items (`input/basicTools.ts`); there is no partial erase. A pen contact whose eraser end changed holds the
-  input past its lift until its erase lands; a press meanwhile (not a finger) is queued and replayed in order when it ends,
-  resolved with the tool chosen at the press (`pointerRouter.ts` `queued`), never refused. Its mode starts from the eraser bit.
+- **The eraser removes whole items, as it goes** (`input/basicTools.ts` `EraserGesture`, `input/eraseSweep.ts`); there is no
+  partial erase and no preview. The path is kept in world units; each round asks the stretches drawn since the last one
+  against the board as it is by then (`region(…, { at, painted })`, exact, reach `eraserRadiusCss`: 8 CSS px, 12 for a
+  finger, the ring cursor `[data-board-cursor="eraser"]` and the trail's width) and deletes what they touch in that task.
+  The whole gesture is one open history step (`history.open('Erase')`; a step already open is marked and rolled back to):
+  release closes it, Escape/undo before release cancels it, any other end keeps what went. Only items whose delete reads
+  geometry (containers, attached arrows, group children: `eraseReadsGeometry`) wait for a pin. A camera move does not end
+  an erase (`cancelForCamera` skips it). `painted`: an unfilled figure is touched by its outline and label only. With
+  Cmd/Ctrl and the Eraser a stretch takes the top-most item and spares what lay under it for the rest of the gesture.
+  **Never make the erase wait for a frame**: applied at release behind a preview frame, it never landed on a 10,000-stroke
+  board, and pacing rounds by `presented` cost 50-100 ms on a 3,000-stroke one.
+- Pen mode (`ToolState.penMode`, `penTransitions.ts`) routes a stylus to ink or eraser while touch pans. A pen contact whose
+  eraser end changed holds the input past its lift until its erase lands; a press meanwhile (not a finger) is queued and
+  replayed in order when it ends, resolved with the tool chosen at the press (`pointerRouter.ts` `queued`), never refused.
+  A press made while a key's edit (a nudge, a turn: `keyEdit`, `keyEditLanding`) still lands is queued the same way. Its
+  mode starts from the eraser bit.
 - The laser (`input/laserTrail.ts`) is a session fade, never saved; Escape clears a visible trail before it
   returns the tool to Select (`input/attach.ts`).
 - A bar press dragged off the bar goes to `ToolState.beginChromeDrag` → `input/chromeDrag.ts` (router-owned): the

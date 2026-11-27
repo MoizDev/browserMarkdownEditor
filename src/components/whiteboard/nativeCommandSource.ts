@@ -46,7 +46,6 @@ export function nativeActionShortcut(action: MainAction, mac: boolean): string |
         keyboardShortcuts: 'help.shortcuts', commandPalette: 'commandPalette.open' } as Partial<Record<MainAction, string>>)[action], mac);
 }
 
-/** The input router and menus consult the same live command authority. */
 export function createNativeKeyCommands(source: BoardCommandSource, other: (id: string, event: KeyboardEvent) => boolean) {
     return { run(id: string, event: KeyboardEvent): boolean {
         const command = keyCommands[id];
@@ -73,7 +72,6 @@ const actionMutates: Record<MainAction, boolean> = {
     commandPalette: false,
 };
 
-/** One authority for menus and input: eligibility is checked again at invocation. */
 export function createNativeCommandSource(options: NativeCommandSourceOptions): BoardCommandSource & {
     actionLabel(id: MainAction): string;
     actionShortcut(id: MainAction): string | undefined;

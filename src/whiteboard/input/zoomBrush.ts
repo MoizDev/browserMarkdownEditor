@@ -7,21 +7,15 @@ export interface ZoomBrushContext {
   toSurface(sample: RealSample): ZoomPoint
   preview(box: ZoomBox): void
   clearPreview(): void
-  /** Zooms to the box, centred on it. `cap` limits the zoom to a fraction of the current zoom (Alt: half). */
   fitBox(box: ZoomBox, cap?: number): void
-  /** One zoom step in (+1) or out (-1) at the point, along the board's zoom steps. */
   stepZoom(direction: -1 | 1, point: ZoomPoint): void
-  /** The live camera and viewport: the quick overview zooms out from them and restores them. */
   view(): { readonly camera: ZoomCamera; readonly viewport: { readonly width: number; readonly height: number } }
   setCamera(camera: ZoomCamera): void
   clampZoom(z: number): number
-  /** Reads the sheet's content box ahead of a quick overview: it is asynchronous, so Z's press starts it. */
   prepareOverview?(): void
-  /** The content box the overview fits, read for the current document; null means the overview fits the viewport alone. */
   overviewBox?(): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null
 }
 
-/** A brush smaller than 8 screen px in either direction is a click (catalogue T§4). */
 const BRUSH_MIN_PX = 8
 
 class ZoomBrushGesture implements GestureOwner {

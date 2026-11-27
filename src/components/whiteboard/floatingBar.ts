@@ -1,25 +1,14 @@
 import { useLayoutEffect, useRef, type RefObject } from 'react';
 
-/** Where a bar floats from: the centre of an item's top edge, and its bottom edge, in the bar's offset parent's pixels. */
 export interface FloatingAnchor { readonly x: number; readonly top: number; readonly bottom: number }
 interface Box { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
 
-/** Clear of the pane's edges and of the chrome, by this much; and this far from the item it belongs to. */
 const MARGIN = 8, GAP = 10;
-/** The board's own chrome a bar over the canvas must never cover: the header and page controls, the docked Styles panel, the
- * tool strip, the zoom box, the minimap and the notices. */
 const CHROME = ['.board-chrome-header', '.board-chrome-top > :not(.board-chrome-header)', '.board-style-panel', '.board-chrome-tools',
     '.board-chrome-zoom', '.native-minimap', '.board-viewer-notice'].join(', ');
 
 const meets = (a: Box, b: Box) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
-/**
- * The crop bar and the picture toolbar float above their picture, centred on it, wherever the picture is; near the pane's
- * right edge they covered the Styles panel and ran past the pane (measured, 1200 px window: the crop bar from x 926 to 1235
- * over a panel at 1008-1192, its Apply button cut off), and under a picture near the top they sat on the header. They now go
- * above the picture when that is clear, else below it, else just under whatever chrome is above; and sideways only as far as
- * clears the chrome, nearest the picture's centre first.
- */
 export function placeFloatingBar(anchor: FloatingAnchor, size: { readonly w: number; readonly h: number },
     area: { readonly w: number; readonly h: number }, chrome: readonly Box[]): { readonly x: number; readonly y: number } {
     const { w, h } = size;
@@ -36,14 +25,9 @@ export function placeFloatingBar(anchor: FloatingAnchor, size: { readonly w: num
         const x = xs.find(candidate => !row.some(box => meets({ x: candidate, y, w, h }, box)));
         if (x !== undefined) return { x, y };
     }
-    // Nothing is clear (a pane narrower than the bar): it stays on the picture, inside the pane.
     return { x: centre, y: clampY(above) };
 }
 
-/** Keeps `ref`'s bar placed by `placeFloatingBar` while it is shown, following the item and the chrome as either moves. Checked
- * each frame while shown: the Styles panel opens and folds, notices come and go and the camera moves, none of which re-renders
- * the bar. Only while shown: every board pane mounts a picture toolbar, and run from mount it kept a frame callback going 60
- * times a second on every board, idle, hidden or with no picture on it (measured: 60 rAF/s on an idle board, 0 before). */
 export function useFloatingBar(ref: RefObject<HTMLElement | null>, anchor: FloatingAnchor | null): void {
     const latest = useRef(anchor);
     useLayoutEffect(() => { latest.current = anchor; });

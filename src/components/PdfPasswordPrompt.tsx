@@ -1,14 +1,12 @@
 import ConfirmDialog from './ConfirmDialog';
 
 interface PdfPasswordPromptProps {
-    /** Change for every open generation and every incorrect attempt, clearing the old field. */
     attemptId: number;
     incorrect: boolean;
     onSubmit: (password: string) => void;
     onCancel: () => void;
 }
 
-/** The owner dismisses this when the document changes and ignores stale answers. */
 export default function PdfPasswordPrompt({ attemptId, incorrect, onSubmit, onCancel }: PdfPasswordPromptProps) {
     return (
         <ConfirmDialog

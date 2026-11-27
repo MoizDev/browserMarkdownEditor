@@ -8,9 +8,6 @@ import type { IndexReader, IndexStat } from './reader';
 import { IndexStore } from './store';
 import type { PersistSession } from './persistSession';
 
-/** One session's mutable index. IO is injected so handle cloning and path
- * resolution do not leak into graph assembly or its revision rules. */
-/** How long a document open may hold the index's reads back; long enough for any read that is going to finish. */
 const FOREGROUND_HOLD_MS = 5000;
 
 export class IndexEngine {
@@ -18,7 +15,6 @@ export class IndexEngine {
     private graphGen = 0;
     private stopped = false;
     private foreground = 0;
-    /** When the foreground count last rose from zero (performance.now()). */
     private foregroundSince = 0;
     private foregroundRevision = -1;
     private ioActive = 0;
@@ -39,7 +35,6 @@ export class IndexEngine {
         private status: (phase: 'sweeping' | 'idle', done: number, total: number) => void,
         private onTimes?: (changes: [string, number, number][], sweepComplete: boolean) => void,
         private onMediaChanged?: () => void) {
-        // The context changes per sweep; media's reader is set for each reconcile below.
         this.media = new BoardMediaIndex({ stat: file => {
             const context = this.mediaContext;
             if (!context) throw new DOMException('Media scan cancelled', 'AbortError');
@@ -83,11 +78,6 @@ export class IndexEngine {
         this.foreground = Math.max(0, active);
         if (!this.foreground) this.ioWaiters.splice(0).forEach(wake => wake());
     }
-    /**
-     * Whether a document open is holding the index's reads back. The hold lapses after FOREGROUND_HOLD_MS: the count
-     * drops only when a read SETTLES, and a read that never settles (a cloud file not downloaded, a stalled volume)
-     * paused the whole index — search, backlinks, the graph, `[[` — for the rest of the page.
-     */
     private foregroundHolds(): boolean {
         return this.foreground > 0 && performance.now() - this.foregroundSince < FOREGROUND_HOLD_MS;
     }
@@ -133,7 +123,6 @@ export class IndexEngine {
         this.ioActive--;
         this.ioWaiters.splice(0).forEach(wake => wake());
     }
-    /** Search and graph share the same eight IO slots and foreground pause. */
     async searchStat(file: IndexFile, context: WorkerContext): Promise<IndexStat> {
         if (!await this.acquireIO(context)) throw new DOMException('Index request cancelled', 'AbortError');
         let stat: IndexStat;
@@ -199,7 +188,6 @@ export class IndexEngine {
             const bytes = await stat.bytes();
             return { file, rev, mtime: stat.mtime, size: stat.size, bytes };
         } catch (error) {
-            // IO errors are transient, unlike a deterministic decode refusal.
             if (error instanceof DOMException && error.name === 'NotAllowedError') throw error;
         } finally { if (held) this.releaseIO(); }
     }

@@ -18,8 +18,6 @@ function sameJson(a: JsonSpan, b: JsonSpan): boolean {
     return Object.is(a.value(), b.value());
 }
 
-/** Read only the native envelope and its ordered host record; drawing records
- * remain opaque to the PDF stream. This binds the board to the PDF-owned id. */
 export async function validateBoardWriteIdentity(blob: Blob, format: string, writeId: string,
     cooperate: () => Promise<void>, expectedHostLine?: string): Promise<void> {
     const reader = blob.stream().getReader(), decoder = new TextDecoder('utf-8', { fatal: true });
@@ -77,7 +75,6 @@ export async function validateBoardWriteIdentity(blob: Blob, format: string, wri
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
-/** Bind the ordered host record to the complete final host, not just its id. */
 export async function validateConvertedBoardHostIdentity(blob: Blob, format: string, writeId: string, encodedHost: string,
     cooperate: () => Promise<void>): Promise<void> {
     if (!encodedHost || encodedHost.length > MAX_LINE_BYTES) throw new Error('Invalid converted PDF host');

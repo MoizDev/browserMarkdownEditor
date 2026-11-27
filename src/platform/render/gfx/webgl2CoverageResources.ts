@@ -28,7 +28,6 @@ export interface Webgl2CoverageResourcesOptions {
     onLost?: () => void;
 }
 
-/** Private benchmark storage; its leases remain fenced until submitted work retires. */
 export class Webgl2CoverageResources {
     readonly #arena: ResourceArena<Descriptors, Objects>;
     readonly #retired = new Set<ByteLease>();

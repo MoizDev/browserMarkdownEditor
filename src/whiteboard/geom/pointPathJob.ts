@@ -57,9 +57,6 @@ export function lowerPointHullDistance(point: Vec2, points: Curve['points']): nu
     const sum = add(square(x), square(y)); return sqrtInterval({ lo: Math.max(0, sum.lo), hi: sum.hi }).lo;
 }
 
-/** Resumable point/path classifier. Every hit has an actual curve witness inside
- * the closed CSS radius; every miss excludes every exact transformed control hull.
- * A boundary, arithmetic limit or exhausted budget is explicit uncertainty. */
 export function createPointPathJob(paths: readonly (readonly PathOp[])[], query: PointQuery, options: PathPickOptions,
     limits: PointPathJobLimits = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): PointPathJobResult; cancel(): void } {
     const matrix = query.localToSurface, margin = query.input === 'touch' ? Math.max(8, options.marginCss) : options.marginCss;

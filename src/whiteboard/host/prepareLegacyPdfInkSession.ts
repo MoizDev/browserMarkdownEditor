@@ -25,7 +25,6 @@ function visualFailure(phase: 'preview' | 'final', visual: Awaited<ReturnType<ty
     return new Error(`Legacy PDF ${phase} visual preflight is unknown (${summary || 'unclassified'}). The original is unchanged.`);
 }
 
-/** The candidate is pane-cancellable until the actual App-owned runtime takes it. */
 export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOptions) {
     const { host, identity, signal } = options, documentId = identity.documentId;
     const current = () => identity.kind === 'pdfInk' && host.isCurrent(identity)

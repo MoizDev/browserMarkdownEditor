@@ -7,9 +7,7 @@ import type { RecoveryEntry } from '../utils/recoveryJournal';
 import type { RecoveryInspection } from '../components/RecoverySurface';
 import { loadChunk } from '../platform/chunkLoad';
 
-/** Everything the recovery actions read from App. Refs are App's own `useRef`s. */
 export interface UseRecoveryActionsDeps {
-  // useFileSystem()
   getVaultActivation: FileSystemContextValue['getVaultActivation'];
   rootHandle: FileSystemContextValue['rootHandle'];
   currentVaultId: FileSystemContextValue['currentVaultId'];
@@ -22,18 +20,14 @@ export interface UseRecoveryActionsDeps {
   putBoardAsset: FileSystemContextValue['putBoardAsset'];
   writeConflictCopy: FileSystemContextValue['writeConflictCopy'];
   writeFileVersioned: FileSystemContextValue['writeFileVersioned'];
-  // App: vault refs, status line
   rootHandleRef: React.RefObject<FileSystemDirectoryHandle | null>;
   currentVaultIdRef: React.RefObject<string | null>;
   announce: (message: string) => void;
-  // useOpenDocuments
   tabsRef: React.RefObject<OpenTab[]>;
   documentBuffers: DocumentBufferStore;
   markdownSessions: MarkdownSessionHost;
   contentOf: (path: string) => string | undefined;
-  // useOutsideChanges
   hasUnsaved: (tab: OpenTab) => boolean;
-  /** Switches a tab between reading and editing (useTabLifecycle): Recover opens a PDF's Annotate to recover into it. */
   changeTabMode: (path: string | null, mode?: 'read' | 'edit') => void;
 }
 

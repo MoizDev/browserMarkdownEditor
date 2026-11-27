@@ -16,7 +16,6 @@ export interface AgentAdapterHost {
     readonly session: BoardSession;
     readonly geometry: AgentGeometry;
     sheet(): SheetId;
-    /** Current visible physical page, zero-based. */
     page(): number;
     isCurrent(): boolean;
     readOnlyReason(): string | null;
@@ -33,7 +32,6 @@ export interface BoardAgentAdapter {
     apply(ops: CanvasOp[], guard?: AgentGuard): Promise<AgentApplyResult>;
 }
 
-/** One adapter belongs to the App-owned session, not to a mounted view. */
 export function createBoardAgentAdapter(host: AgentAdapterHost): BoardAgentAdapter {
     const shapePage = (query: ShapeQuery = {}) => {
         if (!host.isCurrent()) throw new Error('Board session is no longer current');

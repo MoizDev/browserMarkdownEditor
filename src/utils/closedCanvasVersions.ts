@@ -1,7 +1,5 @@
-// A remounted App must not make an old agent cursor name a new source.
 let nextClosedRevision = 0;
 
-/** Confirmed disk facts only: no document, buffer or content ownership lives here. */
 export function createClosedCanvasVersions() {
     type Fact = { root: FileSystemDirectoryHandle; handle: FileSystemFileHandle; hash: string; lastModified: number; size: number; revision: number };
     const facts = new Map<string, Fact>(), queues = new Map<string, Promise<void>>();

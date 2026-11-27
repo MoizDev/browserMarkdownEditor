@@ -5,13 +5,10 @@ import type { MediaEntry, MediaId } from './media';
 import type { ConnectorEnd, NodeRecord, Point } from './nodes';
 import { MAX_COORDINATE } from './validate';
 
-// Provenance: document-model §9.2, model validate/nodes/defaults; independent
-// load-only repair, no third-party or tldraw source.
 type NumericKey = 'x' | 'y' | 'rotation' | 'opacity' | 'w' | 'h' | 'width' | 'sx' | 'sy'
     | 'growY' | 'time' | 'scale' | 'labelScale' | 'fit' | 'bend' | 'elbowMid' | 'labelAt'
     | 'geomVersion' | 'fairTol';
 const TAU = Math.PI * 2;
-/** Below this a sticky's text would be under a quarter of a pixel at its largest size: unreadable at any zoom the board allows. */
 const STICKY_FIT_MIN = 0.01;
 const clamp = (value: number, min: number, max: number, fallback: number): number =>
     Number.isNaN(value) ? fallback : Math.max(min, Math.min(max, value));
@@ -42,9 +39,6 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
         if (original.kind === 'opaque') { result.push(original); continue; }
         let node = original;
         let numericChanged = false, mediaChanged = false;
-        // Plan document-model §9.2 clamps out-of-range values with no content lost. A preserved raw token stays
-        // the write authority until the user sets the property (change/apply drops it, §9.3), so only the
-        // in-memory projection changes here; refusing the board would contradict the plan's clamp rule.
         const set = (key: keyof typeof NODE_FILE_FIELDS, value: unknown) => {
             if (Object.is(Reflect.get(node, key), value)) return;
             node = { ...node, [key]: value } as Exclude<NodeRecord, { kind: 'opaque' }>;
@@ -83,11 +77,6 @@ export async function repairNodeValues(nodes: readonly NodeRecord[], media: read
                 if (rMin !== node.widthModel.rMin || rMax !== node.widthModel.rMax) set('widthModel', { ...node.widthModel, rMin, rMax });
             }
         }
-        // The earlier version's in-place conversions stored tldraw's `fontSizeAdjustment` here, which is 0 until tldraw
-        // has measured the note; this pass then clamped 0 up to the smallest positive number, and the next save wrote
-        // that into the file (measured on a board that version converted: `"fit":5e-324`, an orange square with no
-        // text, and every export of the board failing). A multiplier that small is not a size anyone chose — nothing
-        // in this app sets one at all — so it is read as no stated fit, which fits the text to the note.
         if (node.kind === 'sticky' && node.fit !== null && !(node.fit >= STICKY_FIT_MIN)) set('fit', null);
         else if (node.kind === 'sticky' && node.fit !== null) range('fit', STICKY_FIT_MIN, 100, 1);
         if (node.kind === 'clip') range('time', 0, Number.MAX_VALUE, 0);

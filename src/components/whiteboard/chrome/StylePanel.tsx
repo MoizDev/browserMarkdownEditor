@@ -15,16 +15,12 @@ export interface StylePanelProps {
     readonly snapshot: StylePanelSnapshot;
     readonly commands: StyleCommands;
     readonly toolLabel: (key: ToolLabel) => string;
-    /** Enhanced accessibility mode shows each control's name above it; otherwise the name is only announced. */
     readonly subheadings: boolean;
-    /** Undo and redo from the panel: its controls sit outside the board's keyboard root, so the board never sees the keys. */
     readonly history: (id: 'undo' | 'redo') => void;
 }
 
 const WIDTH_UNDO = 'Change pen width';
-/** Arrow keys step the width slider by this much, PageUp and PageDown by the larger step. */
 const KEY_STEP: Readonly<Record<string, number>> = { ArrowLeft: -0.02, ArrowDown: -0.02, ArrowRight: 0.02, ArrowUp: 0.02, PageDown: -0.1, PageUp: 0.1 };
-/** Tools that draw with the pointer, not with a style: the popover is not offered for them (tldraw's mobile rule). */
 const NO_STYLE_TOOLS = new Set(['hand', 'zoom', 'eraser', 'laser']);
 const FONT_FAMILY: Readonly<Record<Font, string>> = { draw: '"WB Draw", system-ui', sans: 'system-ui, sans-serif', serif: 'Georgia, serif', mono: 'ui-monospace, monospace' };
 const HEAD_KEYS: Readonly<Record<Arrowhead, string>> = { none: 'styles.none', arrow: 'styles.headArrow', triangle: 'styles.headTriangle',
@@ -36,7 +32,6 @@ const SIZE_KEYS: Readonly<Record<Size, string>> = { s: 'styles.small', m: 'style
 const ALIGN_KEYS: Readonly<Record<TextAlign, string>> = { start: 'styles.start', middle: 'styles.middle', end: 'styles.end' };
 const VALIGN_KEYS: Readonly<Record<VAlign, string>> = { start: 'styles.top', middle: 'styles.middle', end: 'styles.bottom' };
 
-/** Ctrl/Cmd+Z and Shift+Ctrl/Cmd+Z in the panel run undo and redo, as they do on the board. */
 function panelHistoryKey(event: KeyboardEvent<HTMLElement>, history: StylePanelProps['history']): boolean {
     if (!(event.metaKey || event.ctrlKey) || event.altKey || event.key.toLowerCase() !== 'z') return false;
     event.preventDefault(); event.stopPropagation();
@@ -44,7 +39,6 @@ function panelHistoryKey(event: KeyboardEvent<HTMLElement>, history: StylePanelP
     return true;
 }
 
-/** Escape in the panel hands the keyboard back to the board, which is where the shortcuts listen. */
 function returnToBoard(from: Element): void {
     from.closest('.board-viewer-host')?.querySelector<HTMLElement>('.board-interaction-root')?.focus({ preventScroll: true });
 }
@@ -65,16 +59,12 @@ interface ChoiceGroupProps<T> {
     readonly selected: Shared<T>;
     readonly columns: number;
     readonly disabled: boolean;
-    /** The undo step a press or a scrub makes. */
     readonly undo: string;
     readonly commands: StyleCommands;
     readonly onPick: (value: T) => void;
-    /** A pointer release or a keyboard pick has settled the choice (a disclosure closes on it). */
     readonly onSettled?: () => void;
 }
 
-/** A row of options. Pressing one applies it at once; holding and moving across others scrubs through them, and the
- * whole press is one undo step. A keyboard activation (no pointer detail) is its own step. */
 function ChoiceGroup<T extends string | number>({ label, choices, selected, columns, disabled, undo, commands, onPick, onSettled }: ChoiceGroupProps<T>) {
     const scrubbing = useRef(false), group = useRef<HTMLDivElement>(null);
     const pick = useRef(onPick), settled = useRef(onSettled);
@@ -84,7 +74,6 @@ function ChoiceGroup<T extends string | number>({ label, choices, selected, colu
             if (!scrubbing.current) return;
             scrubbing.current = false;
             commands.endGesture();
-            // The picker gives the keyboard back to the board on release, as a scrub does in tldraw: the next letter is a shortcut again.
             if (group.current) returnToBoard(group.current);
             settled.current?.();
         };
@@ -107,7 +96,6 @@ function ChoiceGroup<T extends string | number>({ label, choices, selected, colu
             onPointerDown={event => down(event, choice.value)}
             onPointerEnter={event => { if (scrubbing.current && event.buttons & 1 && !disabled) pick.current(choice.value); }}
             onClick={event => {
-                // A pointer press applied its choice already; only a keyboard activation (detail 0) still needs to.
                 if (event.detail !== 0 || disabled) return;
                 commands.beginGesture(undo);
                 pick.current(choice.value);
@@ -123,7 +111,6 @@ interface DisclosureProps<T extends string> {
     readonly label: string;
     readonly current: Shared<T>;
     readonly currentIcon: (value: T) => ReactNode;
-    /** The current choice's name, shown beside its icon when the picker has one. */
     readonly currentText?: (value: T) => string;
     readonly choices: readonly Choice<T>[];
     readonly columns: number;
@@ -134,7 +121,6 @@ interface DisclosureProps<T extends string> {
     readonly mixedLabel: string;
 }
 
-/** A picker too long for a row: a button shows the current choice and opens the rest as a grid. */
 function Disclosure<T extends string>({ label, current, currentIcon, currentText, choices, columns, disabled, undo, commands, onPick, mixedLabel }: DisclosureProps<T>) {
     const [open, setOpen] = useState(false);
     const id = useId();
@@ -154,8 +140,6 @@ function Disclosure<T extends string>({ label, current, currentIcon, currentText
     </div>;
 }
 
-/** The width slider is the pen's width, for ink and for the width of shapes and lines. Its drag, its double-click reset
- * and a held key each make one undo step. Keys are handled here so a held arrow is one step rather than one per repeat. */
 function WidthRow({ position, mixed, label, mixedLabel, disabled, commands }: {
     readonly position: number; readonly mixed: boolean; readonly label: string; readonly mixedLabel: string;
     readonly disabled: boolean; readonly commands: StyleCommands;
@@ -172,7 +156,6 @@ function WidthRow({ position, mixed, label, mixedLabel, disabled, commands }: {
         if (timer.current !== null) window.clearTimeout(timer.current);
         if (opened.current) { opened.current = false; commitRef.current.endGesture(); }
     }, []);
-    // A double-click resets the slider; keep its first click in the same undo step.
     const deferFinish = () => {
         if (!dragging.current) return;
         dragging.current = false;
@@ -219,7 +202,6 @@ function WidthRow({ position, mixed, label, mixedLabel, disabled, commands }: {
         }} />;
 }
 
-/** The labelled section every row sits in. Its name is always the accessible name; it shows as text when enhanced. */
 function Section({ label, subheadings, mixed, mixedLabel, children }: {
     readonly label: string; readonly subheadings: boolean; readonly mixed: boolean; readonly mixedLabel: string; readonly children: ReactNode;
 }) {
@@ -335,40 +317,31 @@ function StyleRows({ snapshot, commands, toolLabel, subheadings }: StylePanelPro
     return <div className="board-style-rows" data-enhanced={subheadings || undefined}>{sections}</div>;
 }
 
-/** A shape's tool label key: the same camel-case name the bar's labels use ('x-box' is `xBox`). */
 function shapeToolLabel(shape: FigureShape): ToolLabel {
     return shape.replace(/-(\w)/g, (_, letter: string) => letter.toUpperCase()) as ToolLabel;
 }
 
-/** Whole choice rows at a short pane: the rows region stops at the bottom of the last choice button that fits the dock's
- * room, so no swatch or option is cut across its middle (measured at 1000×600 on canvas2d with the GPU notice: the second
- * colour row was cut in half). Headings are not stops, so a heading never ends the view alone. Past that point the
- * region scrolls. Reads and writes only the rows' inline max-height. */
 function fitRowsToWholeSections(dock: HTMLElement | null): void {
     const rows = dock?.querySelector<HTMLElement>('.board-style-rows'), panel = dock?.querySelector<HTMLElement>('.board-style-panel');
     if (!dock || !rows || !panel) return;
     rows.style.maxHeight = '';
     const top = rows.getBoundingClientRect().top, panelStyle = getComputedStyle(panel), rowStyle = getComputedStyle(rows);
     const room = dock.getBoundingClientRect().bottom - parseFloat(panelStyle.paddingBottom) - parseFloat(panelStyle.borderBottomWidth) - top;
-    // A button's bottom in the rows' own scroll coordinates: its box moves up by the scroll offset.
     let fit: number | null = null;
     for (const choice of rows.querySelectorAll<HTMLElement>('.board-style-choice')) {
         const bottom = choice.getBoundingClientRect().bottom - top + rows.scrollTop;
         if (bottom <= room && (fit === null || bottom > fit)) fit = bottom;
     }
     if (fit === null) return;
-    // max-height bounds the content box unless the page sets border-box, so the rows' own padding comes off it.
     const padding = rowStyle.boxSizing === 'border-box' ? 0 : parseFloat(rowStyle.paddingTop) + parseFloat(rowStyle.paddingBottom);
     rows.style.maxHeight = `${Math.max(0, fit - padding)}px`;
 }
 
-/** The docked panel under the header: its own collapse fold, the same rows the popover shows. */
 export function DockedStylePanel(props: StylePanelProps) {
     const { snapshot } = props, t = snapshot.translate;
     const collapsed = useSyncExternalStore(subscribeStylePanel, getStylePanelCollapsed, getStylePanelCollapsed);
     const rootRef = useRef<HTMLDivElement>(null), latest = useRef(props);
     useEffect(() => { latest.current = props; });
-    // Rows change with the selection and the tool, and the room with the pane, so the fit is re-read on each render and resize.
     useLayoutEffect(() => { fitRowsToWholeSections(rootRef.current); });
     useEffect(() => {
         const dock = rootRef.current;
@@ -394,7 +367,6 @@ export function DockedStylePanel(props: StylePanelProps) {
     }}>
         <div className="board-style-panel" role="group" aria-label={t('styles.panel')} data-disabled={snapshot.disabled || undefined}
             data-collapsed={collapsed || undefined}>
-            {/* The fold is the card's own header: a chevron that turns with the state, and the colour in use while folded. */}
             <header className="board-style-panel-head">
                 <span className="board-style-panel-title">{t('styles.panel')}</span>
                 {collapsed && <span className="board-style-indicator" aria-hidden="true"
@@ -411,7 +383,6 @@ export function DockedStylePanel(props: StylePanelProps) {
     </div>;
 }
 
-/** Below 641px of pane width the docked panel gives way to this button in the bottom bar, which opens the same rows as a popover. */
 export function StylePopoverAnchor(props: StylePanelProps) {
     const { snapshot } = props, t = snapshot.translate;
     const [open, setOpen] = useState(false);
@@ -439,7 +410,6 @@ export function StylePopoverAnchor(props: StylePanelProps) {
     const mixed = snapshot.colour === MIXED || snapshot.colour === null;
     const tint = mixed ? snapshot.nextColourCss : snapshot.swatches.find(swatch => swatch.id === snapshot.colour)?.css ?? snapshot.nextColourCss;
     const label = t('styles.panel');
-    // A popover button tinted with the colour in use, which the mixed glyph replaces when colours differ.
     return <div className="board-style-popover-anchor" ref={anchor}>
         <button ref={button} type="button" className="board-chrome-tool board-style-popover-button" aria-label={label} data-tooltip={label}
             aria-haspopup="dialog" aria-expanded={open} disabled={disabled} style={{ '--style-tint': tint } as CSSProperties}

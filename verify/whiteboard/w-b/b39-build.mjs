@@ -1,4 +1,3 @@
-// Prepare the reference source before starting a browser; building is its own phase, never inside a run.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';

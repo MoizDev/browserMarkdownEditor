@@ -45,7 +45,6 @@ export interface NativeClipboardBinding {
     openMenu(event: MouseEvent): void;
     focus(): void;
     detach(): void;
-    /** The document's pastes on their way, from any of its views (NativeClipboardService `landing`). */
     landing(): Promise<void> | null;
 }
 export interface NativeClipboardService {
@@ -53,25 +52,14 @@ export interface NativeClipboardService {
     readonly memory: MemoryAllocator;
     readonly readMedia: (entry: MediaEntry, signal: AbortSignal) => Promise<Blob | null>;
     readonly storeMedia: StoreMedia;
-    /** The one picture/card action provider for this document; every view's menu reads its selection. */
     readonly media: MediaActions;
-    /** The crop session on this document's board: one draft, shown by the editing view that has the picture. */
     readonly crop: PictureCropStore;
     theme(): 'light' | 'dark';
-    /** Prints the focused board through its own pinned source. False when the board is not current or busy. */
     print(wholeSheet?: boolean): boolean;
-    /** Starts a crop of one picture from a Ctrl/Cmd-press on its selection handle; false when that picture cannot be cropped now. */
     cropFromHandle(id: NodeId, edge: { readonly dx: -1 | 0 | 1; readonly dy: -1 | 0 | 1 }, pointer: { readonly pointerId: number; readonly x: number; readonly y: number }): boolean;
-    /** One page's preview from the pinned all-sheet print source, no longer than `maxSide` pixels (the notebook thumbnails). */
     pagePng(page: number, maxSide: number, signal: AbortSignal): Promise<Blob>;
-    /** Saves the focused board's whole sheet as a PDF. False when the board is not current or busy. */
     exportPdf(): boolean;
-    /** Settles once every paste, drop and duplicate asked for on this document so far, from any of its views, has landed or
-     * failed; null when none is on its way. What a person does next waits for it wherever it is asked: an Undo taken at once
-     * undid the step before the paste, which then landed over the emptied redo (measured: header Undo right after ⌘V left the
-     * paste and lost the stroke it undid; ⌘Z, which waited, took the paste back). */
     landing(): Promise<void> | null;
-    /** `print` is the view's own print route (Menu → Print's scope choice); without one, Ctrl/Cmd+P prints the whole document. */
     attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
         inputHandled?: boolean, writable?: () => boolean, print?: () => boolean): NativeClipboardBinding;
 }
@@ -120,7 +108,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         if (!source || !current()) throw new Error('The PDF ink source is unavailable');
         return source;
     };
-    // A PDF page's exports and print carry the document's own PDF backdrop, retained for the one capture.
     const retainPdfSource = identity.kind !== 'pdfInk' ? undefined : () => {
         const source = pdfSource();
         if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
@@ -144,8 +131,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     const storeMedia: StoreMedia = identity.kind === 'pdfInk'
         ? createPdfEmbeddedMediaStorage({ runtime, host, identity, issue: issueMediaStorageReceipt })
         : restoreMedia;
-    // Replacing a picture and pasting one share this one port: a PDF page embeds its pictures in its own PDF through the
-    // real receipt, and a file board writes its own file. Replacement commits the receipt in its single transaction.
     const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia, readMedia });
     const cropLifetime = new AbortController();
     const crop = createPictureCropStore({ media: mediaActions, signal: cropLifetime.signal,
@@ -167,7 +152,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 return active.controller.duplicate(snapshot);
             }, notice: report, onError: fail,
             copyPng: capture => {
-                // One frozen capture yields both the shared PNG and the board-private PNG carrying the clipboard density.
                 const image = capture.then(value => value.image);
                 const custom = capture.then(value => new Blob([value.privateImage], { type: 'image/x-board+png' }));
                 void custom.catch(() => {});
@@ -198,7 +182,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         } finally { job.release(); }
     };
     let focusedTask: AbortController | undefined;
-    /** One focused print or export at a time; a second request while one runs is refused, not queued. */
     const startFocusedTask = (work: (signal: AbortSignal) => Promise<void>): boolean => {
         if (disposed || !current() || focusedTask) return false;
         const controller = new AbortController();
@@ -206,8 +189,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         void work(controller.signal).catch(fail).finally(() => { if (focusedTask === controller) focusedTask = undefined; });
         return true;
     };
-    // Thumbnails share one pinned print job per revision, so every page of a revision reads one all-sheet source. The pin lets
-    // go when the revision moves on (a stale pin would hold the scene and any PDF backdrop) and when the document ends.
     let pagePin: { readonly revision: number; readonly controller: AbortController; readonly job: ReturnType<typeof prepareExport>;
         readonly unsubscribe: () => void } | undefined;
     const releasePagePin = () => {
@@ -221,7 +202,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         releasePagePin();
         const controller = new AbortController();
         const job = prepareExport('print', controller.signal);
-        // A refused pin reaches the thumbnail that awaited it; a pin nobody awaits must not raise an unhandled rejection.
         job.catch(() => undefined);
         const unsubscribe = runtime.session.subscribe(() => { if (runtime.session.doc.rev !== revision) releasePagePin(); });
         pagePin = { revision, controller, job, unsubscribe };
@@ -229,9 +209,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     };
     const service: NativeClipboardService = {
         preferences, memory, readMedia, storeMedia, media: mediaActions, crop,
-        // Ctrl/Cmd-drag from a handle of one croppable picture (catalogue S§10.2): the crop opens and its edge follows the press.
         cropFromHandle(id, edge, pointer) {
-            // The sample's x/y are relative to the board surface; the drag measures client pixels, so the surface's origin is added.
             if (!active?.writable() || !mediaActions.cropSource(id)) return false;
             const origin = active.surface.getBoundingClientRect();
             void crop.beginEdge(id, edge, { pointerId: pointer.pointerId, x: pointer.x + origin.left, y: pointer.y + origin.top }).catch(fail);
@@ -253,7 +231,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             let detached = false;
             const canWriteView = () => !detached && current() && !!writable?.() && host.canWrite(identity);
             let pointer: { x: number; y: number } | null = null;
-            // A print belongs to this view: detaching the view (pane hide, close, vault switch) cancels it.
             const surfacePoint = (x: number, y: number) => {
                 const bounds = surface.getBoundingClientRect(), viewport = lease.camera.viewport;
                 if (bounds.width <= 0 || bounds.height <= 0) throw new Error('Board surface is unavailable');
@@ -270,7 +247,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 pinClipboard: () => commands.clipboardCopy.pin(), readMedia, storeMedia, notice: report, onError: fail });
             controllers.add(controller);
             const binding: ViewBinding = { controller, surface, theme, notice, writable: canWriteView }; bindings.add(binding); active = binding;
-            // A view takes input only while it is on screen (ViewerHost), so the bindings are the views being looked at.
             if (bindings.size === 1) commands.shownChanged();
             const focus = () => { active = binding; };
             const move = (event: PointerEvent) => { focus(); try { pointer = surfaceToWorld(surfacePoint(event.clientX, event.clientY), lease.camera.camera); } catch { pointer = null; } };
@@ -304,22 +280,16 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     controller.keydown(event);
                 }
             };
-            // The single picture the press landed on, when it is one the board lets this view crop; null otherwise.
             const pictureAt = (clientX: number, clientY: number): NodeId | null => {
                 const selection = runtime.selection.getSnapshot(), picture = selection.selected.length === 1 ? runtime.session.doc.nodes.get(selection.selected[0]!) : undefined;
                 if (!picture || picture.kind !== 'picture' || isLocked(runtime.session.doc, picture)) return null;
                 const world = surfaceToWorld(surfacePoint(clientX, clientY), lease.camera.camera), local = worldToLocal(runtime.session.doc, picture, world);
                 return local.x >= 0 && local.y >= 0 && local.x <= picture.w && local.y <= picture.h ? picture.id : null;
             };
-            // Double-clicking the picture's body, or pressing Enter with it selected, crops it in place (catalogue S§10.2).
             const dblclick = (event: MouseEvent) => {
                 if (event.button !== 0 || !canWriteView() || crop.get()) return;
                 const id = pictureAt(event.clientX, event.clientY);
                 if (id === null) return;
-                // A double-click's second press is still a gesture when its event fires: the crop opens once that gesture has ended,
-                // because the store refuses to start during one (measured: the open was refused and the double-click did nothing).
-                // The queued task only starts the open: the queue takes synchronous edits only, and handed the open's promise it
-                // reported "Queued canvas edits must be synchronous" beside every crop a double-click opened.
                 focus(); void runtime.session.enqueueAfterGesture(cropLifetime.signal, () => { void crop.open(id).catch(fail); }).catch(fail);
             };
             const dragover = (event: DragEvent) => { if (canWriteView()) controller.dragover(event); };
@@ -329,7 +299,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 const x = event.clientX, y = event.clientY;
                 const selected = runtime.selection.getSnapshot().selected.length > 0, readonly = !canWriteView();
                 const media = mediaActions.selection(!readonly);
-                // The rows are the board's own words for its language. The table is cached once loaded, so the menu opens a microtask later.
                 void loadBoardLanguage(getBoardPreferences().locale).then(table => {
                     const t = (key: string) => translateBoard(table, key);
                     const disabled = !selected;
@@ -337,13 +306,11 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                         { kind: 'command', id: 'copy', label: t('commands.copy'), disabled, ...(disabled ? { reason: t('menu.selectToCopy') } : {}), run: commands.copy },
                         { kind: 'command', id: 'copy-png', label: t('menu.copyAsPng'), run: commands.copyAsPng },
                         { kind: 'command', id: 'copy-svg', label: t('menu.copyAsSvg'), run: commands.copyAsSvg },
-                        // Debug-only, as the board's own menu offers it: the raw document JSON is for developers.
                         ...(runtime.session.doc.view.debugMode ? [{ kind: 'command' as const, id: 'copy-json', label: t('menu.copyAsJson'), run: commands.copyAsJson }] : []),
                         { kind: 'command', id: 'export-png', label: t('menu.exportPng'), run: () => commands.exportPng('context') },
                         { kind: 'command', id: 'export-svg', label: t('menu.exportSvg'), run: () => commands.exportSvg('context') },
                         { kind: 'command', id: 'paste', label: t('commands.paste'), disabled: readonly, ...(readonly ? { reason: t('chrome.readOnly') } : {}), run: () => controller.paste() },
                     ];
-                    // This view's menu has no text dialog, so it offers no alternative-text row; the board's own menu does.
                     if (media) entries.push({ kind: 'separator', id: 'media-separator' }, ...mediaRows(media, { actions: mediaActions, fail,
                         pick: chooseReplacementImage, playback: lease.video, current: () => true, notice: report, text: t }));
                     openContextMenu({ x, y, label: t('menu.canvas'), opener: surface, entries });
@@ -364,7 +331,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 surface.removeEventListener('focus', focus); surface.removeEventListener('pointermove', move);
                 surface.removeEventListener('copy', copy); surface.removeEventListener('cut', cut); surface.removeEventListener('keydown', keydown);
                 surface.removeEventListener('dblclick', dblclick);
-                // A crop belongs to the view it was started in: leaving the view ends it and keeps nothing.
                 crop.cancel();
                 if (!inputHandled) {
                     surface.removeEventListener('paste', paste);
@@ -390,7 +356,6 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     } catch (error) { preferenceLifetime.abort(); stopPreferences(); commands.dispose(); ingestor.dispose(); cache.close(); throw error; }
 }
 
-/** The document's command service for this runtime, or null until it is ready; a failure to start it is reported. */
 export function useDocumentClipboard(runtime: BoardRuntime, host: NativeCanvasHost, identity: NativeCanvasIdentity,
     notice: (message: string) => void): NativeClipboardService | null {
     const [state, setState] = useState<{ runtime: BoardRuntime; service: NativeClipboardService } | null>(null);
@@ -401,7 +366,6 @@ export function useDocumentClipboard(runtime: BoardRuntime, host: NativeCanvasHo
     return state?.runtime === runtime ? state.service : null;
 }
 
-/** Only event listeners and camera belong to a pane; the command service belongs to the document. */
 export function useNativeClipboard(lease: NativeViewLease, host: NativeCanvasHost, identity: NativeCanvasIdentity,
     theme: () => 'light' | 'dark', notice: (message: string) => void): ViewerViewHandle {
     const service = useDocumentClipboard(lease.runtime, host, identity, notice);

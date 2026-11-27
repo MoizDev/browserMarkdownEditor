@@ -5,7 +5,6 @@ interface InkNavigator {
   ink?: { requestPresenter(options: { presentationArea: Element }): Promise<InkPresenter> }
 }
 
-// The presenter is view-local; failure never prevents ordinary rendering.
 export class DelegatedInk {
   private presenter: InkPresenter | null = null
   private generation = 0

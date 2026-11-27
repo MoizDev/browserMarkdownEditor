@@ -3,7 +3,6 @@ import { WeakIdentityLru } from './weakLru';
 import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 import type { PlainTextOptions } from './plainText';
 
-/** UTF-16 run starts, including the endpoint; duplicate starts are zero-width anchors. */
 export interface RunIndex {
     readonly starts: Uint32Array;
     readonly length: number;
@@ -25,7 +24,6 @@ function* constructSteps(block: Block): Generator<void, CachedRunIndex> {
         if ((index & 255) === 255) yield;
     }
     starts[runs.length] = length;
-    // Entries retain only offsets; the weak key does not pin runs or opaque raw data.
     return { index: { starts, length, count: runs.length }, bytes: 256 + starts.byteLength };
 }
 
@@ -58,7 +56,6 @@ function upperBound(values: Uint32Array, value: number): number {
     return low;
 }
 
-/** First run which can overlap the range, including zero-width carriers at its start. */
 export function firstRunAt(index: RunIndex, offset: number): number {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > index.length) throw new RangeError('Invalid block offset');
     const at = lowerBound(index.starts, offset);
@@ -66,11 +63,9 @@ export function firstRunAt(index: RunIndex, offset: number): number {
     return Math.min(at, index.count);
 }
 
-/** The run containing a code unit, never a zero-width anchor. */
 export function runContaining(index: RunIndex, offset: number): number {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset >= index.length) throw new RangeError('Invalid block character offset');
     return upperBound(index.starts, offset) - 1;
 }
 
-/** Explicit disposal is useful for pane/application shutdown; cached blocks are otherwise bounded. */
 export function clearRunIndexes(): void { cache.clear(); }

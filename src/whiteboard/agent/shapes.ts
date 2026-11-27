@@ -5,8 +5,6 @@ import type { SheetId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import type { RichText } from '../text/richText';
 
-// F-AGENT-001, C8: geometry is supplied by the same view-independent projection
-// used for closed files; this layer must not estimate text, groups or ink bounds.
 export interface AgentGeometry {
     bounds(node: Node): { readonly x: number; readonly y: number; readonly w: number; readonly h: number };
     page(node: Node): number | undefined;
@@ -36,7 +34,6 @@ export interface ShapePage {
     readonly revision: number;
     readonly nextOffset?: number;
     readonly revisionChanged?: true;
-    /** Closed drawings retain sheet labels without changing shape records. */
     readonly sections?: readonly { readonly offset: number; readonly name: string; readonly index: number }[];
 }
 export interface ShapeQuery {
@@ -90,14 +87,12 @@ export function summarizeAgentNode(node: Node, geometry: AgentGeometry, page: nu
     return result;
 }
 
-// WB-D12: stable paint order and a revision fence allow every item to be reached.
 export function listAgentShapes(doc: BoardDoc, sheet: SheetId, geometry: AgentGeometry, query: ShapeQuery = {}): ShapePage {
     const selected = doc.sheets.get(sheet);
     if (!selected) throw new RangeError('Sheet does not exist');
     return listAcrossSheets(doc, [selected], geometry, query, false, doc.rev);
 }
 
-/** Saved drawings retain all sheet labels; a live view instead uses its current sheet. */
 export function listAgentSheets(doc: BoardDoc, geometry: AgentGeometry, query: ShapeQuery = {}, diskRevision = doc.rev): ShapePage {
     return listAcrossSheets(doc, doc.sheetOrder, geometry, query, true, diskRevision);
 }
@@ -127,8 +122,6 @@ function listAcrossSheets(doc: BoardDoc, sheets: readonly Sheet[], geometry: Age
                 const summary = summarizeAgentNode(node, geometry, nodePage);
                 const section = labelled && !started ? { offset: total, name: sheet.name.slice(0, 2000), index: sheetIndex } : undefined;
                 const size = JSON.stringify(summary).length + 1 + (section ? JSON.stringify(section).length + 1 : 0);
-                // Section labels share the response budget with shapes; a huge
-                // received sheet name must not make the envelope unbounded.
                 if (size > 58_500) throw new RangeError('A shape summary exceeds the agent response budget');
                 if (chars + size > 58_500) budgetExhausted = true;
                 else {

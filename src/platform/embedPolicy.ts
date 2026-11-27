@@ -2,7 +2,6 @@ import type { EmbedFrameManifest } from './embedContainment.types';
 
 export const EMBED_PROFILE = 'embed-v1' as const;
 
-/** Every provider origin the app's registry can frame. The whiteboard maps links to these, and the frame CSP allows only these. */
 export const EMBED_PROVIDER_ORIGINS: readonly string[] = Object.freeze([
     'https://www.youtube-nocookie.com', 'https://player.vimeo.com', 'https://www.figma.com', 'https://www.canva.com',
     'https://www.google.com', 'https://www.val.town', 'https://codesandbox.io', 'https://codepen.io', 'https://scratch.mit.edu',
@@ -10,7 +9,6 @@ export const EMBED_PROVIDER_ORIGINS: readonly string[] = Object.freeze([
     'https://open.spotify.com', 'https://observablehq.com', 'https://www.desmos.com', 'https://www.tldraw.com',
 ]);
 
-/** Applied to both containment frames; providers receive no delegated browser capabilities. */
 export const EMBED_PERMISSIONS = [
     'clipboard-read', 'clipboard-write', 'camera', 'microphone', 'geolocation', 'accelerometer', 'gyroscope',
     'magnetometer', 'ambient-light-sensor', 'fullscreen', 'display-capture', 'screen-wake-lock', 'autoplay',
@@ -55,7 +53,6 @@ export function validateEmbedManifest(value: unknown, appOrigin?: string): Embed
     return Object.freeze({ version: 1, origins: Object.freeze(origins) });
 }
 
-/** Resource-specific URL grammar belongs to the curated provider registry. */
 export function validateEmbedUrl(value: unknown, manifest: EmbedFrameManifest): string {
     if (typeof value !== 'string' || value.length > 2048) throw new TypeError('Invalid embed URL');
     const approved = validateEmbedManifest(manifest);
@@ -68,7 +65,6 @@ export function validateEmbedUrl(value: unknown, manifest: EmbedFrameManifest): 
     return value;
 }
 
-/** Runtime and its digest are first-party build products, not vault or provider data. */
 export function embedFrameHtml(runtime: string, scriptHash: string, manifest: EmbedFrameManifest): string {
     const approved = validateEmbedManifest(manifest);
     if (typeof runtime !== 'string' || /<\/script/i.test(runtime) ||

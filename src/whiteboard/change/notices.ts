@@ -13,7 +13,6 @@ interface MutableNotice {
     selectionChanged: boolean;
 }
 export interface NoticeScheduler {
-    /** Invalidate one visible platform pane; no private requestAnimationFrame. */
     invalidateFrame(): void;
     hasVisiblePane(): boolean;
     reportError(error: unknown): void;
@@ -28,7 +27,6 @@ function merge(into: MutableNotice, touched: TouchedSet): void {
     for (const id of touched.media) into.media.add(id);
 }
 
-/** One application dispatcher serves visible and hidden sessions in platform frame order. */
 export class NoticeDispatcher {
     private readonly pending = new Set<NoticeChannel>();
     private timer: ReturnType<typeof setTimeout> | undefined;
@@ -42,7 +40,6 @@ export class NoticeDispatcher {
         this.schedule();
     }
     remove(channel: NoticeChannel): void { this.pending.delete(channel); }
-    /** Call when visible-pane registrations change. */
     visibilityChanged(): void { if (this.pending.size) this.schedule(); }
     private schedule(): void {
         if (this.scheduler.hasVisiblePane()) {
@@ -55,7 +52,6 @@ export class NoticeDispatcher {
             }, 100);
         }
     }
-    /** Call from the first ordered platform layer's prepare, once per budget.frameId. */
     flushFrame(frameId: number): void {
         if (this.disposed || this.lastFrame === frameId) return;
         this.lastFrame = frameId;
@@ -66,8 +62,6 @@ export class NoticeDispatcher {
         if (this.disposed || !this.pending.size) return;
         const channels = [...this.pending];
         this.pending.clear();
-        // Snapshot all sessions before invoking any listener: reentrant applies always
-        // wait for the next platform frame, even when they target another session.
         const batch = channels.map(channel => ({ channel, notice: channel.take() }));
         for (const { channel, notice } of batch) if (notice) channel.publish(notice, error => this.scheduler.reportError(error));
         if (this.pending.size) this.schedule();
@@ -94,7 +88,6 @@ export class NoticeChannel {
         this.pending.rev = this.revision();
         return this.pending;
     }
-    /** Apply's last internal consumer; it only accumulates, never calls listeners. */
     record(applied: Applied): void {
         if (this.disposed) return;
         const pending = this.current();
@@ -112,7 +105,6 @@ export class NoticeChannel {
         this.current().sheetChanged = true;
         this.dispatcher.enqueue(this);
     }
-    /** Dispatcher-only snapshot; later applies get a new accumulation. */
     take(): ChangeNotice | undefined {
         const value = this.pending;
         this.pending = undefined;

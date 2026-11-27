@@ -16,8 +16,6 @@ import { createBoardSession } from '../session/createBoardSession';
 import type { BoardSession } from '../session/BoardSession';
 import type { BoardSessionFactoryOptions, ComposedBoardSession } from '../session/factoryTypes';
 
-// Provenance: C7 session, scene, selection and application notice contracts;
-// independent ownership wiring without third-party source.
 export interface BoardRuntimeViewSink {
     visible(): boolean;
     focused(): boolean;
@@ -47,29 +45,18 @@ export interface BoardRuntime {
     readonly encoder: BoardSessionFactoryOptions['encoder'];
     readonly ready: Promise<SessionScene>;
     readonly scene: SessionScene | null;
-    /** The token future pins adopt: the scene's original token until a verified rebind replaces it. Pins already taken keep the token they captured. */
     readonly paintToken: RenderToken;
     readonly paintBinding: ReturnType<ReturnType<typeof createBoardRenderServices>['capturePaintBinding']>;
-    /**
-     * Adopts an admitted source as the paint token for FUTURE pins on this same
-     * runtime, session, scene, records, tools, selection, samples, media and history.
-     * `adopt` must be all-or-nothing: if it throws, the runtime keeps the old token.
-     */
     rebindPaintSource(witness: PaintSourceWitness, expected: PaintSourceExpectation,
         adopt: (token: RenderToken) => void, isCurrent: () => boolean): PaintSourceAdmission;
     adoptPaintSource(witness: PaintSourceWitness, expected: PaintSourceExpectation, isCurrent: () => boolean): PaintSourceAdmission;
     bindView(sink: BoardRuntimeViewSink): () => void;
-    /** A bound view was shown or hidden: once no view of the document is on screen, its rebuildable geometry is given back. */
     viewVisibilityChanged(): void;
-    /** Document-owned services, never tied to a pane's mount/visibility lifetime. Returns unregister. */
     registerOwned(dispose: () => void): () => void;
     flushFrame(frameId: number): void;
-    /** Revokes at once; resolves after the session has retired, since its builds may still read the render services. */
     dispose(): Promise<void>;
 }
 type Registration = { sink: BoardRuntimeViewSink; report: (error: unknown) => void };
-/** How long a document must have had no visible view before its derived geometry is released (see `viewsChanged`): longer than
- * a glance at the graph view or another tab, far shorter than a tab left hidden (the hidden figures are read after 5 s). */
 const RELEASE_HIDDEN_MS = 2_000;
 const views = new Set<Registration>();
 const runtimes = new WeakMap<BoardSession, BoardRuntime>();
@@ -101,12 +88,6 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
     const stopSelection = selection.subscribe(() => { pendingReveal = undefined; });
     const report = (error: unknown) => options.onFailure(error);
     const visible = (entry: Registration) => safe(entry, () => entry.sink.visible(), false);
-    // Whether a view of this document was on screen at the last change. When the last one hides (another tab, a closed pane), the
-    // session's derived geometry goes too: the hide releases each pane's own memory, but these caches belong to the document, and
-    // a hidden 10,060-stroke drawing kept its idle geometry and resolved paint charged at rest (measured: 15.5 MB). The release
-    // waits RELEASE_HIDDEN_MS and is called off if a view shows meanwhile, so a look elsewhere does not throw the geometry away
-    // just before it is needed again: the graph view detaches every view for as long as it is up (measured: a 1 s visit, a 1.04 s
-    // gap). A tab moved to another pane needs no wait: its new view binds before the old one goes (no gap measured).
     let shown = false, releasing: ReturnType<typeof setTimeout> | undefined;
     const viewsChanged = () => {
         let any = false;
@@ -172,9 +153,6 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
         historyLimitReached: options.onHistoryLimit,
     });
     const stopTools = tools.subscribe(() => {
-        // A read-only board keeps its tool as UI state only. Queued anyway, the write was refused at the queue's door
-        // ("The board is read-only") and reported as a board failure: a PDF whose DiskBar came up as the ink was being
-        // left showed it as a "Could not continue" dialog over the bar's own buttons (measured: 4 of 4 timings).
         if (disposed || session.isReadOnly) return;
         const captured = tools.getSnapshot();
         // Single-use completion happens at pointer-up, before asynchronous text
@@ -251,8 +229,6 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
             if (disposed) return retiring ?? Promise.resolve();
             disposed = true;
             if (releasing !== undefined) { clearTimeout(releasing); releasing = undefined; }
-            // Cache/services stop accepting new work at document close. Already
-            // captured read-only jobs retain their own Scene/media/renderer leases.
             for (const entry of owned) {
                 owned.delete(entry);
                 try { entry.dispose(); } catch (error) { try { report(error); } catch { /* Dispose every owner. */ } }
@@ -261,7 +237,6 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
             for (const entry of attached) views.delete(entry);
             attached.clear(); notices.visibilityChanged(); pendingReveal = undefined;
             runtimes.delete(session);
-            // The session's revocation is synchronous; render services outlive its builds, so they go last.
             retiring = (async () => {
                 try { scene?.dispose(); } finally { scene = null; try { await session.dispose(); } finally { options.render.dispose(); } }
             })();

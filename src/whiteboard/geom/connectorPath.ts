@@ -42,7 +42,6 @@ export function trimBodyPath(body: ConnectorBody, fromDistance: number, toDistan
     return path;
 }
 
-/** Crossings are state changes, not synthetic entry/exit events at body endpoints. */
 export function* bodyCrossingSteps(body: ConnectorBody, surface: AttachmentSurface, error: number, maxPieces: number):
     Generator<void, readonly { distance: number; entering: boolean }[]> {
     const length = bodyLength(body);

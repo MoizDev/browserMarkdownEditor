@@ -33,12 +33,9 @@ export interface ConnectorGeometry {
     readonly key: string;
     readonly start: ResolvedConnectorEnd;
     readonly end: ResolvedConnectorEnd;
-    /** Body and heads are in world coordinates; callers must not apply placement twice. */
     readonly body: readonly PathOp[];
     readonly heads: readonly (readonly PathOp[])[];
     readonly label: ConnectorLabelPaint | null;
-    /** Same canonical anchor/available length passed to the label layout,
-     * including for an unlabeled connector that is about to enter editing. */
     readonly editMetrics: Readonly<{ anchorWorld: Vec2; bodyLength: number }>;
     readonly bodyExclusions: readonly Readonly<{ outline: readonly PathOp[]; localToWorld: Affine }>[];
     readonly inkBoundsWorld: Rect;
@@ -55,7 +52,6 @@ export type ConnectorBodyBuilder = (start: Vec2, end: Vec2, bend: number, straig
 export interface HeadGeometryRequest {
     readonly kind: Arrowhead;
     readonly tip: Vec2;
-    /** Forward tangent points from the connector body toward this tip. */
     readonly tangent: Vec2;
     readonly width: number;
     readonly scale: number;

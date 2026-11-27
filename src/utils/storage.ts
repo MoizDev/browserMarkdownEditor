@@ -1,9 +1,5 @@
-// Helpers for JSON-encoded localStorage values, so the
-// get → parse → fallback / stringify → set idiom lives in one place with
-// consistent error handling instead of being hand-rolled at each call site.
 import { createLocalStorageMirror } from './localStorageMirror';
 
-// IndexedDB databases are distinct from the mirrored localStorage key registry below.
 export const INDEXED_DB_NAMES = { recoveryJournal: 'bme-recovery-journal' } as const;
 
 export const STORAGE_MIRROR_SENTINEL = 'bme.lsMirror';
@@ -35,20 +31,12 @@ export const LOCAL_STORAGE_KEYS = [
     STORAGE_MIRROR_SENTINEL,
 ] as const;
 const ownedKeys = new Set<string>(LOCAL_STORAGE_KEYS);
-// What was open and where, not how the app should look or behave. A running tab that SEES a clear (the storage
-// event) puts these back from a backup it kept current to the second. The startup restore never does: a key missing
-// at startup was cleared while no tab of this build was open — in the field, the old build's canvas library
-// clearing localStorage from its "Reset data" button during the rollback — so the backup is from the last time this
-// build ran, possibly weeks before. Measured (the mirror's own code, OLD → NEW → OLD clears → NEW): the session
-// from that last run came back as the vault's saved tabs. Absent, the live state is "nothing open", which a stale
-// session is worse than; a preference from the last run is still the person's own choice, unlike a default.
 const WORKSPACE_KEYS = new Set<string>([
     'vaultSessions', 'fileScrollAnchors', 'collapsedHeadings', 'canvasViewPositions', 'pdfViewPositions',
     'readerViewState', 'pdfTextViewState', 'expandedPaths', 'vaultAgentDrafts', 'vaultAgentOpenChat',
     'fileScrollPositions', 'openTabPaths', 'openTabGroups', 'openTabGroupFocus', 'openTabGroupSizes',
     'openTabsVaultId', 'activeTabPath', 'lastFilePath',
 ]);
-/** Keys put back by the startup restore of this page (see restoreStorageBeforeRender). */
 let startupPuts = 0;
 let restoreNotice: string | null = null;
 const restoreListeners = new Set<() => void>();
@@ -77,7 +65,6 @@ export function readStoredValue(key: string): string | null {
     try { return localStorage.getItem(key); } catch { return null; }
 }
 
-/** Raw-string writer for keys whose readers do not JSON-parse their value. */
 export function writeStoredValue(key: string, value: string): boolean {
     if (!ownedKeys.has(key)) { console.error(`Unregistered browser setting: ${key}`); return false; }
     try {
@@ -102,12 +89,9 @@ export function removeStoredValue(key: string): boolean {
     }
 }
 
-/** Consume once, including a restore completed before App mounted. */
 export function takeRestoreNotice(): string | null {
     let notice = restoreNotice;
     restoreNotice = null;
-    // A startup recovery reloads module-scope stores. Keep its one-shot notice
-    // in this tab only; another window must not consume it first.
     try {
         if (sessionStorage.getItem(RELOAD_NOTICE_KEY) === '1') {
             sessionStorage.removeItem(RELOAD_NOTICE_KEY);
@@ -122,21 +106,8 @@ export function subscribeRestoreNotice(listener: () => void): () => void {
     return () => { restoreListeners.delete(listener); };
 }
 
-/** How long the first render may wait for the settings backup. Measured: with the backup's IndexedDB open never
- *  answering (a wedged backing store, or a deletion pending behind another tab's connection), the page stayed blank
- *  for as long as the run lasted — React had not mounted, so not even "Loading vault..." was drawn. */
 const RESTORE_DEADLINE_MS = 1500;
 
-/**
- * The normal boot pays ONE read, and no IndexedDB work before first render. Resolves true when the page must be
- * reloaded so its module-scope stores read the restored values; it never waits longer than RESTORE_DEADLINE_MS, and
- * it never asks for a second reload in a row.
- *
- * Why the reload cannot loop: it is asked for only when this load put keys back. Those puts are synchronous
- * localStorage writes, so the reloaded page finds them present and puts back nothing (a key is only ever put when
- * missing). And should something clear them again at every start, the restore's one-shot notice key — set before the
- * reload, consumed by App after mount — is still set on the reloaded page, which then mounts instead.
- */
 export function restoreStorageBeforeRender(): Promise<boolean> | undefined {
     try {
         if (localStorage.getItem(STORAGE_MIRROR_SENTINEL) === MIRROR_VERSION) return;
@@ -173,15 +144,12 @@ export function restoreStorageBeforeRender(): Promise<boolean> | undefined {
 }
 
 let recoveryInstalled = false;
-/** Install once outside React; snapshot pre-mirror settings off the startup path. */
 export function installStorageRecovery(): () => void {
     if (recoveryInstalled) return () => {};
     recoveryInstalled = true;
     const onStorage = (event: StorageEvent) => {
         if (event.key !== null) return;
         try { if (event.storageArea !== localStorage) return; } catch { return; }
-        // A newer write may already have replaced the sentinel. The event is
-        // still proof of a clear, so restore per key regardless of its value.
         void mirror.restore();
     };
     const onHidden = () => { if (document.visibilityState === 'hidden') void mirror.reconcile(); };
@@ -210,8 +178,6 @@ export function installStorageRecovery(): () => void {
     };
 }
 
-/** Read and JSON-parse a localStorage value, returning `fallback` if it's
- *  missing, null, or unparseable. */
 export function readJSON<T>(key: string, fallback: T): T {
     try {
         const raw = localStorage.getItem(key);
@@ -223,10 +189,6 @@ export function readJSON<T>(key: string, fallback: T): T {
     }
 }
 
-/** JSON-stringify and persist a value to localStorage. Reports whether it
- *  landed — quota and private-mode failures are swallowed here, and a caller
- *  that is about to DELETE the value's old home (tabSessions' one-way legacy
- *  migration) has to know the new one actually took. */
 export function writeJSON(key: string, value: unknown): boolean {
     try {
         return writeStoredValue(key, JSON.stringify(value));
@@ -236,38 +198,12 @@ export function writeJSON(key: string, value: unknown): boolean {
     }
 }
 
-/* ── Cached record accessors ──
-   For the path-keyed records that are written on a debounce
-   (fileScrollAnchors, pdfViewPositions, collapsedHeadings). The first two
-   used to do a full getItem + JSON.parse of the ENTIRE record, mutate one key,
-   then stringify the whole thing again — every 300-400ms for as long as the
-   user was scrolling, synchronously on the main thread, over a record that
-   grows by one entry per file ever opened.
-
-   Holding the parsed object in memory removes the repeated parse entirely; the
-   write is unchanged. Each key has one writer in this window. Recovery repairs
-   missing backing keys without discarding the live window's record objects;
-   ordinary cross-window edits retain their existing last-writer semantics. */
-
 const records = new Map<string, Record<string, unknown>>();
 
-/** The live, mutable record for `key`, parsed at most once per session. */
 export function readRecord<T>(key: string): Record<string, T> {
     let record = records.get(key);
     if (!record) {
         const stored = readJSON<unknown>(key, {});
-        // readJSON only falls back when the JSON is unparseable. localStorage is
-        // user-editable, so `"hello"`, `42` and `[1,2,3]` all parse fine and
-        // then reach callers that MUTATE the result. Measured on the three:
-        // `record[key] = value` throws TypeError on a primitive in strict mode
-        // (which every module here is), taking out whichever handler was
-        // writing — a scroll flush, a PDF position, a session write; the ARRAY
-        // throws nothing at all and is the quieter bug, since the assignment
-        // succeeds and JSON.stringify then silently drops the entry, so
-        // positions look saved and never come back. `delete` is innocent on all
-        // three (a missing property on a boxed primitive is a no-op), so the
-        // assignments are what this guard is for. A record is an object and not
-        // an array, or it is nothing.
         record = stored && typeof stored === 'object' && !Array.isArray(stored)
             ? stored as Record<string, unknown>
             : {};
@@ -276,53 +212,17 @@ export function readRecord<T>(key: string): Record<string, T> {
     return record as Record<string, T>;
 }
 
-/** Persist the in-memory record for `key` (after mutating it in place).
- *  Reports whether the write landed, for the same reason writeJSON does. */
 export function flushRecord(key: string): boolean {
     const record = records.get(key);
     return record ? writeJSON(key, record) : false;
 }
 
-/* ── The vault a path-keyed record entry belongs to ──
-   Path-keyed records are keyed by a VAULT-RELATIVE path, and two vaults share
-   paths freely — `Notes/index.md` names a different file in each. That was a
-   theoretical collision while a switch emptied the workspace for good; per-vault
-   tab sessions make "the same path open in two vaults" routine, so switching
-   back would scroll a note to an offset measured in a different file.
-
-   The worker index and object-URL registry release their active-vault state on
-   a switch; these records deliberately OUTLIVE the session instead, so they carry the vault in the key
-   rather than being cleared.
-
-   Two costs, both accepted rather than overlooked:
-
-   · Every entry written BEFORE this scoping is keyed by the bare path, and
-     nothing reads those any more — so the first load of a build with this in it
-     drops every remembered scroll offset and PDF page, once, and leaves the
-     dead entries behind (nothing prunes these). Not migrated on purpose: the
-     only vault they could be attributed to is whichever one happens to open
-     first, and filing another vault's offsets under it would be a new bug in
-     place of a one-time reset.
-
-   · The bare-path fallback below is NOT the failure mode it looks like.
-     `currentVaultId` is assigned in exactly one place (FileSystemContext's
-     recordVault) and is never reset to null, so "no id" only ever means "the
-     first vault of this page load has not been recorded yet". A LATER vault
-     whose recordVault throws leaves the scope pointing at the vault before it,
-     not at the bare path, and files its positions there — the collision this
-     scoping exists to prevent, arriving through the one path that cannot be
-     gated from here. Nulling the id in that catch would fix it and clear the
-     address bar mid-open (see App's URL writer, which reads exactly that), so
-     it is left as the rarer of the two. */
-
 let recordScope = '';
 
-/** Point the path-keyed records at `vaultId`'s entries. */
 export function setRecordScope(vaultId: string | null): void {
     recordScope = vaultId ?? '';
 }
 
-/** `path` as it is keyed inside a path-keyed record, under the open vault. */
 export function scopedKey(path: string): string {
     // U+0000 as the separator: a vault id is a UUID and a path cannot contain a
     // NUL, so the two halves can never be confused. Written as an ESCAPE, never

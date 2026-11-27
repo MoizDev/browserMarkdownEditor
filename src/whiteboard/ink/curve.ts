@@ -9,9 +9,7 @@ export const CURVE_CORNER_DOT = -0.5;
 export const CURVE_SMOOTH_DOT = 0;
 export const CURVE_MIN_CHORD_WORLD = 1e-12;
 export const CURVE_CHUNK_SPANS = 256;
-// Bounds only the VALIDATION of a saved stroke's `fairTol`; the curve no longer reads it (see writeControl).
 export const FAIRING_CONTROL_ERROR_DEVICE_PX = 0.25;
-// Product-design cap, NOT a main parity witness. M-INK-ZOOM-CAP still needs a current-app run.
 export const INK_ZOOM_CAP_CALIBRATION = Object.freeze({ id: 'M-INK-ZOOM-CAP', status: 'pending' as const });
 
 export const enum CurveFlag {
@@ -35,18 +33,13 @@ export type CurvePublication = Readonly<{
     sequence: number;
     phase: 'wet-real' | 'dry';
     parameters: CurveParameters;
-    // Immutable canonical sample snapshot; finalized ranges are lazy geometry, not a permanent
-    // expanded cubic table. The renderer materializes ONLY visible ranges under its byte budget.
     samples: SampleSequence;
     finalizedSpanCount: number;
     replaceableTail: CurveGeometry;
     endpointX: number; endpointY: number;
     packingErrorWorld: number;
-    /** Set only on the pen-up publication of a stroke that closes on itself (see curveClosure). */
     closure: CurveClosure;
 }>;
-/** A closed stroke's neighbours across its join: the sample before its last (`beforeX/Y`, the first
- * span's predecessor) and its second sample (`afterX/Y`, the last span's successor). Null when open. */
 export type CurveClosure = Readonly<{ beforeX: number; beforeY: number; afterX: number; afterY: number; }> | null;
 
 export function curveParameters(declaredMaxScale: number, fairingToleranceWorld?: number, maxDpr = 3): CurveParameters {
@@ -65,28 +58,10 @@ function validateParameters(p: CurveParameters): void {
         || p.fairingToleranceWorld > FAIRING_CONTROL_ERROR_DEVICE_PX / scale) throw new RangeError('Invalid saved v1 ink curve parameters');
 }
 
-// Every freehand span is a cubic through its two samples whose end tangents are shared with the
-// neighbouring spans, so the stroke is tangent-continuous through each sample at any sample spacing.
-// Until this rule the controls were clamped to the saved fairing tolerance (about 0.01 world px), so
-// each span was its own chord: measured, a quick loop arrives as 10–12 samples 30–100 px apart and
-// was drawn as a decagon (the user's "sharp corners on faster strokes"). Dense slow input hid it.
-//
-// Tangent at a sample: the direction from its previous to its next sample (the chord-weighted sum
-// of the two unit chords), so a short jittery neighbour chord cannot swing the tangent of a long
-// span. Handle: one third of the span's OWN chord, which is the circular-arc handle to within 3%
-// for turns up to 40° per sample (7% at 60°) and can never loop a short span behind a long one.
-// Corners: a turn of 120° or more (CURVE_CORNER_DOT) is a real corner, the span leaves along its
-// chord (the straight third). Between a 90° turn (CURVE_SMOOTH_DOT) and that, the tangent eases
-// from the shared one to the chord, so the picture never jumps as a turn crosses the corner rule
-// and a quick zig-zag keeps pointed tips instead of loops.
-//
 // Bound used by every enclosure (stroke bounds, notebook growth): each control lies EXACTLY one
 // third of its span's chord from that span's endpoint, whatever the branch, and a cubic lies in the
 // hull of its four controls, so a span never leaves the discs of radius chord/3 around its samples
 // (CURVE_CONTROL_REACH, accumulated by `CurveReach` in ink/reach.ts).
-//
-// The saved fairing tolerance no longer limits the curve. It is still read, validated and written
-// as before (geomVersion stays 1), so files open both ways; old saved ink now draws smooth too.
 
 function writeControl(out: Float64Array, offset: number, ax: number, ay: number, bx: number, by: number,
     neighbourX: number, neighbourY: number, hasNeighbour: boolean, isEnd: boolean): boolean {
@@ -96,7 +71,6 @@ function writeControl(out: Float64Array, offset: number, ax: number, ay: number,
     if (!Number.isFinite(baseX) || !Number.isFinite(baseY) || !Number.isFinite(length)) throw new RangeError('Ink control overflow');
     out[offset] = baseX; out[offset + 1] = baseY;
     if (!hasNeighbour || length <= CURVE_MIN_CHORD_WORLD) return length <= CURVE_MIN_CHORD_WORLD;
-    // The neighbour chord, oriented along the stroke: into A for the start control, out of B for the end.
     const nx = isEnd ? neighbourX - bx : ax - neighbourX;
     const ny = isEnd ? neighbourY - by : ay - neighbourY;
     const neighbourLength = Math.hypot(nx, ny);
@@ -111,7 +85,6 @@ function writeControl(out: Float64Array, offset: number, ax: number, ay: number,
         const t = (CURVE_SMOOTH_DOT - dot) / (CURVE_SMOOTH_DOT - CURVE_CORNER_DOT), w = t * t * (3 - 2 * t);
         const blendX = tangentX + (ux - tangentX) * w, blendY = tangentY + (uy - tangentY) * w;
         const blendLength = Math.hypot(blendX, blendY);
-        // Both are unit vectors less than 120° apart, so the blend cannot vanish; guard rounding anyway.
         if (!(blendLength > 0)) return true;
         tangentX = blendX / blendLength; tangentY = blendY / blendLength;
     }
@@ -123,16 +96,6 @@ function writeControl(out: Float64Array, offset: number, ax: number, ay: number,
     return false;
 }
 
-// A closed stroke (its last sample exactly on its first, `closed` on the node; input/liveInk.ts marks a
-// pen stroke so at pen up) was drawn with two free ends meeting there: the first span left along its
-// own chord and the last arrived along its own, so a quick "0" showed a kink at the join. A closed
-// stroke's join is now an ordinary sample: the first span takes the sample before the last as its
-// predecessor and the last span takes the second sample as its successor, so both ends share the
-// tangent from that predecessor to that successor, under the same corner rule (a 120° turn there stays
-// a corner). Controls stay one third of their own chord from their samples, so CURVE_CONTROL_REACH and
-// every bound built on it hold unchanged. Closure is known only at pen up, so the first span changes
-// then: the wet layer re-tessellates its finalized prefix once for it (viewer/wetLayer.ts) and the
-// pen-up picture is the committed one.
 export function curveClosure(samples: SampleSequence, closed: boolean): CurveClosure {
     const last = samples.count - 1;
     if (!closed || samples.count < 4 || samples.x(0) !== samples.x(last) || samples.y(0) !== samples.y(last)
@@ -140,7 +103,6 @@ export function curveClosure(samples: SampleSequence, closed: boolean): CurveClo
     return Object.freeze({ beforeX: samples.x(last - 1), beforeY: samples.y(last - 1), afterX: samples.x(1), afterY: samples.y(1) });
 }
 
-// Writes one span into caller-owned doubles; repeated reconstruction needs no point/vector objects.
 export function writeCurveSpan(samples: SampleSequence, index: number, p: CurveParameters,
     output: Float64Array, offset = 0, endpointLimit = samples.count, closure: CurveClosure = null): number {
     validateParameters(p);
@@ -156,7 +118,6 @@ export function writeCurveSpan(samples: SampleSequence, index: number, p: CurveP
     const straight = samples.segmentKind(index) === 'straight';
     const before = !straight && index > 0 && samples.segmentKind(index - 1) === 'freehand';
     const after = !straight && index + 2 < endpointLimit && samples.segmentKind(index + 1) === 'freehand';
-    // A closed stroke's join (curveClosure): the whole sequence is the loop, so only a full-length read joins.
     const join = !straight && closure && endpointLimit === samples.count ? closure : null;
     const opening = !!join && index === 0, closing = !!join && index + 2 === samples.count;
     if (writeControl(output, offset + 2, ax, ay, bx, by,
@@ -189,7 +150,6 @@ export function materializeCurveRange(samples: SampleSequence, range: CurveRange
             cubics[offset + j] -= originX; cubics[offset + j + 1] -= originY;
         }
     }
-    // The control hull conservatively bounds the entire cubic; radius expansion belongs to width.
     return Object.freeze({
         firstSpan, spanCount, originX, originY, cubics, flags,
         boundsLocal: Object.freeze({ x: minX, y: minY, w: maxX - minX, h: maxY - minY })
@@ -203,7 +163,6 @@ function packingDisplacement(before: SampleSequence, after: SampleSequence, firs
     for (let i = firstSpan; i < firstSpan + spanCount; i++) {
         writeCurveSpan(before, i, p, original);
         writeCurveSpan(after, i, p, packed);
-        // Same span parameterization; convex Bernstein weights bound EVERY point, not only vertices.
         for (let j = 0; j < 8; j += 2) {
             bound = Math.max(bound, Math.hypot(original[j] - packed[j], original[j + 1] - packed[j + 1]));
             magnitude = Math.max(magnitude, Math.abs(original[j]), Math.abs(original[j + 1]), Math.abs(packed[j]), Math.abs(packed[j + 1]));
@@ -212,7 +171,6 @@ function packingDisplacement(before: SampleSequence, after: SampleSequence, firs
     return bound === 0 ? 0 : bound + 64 * Number.EPSILON * magnitude;
 }
 
-/** The builder's samples followed by the dequantizer's provisional tail, as one sequence. */
 function withTail(base: SampleSequence, tail: readonly DequantizedSample[]): SampleSequence {
     const prefix = base.count, count = prefix + tail.length;
     const check = (i: number) => { if (!Number.isInteger(i) || i < 0 || i >= count) throw new RangeError('Invalid authoring sample index'); };
@@ -231,9 +189,6 @@ export class LocalCurveBuilder {
     private sequence = 0;
     private completed = false;
     private readonly dequantizer: PointerDequantizer | undefined;
-    /** `inputPixelWorld` (one CSS pixel of pointer input, in world units) is given only for live pointer
-     * input, whose samples may sit on the pointer's grid (ink/dequantize.ts); replayed or generated
-     * samples are never moved. */
     constructor(options: SampleBuilderOptions, captureDeviceScale: number,
         fairingToleranceWorld?: number, certificate?: OmissionCertificate, inputPixelWorld?: number) {
         this.parameters = curveParameters(options.declaredMaxScale, fairingToleranceWorld, options.maxDpr ?? 3);
@@ -258,8 +213,6 @@ export class LocalCurveBuilder {
         const samples = tail.length ? withTail(base, tail) : base;
         if (!samples.count) throw new Error('Empty ink has no geometry publication');
         const spanCount = samples.count - 1;
-        // The provisional tail still moves (by under one grid step) as later samples arrive, so only the
-        // builder's own samples can finalize; every span the tail can reach stays replaceable.
         const finalizedSpanCount = Math.max(0, base.count - 4);
         const sequence = ++this.sequence;
         return Object.freeze({
@@ -272,9 +225,6 @@ export class LocalCurveBuilder {
     }
     finish(): Readonly<{ samples: SampleBuilder; publication: CurvePublication; }> {
         if (this.completed) throw new Error('Ink has already completed');
-        // Capture exactly what was displayed. No final fitting runs here: the provisional tail settles
-        // exactly where `publish` last drew it (the same estimates from the same samples), and thinning
-        // it is the usual certificate against those very positions, within its 0.08 device px.
         for (const s of this.dequantizer?.flush() ?? []) this.samples.append(s.x, s.y, s.pressure, s.kind, s.pins);
         const canonical = this.samples.snapshot(), publication = this.publication(canonical, []);
         const samples = this.samples.finish();
@@ -283,12 +233,9 @@ export class LocalCurveBuilder {
     }
 }
 
-/** The pen-up publication of a stroke that closes on itself: its first and last spans meet smoothly (curveClosure). */
 export function closeCurvePublication(publication: CurvePublication, closure: CurveClosure): CurvePublication {
     if (!closure) return publication;
     const { samples, parameters } = publication;
-    // The first span changes too, so this publication finalizes nothing: a reader that cached a finalized
-    // prefix starts it again (viewer/wetLayer.ts). The tail materialized here is the stroke's first chunk.
     return Object.freeze({ ...publication, closure, finalizedSpanCount: 0, replaceableTail: materializeCurveRange(samples,
         { firstSpan: 0, spanCount: Math.min(CURVE_CHUNK_SPANS, samples.count - 1) }, parameters, closure) });
 }

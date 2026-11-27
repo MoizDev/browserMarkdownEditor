@@ -18,8 +18,6 @@ function expand(box: Box, radius: number): Box {
     return [box[0] - radius, box[1] - radius, box[2] + radius, box[3] + radius];
 }
 function inkBounds(node: StrokeNode, m: Affine, samples: SampleStore): Box {
-    // The drawn curve is built from the REALIZED points (render/inkGeometry.ts); with a non-uniform
-    // sx/sy that is not the stored curve scaled afterwards, so bound the same curve that is drawn.
     const sequence = realizeStrokePoints(samples.sequence(node.samples), node.sx, node.sy);
     if (!sequence.count) throw new Error('Empty imported stroke');
     let box: Box | undefined, pressure = 0;
@@ -39,7 +37,6 @@ function inkBounds(node: StrokeNode, m: Affine, samples: SampleStore): Box {
         : node.widthModel.rMin + (node.widthModel.rMax - node.widthModel.rMin) * pressure;
     return expand(box!, radius);
 }
-// Connectors use their owning geometry provider, never a straight-line fallback.
 export function basicLegacyGeometry(samples: SampleStore, remaining: LegacyGeometry): LegacyGeometry {
     let lastNode: Readonly<Node> | undefined, lastTransform: Affine | undefined, lastSupplied: Box | undefined;
     return { worldBounds(node: Readonly<Node>, transform: Affine): Box | undefined {

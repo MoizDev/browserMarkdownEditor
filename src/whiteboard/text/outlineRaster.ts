@@ -27,12 +27,10 @@ function maxStretch(matrix: Affine): number {
     return scale * Math.sqrt((x + y + Math.hypot(x - y, 2 * cross)) / 2);
 }
 
-/** Each fallback bitmap stays small even when one source fragment spans a very wide page. */
 export async function* rasterTextFragment(fragment: PaintFragment, face: Face, baseline: number, lineTop: number, lineBottom: number,
     localToWorld: Affine, color: Rgba, pageScale: number, blend: 'normal' | 'multiply', fonts: BoardFonts, context: WorkerContext): AsyncGenerator<PageDisplayItem> {
     context.signal.throwIfAborted();
     if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');
-    // Canvas treats ASCII space and tab as blank glyphs; their backgrounds/decorations are separate items.
     if (/^[ \t]*$/.test(fragment.text)) return;
     if (face.loaded && !await awaitOutlineResource(fonts.load(face.key), context.signal, 30_000, 'Export canvas font'))
         throw new Error('Export canvas font could not be loaded');

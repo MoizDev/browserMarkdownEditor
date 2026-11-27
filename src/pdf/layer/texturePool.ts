@@ -9,12 +9,8 @@ export interface PooledTexture {
     readonly bytes: number;
 }
 
-/** Free textures kept for reuse. An interior tile is 514×514 at every scale, so a zoom step's new tiles are the same size
- * as the ones it releases: the limit should hold one visible set (about 30 tiles at DPR 2, the PLAN §6 figure). At 16,
- * every zoom step destroyed the overflow and created it again. Under pressure the layer clears the pool anyway. */
 const FREE_TEXTURE_LIMIT = 32;
 
-/** Scratch textures retain their governor lease until reused or destroyed (design §6.1:592). */
 export class PdfTexturePool {
     private readonly free: PooledTexture[] = [];
     private freeBytes = 0;
@@ -61,8 +57,6 @@ export class PdfTexturePool {
     }
 }
 
-/** A tile's own texture, created for a tile and destroyed when the tile leaves the GPU. Not pooled: a free texture is charged
- * bytes that nothing draws, so a pool of them is memory the tile model does not need. */
 export function createTileTexture(allocator: MemoryAllocator, device: GfxDevice, width: number, height: number, options?: ReserveOptions): PooledTexture | null {
     const bytes = width * height * 4;
     const lease = allocator.reserve(bytes, options);

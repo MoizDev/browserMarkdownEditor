@@ -8,7 +8,6 @@ import { isMissingMedia } from '../media/missingMedia'
 
 export interface PreparedRaster {
   readonly resources: PaintResources2d
-  /** Releases only leases held by this capture, not the source frame. */
   dispose(): void
 }
 function origin(commands: readonly PathCommand[]): readonly [number, number] {
@@ -28,8 +27,6 @@ async function finishPath(job: Path2dJob | InkCoverageUnionPath2dJob, signal: Ab
   } catch (error) { job.cancel(); throw error }
 }
 
-/** Prepare the same 2D geometry and image leases as the screen painter. The frame is an
- * immutable capture, not a live scene: its owner must retain it until dispose. */
 export async function prepareRaster(
   frame: PaintFrame, scale: number, images: PaintImageProvider, signal: AbortSignal,
 ): Promise<PreparedRaster> {
@@ -38,9 +35,6 @@ export async function prepareRaster(
   const clips = new Map<string, PreparedPath2d>()
   const geometry = new Map<string, PreparedPath2d>()
   const leases = new Map<string, PaintImageLease>()
-  // A picture whose file is missing is drawn as the placeholder the screen shows, and the rest is exported: refusing the
-  // whole export for it lost every PNG, SVG and PDF of such a board ("Captured board media is unavailable"). The
-  // provider has already told the person which file is missing.
   const missing = new Set<string>()
   let disposed = false
   function dispose(): void {

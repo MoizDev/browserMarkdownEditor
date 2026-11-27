@@ -20,7 +20,6 @@ import { paletteGroups, type PaletteSheetSource, type PaletteStyleCommands, type
 import { toolChoices } from './toolChoices';
 import { arrangeSubmenus } from './boardCommands';
 
-/** The sheet structure the palette lists and changes: the board's own sheet controls (useNativeSheetControls). */
 export interface PaletteSheetControls {
     snapshot(): { readonly sheets: readonly { readonly id: string; readonly name: string }[]; readonly current: string; readonly canCreate: boolean };
     selectSheet(id: string): void;
@@ -28,7 +27,6 @@ export interface PaletteSheetControls {
     duplicateSheet(id: string): unknown;
 }
 
-/** Values come from the owning session and viewer; the chrome does not invent capability state. */
 export interface SessionBoardChromeProps {
     readonly kind: 'whiteboard' | 'notebook' | 'pdf-ink';
     readonly isVisible: boolean;
@@ -44,15 +42,12 @@ export interface SessionBoardChromeProps {
     readonly toolStateFor: (id: string, figure?: string) => CommandState;
     readonly commands: Omit<BoardCommandSource, 'label'>;
     readonly actionShortcut: (id: MainAction) => string | undefined;
-    /** The displayed chord of a keyboard binding by id (the Preferences rows show Tool lock, Show grid and Focus mode chords). */
     readonly bindingChord?: (bindingId: string) => string | undefined;
     readonly actionState: (id: MainAction) => CommandState;
     readonly runAction: (id: MainAction) => void | Promise<void>;
     readonly shortcuts: readonly ShortcutGroup[];
     readonly registerShortcuts?: (open: () => void) => () => void;
-    /** The keyboard's way to open the command palette: the chrome hands back its open function while it is mounted. */
     readonly registerCommandPalette?: (open: () => void) => () => void;
-    /** The selection-scoped rows the palette lists first, read when it opens. */
     readonly paletteSelection?: () => readonly ContextMenuEntry[];
     readonly paletteStyles?: PaletteStyleCommands;
     readonly paletteSheets?: PaletteSheetControls;
@@ -63,9 +58,7 @@ export interface SessionBoardChromeProps {
     readonly readOnlyReason: string;
     readonly zoom: number;
     readonly minimapVisible: boolean;
-    /** The style panel's model and commands, from the attached board session. */
     readonly stylePanel?: Pick<StylePanelProps, 'snapshot' | 'commands'>;
-    /** The paged host's paper controls, rendered inside the chrome column under the header. */
     readonly pageControls?: ReactNode;
 }
 
@@ -84,7 +77,6 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
     const { isVisible, registerShortcuts, registerCommandPalette } = props;
     useEffect(() => { if (!isVisible) { setShortcutsOpen(false); setPalette(null); } }, [isVisible]);
-    // Focus mode clears dialogs, as tldraw's does (actions.tsx:1837-1846): the board goes to one dot, with nothing open over it.
     const focusMode = props.localPreferences.view.focusMode;
     useEffect(() => { if (focusMode) { setShortcutsOpen(false); setPalette(null); } }, [focusMode]);
     useEffect(() => {
@@ -113,11 +105,9 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
         || id === 'convertToBookmark' || id === 'convertToEmbed';
     const actionState = (id: MainAction): CommandState => {
         if (props.readOnly && editAction(id)) return { enabled: false, reason: props.readOnlyReason };
-        // The shortcuts dialog and the palette are views of the board's commands, so they open on a read-only board too.
         return id === 'keyboardShortcuts' || id === 'commandPalette' ? { enabled: true } : props.actionState(id);
     };
     const focusedElement = (): HTMLElement | null => document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    // A header button keeps the keyboard after a menu closes, and then the board's shortcuts hear nothing: focus goes back to the board itself.
     const boardSurface = (anchor: HTMLElement): HTMLElement => anchor.closest<HTMLElement>('.board-viewer-host')?.querySelector<HTMLElement>('.board-interaction-root') ?? anchor;
     const runAction = (id: MainAction) => {
         if (!actionState(id).enabled) return;
@@ -150,7 +140,6 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
         return { sheets: snapshot.sheets, current: snapshot.current, canCreate: snapshot.canCreate && !props.readOnly,
             select: id => controls.selectSheet(id), create: () => { controls.createSheet(); }, duplicate: id => { controls.duplicateSheet(id); } };
     };
-    // The palette's rows are read when it opens, from the same sources the menus use. The ref keeps the registered opener current.
     const buildPalette = (): readonly PaletteGroup[] => paletteGroups({
         translate: props.translate, sectionLabel: labels.mainSectionLabel, main: mainMenuEntries(menu), preferences,
         selection: props.paletteSelection?.() ?? [], arrange: arrangeSubmenus(commandSource, labels.contextSectionLabel), arrangeLabel: labels.contextSectionLabel('arrange'),
@@ -165,14 +154,12 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const closePalette = useCallback(() => setPalette(null), []);
     const runPaletteRow = (key: string, command: ContextMenuCommand) => {
         updateBoardPreferences({ paletteRecents: rememberRecent(getBoardPreferences().paletteRecents, key, 20) });
-        // The palette unmounts before its command runs, so focus is back on the board when the command opens something of its own.
         flushSync(() => setPalette(null));
         try {
             const result = command.run();
             if (result instanceof Promise) void result.catch(props.reportError);
         } catch (error) { props.reportError(error); }
     };
-    // Debug mode's overlay shows the board's own diagnostics: the tool, the counts and the frame time are live (debugStats).
     const active = props.toolState.getSnapshot().active;
     const debugOverlay: DebugOverlayProps | undefined = props.localPreferences.view.debugMode ? {
         label: labels.text('debugOverlay'), locale: props.locale, direction: props.direction,

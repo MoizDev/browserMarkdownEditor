@@ -9,10 +9,9 @@ import { ApplyFailed, refuseChange } from './errors';
 // rev does not change between a builder's pushes. Hidden sessions need these
 // semantic queries too; neither requires tessellation, a view, or painted pixels.
 export interface ChangeGeometry {
-    resolvedTip(doc: BoardDoc, connector: ConnectorNode, terminal: 'start' | 'end'): Point; // World, last painted tip including clipping/gap.
-    /** Optional so that previews and shims need not carry it; apply capture requires it and refuses without it. */
-    resolvedPolylineTip?(doc: BoardDoc, polyline: PolylineNode, terminal: 'start' | 'end'): Point; // World, resolved tip of a bound or free polyline end.
-    worldBoundsCenter(doc: BoardDoc, node: Node): Point; // Unclipped geometric world bounds.
+    resolvedTip(doc: BoardDoc, connector: ConnectorNode, terminal: 'start' | 'end'): Point;
+    resolvedPolylineTip?(doc: BoardDoc, polyline: PolylineNode, terminal: 'start' | 'end'): Point;
+    worldBoundsCenter(doc: BoardDoc, node: Node): Point;
 }
 export interface WorldPose extends Point { readonly rotation: number }
 export interface LocalPose extends WorldPose { readonly page: number }

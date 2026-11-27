@@ -4,8 +4,6 @@ import { checkPngSize } from './png'
 import { exportRows } from './tiles'
 import type { RenderExportTile, TiledPngOptions } from './tiles'
 
-/** One shared platform worker compresses rows with backpressure; rasterization stays with
- * the capture owner and every transfer owns its bytes, never the live band backing store. */
 const ROW_BATCH_BYTES = 4 * 1024 * 1024
 
 export async function encodeTiledPngInWorker(
@@ -29,8 +27,6 @@ export async function encodeTiledPngInWorker(
     if (!isCurrent(candidate) || !payload || typeof payload !== 'object' || (payload as { streamId?: unknown }).streamId !== streamId) return
     if (pulling) { failure = new Error('Duplicate PNG row request'); abort.abort(failure); return }
     pulling = true
-    // Measured: one worker round trip per row (~24ms) left a 15-page export at row 12k of 16k when
-    // its 300s deadline hit. Rows travel in bands of up to ROW_BATCH_BYTES; the encoder still sees rows.
     const pull = (async () => {
       const parts: Uint8Array[] = []
       let bytes = 0

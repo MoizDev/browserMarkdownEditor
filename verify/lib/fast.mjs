@@ -59,7 +59,6 @@ export async function openDocument(page, path) {
         if (await parent.getAttribute('aria-expanded') !== 'true') await parent.click();
     }
     await treeRow(page, path).click();
-    // The platform pane's canvas sits in the PDF's tiled surface and in a board's viewer surface (PdfTiledView, ViewerHost).
     if (/\.pdf$/i.test(path)) await page.locator('.pdf-tiled-surface:visible canvas').first().waitFor();
     else if (/\.epub$/i.test(path)) await page.frameLocator('.epub-pane iframe').locator('.chapter').first().waitFor();
     else if (/\.(drawing|tldraw|notebook)$/i.test(path)) await page.locator('.board-viewer-surface:visible canvas').first().waitFor();
@@ -73,7 +72,6 @@ export async function replaceNote(page, text) {
     await page.keyboard.insertText(text);
 }
 
-/** One report per guard, fresh OPFS contexts per case, immutable prepared app. */
 export async function fastGuard(name, flow) {
     if (process.argv.includes('--prepare')) { await prepareFast(); return; }
     if (!Number.isInteger(fastPort) || fastPort < 1024) throw new Error('Set BME_PORT to a free port for the preview server (1024–65535)');

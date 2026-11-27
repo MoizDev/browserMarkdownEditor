@@ -32,8 +32,6 @@ function* normalized(input: ConvexClipPolygon): Generator<void, ExactPoint[]> {
         const turn = exactSide(exactLineBetween(a, b), c);
         if (turn && winding && turn !== winding) throw new RangeError('Clip polygon must be convex and simple');
         if (turn) winding = turn;
-        // Unit-weight exact affine inputs: uniform turns plus one direction
-        // winding reject star loops without scanning all vertex/edge pairs.
         const ax = dyadicSubtract(b.x, a.x), ay = dyadicSubtract(b.y, a.y), bx = dyadicSubtract(c.x, b.x), by = dyadicSubtract(c.y, b.y);
         const halfA = ay.n > 0n || (ay.n === 0n && ax.n >= 0n) ? 0 : 1;
         const halfB = by.n > 0n || (by.n === 0n && bx.n >= 0n) ? 0 : 1;
@@ -91,7 +89,6 @@ function* clipSteps(polygons: readonly ConvexClipPolygon[], tolerance: number, h
         for (const current of vertices) {
             const currentSide = exactSide(line, current.point);
             if ((previousSide < 0 && currentSide >= 0) || (previousSide >= 0 && currentSide < 0)) {
-                // Each incoming edge names its original supporting line, not a rounded intersection.
                 const intersection = exactIntersection(current.incoming, line);
                 if (!intersection) return 'uncertain';
                 push({ point: intersection, incoming: previousSide < 0 ? line : current.incoming });

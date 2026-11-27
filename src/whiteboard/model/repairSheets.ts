@@ -47,13 +47,11 @@ export async function repairSheets(
             if (!id) return result(sheets, 'Cannot allocate a unique sheet identity');
             reserved.add(id);
             const fields = new Map(sheet.ext?.fields);
-            // Existing user metadata takes precedence over the generated inert JSON string.
             if (!fields.has('importedId')) fields.set('importedId', JSON.stringify(sheet.id) as RawJson);
             sheet = { ...sheet, id: id as SheetId, ext: { fields, raw: sheet.ext?.raw ?? new Map() } };
             record(i, 'duplicate-sheet-id', id);
         }
         seen.add(sheet.id);
-        // Valid ties are sorted by id, not rewritten on load.
         if (!isValidKey(sheet.order)) badOrder = true;
         if (sheet.ext?.raw.has('order')) protectedOrder = true;
         records.push(sheet);

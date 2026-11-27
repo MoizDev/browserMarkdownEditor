@@ -11,16 +11,12 @@ import { focusTab } from '../utils/tabPanes';
 import type { Notify } from './useAppDialogs';
 import type { PdfRebuildEntry, SetDiskState, SetLayout, SetTabs } from './types';
 
-/** Everything the reader integration reads from App. Refs are App's own `useRef`s. */
 export interface UseReaderIntegrationDeps {
-  // useFileSystem()
   readFileSnapshot: FileSystemContextValue['readFileSnapshot'];
-  // App: vault, dialogs, status line
   currentVaultIdRef: React.RefObject<string | null>;
   readerEpochRef: React.RefObject<{ root: FileSystemDirectoryHandle | null; epoch: number }>;
   notify: Notify;
   announce: (message: string) => void;
-  // useOpenDocuments
   tabsRef: React.RefObject<OpenTab[]>;
   setTabs: SetTabs;
   layoutRef: React.RefObject<TabLayout>;
@@ -28,14 +24,11 @@ export interface UseReaderIntegrationDeps {
   activeTabPathRef: React.RefObject<string | null>;
   invalidReaderTokens: React.RefObject<Set<string>>;
   readerIdentityCache: React.RefObject<Map<string, ReaderIdentity>>;
-  // useDiskState
   diskStateRef: React.RefObject<Map<string, 'conflict' | 'deleted'>>;
   pdfRebuildRef: React.RefObject<Map<string, PdfRebuildEntry>>;
   setDiskState: SetDiskState;
-  // useTabLifecycle
   closeTab: (path: string) => void;
   reopenClosedTab: () => Promise<string | undefined>;
-  // useOutsideChanges
   checkOpenDocs: (scope: ReadonlySet<string> | 'all') => Promise<void>;
 }
 
@@ -76,17 +69,11 @@ export function useReaderIntegration(deps: UseReaderIntegrationDeps) {
         if (entry && entry.baseline.hash !== version.hash) { setDiskState(tab.id, 'conflict'); return; }
         const late = !getBaseline(tab.id);
         setBaseline(tab.id, version);
-        // A reader's version can land seconds after its open (a large file's hash), and an outside change in between
-        // was skipped for want of a baseline: the old pages stayed up with no DiskBar (measured, 287 MB textbook
-        // overwritten 0.6 s after the click). Compare once now; an unchanged file costs one stat.
         if (late) void readerDeps.current.checkOpenDocs(new Set([tab.file.path]));
       },
       onReaderSourceLost(token, stat) {
         const tab = current(token);
         if (!tab) return;
-        // The snapshot could not be read through, so no hash of it exists: the baseline is its stat with an unknown
-        // hash, which any changed file differs from (reload, or the DiskBar over unsaved work) and an unchanged one
-        // matches by stat (nothing to do).
         if (!getBaseline(tab.id)) setBaseline(tab.id, { ...stat, hash: '' });
         void readerDeps.current.checkOpenDocs(new Set([tab.file.path]));
       },

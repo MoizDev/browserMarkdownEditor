@@ -1,5 +1,3 @@
-// Original mock transport by wb-enum-paged, packaged by wb-harness.
-// No model/helper runs. Browser tools still use the app's real validation/host/save path.
 export async function installToolTransport(page,{modKey}={}) {
   modKey??=await page.evaluate(()=>/Mac|iPhone|iPad/.test(navigator.platform)?'Meta':'Control');
   let socket=null,run=null,next=1,resolveStart;

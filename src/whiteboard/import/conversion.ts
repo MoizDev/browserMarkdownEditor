@@ -13,14 +13,11 @@ export interface ConversionSnapshot {
     readonly media: readonly ImportedMedia[];
 }
 export interface ConversionIO {
-    // All callbacks close over one vault, document handle and baseline, never current app selection.
     readonly checkBaseline: () => Promise<VersionStatus>;
     readonly listBackups: () => AsyncIterable<ConversionBackup>;
     readonly keepCopyInGarbage: (original: Blob) => Promise<string>;
     readonly saveMedia: (media: ImportedMedia) => Promise<void>;
-    // Native header records this digest so Restore can locate the original after rename or move.
     readonly encodeBoard: (snapshot: ConversionSnapshot, originalSha256: string) => Promise<Blob>;
-    // PDF implementation adds board.json and replaces the old snapshot with this fence in one output.
     readonly buildPdf: (board: Blob, fence: Uint8Array, media: readonly ImportedMedia[]) => Promise<Blob>;
     readonly writeVersioned: (bytes: Blob) => Promise<ConversionWrite>;
     readonly confirmLoss: (losses: readonly string[]) => Promise<boolean>;
@@ -58,7 +55,6 @@ async function findBackup(original: Blob, originalHash: string, io: ConversionIO
     return null;
 }
 
-// I-1/I-2, E-DEL-11/12: this controller holds one immutable source and one vault-bound IO closure.
 export function createConversion(kind: 'whiteboard' | 'notebook' | 'pdf-ink', original: Blob, io: ConversionIO): {
     readonly converted: boolean;
     flush(snapshot: ConversionSnapshot, convertAnyway?: boolean): Promise<ConversionResult>;

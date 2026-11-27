@@ -9,10 +9,6 @@ import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { Node, Point } from '../model/nodes';
 
-// C8 / geometry scope: the ONE logical-box formula. The async scope
-// (commands/geometryScope.ts) and the synchronous staged reader used by the
-// agent facade both drive these generators, so no second copy of the
-// stroke, connector, polyline or vector arithmetic exists.
 export type LogicalPrepared = Awaited<ReturnType<BoardRuntime['render']['prepareForPick']>>;
 export const IDENTITY: Affine = [1, 0, 0, 1, 0, 0];
 export type LogicalBox = Box;
@@ -32,19 +28,15 @@ export function rectBox(rect: { readonly x: number; readonly y: number; readonly
     return [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height];
 }
 
-/** The caller owns fencing: `check` throws when the candidate it reads has changed. */
 export interface LogicalSource {
     prepared(id: NodeId): LogicalPrepared | undefined;
-    /** Resolved local points of an attached polyline; undefined when the reader cannot resolve them. */
     polylinePoints(id: NodeId): readonly Point[] | undefined;
     children(id: NodeId): readonly Node[];
     pose(id: NodeId): WorldPose;
     check(): void;
 }
-/** `due` says when a cooperative caller should yield; a synchronous caller passes `() => false`. */
 export type LogicalDue = () => boolean;
 
-/** Logical geometry of one non-group leaf, expressed in the caller's rigid target space. */
 export function* logicalLeafBox(source: LogicalSource, node: Readonly<Node>, targetFromWorld: Affine, due: LogicalDue): Generator<void, Box, void> {
     const value = source.prepared(node.id); if (!value) throw new Error(`Geometry not prepared: ${node.id}`);
     const nodeToTarget = compose(targetFromWorld, matrix(source.pose(node.id)));
@@ -76,7 +68,6 @@ export function* logicalLeafBox(source: LogicalSource, node: Readonly<Node>, tar
             for (let i = 0; i < part.discs.length; i += 3) { point(part.discs[i], part.discs[i + 1], part.discs[i + 2]); if (due()) yield; }
         }
     } else if (node.kind === 'polyline') {
-        // An attached polyline's ends are a resolved product, never its persisted interior points alone.
         const resolved = source.polylinePoints(node.id);
         if (!resolved && isAttachedPolyline(node)) throw new Error(`Attached polyline geometry is unresolved: ${node.id}`);
         const bounds = transformedPathBounds(polylinePath(resolved ? { ...node, points: [...resolved] } : node), nodeToTarget);
@@ -89,7 +80,6 @@ export function* logicalLeafBox(source: LogicalSource, node: Readonly<Node>, tar
     return box;
 }
 
-/** Union of a root and, for a group (or a frame rooted as a group), its leaves. */
 export function* logicalAggregateBox(source: LogicalSource, root: Readonly<Node>, targetFromWorld: Affine, due: LogicalDue): Generator<void, Box, void> {
     const stack: Readonly<Node>[] = [root]; let box: Box | null = null;
     while (stack.length) {

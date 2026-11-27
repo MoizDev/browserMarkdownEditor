@@ -9,13 +9,12 @@ import type {
 import type { RichText } from '../text/richText';
 import { COMMON_NODE_DEFAULTS, NODE_DEFAULTS } from './defaults';
 
-// document-model.md §3, M-3/M-10: closed records, with one field layout per kind.
 export interface NodeBase {
     readonly id: NodeId;
     readonly kind: NodeKind;
     readonly parent: ParentId;
     readonly order: OrderKey;
-    readonly page: number; // Only sheet-root nodes on paged boards have page >= 0 (M-6).
+    readonly page: number;
     readonly x: number;
     readonly y: number;
     readonly rotation: number;
@@ -24,7 +23,6 @@ export interface NodeBase {
     readonly ext: ExtBag | null;
 }
 
-// ink.md §4; R-W8: rMax is radius at pressure 1, not a ceiling for imported pressure.
 export type WidthModel =
     | { readonly id: 'uniform' }
     | { readonly id: 'pressure-linear-v1'; readonly rMin: number; readonly rMax: number };
@@ -210,7 +208,6 @@ export type NodeKind = Node['kind'];
 export type NodeRecord = Node;
 export type NodeTable = ReadonlyMap<NodeId, Readonly<Node>>;
 
-/** One dependency rule for two-terminal and multi-point bound paths. */
 export function attachedTargets(node: Readonly<Node>): readonly NodeId[] {
     const start = node.kind === 'connector' ? node.start.attach : node.kind === 'polyline' ? node.startAttach : null;
     const end = node.kind === 'connector' ? node.end.attach : node.kind === 'polyline' ? node.endAttach : null;
@@ -225,8 +222,6 @@ type DefaultKeys<K extends NodeKind> = Extract<CommonDefaults<K> | keyof typeof 
 export type NodeInput<K extends NodeKind> = Omit<NodeOf<K>, 'kind' | DefaultKeys<K>>
     & Partial<Pick<NodeOf<K>, DefaultKeys<K>>>;
 
-// M-10: explicit literals, never a caller-record spread, keep every kind's field
-// order fixed. Samples, rich text and other immutable values are retained by reference.
 export function createStroke(p: NodeInput<'stroke'>): StrokeNode {
     return {
         id: p.id, kind: 'stroke', parent: p.parent, order: p.order, page: p.page,

@@ -5,7 +5,6 @@ import type {
 import type { GpuReleaseReason } from './types';
 import { auditArenaError } from './renderAudit';
 
-// rendering-design.md:88: kind brands are public; device/generation/slot are not.
 export interface ArenaHandleMap {
     buffer: BufferHandle;
     texture: TextureHandle;
@@ -18,28 +17,20 @@ export interface ArenaHandleMap {
 export type ArenaResourceKind = keyof ArenaHandleMap;
 export type ArenaResourceMap = { [K in ArenaResourceKind]: unknown };
 
-/** Backend-only seam, never passed to a layer (design:88, 298).
- * create is synchronous and must clean up its own partial native allocation on throw.
- * Async pipeline preparation finishes before its descriptor reaches this seam.
- * completed only polls; destroy must be safe to retry if a partial deletion throws.
- */
 export interface ResourceArenaBackend<D extends ArenaResourceMap, O extends ArenaResourceMap> {
     create<K extends ArenaResourceKind>(kind: K, descriptor: D[K]): O[K];
     destroy<K extends ArenaResourceKind>(kind: K, object: O[K]): void;
     completed(serial: number): boolean;
 }
 
-/** Creation-time generation and governor callbacks; no budget is invented here (design:601–603). */
 export interface ResourceArenaOptions<D extends ArenaResourceMap, O extends ArenaResourceMap> {
     generation: number;
     backend: ResourceArenaBackend<D, O>;
     releaseLease(lease: ByteLease): void;
 }
 
-/** Runtime product refusal, not a verification assertion (design:114–115, 603). */
 export class ArenaError extends Error {
     readonly code: GfxError;
-    /** The arguments a throw site found failing validation. Audit only: the device never reads it, and a site passes it only on the throw. */
     readonly detail: Readonly<Record<string, unknown>> | undefined;
 
     constructor(code: GfxError, detail?: Readonly<Record<string, unknown>>) {
@@ -51,16 +42,13 @@ export class ArenaError extends Error {
     }
 }
 
-/** An identity-checked encoding token pins resources until submit or cancel (design:298). */
 export interface ArenaEncoding { readonly id: number }
 
-/** O(1) counters: retired allocations remain charged separately (design:601–603). */
 export interface ArenaMemory {
     readonly live: number;
     readonly retiring: number;
 }
 
-/** A shared lease returns only after owner closure AND final resource destruction (vr-lead ruling). */
 export interface ArenaLeaseMemory extends ArenaMemory {
     readonly lease: ByteLease;
     readonly closed: boolean;
@@ -105,9 +93,6 @@ interface EncodingRecord<O extends ArenaResourceMap> {
 let nextDeviceId = 1;
 let nextHandleId = 1;
 
-/** One immutable device generation owns all native resources (design:88, 298, 771–773).
- * Only backend/platform code sees the arena; layers receive the resource/pass API instead.
- */
 export class ResourceArena<
     D extends ArenaResourceMap = ArenaResourceMap,
     O extends ArenaResourceMap = ArenaResourceMap,
@@ -140,10 +125,6 @@ export class ResourceArena<
         this.#releaseLease = options.releaseLease;
     }
 
-    /** Reserve → create → publish, rolling back every failed allocation (design:603, 771).
-     * Explicit dependencies are target/clip → live texture only (design:241; vr-lead ruling).
-     * A retained pipeline/sampler cannot smuggle a working texture into the hidden reserve.
-     */
     create<K extends ArenaResourceKind>(
         kind: K,
         descriptor: D[K],
@@ -163,8 +144,6 @@ export class ResourceArena<
         if (!Number.isSafeInteger(nextHandleId) || !Number.isSafeInteger(this.#nextSlot)) {
             throw new ArenaError('allocation');
         }
-        // The generic map preserves the exact kind brand; the minted shape is identical
-        // for every kind, but TypeScript cannot correlate a generic indexed union here.
         const handle = Object.freeze({ id: nextHandleId++, kind }) as unknown as ArenaHandleMap[K];
         const record: ResourceRecord<O> = {
             handle, deviceId: this.#deviceId, generation: this.generation,
@@ -198,14 +177,12 @@ export class ResourceArena<
         }
     }
 
-    /** Backend-only native lookup; foreign/stale/retired identities never resolve (design:88). */
     validate<K extends ArenaResourceKind>(handle: Handle, expectedKind: K): O[K] {
         const record = this.#liveRecord(handle, expectedKind);
         if (record.creating || record.object === null) throw new ArenaError('invalid-resource');
         return record.object as O[K];
     }
 
-    /** Encoding pins are distinct from submitted serials; neither can stand in for the other (design:298). */
     beginEncoding(): ArenaEncoding {
         this.#requireHealthy();
         if (!Number.isSafeInteger(this.#nextEncoding)) throw new ArenaError('allocation');
@@ -216,9 +193,6 @@ export class ResourceArena<
         return token;
     }
 
-    /** Resolve while live, then retain that native object through submission (design:298; R-060).
-     * Already encoded commands keep their pinned native objects even if release follows.
-     */
     pin<K extends ArenaResourceKind>(frame: ArenaEncoding, handle: Handle, kind: K): O[K] {
         const encoding = this.#encoding(frame);
         const object = this.validate(handle, kind);
@@ -226,7 +200,6 @@ export class ResourceArena<
         return object;
     }
 
-    /** Called with the actual queue serial; ordered submissions make the latest fence sufficient (design:298). */
     submit(frame: ArenaEncoding, serial: number): void {
         const encoding = this.#encoding(frame);
         this.#checkCount(serial);
@@ -241,7 +214,6 @@ export class ResourceArena<
         this.#openEncodings.delete(encoding);
     }
 
-    /** Cancellation is idempotent, including cleanup after generation loss (design:298, 773). */
     cancel(frame: ArenaEncoding): void {
         const encoding = this.#encodings.get(frame);
         if (!encoding) throw new ArenaError('invalid-resource');
@@ -252,7 +224,6 @@ export class ResourceArena<
         this.#openEncodings.delete(encoding);
     }
 
-    /** Immediately revoke the public handle; its native allocation remains charged (design:298). */
     release(handle: Handle): void {
         const record = this.#record(handle);
         if (record.state !== 'live') return;
@@ -264,7 +235,6 @@ export class ResourceArena<
         this.#retiring.add(record);
     }
 
-    /** Owner closure prevents further allocations; fenced resources still hold the grant (design:603). */
     closeLease(lease: ByteLease): void {
         const record = this.#lease(lease);
         record.closed = true;
@@ -278,9 +248,6 @@ export class ResourceArena<
         for (const record of this.#retiring) this.#collectRecord(record, completed);
     }
 
-    /** Same-task cache release; only device-owned programs/sampler descriptors survive (design:370).
-     * Unsubmitted encodings are cancelled; submitted uses remain charged as fenced retirement.
-     */
     releaseAll(reason: GpuReleaseReason): void {
         if (reason === 'context-lost') {
             this.abandon();
@@ -294,9 +261,6 @@ export class ResourceArena<
         this.collect();
     }
 
-    /** Loss invalidates the entire generation without calling the lost backend (design:298, 771).
-     * Lease owners still close their grants; closeLease remains usable after abandonment.
-     */
     abandon(): void {
         if (this.#abandoned) return;
         this.#abandoned = true;
@@ -338,7 +302,6 @@ export class ResourceArena<
         return { live: this.#liveBytes, retiring: this.#retiringBytes };
     }
 
-    /** Constant-time per-lease readout, not a per-frame walk over the resource cache (design:603). */
     leaseMemory(lease: ByteLease): ArenaLeaseMemory {
         const record = this.#leases.get(lease);
         return {
@@ -382,7 +345,6 @@ export class ResourceArena<
 
     #dependencies(kind: ArenaResourceKind, handles: readonly Handle[]): ResourceRecord<O>[] {
         if (handles.length && kind !== 'target' && kind !== 'clip') throw new ArenaError('invalid-input');
-        // Parents are new and dependencies must already be live textures, so cycles cannot form.
         const held = new Set<ResourceRecord<O>>();
         for (const handle of handles) {
             const record = this.#liveRecord(handle, 'texture');
@@ -453,8 +415,6 @@ export class ResourceArena<
             this.#freeSlots.push(record.slot);
             for (const dependency of record.dependencies) dependency.references--;
             this.#returnLease(record.lease);
-            // Dependencies are texture leaves; freeing a parent may make them eligible now,
-            // even when they appeared earlier in this collection's insertion order.
             for (const dependency of record.dependencies) this.#collectRecord(dependency, completed);
         } catch (error) {
             if (error instanceof ArenaError && error.code === 'lost') this.abandon();

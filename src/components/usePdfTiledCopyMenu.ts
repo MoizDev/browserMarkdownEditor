@@ -16,13 +16,11 @@ import type { PdfTextCopyBinding } from '../pdf/overlay/textCopy';
 import { openPdfTextMenu } from '../pdf/overlay/textMenu';
 import type { PdfTextReader } from '../utils/pdfReadingText';
 
-// P5's resident find index may expose canonical text without a worker trip.
 function peekText(reader: PdfTextReader | undefined, page: number): string | undefined {
     return reader?.findEngine.peekPageText(page)?.text;
 }
 
 export interface PdfTiledCopyMenuOptions {
-    /** Common ancestor of the canvas and accessibility mirror. */
     element: HTMLElement | null;
     document: PdfPoolDocument;
     geometry?: PdfSelectionGeometryCache;
@@ -40,7 +38,6 @@ export interface PdfTiledCopyMenuOptions {
     notice(message: string): void;
 }
 
-/** Copy and menu share canonical text, cancellation and the pane's selection. */
 export function usePdfTiledCopyMenu(options: PdfTiledCopyMenuOptions) {
     const live = useRef(options), binding = useRef<PdfTextCopyBinding | null>(null), menuTask = useRef<AbortController | null>(null);
     const [status, setStatus] = useState<{ owner: object; document: PdfPoolDocument; message: string | null } | null>(null);

@@ -18,8 +18,6 @@ function itemRequest(input: ArrayBuffer, item: InkBatchItem): InkCoverageRequest
         parameters: item.parameters, style: item.style, range: item.range, options: item.options };
 }
 
-/** Builds every chunk of the batch in turn and answers them packed into ONE buffer. An item that fails (an outline past its
- * ceiling, an invalid request) fails alone; a cancellation ends the batch. */
 export async function inkBatch(payload: unknown, context: WorkerContext): Promise<InkBatchReply> {
     if (!payload || typeof payload !== 'object') throw new TypeError('Invalid ink batch');
     const { input, items } = payload as Partial<InkBatchRequest>;

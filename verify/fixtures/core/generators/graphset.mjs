@@ -2,7 +2,6 @@ import { parseArgs } from '../../lib/cli.mjs';
 import { compareNames, fixtureWriter, jsonBytes, sha256 } from '../../lib/output.mjs';
 import { seededRandom } from '../../lib/random.mjs';
 
-// Data only: no src imports, clock, filesystem ordering or unseeded randomness.
 const { out, seed, set = 'all' } = parseArgs(process.argv.slice(2), ['set']);
 if (!['all', 'exact', 'timed', 'geometry'].includes(set)) throw new Error('--set must be all, exact, timed or geometry');
 const generator = 'verify/fixtures/core/generators/graphset.mjs';
@@ -42,8 +41,6 @@ function targetsFor(i, count, family, random) {
     if (family === 'hubs2') add(0);
     add(first + (i - first + 1) % (end - first));
     for (let attempt = 0; targets.size < degree && attempt < degree * 16 + 64; attempt++) add(first + Math.floor(random() * (end - first)));
-    // A bounded deterministic fallback also handles unusual seeds without a
-    // rejection loop whose completion depends on getting a lucky PRNG draw.
     for (let target = first; targets.size < degree && target < end; target++) add(target);
     if (targets.size !== degree) throw new Error(`Not enough distinct targets for ${count}/${family}`);
     return [...targets];
@@ -64,9 +61,6 @@ async function vault(definition) {
         const targets = targetsFor(i, count, family, random);
         const links = targets.map(target => {
             edges.push([path, paths[target]]);
-            // Duplicate basenames are NEVER destinations: otherwise reference's
-            // historical last-wins bug and the fixed reader would change the
-            // topology, confounding a force-kernel differential (D08).
             return `[[${paths[target].split('/').at(-1).slice(0, -3)}]]`;
         });
         return { path, encoding: 'utf8', content: `# Vertex ${pad(i)}\n\nG0-GRAPHSET-v1 ${id}; seed ${seed}; vertex ${i}.\n\n${links.join(' ')}\n` };
@@ -106,8 +100,6 @@ function coordinates(shape, count, random) {
             const a = other[pair], b = other[pair + 1];
             x[a] = px; y[a] = py; x[b] = -px; y[b] = -py;
         }
-        // Mirrored other points and the pair's symmetric targets 1/2 keep y
-        // unclamped, so the index-20 near-coincidence fallback is observable.
         return { x, y };
     }
     for (let i = 0; i < count; i++) {

@@ -32,8 +32,6 @@ import type { PdfInkSourceLease } from './pdfInkSourceOwner';
 import type { BoardRuntime } from './runtime';
 import { missingFromExport, type MissingMediaError } from '../media/missingMedia';
 
-/** The canonical parts an export reads: a live BoardRuntime supplies them, and so does an immutable closed
- * source with its own real scene, render services and media. Nothing here needs a camera or a live store. */
 export type NativeExportRuntime = Readonly<{
     session: Pick<BoardRuntime['session'], 'doc' | 'owner'>;
     scene: BoardRuntime['scene'];
@@ -49,24 +47,19 @@ export interface NativeExportOptions {
     readonly theme: 'light' | 'dark';
     readonly transparent: boolean;
     readonly signal: AbortSignal;
-    /** Agent viewport/page captures share this producer, including genuine PDF children. */
     readonly region?: Readonly<Rect>;
     readonly maxSide?: number;
-    /** A captured semantic selection, including the flatten operation's locked-subtree mask. */
     readonly selection?: Readonly<{ roots: readonly NodeId[]; excludeSubtrees: readonly NodeId[] }>;
-    /** A print of the whole sheet even while something is selected: the print dialog's "Sheet" answer. */
     readonly wholeSheet?: boolean;
     readMedia?(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     current(): boolean;
     notice(message: string): void;
     onError(error: unknown): void;
-    /** Only the document-owned PDF source facade can supply this lease. */
     retainPdfSource?(): PdfInkSourceLease;
 }
 
 export interface NativeExportJob {
     png(signal: AbortSignal): Promise<Blob>;
-    /** Copy-as-PNG: the same frozen capture, once plain and once carrying our private pixel density. */
     clipboardPng(signal: AbortSignal): Promise<Readonly<{ image: Blob; privateImage: Blob }>>;
     svg(signal: AbortSignal): Promise<Blob>;
     filename(extension: 'png' | 'svg' | 'pdf'): string;
@@ -76,14 +69,12 @@ export interface NativeExportJob {
 export interface NativePreparedExportJob extends NativeExportJob {
     readonly bounds: Readonly<Rect>;
     readonly topmostRoot: NodeId | null;
-    /** Print is the same frozen source as PNG and SVG: its pages are the pinned layout, or the one scope for a whiteboard. */
     readonly print: BoardPrintSource;
 }
 
 let serial = 0;
 const stale = () => new DOMException('Board export ended', 'AbortError');
 
-/** Scene, selection and media are pinned before the first asynchronous boundary. */
 export async function prepareNativeExport(options: NativeExportOptions): Promise<NativePreparedExportJob> {
     const { runtime, signal, route, theme, transparent, boardName, maxSide } = options;
     const region = options.region ? { ...options.region } : undefined;
@@ -95,7 +86,6 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
     if (!options.current() || !scene?.ready || scene.revision !== doc.rev) throw new Error('Board export scene is not ready');
     const selection = runtime.selection.getSnapshot(), revision = doc.rev, fontEpoch = runtime.render.text.fonts.epoch;
     if (region && options.selection) throw new TypeError('Explicit selection and capture region are mutually exclusive');
-    // A paged document prints every page: a selection never shrinks the whole PDF a print must carry.
     const pagedPrint = route === 'print' && doc.kind !== 'whiteboard';
     const selectedRoots = options.selection ? [...options.selection.roots] : route === 'menu' || region || pagedPrint || options.wholeSheet ? [] : [...selection.selected];
     if (options.selection && !selectedRoots.length) throw new RangeError('Nothing to export');
@@ -164,8 +154,6 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             leases.push(runtime.media.retain(id, 'snapshot'));
             const blob = runtime.media.get(id) ?? await options.readMedia?.(entry, signal);
             signal.throwIfAborted();
-            // A picture whose file is not in `.Assets` has no bytes anywhere: the export draws its placeholder and says so once.
-            // Bytes that are there but do not match their record are still refused.
             if (!blob && doc.kind !== 'pdf-ink') { missing.set(id, missingFromExport(entry)); continue; }
             if (!blob || blob.size !== entry.bytes) throw new Error(`Captured board media is unavailable: ${id}`);
             blobs.set(id, blob.slice(0, blob.size, blob.type));
@@ -229,8 +217,6 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         try {
             const measured = await measureBoardPaintBounds(filtered, { signal: operationSignal,
                 onPaintedItem(item, index) {
-                    // Only the actual certified nonempty paint can choose the
-                    // replacement slot; opacity-zero and fully clipped roots cannot.
                     const root = rootOf.get(item.nodeId as NodeId);
                     if (root && index >= topmostIndex) { topmostIndex = index; topmostRoot = root; }
                 }, memory: {
@@ -258,7 +244,6 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         const scope = region ? { kind: 'sheet' as const, ids: [], bounds: region, includeBackdrop: meta.kind !== 'whiteboard' }
             : resolveExportScope({ selection: selectedRoots, paged: meta.kind !== 'whiteboard',
                 selectionBounds: () => inkBounds, sheetBounds: () => pageBounds ?? inkBounds }, route);
-        // A notebook's paper goes under its pages when the scope carries it; `base` is the ink on those pages.
         const withBackdrop = (base: PaintNodeSource): PaintNodeSource => {
             if (!scope.includeBackdrop || meta.host.kind !== 'notebook' || !pages) return base;
             const paper = meta.host.paper;
@@ -269,8 +254,6 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                 } };
         };
         const source = withBackdrop(filtered);
-        // Paged print and PDF output carry every sheet's ink on its physical page, first sheet lowest (R-12); PNG and SVG stay
-        // on the current sheet. Only print reads the joined sheets, so they are pinned the first time print needs them.
         const sheetPaints = async (paintSignal: AbortSignal): Promise<PaintNodeSource[]> => {
             const parts: PaintNodeSource[] = [];
             for (const sheet of doc.sheetOrder) parts.push(await pin.paintSource({ sheetId: sheet.id, theme: 'light', deviceScale: 2 }, paintSignal));
@@ -281,13 +264,9 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             pagedPaint ??= sheetPaints(operationSignal).then(parts => withBackdrop(concatPaintSources(parts)));
             return pagedPaint;
         };
-        // An explicit viewport may contain only page gaps/outside space; agent
-        // captures still show real empty paper-white pixels, not transparent ink.
         const background = region ? DEFAULT_BOARD_PALETTES[meta.kind === 'whiteboard' ? theme : 'light'].background
             : scope.includeBackdrop || transparent ? undefined : DEFAULT_BOARD_PALETTES[meta.kind === 'whiteboard' ? theme : 'light'].background;
         const longest = Math.max(scope.bounds.width, scope.bounds.height);
-        // Two pixels per world unit, or the largest scale the PNG size limit accepts (copy has the tighter clipboard side):
-        // an oversize board exports smaller and says so, rather than failing the download.
         const sizeLimit = pngScaleLimit(scope.bounds, route === 'copy');
         const naturalScale = Math.min(2, sizeLimit);
         const pngScale = maxSide === undefined ? naturalScale : Math.min(naturalScale, (maxSide - 1e-9) / longest);
@@ -360,15 +339,10 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                 },
             });
         };
-        /** One world rectangle of the PDF-backed board, captured at `pixelsPerUnit` from the same pinned backdrop and board. */
         const pdfCaptureBlob = async (world: Readonly<Rect>, pixelsPerUnit: number, layers: readonly string[],
             captureSignal: AbortSignal, clipboard: boolean): Promise<Blob> => {
             const backdrop = pdfBackdrop;
             if (!backdrop) throw new Error('The PDF backdrop is unavailable');
-            // A snapshot pins one font epoch. The pool provides a font a page first needs during the tile render,
-            // which advances the epoch and aborts this attempt. The export then re-pins at the new epoch rather than
-            // mixing pixels from two epochs. The epoch only rises while the profile lives, and the font catalogue is
-            // finite, so the loop ends. The deadline is shared by every attempt.
             const deadline = Date.now() + 300_000;
             for (;;) {
                 const epoch = backdrop.fontEpoch();
@@ -387,7 +361,6 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             return pdfCaptureBlob(scope.bounds, pngScale,
                 [...(region && background ? ['native-export-background'] : []), ...pdfLayers, 'board-underlay', 'board-content'], captureSignal, route === 'copy');
         };
-        /** The full PDF with its ink: the pinned backdrop's pages and every sheet's ink, written by the same writer a save uses. */
         const pdfInkPrint = async (inkLease: PdfInkSourceLease, printSignal: AbortSignal): Promise<Uint8Array> => {
             const layout = pages;
             if (!layout || layout.length !== inkLease.source.pages.length) throw new Error('PDF page geometry is unavailable');
@@ -491,7 +464,6 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             return pdfBackdrop ? pdfPng(combined) : streamRasterPng(source, capturedImages, scope.bounds, pngScale, combined,
                 { background: background && colourCss(background), clipboard: route === 'copy' });
         });
-        // Paged documents print their pinned pages (the selection, when there is one, is a single page); a whiteboard prints its scope.
         const printPages: Rect[] = !selectionOnly && meta.kind !== 'whiteboard' && pages?.length
             ? pages.map(page => ({ ...page })) : [{ ...scope.bounds }];
         const printScale = meta.kind === 'whiteboard' ? 0.75 : 1, printRaster = meta.kind === 'whiteboard' ? 200 / 96 : 200 / 72;
@@ -514,11 +486,8 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                 if (maxSide !== undefined && (!Number.isSafeInteger(maxSide) || maxSide < 1 || maxSide > 8192)) throw new RangeError('Invalid print page maximum side');
                 // A print page is decoded by the print viewer in this renderer, so it keeps the clipboard's budget: a
                 // download may be far larger, but a 200 dpi page past this bound would crash the page instead of printing.
-                // A thumbnail names its longer side in pixels, and the raster stops at that many.
                 const sideLimit = maxSide === undefined ? Infinity : (maxSide - 1e-9) / Math.max(world.width, world.height);
                 const raster = Math.min(printRaster, pngScaleLimit(world, true), sideLimit);
-                // A PDF-backed page keeps its backdrop: the raster fallback must show what the PDF print shows. Its board
-                // layers are still the current sheet's only, because the PDF capturer draws them; the PDF print is all-sheet.
                 if (pdfBackdrop) return pdfCaptureBlob(world, raster, [...pdfLayers, 'board-underlay', 'board-content'], combined, false);
                 const content = meta.kind === 'whiteboard' ? (paperSource ?? source) : await pagedSource();
                 return streamRasterPng(content, capturedImages, world, raster, combined, { background: '#ffffff' });
@@ -530,7 +499,6 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             png: exportPng,
             clipboardPng: async requestSignal => {
                 const image = await exportPng(requestSignal);
-                // The private item is the same pixels with our density chunk; the public PNG stays untouched.
                 return Object.freeze({ image, privateImage: await splicePngDensity(image, scope.bounds, requestSignal) });
             },
             svg: requestSignal => run(requestSignal, combined => pdfBackdrop ? pdfSvg(combined) :

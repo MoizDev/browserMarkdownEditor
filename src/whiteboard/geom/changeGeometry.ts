@@ -16,11 +16,8 @@ import { transformPoint } from './affine';
 import { drainPolylinePoints, POLYLINE_TOLERANCE_WORLD, polylineMatrix, type AttachedPolyline } from './polylinePoints';
 import { prepareBoardAttachmentSurfaceNow } from '../render/attachmentSurfaces';
 
-// Provenance: staged-change world pose and shared connector attachment/geometry
-// contracts; independent composition, no third-party source.
 export type ConnectorLabelLayout = ConnectorLabelPaint;
 export interface BoardChangeGeometry extends ChangeGeometry {
-    /** 'unroutable': an elbow connector has no valid candidate on the prepared layout (document-model §9.2). */
     elbowRoute(doc: BoardDoc, node: Readonly<ConnectorNode>): 'ready' | 'unroutable';
 }
 export function createBoardChangeGeometry(options: {
@@ -81,8 +78,6 @@ export function createBoardChangeGeometry(options: {
         transformBox(out, 0, local.ink, 0, matrix(doc, node.id));
         return [out[0], out[1], out[2], out[3]];
     };
-    // Synchronous mirror of the cooperative polyline reader: a chained polyline target
-    // is resolved first, from its own bindings, so a surface never reads unresolved points.
     const resolvePolylineNow = (doc: BoardDoc, line: AttachedPolyline, chain: ReadonlySet<NodeId>): readonly Point[] => {
         if (chain.has(line.id)) return unavailable(line.id, 'polyline attachment cycle');
         if (chain.size >= 64) return unavailable(line.id, 'polyline attachment chain is too deep');
@@ -107,8 +102,6 @@ export function createBoardChangeGeometry(options: {
         return drainPolylinePoints(line, doc, surfaces, POLYLINE_TOLERANCE_WORLD);
     };
     return {
-        // Post-layout admission (document-model §9.2): 'unroutable' means the elbow provider found no valid
-        // candidate on the prepared layout. A missing layout still throws, so admission fails closed.
         elbowRoute(doc, node) {
             const current = doc.nodes.get(node.id);
             if (!current || current.kind !== 'connector') return unavailable(node.id, 'connector is missing');

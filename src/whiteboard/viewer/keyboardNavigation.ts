@@ -5,7 +5,6 @@ import type { KeyboardNavigationPriority, PagedScrollKey } from '../input/scroll
 import { boardPageStack } from '../model/pages';
 import { getBoardPreferences } from '../../utils/boardPreferences';
 
-/** Catalogue I§2.1: a Space+arrow page is one 320 ms glide at the board's animation speed, like back-to-content and the minimap. */
 export const PAGE_GLIDE_MS = 320;
 
 export interface BoardKeyboardNavigationOptions {
@@ -17,16 +16,13 @@ export interface BoardKeyboardNavigationOptions {
     readonly editable: () => boolean;
     readonly nudge: (direction: string, coarse: boolean) => boolean;
     readonly cancelMotion: () => void;
-    /** The shared scheduler's glide: a Space page moves through it, never a loop of its own. */
     readonly animatePan: (delta: { readonly x: number; readonly y: number }, durationMs: number) => void;
     readonly cancelReveal: () => void;
     readonly changed: () => void;
     readonly error: (error: unknown) => void;
-    /** The preference that turns board animation off: a Space page then jumps in one step. */
     readonly reducedMotion: () => boolean;
 }
 
-/** Keyboard camera work goes through the pane's existing controller and constraints. */
 export function createBoardKeyboardNavigation(options: BoardKeyboardNavigationOptions): (keyboardCursorActive: boolean) => KeyboardNavigationPriority {
     const { runtime, camera } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     const active = () => options.current() && session.owner === owner && session.doc === doc;
@@ -46,7 +42,6 @@ export function createBoardKeyboardNavigation(options: BoardKeyboardNavigationOp
             return cameraAction(() => camera.setCamera({ ...camera.camera, y: key === 'Home' ? 0 : stack.height }));
         }
         const sign = key === 'PageUp' || key === 'ShiftSpace' ? -1 : 1;
-        // Default: page keys move 90% of the visible height to preserve reading context.
         return cameraAction(() => camera.panBy({ x: 0, y: sign * viewport.height * 0.9 }));
     };
     const pan = (direction: string, coarse: boolean): boolean => {
@@ -63,7 +58,6 @@ export function createBoardKeyboardNavigation(options: BoardKeyboardNavigationOp
         scroll,
         nudge: (direction, coarse) => active() && options.editable() && options.nudge(direction, coarse),
         pan,
-        // Space+arrow pages one viewport (K§10.5); reduce motion makes it one jump.
         page: direction => {
             const viewport = options.viewport();
             const delta = direction === 'ArrowLeft' ? { x: -viewport.width, y: 0 } : direction === 'ArrowRight' ? { x: viewport.width, y: 0 }

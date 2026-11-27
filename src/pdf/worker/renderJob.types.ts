@@ -1,7 +1,5 @@
 import type { DeviceRect } from '../engine/types';
 
-/** Supplied by the contained worker dispatcher; cancellation is the only
- * signal allowed to bypass its serialized engine operation queue. */
 export interface RenderSliceHooks {
     readonly signal: AbortSignal;
     heartbeat(): void;

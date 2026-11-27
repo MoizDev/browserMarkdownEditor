@@ -1,16 +1,7 @@
-// The page box and the thumbnail toggle for a canvas of pages: the PDF
-// annotator's and a notebook's. (The PDF reader has its own, wired into its
-// scroll pass.)
-//
-// The page on screen arrives through a handle, not a prop. It changes on every
-// page boundary of a scroll, and a prop would re-render the host, which for
-// these hosts means tldraw.
-
 import { forwardRef, useCallback, useImperativeHandle, useRef } from 'react';
 import { ThumbnailsToggle } from './PdfThumbnails';
 
 export interface PageControlsHandle {
-    /** Show 0-based page `index` in the box (left alone while it is being typed in). */
     setPage(index: number): void;
 }
 
@@ -19,13 +10,11 @@ interface PageControlsProps {
     thumbsOpen: boolean;
     onToggleThumbs: () => void;
     onJump: (index: number) => void;
-    /** More buttons for the thumbnails pill: the PDF annotator's invert toggle. */
     children?: React.ReactNode;
 }
 
 function PageControls({ pageCount, thumbsOpen, onToggleThumbs, onJump, children }: PageControlsProps, ref: React.ForwardedRef<PageControlsHandle>) {
     const inputRef = useRef<HTMLInputElement | null>(null);
-    /** What the box read when it took focus, so a blur only jumps if it changed. */
     const focusValueRef = useRef('');
     const pageRef = useRef(0);
 
@@ -42,8 +31,6 @@ function PageControls({ pageCount, thumbsOpen, onToggleThumbs, onJump, children 
         if (input) input.value = String(pageRef.current + 1);
     }, []);
 
-    /** Go to the typed page. Out of range clamps ("999" plainly means the end),
-     *  and anything unreadable puts the box back. */
     const commit = useCallback((onlyIfChanged: boolean) => {
         const input = inputRef.current;
         if (!input || (onlyIfChanged && input.value === focusValueRef.current)) return;

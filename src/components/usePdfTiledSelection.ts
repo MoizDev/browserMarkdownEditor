@@ -16,7 +16,6 @@ export interface PdfTiledSelectionOptions {
     geometry?: PdfSelectionGeometryCache;
     isVisible: boolean;
     isFocused: boolean;
-    /** Convert client coordinates using the current camera, not a captured one. */
     locate(clientX: number, clientY: number): { page: number; x: number; y: number } | null;
     pageSize(page: number): { width: number; height: number } | undefined;
     isLink(target: EventTarget | null): boolean;
@@ -34,8 +33,6 @@ export interface PdfTiledSelectionOptions {
     locale?(page: number, line: number): string | undefined;
 }
 
-/** Pane-owned state is supplied by the caller and survives unmounting this
- * surface. Geometry/worker requests are always owned by this mounted pane. */
 export function usePdfTiledSelection(options: PdfTiledSelectionOptions) {
     const live = useRef(options);
     useLayoutEffect(() => { live.current = options; });

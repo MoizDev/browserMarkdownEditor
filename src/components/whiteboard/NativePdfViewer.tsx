@@ -11,9 +11,6 @@ import { isCancellation } from '../../platform/workers/envelope';
 import { BoardNoticeStack } from './BoardNoticeStack';
 import { getPdfInverted, setPdfInverted, subscribePdfInverted } from '../../utils/pdfViewState';
 
-// Inversion is the PDF's one app-wide view preference (utils/pdfViewState.ts), the one the Original view reads. Annotate kept
-// its own, starting at false: an inverted PDF came up white on entering Annotate (measured: luminance 0 in Original, 255 in
-// Annotate), and a press there was neither stored nor shown in Original on leaving it.
 function usePdfInversion(): readonly [boolean, (value: boolean) => void] {
     return [useSyncExternalStore(subscribePdfInverted, getPdfInverted), setPdfInverted];
 }
@@ -57,7 +54,6 @@ export interface NativePdfViewerProps {
     readonly file: ActiveFile;
     readonly isVisible: boolean;
     readonly isFocused: boolean;
-    /** The pane's DiskBar is up (NativeCanvasEntryProps.diskHeld). */
     readonly diskHeld: boolean;
     readonly theme: Theme;
     readonly emphasisEnabled: boolean;
@@ -296,8 +292,6 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
         handoff.current?.dispose(); handoff.current = null;
         onUnavailable(error);
     }, [onUnavailable]);
-    // The theme is passed explicitly: latest.current still holds the previous render's props
-    // here, which left the light-theme surround painted dark until something else re-rendered.
     const theme = props.theme;
     const renderView = useCallback((context: NativeEditingRenderContext) => <PdfEditingAttached props={{ ...latest.current, theme }}
         context={context} updating={updating || awaitingPresentation} rebind={rebind} />, [updating, awaitingPresentation, rebind, theme]);
@@ -344,15 +338,11 @@ function PdfEditingAttached({ props, context, updating, rebind }: { props: Nativ
 }
 
 export default function NativePdfViewer(props: NativePdfViewerProps) {
-    // This is the view route, not write authority; a rebind must not unmount
-    // the editing view and discard its camera while its source is covered.
     const [openedAsEditing] = useState(() => props.identity.kind === 'pdfInk'
         && typeof props.adapter.activateEditing === 'function');
     const [unavailable, setUnavailable] = useState(false);
     const noticeRef = useRef(props.onNotice);
     useLayoutEffect(() => { noticeRef.current = props.onNotice; }, [props.onNotice]);
-    // Reading bindings change on focus and own-save. They must not tear down
-    // the input lease in the middle of a stroke or a covered source handoff.
     const onUnavailable = useCallback((error: unknown) => {
         console.error('Native PDF editing failed:', error);
         setUnavailable(true);

@@ -101,8 +101,6 @@ try {
     await assert('real app workers receive bytes, not filesystem handles', 0, workerFs.length);
     report.data.epubControl = epubReadout;
 
-    // This is explicitly a control OF THE INSTRUMENT, not an app entry point or
-    // a claimed feature. Existing app workers correctly perform no FSA reads.
     report.data.plantedControl = { kind: 'instrument control, not an app gate', name: 'bme-opfs-read-control' };
     const nativeRead = await page.evaluate(async ({ vaultName }) => {
         const source = `postMessage({phase:'top-level',instrumented:'__bmeCounters' in globalThis});

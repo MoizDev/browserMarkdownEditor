@@ -10,7 +10,6 @@ import type { Box } from '../geom/bounds';
 
 export interface StrokeSummary {
     readonly minX: number; readonly minY: number; readonly maxX: number; readonly maxY: number;
-    // The freehand curve's enclosure and its farthest control reach (model/samples.ts SampleSummary).
     readonly curve: readonly [minX: number, minY: number, maxX: number, maxY: number];
     readonly maxReach: number;
     readonly maxPressure: number | null;
@@ -20,9 +19,7 @@ export interface LocalGeometryBounds {
     readonly hit?: Box;
 }
 export interface BoundsProvider {
-    // Cached exact geometry/layout, already realizing stroke sx/sy and text/card scale, not placement.
     local(node: Readonly<Node>): LocalGeometryBounds | undefined;
-    // R-W39: collected during the reader's required varint inspection, no sample arrays/decoding.
     stroke(node: Extract<Node, { kind: 'stroke' }>): StrokeSummary | undefined;
 }
 export const enum BoundsQuality { Pending = 0, Conservative = 1, Exact = 2, ColdLayout = 3 }
@@ -33,11 +30,6 @@ export function placement(out: Float64Array, offset: number, node: Readonly<Node
     out[offset + 4] = node.x + pageX; out[offset + 5] = node.y + pageY;
     for (let i = 0; i < 6; i++) if (!Number.isFinite(out[offset + i])) throw new RangeError('Non-finite scene placement');
 }
-// R-W38/39: cold b is WORLD space (PAGE-LOCAL for a paged root AND descendants), never
-// transformed by the node chain twice. Only layout-dependent kinds use that temporary cache;
-// an offscreen-capable idle layout pass must replace it, so a stale finite b cannot hide a node.
-// Strokes NEVER trust b: the curve box + pressure from full reader inspection bound the surviving
-// samples and every control of the curve through them without decoding. New strokes supply their geometry.
 export function localBounds(node: Readonly<Node>, provider: BoundsProvider, out: Float64Array,
     dotMetric: DotMetric = DOT_METRIC_PROVISIONAL): BoundsQuality {
     const exact = provider.local(node);
@@ -56,18 +48,13 @@ export function localBounds(node: Readonly<Node>, provider: BoundsProvider, out:
             const [cx0, cy0, cx1, cy1] = s.curve;
             if (![cx0, cy0, cx1, cy1, s.maxReach].every(Number.isFinite) || cx0 > s.minX || cy0 > s.minY
                 || cx1 < s.maxX || cy1 < s.maxY || s.maxReach < 0) throw new RangeError('Invalid inspected stroke curve bounds');
-            // The curve is built from the REALIZED samples (sx, sy applied), where each control lies
-            // within a third of its realized chord of its sample, and a realized chord is at most
-            // k = max(|sx|, |sy|) times the stored one. On the x axis a control is therefore within
-            // |sx|·reach + (k − |sx|)·reach of sx·x, and the scaled curve box already holds |sx|·reach:
-            // the stroke's curve lies in that box grown by (k − |s|)·maxReach per axis (0 when uniform).
             const k = Math.max(Math.abs(node.sx), Math.abs(node.sy));
             const extraX = (k - Math.abs(node.sx)) * s.maxReach, extraY = (k - Math.abs(node.sy)) * s.maxReach;
             const ax = node.sx * cx0, bx = node.sx * cx1, ay = node.sy * cy0, by = node.sy * cy1;
             const dot = s.minX === s.maxX && s.minY === s.maxY;
             let radius = node.width / 2;
             if (node.widthModel.id === 'pressure-linear-v1') {
-                const pressure = s.maxPressure ?? 16; // Domain enclosure, never a guessed pen signal.
+                const pressure = s.maxPressure ?? 16;
                 if (!Number.isFinite(pressure) || pressure < 0 || pressure > 16) throw new RangeError('Invalid inspected pressure maximum');
                 const atMaximum = node.widthModel.rMin + (node.widthModel.rMax - node.widthModel.rMin) * pressure;
                 radius = Math.max(node.widthModel.rMin, atMaximum);
@@ -79,14 +66,12 @@ export function localBounds(node: Readonly<Node>, provider: BoundsProvider, out:
             return BoundsQuality.Conservative;
         }
         case 'figure': {
-            // Labels are layout-owned and may overhang the figure. Without that layout, using the
-            // body alone as the whole ink envelope could cull a visible label outside the shape.
             if (node.label) return BoundsQuality.ColdLayout;
             const r = node.width / 2;
             writeBox(out, 0, -r, -r, node.w + r, node.h + node.growY + r);
             return BoundsQuality.Conservative;
         }
-        case 'frame': return BoundsQuality.ColdLayout; // Its title lies outside the frame body.
+        case 'frame': return BoundsQuality.ColdLayout;
         case 'picture': case 'clip': case 'linkcard': case 'embed':
             writeBox(out, 0, 0, 0, node.w, node.h);
             return BoundsQuality.Conservative;
@@ -99,7 +84,7 @@ export function localBounds(node: Readonly<Node>, provider: BoundsProvider, out:
             writeBox(out, 0, x0 - r, y0 - r, x1 + r, y1 + r);
             return BoundsQuality.Conservative;
         }
-        case 'group': return BoundsQuality.Pending; // Aggregate children; never a guessed group size.
+        case 'group': return BoundsQuality.Pending;
         case 'text': case 'sticky': case 'connector': case 'opaque': return BoundsQuality.ColdLayout;
     }
 }

@@ -1,8 +1,6 @@
 import type { HistoryController } from '../../change/historyTypes';
 import type { EditSelection, TextChange } from './host';
 
-// Only one uncommitted rule mark is retained here. The document inverses and
-// selection snapshots stay in the shared history, not in a second undo stack.
 export class TypingHistory {
     private open = false;
     private lastTime = 0;

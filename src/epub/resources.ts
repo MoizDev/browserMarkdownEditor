@@ -20,7 +20,6 @@ export function inspectResource(data:ResourceData):{pixels:number;fontBytes:numb
    if(font){if(b.length<12||b.length>L.font)throw Error('FONT_SIZE');const sig=v.getUint32(0);if(![0x774f4632,0x774f4646,0x00010000,0x4f54544f,0x74727565].includes(sig))throw Error('FONT_SIGNATURE');if((sig===0x774f4632||sig===0x774f4646)&&(b.length<48||v.getUint32(16)>32*1024*1024))throw Error('FONT_EXPANSION');}
    else {
     if(!['image/png','image/jpeg','image/gif','image/webp','image/avif'].includes(data.type))throw Error('IMAGE_FORMAT_UNSUPPORTED');
-    // Reject animation before decode. PNG/WebP are chunk-scanned; GIF is refused explicitly.
     if(data.type==='image/gif')throw Error('IMAGE_ANIMATION_UNSUPPORTED: GIF images are not supported.');
     if(data.type==='image/avif')throw Error('IMAGE_FORMAT_UNSUPPORTED: AVIF images are not supported.');
     if(data.type==='image/png'){if(b.length<33||v.getUint32(0)!==0x89504e47||v.getUint32(4)!==0x0d0a1a0a)throw Error('IMAGE_SIGNATURE');let p=8;for(;p+12<=b.length;){const n=v.getUint32(p),t=v.getUint32(p+4);if(n>b.length-p-12)throw Error('IMAGE_CHUNKS');if(t===0x6163544c)throw Error('IMAGE_ANIMATION_UNSUPPORTED');p+=n+12;if(t===0x49454e44)break}const w=v.getUint32(16),h=v.getUint32(20);if(!w||!h||w>16384||h>16384||w*h>L.imagePixels)throw Error('IMAGE_PIXELS');pixels=w*h}
@@ -30,7 +29,6 @@ export function inspectResource(data:ResourceData):{pixels:number;fontBytes:numb
      for(let p=2;p+4<b.length;){if(b[p++]!==255)throw Error('IMAGE_JPEG');while(b[p]===255)p++;const marker=b[p++];if(marker===217||marker===218)break;if(marker>=208&&marker<=215)continue;const len=v.getUint16(p);if(len<2||p+len>b.length)throw Error('IMAGE_JPEG');if([192,193,194,195,197,198,199,201,202,203,205,206,207].includes(marker)){const h=v.getUint16(p+3),w=v.getUint16(p+5);if(!w||!h||w>16384||h>16384||w*h>L.imagePixels)throw Error('IMAGE_PIXELS');pixels=w*h;found=true;break}p+=len}if(!found)throw Error('IMAGE_JPEG');
     }
     if(data.type==='image/webp'){
-     // Read dimensions without asking the decoder to allocate a publisher-sized bitmap.
      const tag=v.getUint32(12);let w=0,h=0;
      if(tag===0x56503858&&b.length>=30){w=1+b[24]+(b[25]<<8)+(b[26]<<16);h=1+b[27]+(b[28]<<8)+(b[29]<<16)}
      else if(tag===0x56503820&&b.length>=30&&b[23]===0x9d&&b[24]===1&&b[25]===0x2a){w=v.getUint16(26,true)&0x3fff;h=v.getUint16(28,true)&0x3fff}

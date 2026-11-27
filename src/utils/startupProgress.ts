@@ -1,40 +1,21 @@
-// What the vault's startup is doing right now, for the loading screen and the console.
-//
-// Measured: every step of reopening the last vault awaits a browser call with no deadline (IndexedDB, a permission
-// query, enumerating each folder of the tree), and a call that never settles — a folder on a cloud drive that is not
-// downloaded, a network share or a sleeping disk, another tab holding the browser's storage — left "Loading vault..."
-// up for good, with nothing on screen or in the console to say which. FileSystemContext reports each step here; the
-// loading screen reads it to name the step after a few seconds and offer a way on, and it is logged ONCE, so a
-// screenshot or a console paste from someone stuck identifies the call.
-//
-// A plain mutable store polled by its one reader (the screen ticks anyway, to show elapsed time), because the walk
-// reports every folder it opens and a listener per report would be thousands of wake-ups on a big vault.
-
 export type StartupStep = 'recent-vaults' | 'stored-vault' | 'permission' | 'record' | 'walk';
 
 export interface StartupSnapshot {
     readonly step: StartupStep;
-    /** ms the current step has been running. */
     readonly stepMs: number;
     readonly vault: string | null;
     readonly foldersRead: number;
     readonly filesFound: number;
-    /** The folder that has gone longest without answering — since it began listing, or since the last entry it
-     *  yielded — vault-relative ('' is the vault's own top level). */
     readonly waitingOn: string | null;
     readonly waitingMs: number;
 }
 
-/** What a walk reports per folder: the folder starts listing, yields each entry, then finishes with this many files. */
 export interface WalkProgress {
     begin(path: string): void;
-    /** The folder answered with another entry. A big or slow folder that keeps answering is not one that has stopped:
-     *  timed from `begin` alone, a folder of a few thousand files on a slow disk read as "not answering". */
     seen(path: string): void;
     end(path: string, files: number): void;
 }
 
-/** When the screen starts naming the step and offering a way on. */
 export const STARTUP_SLOW_MS = 4000;
 
 interface Run {
@@ -79,7 +60,6 @@ export function readStartup(): StartupSnapshot | null {
     };
 }
 
-/** A startup (the mount's reopen of the last vault, or "Restore 'X'") begins; replaces any earlier one. */
 export function beginStartup(step: StartupStep): void {
     finishStartup();
     const current: Run = { step, stepAt: performance.now(), vault: null, foldersRead: 0, filesFound: 0, pending: new Map(), logTimer: undefined };
@@ -102,7 +82,6 @@ export function finishStartup(): void {
     run = null;
 }
 
-/** The current startup's walk reporter, or undefined when no startup is running (an ordinary refresh). */
 export function startupWalk(): WalkProgress | undefined {
     const current = run;
     if (!current) return undefined;

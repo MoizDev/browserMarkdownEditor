@@ -24,7 +24,6 @@ export interface LegacyImportOptions<T> extends Omit<LegacyRecordOptions, 'prepa
     readonly pageSource?: PageSource;
     readonly textLayout: LegacyTextLayout;
     readonly geometry: LegacyGeometry;
-    /** Precompute async, font-backed connector/attachment geometry before synchronous page bounds. */
     readonly prepareGeometry?: (nodes: readonly import('../model/nodes').Node[], sheets: readonly import('../model/doc').Sheet[], signal?: AbortSignal) => Promise<void>;
     readonly admit: (input: BoardDocInput, samples: SampleStore, root: RootMapper, report: ReportBuilder) => Promise<T>;
     readonly releaseAdmitted: (value: T) => void;
@@ -40,7 +39,6 @@ export interface LegacyImportResult<T> {
     dispose(): void;
 }
 
-// I-1: the original text and admitted media remain in memory; this function has no file capability.
 export async function importLegacy<T>(text: string, options: LegacyImportOptions<T>): Promise<LegacyImportResult<T>> {
     const report = new ReportBuilder();
     let draft: Awaited<ReturnType<typeof readLegacyRecords>> | null = null;
@@ -93,7 +91,6 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
                 if (raw && Object.keys(paper).some(key => Object.hasOwn(raw, key)
                     && raw[key] !== paper[key as keyof NotebookPaper])) report.repair(null, 'Notebook paper settings normalized');
                 if (raw) for (const key of Object.keys(raw)) {
-                    // The raw paper object is kept whole in the converted file (legacyEnvelope).
                     if (!Object.hasOwn(paper, key)) report.repair(null, `Unknown notebook paper field ${key} preserved`);
                 }
                 host = { ...host, paper };
@@ -101,11 +98,6 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
             const fields = new Map<string, RawJson>();
             if (Object.keys(draft.envelope.extras).length) fields.set('legacyEnvelope', parseJson(JSON.stringify(draft.envelope.extras)).raw());
             if (Object.keys(draft.envelope.documentExtras).length) fields.set('legacyDocument', parseJson(JSON.stringify(draft.envelope.documentExtras)).raw());
-            // A drawing or notebook is no longer converted in place: what is built from one is only ever shown read-only
-            // or written as an editable COPY, whose old board stays where it is. The header says so, or the copy read as a
-            // board an earlier version converted in place and offered to restore a Trash backup that never existed
-            // (utils/conversionRestore.ts; measured on a notebook's copy, which keeps the `.notebook` name). A PDF's ink
-            // is still converted in place and is not marked.
             if (host.kind !== 'pdf-ink') fields.set('legacyCopy', parseJson('true').raw());
             const ui = readLegacyUi(draft.envelope.ui);
             const preserved = { version: NATIVE_VERSION, fields, records: draft.preservedRecords, end: null };
@@ -133,8 +125,6 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
     }
     const result = report.finish();
     let disposed = false;
-    // Items that could not be represented are left out (each preserved as written) and the board still converts:
-    // one refused shape used to fail the user's whole board. Only a board that could not be made at all is read-only.
     return { source: text, board, media, report: result, readOnly: !board,
         converted: false, savedView,
         dispose() {

@@ -59,9 +59,6 @@ try {
         window.__findKeys = []; window.__findText = [];
         window.addEventListener('keydown', event => {
             if (!(event.metaKey || event.ctrlKey) || !['f', 'g'].includes(event.key.toLowerCase())) return;
-            // Native dispatch may checkpoint microtasks between listeners.
-            // Keep the event, then read its final defaultPrevented from Node
-            // after the real press, even if the viewer stopped propagation.
             window.__findKeys.push(event);
         }, true);
         const post = Worker.prototype.postMessage;
@@ -106,9 +103,6 @@ try {
         await input.fill(probe.query);
         await page.waitForFunction(() => document.querySelector('.pdf-find-bar [role="status"]')?.textContent === '1 of 1', undefined, { timeout: 120000 });
         await page.waitForFunction(number => document.querySelector('.pdf-viewer-page-input')?.value === String(number), probe.pages[0]);
-        // Search completion and the approximate page jump can precede both
-        // TextLayer completion and the offscreen-canvas blit. Wait for the
-        // actual user-visible result, not the unrelated status update.
         try {
             await page.waitForFunction(({ query, number }) => {
                 const ranges = [...(CSS.highlights.get('pdf-find-current') ?? [])];

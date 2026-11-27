@@ -5,22 +5,12 @@ import type { CSSProperties } from 'react';
 import type { GraphNode, OpenNodeHandler } from '../types';
 
 interface BacklinksPanelProps {
-    nodes?: GraphNode[];          // default [] ; backlink graph nodes (from getBacklinkNodes)
-    onOpenNode: OpenNodeHandler;  // (node) => void — open a note by its graph node
-    onClose: () => void;          // () => void — dismiss the popover
-    style?: CSSProperties;        // inline positioning (fixed bottom/right) from the anchor button
+    nodes?: GraphNode[];
+    onOpenNode: OpenNodeHandler;
+    onClose: () => void;
+    style?: CSSProperties;
 }
 
-/**
- * BacklinksPanel — a small dismissible popover listing every note that links to
- * the currently open note ("Linked mentions"). It is rendered by EditorPane and
- * anchored above the status bar's button; clicking a mention opens that note.
- *
- * @param nodes       backlink graph nodes (from getBacklinkNodes)
- * @param onOpenNode  (node) => void — open a note by its graph node
- * @param onClose     () => void — dismiss the popover
- * @param style       inline positioning (fixed bottom/right) from the anchor button
- */
 export default function BacklinksPanel({ nodes = [], onOpenNode, onClose, style }: BacklinksPanelProps) {
     return (
         <div className="backlinks-popover" style={style} role="dialog" aria-label="Linked mentions">

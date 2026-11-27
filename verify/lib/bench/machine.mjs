@@ -39,8 +39,6 @@ export function sessionValidity(before, after, { memoryFloorBytes = 6 * GiB, max
     for (const [phase, sample] of phases) {
         if (sample.freeBytes === null) causes.push(`${phase}: free memory unreadable`);
         else if (sample.freeBytes < memoryFloorBytes) causes.push(`${phase}: free+inactive+purgeable below ${memoryFloorBytes} bytes`);
-        // Amendment §4: measured shed maximum2.15 +0.85 daemon-burst margin.
-        // This is START load only; the post-load and consumers remain evidence.
         if (phase === 'before' && sample.load[0] > maxLoad) causes.push(`${phase}: one-minute load ${sample.load[0]} > ${maxLoad}`);
         causes.push(...environmentCauses(sample.environment, phase));
         if (sample.powerSource !== 'AC') causes.push(`${phase}: power source ${sample.powerSource} (AC required)`);

@@ -1,5 +1,3 @@
-// Warm only the native panes the vault actually needs, after the app has drawn.
-// Markdown-only vaults fetch none of the PDF, canvas or EPUB implementations.
 import { loadPdfPane } from './pdfPaneModule';
 import { canvasPaneSlot, epubPaneSlot, nativeCanvasEntrySlot } from './paneModules';
 
@@ -15,7 +13,6 @@ const started = new Set<string>();
 function warm(key: string, load: () => Promise<unknown>): void {
     if (started.has(key)) return;
     started.add(key);
-    // Demand owns the error and explicit Retry, not an idle refresh loop.
     load().catch(() => started.delete(key));
 }
 

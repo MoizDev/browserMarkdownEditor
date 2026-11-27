@@ -2,7 +2,6 @@ import type { Block, BlockCarrier, RichText, Run } from './richText';
 import type { PlainTextOptions } from './plainText';
 import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
-// Independent future tails stay byte-exact as range carriers, never concatenated positional fields.
 const carrierOrigins = new WeakMap<BlockCarrier, object>();
 const carrierSources = new WeakMap<BlockCarrier, object>();
 interface CarrierIdentity { readonly origin: object; readonly source: object }
@@ -67,7 +66,6 @@ export function trackBlock(block: Block, origin: Block): Block {
     return trackBlockIdentity(block, blockOrigin(origin));
 }
 export function runOrigin(run: Run): object { return runOrigins.get(run) ?? run; }
-/** An untracked run can appear more than once by object identity; occurrences remain independent. */
 export function runOccurrenceOrigin(text: RichText, blockIndex: number, runIndex: number): object {
     let blocks = runOccurrences.get(text);
     if (!blocks) { blocks = new Map(); runOccurrences.set(text, blocks); }
@@ -138,7 +136,6 @@ export function sliceCarriers(block: Block, from: number, to: number, preserveOr
 }
 function compareCarrier(a: BlockCarrier, b: BlockCarrier): number { return a.from - b.from || a.to - b.to; }
 
-/** Stable bottom-up sort can yield even for a block with many preserved tails. */
 function* sortCarrierSteps(values: BlockCarrier[]): Generator<void, BlockCarrier[]> {
     let sorted = true, work = 0;
     for (let i = 1; i < values.length; i++) {

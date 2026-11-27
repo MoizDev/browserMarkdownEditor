@@ -1,4 +1,3 @@
-// Headless real-app fault gate. No app module imports or app-internal calls.
 import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -225,8 +224,6 @@ try {
         const before = await page.evaluate(() => window.__pdfFault.workers.length);
         faultEnabled = false;
         if (name === 'startup-csp') {
-            // A document's CSP cannot be removed in place; a real reload uses
-            // restored response headers and the same stored OPFS vault.
             await page.reload();
             await page.locator('.pdf-pane:not(.pdf-pane-hidden) .pdf-viewer-page > canvas').first().waitFor();
             const result = await page.waitForFunction(() => [...document.querySelectorAll('.pdf-pane:not(.pdf-pane-hidden) .pdf-viewer-page > canvas')].some(c => c.width && c.__faultPaint), undefined, { timeout: 15000 });
@@ -310,9 +307,6 @@ try {
             const runtimeWorkers = page.workers().filter(worker => worker.url().includes('/pdfClassic.worker-'));
             if (runtimeWorkers.length !== 1) throw new Error('Expected one runtime worker handle');
             const closed = runtimeWorkers[0].waitForEvent('close', { timeout: 5000 });
-            // CfT 157 rejects Target.closeTarget for dedicated workers. This
-            // CDP Runtime.evaluate invokes only the platform's self.close(),
-            // then requires the browser's real target-close event as witness.
             await runtimeWorkers[0].evaluate(() => self.close());
             await closed;
             report.workerClosed = true;

@@ -11,9 +11,6 @@ export function inputHelpers(h) {
   }
   return {
     settleModifiers:async(n=14,{minimumMs=250,path,point,release=['alt','shift']}={})=>{
-      // Headless frame cadence is not a wall clock. Fourteen frames still left Alt active
-      // in the FIG sweep. If a shortcut swallowed key-up, a real neutral hover starts the
-      // release grace; time alone cannot. Opt in with point rather than silently moving input.
       if(point)await pointer('mouseMoved',point,{kind:'mouse',button:'none',buttons:0,keys:[]});
       await Promise.all([frames(page,n),pause(minimumMs)]);
       if(path)await until(async()=>{const s=await h.probe.session(path);return release.every(key=>!s.input.modifiers[key]);},{timeout:2000,description:`released modifier state for ${path}`});

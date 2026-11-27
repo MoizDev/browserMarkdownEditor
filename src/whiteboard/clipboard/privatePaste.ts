@@ -14,8 +14,6 @@ import type { StoreMedia } from '../media/storage.types';
 import type { ClipboardIntent, ClipboardTarget } from './types';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: private clipboard C5 admission, serial session jobs and atomic
-// paste contracts; independent orchestration, no upstream engine source.
 export interface PrivateClipboardPasteOptions {
     readonly runtime: BoardRuntime;
     readonly memory: MemoryAllocator;
@@ -32,7 +30,6 @@ export interface PrivateClipboardPasteOptions {
     noticeMissing(ids: readonly MediaId[]): void;
     cooperate?(): Promise<void>;
 }
-/** The caller owns the one session job; this function never enqueues another job. */
 export async function pastePrivateClipboardInJob(options: PrivateClipboardPasteOptions, context: JobContext): Promise<readonly NodeId[]> {
     const { runtime } = options, session = runtime.session, doc = session.doc, revision = doc.rev;
     const target = Object.freeze({ ...options.target, viewport: Object.freeze({ ...options.target.viewport }),
@@ -40,7 +37,6 @@ export async function pastePrivateClipboardInJob(options: PrivateClipboardPasteO
     const identity: BoardJobIdentity = Object.freeze({ session: context.job.session, epoch: context.job.vaultEpoch, revision });
     const check = () => {
         runtime.jobs.assertContext(context); context.assertCurrent();
-        // No revision fence: a gesture committed while the paste is prepared is no reason to drop it (change/insertionLanding.ts).
         if (!options.current(target) || runtime.session !== session || session.doc !== doc || session.isReadOnly) {
             throw new DOMException('Clipboard target became stale', 'AbortError');
         }

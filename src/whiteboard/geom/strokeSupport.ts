@@ -11,8 +11,6 @@ function magnitude(x: Interval, y: Interval): number {
 function product(a: Interval, b: number): Interval { return multiply(a, interval(b)); }
 function dot(point: BoundsPoint, x: number, y: number): Interval { return add(product(point.x, x), product(point.y, y)); }
 
-/** Certified upper support of an affine-transformed local disk in any finite,
- * not necessarily normalized, CSS direction. */
 export function strokeSupportUpper(matrix: Affine, localRadius: number, x: number, y: number): number {
     if (![...matrix, localRadius, x, y].every(Number.isFinite) || localRadius < 0) throw new RangeError('Invalid stroke support request');
     if (!localRadius || (!x && !y)) return 0;
@@ -45,8 +43,6 @@ function directions(path: CertifiedCurve['points'], target: readonly BoundsPoint
     return result;
 }
 
-/** A positive separating support gap proves the complete curve stroke misses
- * the target hull plus its CSS margin; failure to separate is not a hit. */
 export function strokeSeparatedFromHull(path: CertifiedCurve['points'], target: readonly BoundsPoint[], matrix: Affine,
     localRadius: number, margin: number): boolean {
     if (!target.length || !Number.isFinite(margin) || margin < 0) throw new RangeError('Invalid stroke separation query');

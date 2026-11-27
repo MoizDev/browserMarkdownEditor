@@ -2,21 +2,14 @@ import type { Affine, Camera, Rect, Viewport, ViewState } from '../types';
 import { pageAt } from './pageStack';
 import type { PageStack } from './pageStack';
 
-/** Plain coordinates, with units determined by the named transform (contracts.md C1.1:81–86). */
 export interface Point { x: number; y: number }
 
-/** Free limits are CSS/world scale; paged limits are relative to fit-width (C1.2:144–158). */
 export interface ZoomLimits { min: number; max: number }
-/** CSS-pixel gutters applied outside the page stack (contracts.md C1.5:218–220). */
 export interface ViewportInsets { left: number; right: number; top: number; bottom: number }
-/** World-space clamp interval, before the presentation-only rest snap (C1.2:144–168). */
 export interface OriginBounds { minX: number; maxX: number; minY: number; maxY: number }
-/** Current gesture/resize anchor, never a stale pointerdown offset (design §8:732). */
 export interface CameraAnchor { world: Point; surface: Point }
-/** Existing reading-position shape; zoom is relative to fit-width (contracts.md C1.4:184–186). */
 export interface PagedPosition { page: number; offset: number; zoom: number }
 
-/** Constraint plug-ins own bounds/semantic resize, not event listeners (contracts.md C1.2:144–153). */
 export interface CameraConstraint {
     clampZoom(z: number, viewport: Viewport): number;
     bounds(camera: Camera, viewport: Viewport): OriginBounds;
@@ -50,7 +43,6 @@ function validateLimits(limits: ZoomLimits): void {
     }
 }
 
-/** surface = (world - camera.xy) * z; no PDF/user-space arithmetic here (C1.2:103–104). */
 export function worldToSurface(point: Point, camera: Camera): Point {
     return { x: (point.x - camera.x) * camera.z, y: (point.y - camera.y) * camera.z };
 }
@@ -59,7 +51,6 @@ export function surfaceToWorld(point: Point, camera: Camera): Point {
     return { x: camera.x + point.x / camera.z, y: camera.y + point.y / camera.z };
 }
 
-/** DPR is scalar, never independently derived x/y ratios (C1.2:99–104). */
 export function surfaceToDevice(point: Point, viewport: Viewport): Point {
     return { x: point.x * viewport.dpr, y: point.y * viewport.dpr };
 }
@@ -76,22 +67,18 @@ export function deviceToWorld(point: Point, view: ViewState): Point {
     return surfaceToWorld(deviceToSurface(point, view.viewport), view.camera);
 }
 
-/** World-root affine; paged children use absolute PagePresentation.surface, NOT both (C1.2:139–143). */
 export function cameraTransform(camera: Camera): Affine {
     return [camera.z, 0, 0, camera.z, -camera.x * camera.z, -camera.y * camera.z];
 }
 
-/** Camera zoom changes around a fixed world/surface pair (C1.2:154–158; design:699). */
 export function cameraAtAnchor(world: Point, surface: Point, z: number): Camera {
     return { x: world.x - surface.x / z, y: world.y - surface.y / z, z };
 }
 
-/** Gutters are viewport insets, never part of pageStack (contracts.md C1.5:218–220). */
 export function fitWidthZ(viewport: Viewport, stack: Readonly<PageStack>, insets: ViewportInsets): number {
     return stack.width > 0 ? Math.max(0, viewport.width - insets.left - insets.right) / stack.width : 0;
 }
 
-/** Empty/zero-width views have no semantic position; keep the previous position while dormant (§8:731). */
 export function pagedPosition(camera: Camera, viewport: Viewport, stack: Readonly<PageStack>, insets: ViewportInsets): PagedPosition | null {
     const fit = fitWidthZ(viewport, stack, insets);
     const page = pageAt(stack, camera.y);
@@ -104,7 +91,6 @@ export function pagedPosition(camera: Camera, viewport: Viewport, stack: Readonl
     };
 }
 
-/** Restores the unchanged page/offset/userZoom shape (C1.4:185; design §8:732–737). */
 export function cameraForPagedPosition(position: PagedPosition, viewport: Viewport, stack: Readonly<PageStack>,
     insets: ViewportInsets, limits: ZoomLimits, centerWorldX = stack.width / 2): Camera | null {
     validateLimits(limits);
@@ -123,7 +109,6 @@ export function cameraForPagedPosition(position: PagedPosition, viewport: Viewpo
     };
 }
 
-/** Free-world pan is unbounded; zoom policy is supplied by the whiteboard (C1.2:144–145). */
 export function freeConstraint(limits: ZoomLimits): CameraConstraint {
     validateLimits(limits);
     const { min, max } = limits;
@@ -137,15 +122,11 @@ export function freeConstraint(limits: ZoomLimits): CameraConstraint {
     };
 }
 
-/** Below fit-width, centre horizontally and pin the top of a short stack (C1.2:144–153).
- * Page positions and gutters remain in their own units; no old-engine camera convention is imported.
- */
 export function pagedConstraint(stack: Readonly<PageStack>, limits: ZoomLimits, insets: ViewportInsets): CameraConstraint {
     validateLimits(limits);
     if (Object.values(insets).some(value => !Number.isFinite(value) || value < 0)) {
         throw new RangeError('Viewport insets must be finite and nonnegative');
     }
-    // A plugin is a layout snapshot, not a window onto a caller's mutable page list.
     const pages: PageStack = { rects: stack.rects.map(rect => ({ ...rect })), width: stack.width, height: stack.height };
     const edges = { ...insets };
     const zoomLimits = { ...limits };
@@ -175,10 +156,6 @@ export function pagedConstraint(stack: Readonly<PageStack>, limits: ZoomLimits, 
             const z = nextFit * clamp(camera.z / previousFit, zoomLimits.min, zoomLimits.max);
             const center = surfaceToWorld({ x: (edges.left + previous.width - edges.right) / 2, y: 0 }, camera).x;
             const minY = -edges.top / camera.z;
-            // The internal top-world Y retains a negative page-relative gap fraction. Going through
-            // the clamped persisted getter would jump to the next page (vr-lead C1.2 resize ruling).
-            // Recognize both the ideal top pin and its exact rest-snapped presentation, without
-            // treating a nearby real scroll as a pin or inventing another tolerance.
             const pinnedTop = camera.y === minY || camera.y === snapOrigin(minY, camera.z * previous.dpr, minY, Infinity);
             return {
                 x: center - (edges.left + (next.width - edges.left - edges.right) / 2) / z,
@@ -209,9 +186,6 @@ function snapOrigin(value: number, scale: number, min: number, max: number): num
     return nearest / scale;
 }
 
-/** Constrain first, then nearest-grid snap ONCE (C1.2:159–168; vr-lead tie ruling).
- * A <=0.5-device-pixel clamp overshoot is presentation-only; re-clamping would undo alignment.
- */
 export function snapCamera(camera: Camera, viewport: Viewport, bounds: OriginBounds = unbounded): Camera {
     const scale = camera.z * viewport.dpr;
     return {
@@ -221,7 +195,6 @@ export function snapCamera(camera: Camera, viewport: Viewport, bounds: OriginBou
     };
 }
 
-/** Every page-owned tile, stroke, hit test and overlay uses this transform (C1.2:162–168). */
 export interface PagePresentation {
     surface: Affine;
     device: Affine;
@@ -246,12 +219,10 @@ export function pageLocalToSurface(point: Point, presentation: PagePresentation)
     return { x: point.x * presentation.surface[0] + presentation.surface[4], y: point.y * presentation.surface[3] + presentation.surface[5] };
 }
 
-/** Invert the presentation transform, not merely the ideal world camera (design R-045:892). */
 export function surfaceToPageLocal(point: Point, presentation: PagePresentation): Point {
     return { x: (point.x - presentation.surface[4]) / presentation.surface[0], y: (point.y - presentation.surface[5]) / presentation.surface[3] };
 }
 
-/** Plain samples only; browser listeners, focus routing and preventDefault belong to adapters (§7.2:695–703). */
 export interface WheelSample {
     deltaX: number;
     deltaY: number;
@@ -268,15 +239,9 @@ export function wheelDelta(sample: WheelSample, viewport: Viewport): Point {
         : { x: sample.deltaX * unit, y: sample.deltaY * unit };
 }
 
-/** One per pane. The scheduler obtains one immutable ViewState and gives that same object to every layer.
- * Changes after beginFrame are pending for the next frame; no frame owns a live mutable camera (C1.2:110–117).
- */
 export class CameraController {
     private cameraValue: Readonly<Camera>;
     private viewportValue: Readonly<Viewport>;
-    /** The display's own device-pixel ratio, which rest snapping aligns to. The viewport's dpr is the BACKING ratio and
-     * carries the quality scale, so snapping to it moved a resting camera whenever quality changed: content shifted by up
-     * to half a backing pixel at a soft↔sharp swap (logged: −0.78/−0.66 world units, ~0.3 px at 40%, no camera input). */
     private snapDpr: number | null = null;
     private lastIdeal: Camera | null = null;
     private resizeReference: Readonly<Viewport>;
@@ -314,21 +279,14 @@ export class CameraController {
         this.publishCamera(next);
     }
 
-    /** Paged resize keeps page/offset/userZoom; free resize keeps the centre world point (§8:732–737).
-     * During a gesture the caller supplies its CURRENT world/surface anchor instead of an old down point.
-     */
     setViewport(viewport: Viewport, anchor?: CameraAnchor, geometryChanged = false, snapDpr?: number): void {
         validateViewport(viewport);
         if (snapDpr !== undefined && Number.isFinite(snapDpr) && snapDpr > 0) this.snapDpr = snapDpr;
         const previous = this.viewportValue;
         if (previous.width === viewport.width && previous.height === viewport.height && previous.dpr === viewport.dpr) {
-            // A new physical geometry may quantize to the same budgeted viewport. It still
-            // invalidates view-dependent work, but never the document/content token.
             if (geometryChanged) this.epoch++;
             return;
         }
-        // Preserve the last useful geometry across a zero-size dormancy; fit-width at zero cannot
-        // recover userZoom on show. A DPR-only change likewise must not reinterpret a reading position.
         const reference = previous.width > 0 && previous.height > 0 ? previous : this.resizeReference;
         const visibleSize = viewport.width > 0 && viewport.height > 0;
         const resized = !visibleSize || (reference.width === viewport.width && reference.height === viewport.height)
@@ -347,7 +305,6 @@ export class CameraController {
         this.epoch++;
     }
 
-    /** CSS displacement is divided by z, never multiplied by DPR (§7.2:696–697). */
     panBy(delta: Point): void {
         this.setCamera({ x: this.cameraValue.x + delta.x / this.cameraValue.z, y: this.cameraValue.y + delta.y / this.cameraValue.z, z: this.cameraValue.z });
     }
@@ -358,7 +315,6 @@ export class CameraController {
         this.panBy(delta);
     }
 
-    /** Animations must clamp BEFORE deriving the fixed-anchor origin, not clamp z afterward (C1.2:154–158). */
     clampZoom(z: number): number {
         if (!positive(z)) throw new RangeError('Camera zoom must be finite and positive');
         const clamped = this.constraint.clampZoom(z, this.viewportValue);
@@ -371,13 +327,11 @@ export class CameraController {
         this.setCamera(cameraAtAnchor(surfaceToWorld(anchor, this.cameraValue), anchor, clampedZ));
     }
 
-    /** Normalized CSS-pixel pinch delta; no easing/inertia. Adapters prevent browser zoom (§7.2:699). */
     zoomWheel(deltaY: number, anchor: Point): void {
         if (!Number.isFinite(deltaY)) throw new RangeError('Pinch delta must be finite');
         this.zoomTo(this.cameraValue.z * Math.exp(-clamp(deltaY, -50, 50) * 0.01), anchor);
     }
 
-    /** Focus/find/drag reveal uses the same constrained camera, not native scrolling (C1.2:122–129). */
     bringIntoView(rect: Rect, marginCss = 0): void {
         if (![rect.x, rect.y, rect.width, rect.height, marginCss].every(Number.isFinite) || rect.width < 0 || rect.height < 0 || marginCss < 0) {
             throw new RangeError('Reveal rectangle and margin must be finite and nonnegative in size');
@@ -402,10 +356,6 @@ export class CameraController {
         if (frameId === this.frameId && this.frameState) return this.frameState;
         const ideal = constrainCamera(this.cameraValue, this.viewportValue, this.constraint);
         this.publishCamera(ideal);
-        // The presented camera depends on the logical camera and the display's pixel grid only. A frame is left unsnapped
-        // only while the camera itself is travelling (sub-pixel glide); 'moving' alone is not enough, because a press with
-        // no camera input marks frames moving, and the ink pane then hopped by the snap difference at every press and back
-        // at release (measured on canvas2d, img8 at 262%: 0.05/0.19 world units against the page, which did not move).
         const travelling = this.moving && this.lastIdeal !== null &&
             (ideal.x !== this.lastIdeal.x || ideal.y !== this.lastIdeal.y || ideal.z !== this.lastIdeal.z);
         this.lastIdeal = ideal;

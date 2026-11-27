@@ -2,8 +2,6 @@ import { createHash } from 'node:crypto';
 import { parseArgs } from '../../lib/cli.mjs';
 import { fixtureWriter, jsonBytes } from '../../lib/output.mjs';
 
-// Courier's fixed advance makes the drag's expected prefix independent of an
-// installed font. Coordinates are recorded in PDF points, with a top-left origin.
 const title = 'Selection starts at the margin';
 const lines = [
   { text: title, x: 92, y: 92, size: 20 },
@@ -47,7 +45,5 @@ await emit('selection-geometry.json', jsonBytes({
   titlePrefix: title.slice(0, 16), nativeStart: { x: 92 + 12 * 3, y: 87 },
   nativeText: title.slice(3, 16),
   multilineStart: { x: 74, y: 147 }, multilineEnd: { x: 72 + 7.2 * 12, y: 167 },
-  // Native selections include line breaks. R3b compares the whitespace-normalized
-  // clipboard with this independently generated text, never with the text-layer DOM.
   normalizedPageText: lines.map(l => l.text).join(' '),
 }));

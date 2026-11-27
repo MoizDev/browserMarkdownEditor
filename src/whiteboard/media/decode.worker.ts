@@ -10,8 +10,6 @@ import { boardHandlers } from '../workers/protocol';
 import { reportBoardMemory } from '../workers/boardMemory';
 import type { WorkerContext } from '../../platform/workers';
 
-/** Reads a whole file into the worker heap. The copy is reported BEFORE it is made, at the size the
- * blob already declares, and cleared when the handler leaves, so a recycled worker never keeps it. */
 async function withWholeFile<T>(blob: Blob, context: WorkerContext, extra: number,
     body: (bytes: Uint8Array) => Promise<T>): Promise<T> {
     const owner = {};
@@ -38,7 +36,6 @@ serve({
             if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new Error('Invalid SVG request');
             const blob = (args as { blob: Blob }).blob;
             if (blob.size > 5 * 1024 * 1024) throw new RangeError('SVG files must be at most 5 MiB');
-            // The bytes plus the decoded text, which can take two bytes of storage per input byte.
             await withWholeFile(blob, context, 2 * blob.size, async bytes => {
                 const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
                 preflightSvgText(text);
@@ -55,8 +52,6 @@ serve({
         async hashSource(args, context) {
             if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new Error('Invalid source hash request');
             const blob = (args as { blob: Blob }).blob;
-            // Source JSON is not a media asset. The caller already admitted its
-            // full conversion peak; SHA keeps only the shared 4 MiB sliced reader.
             if (blob.size > 256 * 1024 * 1024) throw new RangeError('Legacy sources must be at most 256 MiB');
             return hashMedia(blob, context.signal, () => context.slice());
         },

@@ -19,7 +19,6 @@ function matches(bytes: Uint8Array, offset: number, expected: Uint8Array): boole
     return true;
 }
 
-/** Yield between bounded chunks so cancellation is observable without copying the output. */
 async function cooperate(signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     await new Promise<void>(resolve => {
@@ -90,8 +89,6 @@ async function verifyBoard(args: WriterOperations['writer.finishAnnotated']['arg
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
-/** Called by the privileged host after wire-shape checks and before any disk write.
- * Notebook output additionally requires independent contained readback by the pool. */
 export async function verifyPdfWriterOutput<K extends VerifiedOperation>(op: K, args: WriterOperations[K]['args'],
     result: WriterOperations[K]['result'], signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
@@ -104,7 +101,6 @@ export async function verifyPdfWriterOutput<K extends VerifiedOperation>(op: K, 
     if (!matches(bytes, 0, new TextEncoder().encode('%PDF-'))) throw new Error('PDF writer returned invalid output bytes');
     if (op === 'writer.finishAnnotated') {
         const finish = args as WriterOperations['writer.finishAnnotated']['args'];
-        // A print carries no board (see pdfiumWriter.finishAnnotated); its mark is still verified.
         if (!Array.isArray(finish.attachments) || finish.attachments.length) await verifyBoard(finish, signal);
         await verifyMark(bytes, args.writeId, signal);
     } else if (op === 'writer.buildNotebook') {

@@ -74,33 +74,9 @@ import DiskBar from './DiskBar';
 import { warmMath } from '../editor/mathWidget';
 import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode, EditorRevealRequest, OpenNoteByNameHandler, OpenTab, Theme } from '../types';
 
-/** localStorage key: per-file editor scroll places (editor/scrollAnchor.ts). */
 const SCROLL_ANCHORS_KEY = 'fileScrollAnchors';
-/** The raw-scrollTop record the anchors replaced; see scrollAnchorRecord. */
 const LEGACY_SCROLL_POSITIONS_KEY = 'fileScrollPositions';
 
-/* ── Scroll persistence, keyed by PATH rather than by pane ─────────────────
-   The scroll handler is baked into the document's EditorState (below), and a
-   state outlives the pane that built it — so a handler adopted by a later pane
-   still writes into the pane that created it. Held per PATH instead, both ends
-   agree whichever pane is showing the document: the handler debounces, and the
-   unmount flush below finds the timer it actually armed. Sound because a path
-   is open at most once, so at most one pane is ever scrolling it.
-
-   `pending` is remembered rather than re-read because by the time an unmount
-   runs the scroller is detached and reports 0.
-
-   What is remembered is a place in the TEXT — the line block at the top edge
-   and how far into it (editor/scrollAnchor.ts) — because a pixel offset
-   measured while reading means something else to the fresh view a return
-   builds. A returning view HOLDS that place until the reader takes over, and
-   nothing is remembered while it holds: its scroll events are the restore
-   landing, and saving those is how every return used to creep further down.
-
-   The in-memory map stays keyed by the BARE path — it lives for one session,
-   inside one vault. Only the stored record is `scopedKey`'d, because it
-   outlives the switch and `Notes/index.md` names a different file in every
-   vault (see utils/storage.ts). */
 const scrollDebounce = new Map<string, { timer: ReturnType<typeof setTimeout> | null; pending: ScrollAnchor | null }>();
 
 function scrollSlot(path: string) {
@@ -111,11 +87,6 @@ function scrollSlot(path: string) {
 
 let legacyScrollPositionsDropped = false;
 
-/** The stored anchors record. The raw-scrollTop record they replaced is
- *  deleted on first use rather than read: its pixels are exactly the wrong
- *  answer on a long note, and nothing prunes it — so every note opens at its
- *  top once and remembers correctly from then on. One-way, like tabSessions'
- *  migration off its flat keys. */
 function scrollAnchorRecord(): Record<string, unknown> {
     if (!legacyScrollPositionsDropped) {
         legacyScrollPositionsDropped = true;
@@ -124,15 +95,12 @@ function scrollAnchorRecord(): Record<string, unknown> {
     return readRecord<unknown>(SCROLL_ANCHORS_KEY);
 }
 
-/** Write the remembered place now, cancelling any pending debounce. */
 function flushScroll(path: string): void {
     const slot = scrollDebounce.get(path);
     if (!slot) return;
     if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
     if (slot.pending !== null) {
         const { pos, offset } = slot.pending;
-        // Held parsed in memory — mutate and write, no full re-parse per tick.
-        // A tenth of a pixel is already finer than the hold's 1px tolerance.
         scrollAnchorRecord()[scopedKey(path)] = { pos, offset: Math.round(offset * 10) / 10 };
         flushRecord(SCROLL_ANCHORS_KEY);
         slot.pending = null;
@@ -140,16 +108,12 @@ function flushScroll(path: string): void {
     scrollDebounce.delete(path);
 }
 
-/** (Re)start the debounce that writes `path`'s remembered place. */
 function armScrollFlush(path: string): void {
     const slot = scrollSlot(path);
     if (slot.timer) clearTimeout(slot.timer);
     slot.timer = setTimeout(() => { slot.timer = null; flushScroll(path); }, 300);
 }
 
-/** Debounced scroll persistence for one document. The place is captured in
- *  CodeMirror's next measure (the one it runs right after scroll handlers),
- *  not read here: see captureScrollAnchor. */
 function rememberScroll(path: string, view: EditorView): void {
     if (isHoldingScrollAnchor(view)) return;
     captureScrollAnchor(view, `scroll-anchor:${path}`, (anchor) => {
@@ -158,10 +122,6 @@ function rememberScroll(path: string, view: EditorView): void {
     });
 }
 
-/** Where `path` was left. The debounced capture comes first: a pane mounting
- *  in the same commit another unmounts reads this before that pane's cleanup
- *  has flushed it. Then the stored entry, shape-guarded — localStorage is
- *  user-editable, and a malformed entry just opens the note at its top. */
 function rememberedScroll(path: string): ScrollAnchor | null {
     const pending = scrollDebounce.get(path)?.pending;
     if (pending) return pending;
@@ -169,9 +129,6 @@ function rememberedScroll(path: string): ScrollAnchor | null {
     return isScrollAnchor(stored) ? stored : null;
 }
 
-/** Carry the remembered place through an edit made in the app, so text added
- *  or removed above it does not change which line comes back. Runs on every
- *  keystroke, so it re-arms the write only when the place actually moved. */
 function mapRememberedScroll(path: string, changes: ChangeDesc): void {
     const current = rememberedScroll(path);
     if (!current) return;
@@ -181,20 +138,10 @@ function mapRememberedScroll(path: string, changes: ChangeDesc): void {
     armScrollFlush(path);
 }
 
-/** localStorage key: per-file collapsed heading sections (editor/headingFold.ts). */
 const COLLAPSED_HEADINGS_KEY = 'collapsedHeadings';
 
-/* ── Collapsed-section persistence, keyed by PATH for the scroll reason ────
-   The listener that notices a fold is baked into the EditorState exactly as
-   the scroll handler is, so its debounce is held per path for the reason given
-   above. The STATE is remembered rather than its keys: turning positions into
-   keys walks the note's lines, which belongs in the debounced flush and not in
-   every keystroke that moves a collapsed heading down the page. An entry is
-   deleted once nothing is collapsed, so the record only grows by the notes that
-   actually have a collapsed section. */
 const foldDebounce = new Map<string, { timer: ReturnType<typeof setTimeout> | null; pending: EditorState | null }>();
 
-/** Write the document's collapsed headings now, cancelling any pending debounce. */
 function flushFolds(path: string): void {
     const slot = foldDebounce.get(path);
     if (!slot) return;
@@ -203,8 +150,6 @@ function flushFolds(path: string): void {
         const record = readRecord<HeadingKey[]>(COLLAPSED_HEADINGS_KEY);
         const key = scopedKey(path);
         const keys = foldedHeadingKeys(slot.pending);
-        // Typing above a collapsed heading moves it without changing its key:
-        // that is a debounce tick, not a write of the whole record.
         if (!sameHeadingKeys(record[key], keys)) {
             if (keys.length > 0) record[key] = keys;
             else delete record[key];
@@ -218,7 +163,6 @@ function flushFolds(path: string): void {
 const unsubscribeViewRetarget = subscribeDocumentViewRetarget(from => { flushScroll(from); flushFolds(from); });
 if (import.meta.hot) import.meta.hot.dispose(unsubscribeViewRetarget);
 
-/** Debounced fold persistence for one document. */
 function rememberFolds(path: string, state: EditorState): void {
     let slot = foldDebounce.get(path);
     if (!slot) { slot = { timer: null, pending: null }; foldDebounce.set(path, slot); }
@@ -228,67 +172,26 @@ function rememberFolds(path: string, state: EditorState): void {
     armed.timer = setTimeout(() => { armed.timer = null; flushFolds(path); }, 400);
 }
 
-/** The collapsed headings stored for `path` — shape-guarded, since localStorage
- *  is user-editable. */
 function storedFoldKeys(path: string): readonly HeadingKey[] {
     const keys = readRecord<unknown>(COLLAPSED_HEADINGS_KEY)[scopedKey(path)];
     return isHeadingKeyList(keys) ? keys : [];
 }
 
-/* ── One set of compartments for every pane ───────────────────────────────
-   A Compartment is an identity key, not state: each EditorState tracks its own
-   replacement for it, so several views can share these freely.
-
-   They MUST be shared, in fact. A pane's state outlives the pane — it is cached
-   by path and handed to whichever pane shows that document next (a tab switch,
-   or the same document dragged into a split) — and a reconfigure effect naming
-   a compartment the state has never heard of is silently dropped. Per-pane
-   compartments would therefore give a restored document a theme, mode and tab
-   size frozen at whatever the pane that last held it was configured with. */
 const themeCompartment = new Compartment();
 const readOnlyCompartment = new Compartment();
 const livePreviewCompartment = new Compartment();
 const indentCompartment = new Compartment();
 
 
-/** The theme + syntax-highlight extension pair for the current app theme. */
 function themeExtensions(theme: Theme, code = false) {
     const light = theme === 'light';
-    // A code pane keeps the app's CHROME (background, caret, selection,
-    // scrollbars) and replaces the prose HIGHLIGHT STYLE outright — it is not
-    // layered on top. Measured: with both active, the note style's own code
-    // colours won half the tokens, so a Racket file came out in Obsidian's
-    // palette rather than the user's (codeHighlight.ts).
     if (code) return [light ? obsidianLightTheme : obsidianDarkTheme, light ? codeLightTheme : codeDarkTheme];
     return light
         ? [obsidianLightTheme, obsidianLightHighlightStyle]
         : [obsidianDarkTheme, obsidianHighlightStyle];
 }
 
-/**
- * Whether a keydown that reached `window` is meant for this note — the guard
- * in front of the search keys (editor/noteSearch.ts), which have to be caught
- * outside the editor because the text of a note being read never holds focus.
- *
- * - Already `defaultPrevented`: CodeMirror (Edit mode, focus in the text), the
- *   open search panel or a dialog took it — acting again would jump twice.
- * - A modal is open: the note is not what the reader is looking at.
- * - Inside the view: its text, a table cell (CodeMirror ignores keys raised in
- *   a widget, so Edit mode's ⌘F in a cell used to reach the browser too), and
- *   its scroller, which holds the keyboard after a tab-bar click (EditorPane's
- *   handKeyboardToNote) and after the search bar closes in Reading mode.
- * - A text field, menu, dialog or listbox owns its keyboard — the sidebar's
- *   search box and a rename field keep the browser's find.
- * - Anything else has no find of its own, so the note in front gets it:
- *   `<body>` (where a click in Reading-mode text or a tree row leaves the
- *   keyboard — neither is focusable), and any button, in the pane's chrome or
- *   the sidebar's. The sidebar counts: Help Guide keeps the keyboard after
- *   opening the guide, whose own text says to press ⌘F (measured: the
- *   browser's find opened instead while this stopped at `.editor-pane`).
- */
 function keyIsForNote(event: KeyboardEvent, view: EditorView): boolean {
-    // Every search key is ⌘/Ctrl-something or F3 — a superset test, so a typed
-    // letter in Edit mode never pays for the document query below.
     if (!event.metaKey && !event.ctrlKey && event.key !== 'F3') return false;
     if (event.defaultPrevented || event.isComposing) return false;
     if (document.querySelector('[aria-modal="true"]')) return false;
@@ -299,23 +202,14 @@ function keyIsForNote(event: KeyboardEvent, view: EditorView): boolean {
     return !target.closest('input, textarea, select, [role="dialog"], [role="menu"], [role="listbox"]');
 }
 
-/* ── What the AI agent sees of a note (utils/viewRegistry.ts) ──────────────
-   Read from the live view when a message is SENT — never on a keystroke, a
-   scroll or a timer — so none of this is on the hot path. */
-
 function lineCol(state: EditorState, pos: number): LineCol {
     const line = state.doc.lineAt(pos);
     return { line: line.number, col: pos - line.from + 1 };
 }
 
-/** Where the reader is in `view`, now. `mode` and `dirty` are the tab's. */
 function describeMarkdown(view: EditorView, mode: EditorMode, dirty: boolean, language?: string): MarkdownViewInfo {
     const { state } = view;
     const doc = state.doc;
-    // The lines actually inside the scroll box — not `view.viewport`, which
-    // CodeMirror renders with a margin above and below what is on screen. The
-    // height map is measured where the reader is looking, so this is exact
-    // there; a view with no box (not laid out) falls back to the viewport.
     let from = view.viewport.from;
     let to = view.viewport.to;
     const box = view.scrollDOM.getBoundingClientRect();
@@ -345,26 +239,6 @@ function describeMarkdown(view: EditorView, mode: EditorMode, dirty: boolean, la
     };
 }
 
-/**
- * Put the agent's edit into the live editor: ONE transaction, so it is one
- * undo step, and an ordinary one, so the update listener reports it through
- * `onContentChange` — the save funnel typing uses — and carries the scroll
- * place and collapsed headings through it like any keystroke.
- *
- * Works in Reading mode too, deliberately: neither half of Reading mode blocks
- * a programmatic dispatch (editor/readingMode.ts), and no transaction or change
- * filter anywhere in this editor refuses one. That is why the app's own writes
- * ask `canWrite` first — and why THIS one does not: it is a tool the user
- * asked the agent to use, not a gesture aimed at a note being read, and the
- * chat shows it as a change card. `input.agent` names it for anything that
- * filters on userEvent later. `isolateHistory` keeps the user's typing just
- * before or after it from merging into the same undo step (the history joins
- * adjacent input within 500ms), so ⌘Z takes back exactly the agent's edit.
- *
- * Offsets are into the CURRENT text; the caller has already refused a stale
- * edit (the text it read must still be the text here). Throws RangeError on
- * ranges that are out of bounds or overlap — a caller bug, not a user one.
- */
 function applyAgentChanges(view: EditorView, changes: readonly TextChange[]): void {
     const length = view.state.doc.length;
     const sorted = [...changes].sort((a, b) => a.from - b.from || a.to - b.to);
@@ -385,29 +259,10 @@ function applyAgentChanges(view: EditorView, changes: readonly TextChange[]): vo
     });
 }
 
-/* ── The editor's own right-click menu ────────────────────────────────────
-   Rows that write test `canWrite` (editor/readingMode.ts), never either facet
-   alone: neither half of Reading mode blocks a programmatic `view.dispatch`,
-   so an unguarded Insert table… would really insert a table into a note
-   nobody was editing, with no visible cause. */
 const READ_MODE_REASON = 'Switch to editing with ⌘E';
 const NO_SELECTION_REASON = 'Nothing is selected';
 
 
-/**
- * The rows of the menu a right-click in note text raises.
- *
- * Built fresh per click, so every disabled state is a snapshot of the moment
- * the user asked. Disabled rows are PRESENT and carry their reason rather than
- * being left out — a menu that quietly grows and shrinks makes the reader hunt
- * for a row that is simply not applicable right now (the rule
- * VaultMenu.messageFor states for the vault list).
- *
- * Every command re-reads the selection from the view when it RUNS rather than
- * closing over the one measured here: the clipboard calls are async, and a
- * position captured before an await is a position that may no longer describe
- * anything.
- */
 function editorMenuEntries(view: EditorView, notify: (message: string) => void): ContextMenuEntry[] {
     const editable = canWrite(view.state);
     const empty = view.state.selection.main.empty;
@@ -439,8 +294,6 @@ function editorMenuEntries(view: EditorView, notify: (message: string) => void):
             kind: 'command',
             id: 'copy',
             label: 'Copy',
-            // Copy is the one row that survives Reading mode — reading is
-            // exactly when quoting a passage is most likely.
             disabled: empty,
             reason: empty ? NO_SELECTION_REASON : undefined,
             run: async () => {
@@ -458,11 +311,6 @@ function editorMenuEntries(view: EditorView, notify: (message: string) => void):
             disabled: !editable,
             reason: !editable ? READ_MODE_REASON : undefined,
             run: async () => {
-                // Chromium permission-gates a clipboard READ that is not
-                // driven by a live gesture, and by the time a menu row is
-                // clicked the right-click is spent — so a refusal here is
-                // ordinary, and saying so (naming the keystroke that always
-                // works) is the whole handling.
                 const read = await readClipboardText();
                 if (!read.ok) { notify(CLIPBOARD_READ_BLOCKED); return; }
                 if (!canWrite(view.state)) return;
@@ -501,86 +349,34 @@ function editorMenuEntries(view: EditorView, notify: (message: string) => void):
 interface DocumentPaneProps {
     reading: ReaderIntegration;
     tab: OpenTab;
-    /** Which column this is. Every pane-scoped action names it rather than a
-     *  path, because closing the column, and stepping its history, outlive the
-     *  document that happens to be showing. */
     paneId: string;
-    /** The pane ⌘E, ⌘F and ⌘S mean, and the only one that answers a table
-     *  insert raised from outside the editor. */
     isFocused: boolean;
-    /** More than one column is on screen. Only the aria-labels read it: with
-     *  several identical headers up, a bare verb does not say which document
-     *  it acts on. The focus underline is CSS's, from `.editor-split.is-split`. */
     isSplit: boolean;
-    /** Whether this pane's own history has anywhere to step. False leaves the
-     *  arrow on screen and disabled — a control that comes and goes is harder
-     *  to aim at than one that is plainly spent. */
     canBack: boolean;
     canForward: boolean;
     onBack: (paneId: string) => void;
     onForward: (paneId: string) => void;
-    /** Closes this whole column and every tab in it. Raised from the ⋯ menu:
-     *  the reference images' header has no ×, and the tab strip's × already
-     *  closes one document. */
     onClosePane: (paneId: string) => void;
-    /** Read ⇄ edit for THIS pane's document (view ⇄ annotate for a PDF) —
-     *  the same toggle ⌘E runs, which is why it still takes a path. */
     onToggleMode: (path: string) => void;
-    /** Write a .pdf beside this notebook. A notebook is the editable original
-     *  and the PDF an output, so this writes rather than switching to it. */
     onExportNotebook: (file: ActiveFile) => void;
-    /**
-     * This pane's share of the EDITOR's width — a `flex-grow` naming the CSS
-     * variable EditorPane keeps for this column, so a pane needs to know
-     * nothing at all about how the editor divides its width.
-     *
-     * Passed at every pane count, a single column included (`--pane-w-0: 100`),
-     * so the column and the tab group drawn above it size themselves by one
-     * mechanism instead of two.
-     *
-     * EditorPane hands out ONE FROZEN OBJECT per column, so this prop's
-     * identity never moves: a pane's props do not change at all while a divider
-     * is being dragged, which is what lets the drag repaint the whole split
-     * without re-rendering a single document.
-     */
     widthStyle: React.CSSProperties;
     theme: Theme;
-    /** Spaces a Tab inserts — and how far Tab indents a list item. */
     tabSize: number;
-    /** Settings → Colour brackets by depth. Code panes only; reconfigured
-     *  live through a compartment, like the theme and the indent width. */
     rainbowBrackets: boolean;
     contentOf(path: string): string | undefined;
     documentBuffers: DocumentBufferStore;
     markdownSessions: MarkdownSessionHost;
-    /** Register what takes the keyboard when a tab-bar click brings this note
-     *  to the front (see EditorPane's handKeyboardToNote); returns the
-     *  unregister. Stable, for the memo. Called from an effect and never baked
-     *  into the EditorState, so it may be EditorPane's: it lives and dies with
-     *  the panes that register in it, graph-view trips included. */
     registerKeyboardTarget: (path: string, take: () => void) => () => void;
     /** Baked into the EditorState, which outlives this pane and EditorPane
      *  both, so the caller keeps it stable for the app's life (App does). */
     getWikiLinkTargets: () => WikiLinkTarget[];
-    /** Path-explicit: several documents are editable at once, and a debounced
-     *  canvas save can land after this pane has gone away. `fromDisk` = the
-     *  text was just reloaded from the file: buffer it, but it is not an edit. */
     onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
-    /** Resolve this document's DiskBar (OpenTab.disk). Stable. */
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
-    /** Read this document's file again when the restore could not
-     *  (OpenTab.readError); resolves true once it holds the text. Stable. */
     onRetryRead: (path: string) => Promise<boolean>;
     onFocusPane: (path: string) => void;
     onOpenNote: OpenNoteByNameHandler;
-    /** Say something to the reader — the app's own dialog, from App's `tell`.
-     *  A refused clipboard and a refused `.md` drop use it, and it is the
-     *  difference between a gesture that explains itself and a dead one.
-     *  Must be STABLE: this component is memoized so the tree of panes does
-     *  not re-render on every keystroke. */
     onNotify: (message: string) => void;
     onConfirm: (question: { title: string; body: string; confirmLabel: string; danger?: boolean }) => Promise<boolean>;
-    /** One-shot select+scroll order from vault search (null = nothing pending). */
     revealRequest: EditorRevealRequest | null;
     onRevealHandled: () => void;
 }
@@ -591,24 +387,6 @@ function TexDocument({ store, documentId, path, contentOf }: { store: DocumentBu
     return text === undefined ? null : <TexView source={text} />;
 }
 
-/**
- * ONE open document, drawn in one column of the editor.
- *
- * Everything document-scoped lives here — the CodeMirror view, its
- * compartments, the paste/scroll/wikilink handlers and the drawing canvas — so
- * that showing N documents side by side is N of these rather than a special
- * case inside the editor. React keys the component by document (`OpenTab.id`),
- * which is why there is no tab-swap logic in it at all:
- * a pane shows one document for its whole life, and switching tabs mounts and
- * unmounts panes instead of re-pointing one.
- *
- * The App-owned Markdown session retains the EditorState across pane unmounts,
- * so undo history and selection survive a tab switch or graph-view trip.
- *
- * A canvas document (a drawing, a PDF) builds no view: it never held text, and
- * the surface that draws it is either the drawing pane below or the PdfPane
- * that EditorPane positions over this slot.
- */
 function DocumentPane({
     tab,
     paneId,
@@ -652,12 +430,7 @@ function DocumentPane({
     const isPdf = !file.isHelp && tab.representation.loadedKind === 'pdf';
     const isEpub = !file.isHelp && tab.representation.loadedKind === 'epub';
     const isCanvas = isDrawing || isNotebook || isPdf || isEpub;
-    /** A LaTeX source file. Reading mode typesets it (components/TexView.tsx)
-     *  instead of building a CodeMirror view, so the two modes are "the document"
-     *  and "the source" rather than markdown's two readings of one text. */
     const isTex = !file.isHelp && isTexFile(file.name);
-    /** A source file: line numbers, syntax colours, folds, several cursors —
-     *  editor/codeEditor.ts. The grammar itself arrives a tick after the view. */
     const isCode = !file.isHelp && isCodeFile(file.name);
     const codeLanguage: CodeLanguage | null = isCode ? codeLanguageFor(file.name) : null;
     /** Restored without its text (OpenTab.readError): this pane shows only
@@ -669,9 +442,6 @@ function DocumentPane({
     const readerIdentity = reading.identityForTab(tab);
     const controller = useSyncExternalStore(useCallback(listener => subscribeReadingSurface(tab.id, listener), [tab.id]), useCallback(() => getReadingSurface(readerIdentity), [readerIdentity]));
     const capability = readingCapabilities(tab, controller?.capabilities() ?? tab.readerCapabilities).emphasis;
-    /** Showing the typeset LaTeX rather than a CodeMirror view: no view is built
-     *  at all in this mode, which is why everything below reads `viewRef` when
-     *  called instead of assuming one. */
     const texReading = isTex && mode === 'read' && !unreadable;
     const [retrying, setRetrying] = useState(false);
     // A success remounts this pane (EditorPane keys it on readError), so only a
@@ -696,16 +466,8 @@ function DocumentPane({
     // TeX read mode swaps the container without unmounting this pane. A ref's
     // transient null on an ordinary re-render must not destroy the live view.
     useLayoutEffect(() => { if (texReading) destroyView(); }, [texReading, destroyView]);
-    /** True only while setEditorContainer builds the view — see there. */
     const buildingViewRef = useRef(false);
 
-    // "Insert table…" in this pane's ⋯ menu cannot reach this view: the menu is
-    // built from a module store (utils/contextMenu.ts) and holds no EditorView.
-    // So a pick goes out as a request naming the document and only the pane
-    // FOCUSED on it inserts — which is why openPaneMenu focuses this pane before
-    // raising the menu, and why there is still one insertion site rather than
-    // two. A ref, because the subscription is made once per document and focus
-    // moves under it.
     const isFocusedRef = useRef(isFocused);
     useEffect(() => { isFocusedRef.current = isFocused; }, [isFocused]);
     useEffect(() => onTableInsertRequest((request) => {
@@ -714,14 +476,6 @@ function DocumentPane({
         insertTableAtCursor(view, request.rows, request.cols);
     }), [tab.file.path]);
 
-    // ⌘F, ⌘G and F3 for this note, from outside the editor: a note being read
-    // never holds focus, so CodeMirror's own searchKeymap cannot see them
-    // (editor/noteSearch.ts). Only the FOCUSED pane acts, for the table-insert
-    // reason — two panes must not both open. Bubble phase, so the content and
-    // the panel have had their turn and `keyIsForNote` sees what they took. A
-    // canvas pane builds no CodeMirror view; PDF/EPUB find is routed below
-    // through their reader controllers. Registered by the pane, not baked
-    // into the EditorState, so the outlives-the-pane rule does not apply.
     useEffect(() => {
         if (isCanvas) return;
         const onKeyDown = (event: KeyboardEvent) => {
@@ -733,8 +487,6 @@ function DocumentPane({
         return () => window.removeEventListener('keydown', onKeyDown);
     }, [isCanvas]);
 
-    // PDFs float outside this slot. Header/tab focus still belongs to the
-    // focused document's own Original or extracted-Text find.
     useEffect(() => {
         if (!isPdf && !isEpub) return;
         const key = (event: KeyboardEvent) => {
@@ -749,20 +501,9 @@ function DocumentPane({
         return () => window.removeEventListener('keydown', key);
     }, [isPdf, isEpub, controller]);
 
-    // What a tab-bar click hands the keyboard to: the note's SCROLLER, in both
-    // modes. Not the text — Reading mode's cannot be focused at all, and Edit
-    // mode's would arm Space to type at a caret that may be pages away, and
-    // turn PageDown and the arrows into caret moves. CodeMirror already gives
-    // `.cm-scroller` `tabIndex = -1` and runs none of its key handling there,
-    // so the browser just scrolls it (and Tab goes into the text where the
-    // reader is — editor/tabIntoText.ts); ⌘F still finds this note from it
-    // (`keyIsForNote`: inside the view). Reads `viewRef` when CALLED, so it
-    // reaches the view StrictMode's rebuild left, not the one it destroyed.
     const texScrollerRef = useRef<HTMLDivElement | null>(null);
     useEffect(() => {
         if (isCanvas || unreadable) return;
-        // A typeset .tex has no view: its own scroller takes the keyboard, so
-        // Space and PageDown scroll the document a tab-bar click just fronted.
         return registerKeyboardTarget(path, () => (texReading
             ? texScrollerRef.current?.focus({ preventScroll: true })
             : viewRef.current?.scrollDOM.focus({ preventScroll: true })));
@@ -770,12 +511,6 @@ function DocumentPane({
 
     const revealClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // What the AI agent sees of this note, and its hands on it. Registered by
-    // the pane from an effect, NOT baked into the EditorState: the state
-    // outlives this pane, and a reporter captured in it would go on answering
-    // for a pane long gone. Everything is read through refs when called.
-    // The Help Guide is reported (the agent should know it is being read) but
-    // gets no hands: it is read-only in every mode and has no file behind it.
     const tabRef = useRef(tab);
     useEffect(() => { tabRef.current = tab; }, [tab]);
     const isHelp = !!file.isHelp;
@@ -793,7 +528,6 @@ function DocumentPane({
                 const view = viewRef.current;
                 const { mode: tabMode, dirty } = tabRef.current;
                 if (view) return describeMarkdown(view, tabMode, !!dirty, codeLanguage?.name);
-                // Between the pane's mount and its view (a frame at most).
                 const content = text();
                 const state = EditorState.create({ doc: content });
                 return {
@@ -811,11 +545,6 @@ function DocumentPane({
                     applyAgentChanges(view, changes);
                     return true;
                 },
-                // The file changed on disk and this document had nothing unsaved
-                // (App.checkOpenDocs decided): one minimal transaction, so the
-                // caret, the scroll place and the history outside the change all
-                // stay. The update listener sees `externalReload` and reports it
-                // as `fromDisk`, so it is never written back.
                 replaceFromDisk(next: string) {
                     const view = viewRef.current;
                     if (!view) return false;
@@ -825,39 +554,11 @@ function DocumentPane({
                 },
             }),
         });
-        // `codeLanguage` is a property of the PATH (one file, one language), so
-        // it cannot change under a mounted pane; listed for the rule's sake.
     }, [path, isCanvas, unreadable, isHelp, codeLanguage?.name, contentOf]);
 
-    // Live prop mirrors: the view is built once, so everything it calls has to
-    // be reachable without rebuilding it.
-    //
-    // THE CATCH, and it is easy to miss: a ref only stays live while the pane
-    // that owns it is mounted, but these are read from handlers baked into the
-    // EditorState — which is cached and re-adopted by whichever pane shows the
-    // document next, keeping the handlers the FIRST pane built. So a callback
-    // reached this way must already be stable for the app's life; making it a
-    // ref here does not rescue one that isn't, it only hides the staleness.
-    // (`openNoteByName` was not, and wikilink clicks silently stopped working
-    // in any note whose pane had been unmounted once — it is now stable in
-    // App.tsx, where the fix belongs.) Anything genuinely per-document that the
-    // handlers need goes by PATH instead, like scrollDebounce above.
-    // These callbacks are App/context lifetime. A cached state must resolve the
-    // document's current destination, not the refs of the pane that made it.
-
-    // ONE stable identity for the life of the pane. ImageWidget.eq() compares
-    // its resolver by identity, so a fresh closure per call site made every
-    // image widget compare unequal after any compartment reconfigure — i.e. on
-    // every ⌘E CodeMirror tore down and rebuilt all their DOM, re-resolved every
-    // asset, and flashed each image back through its "Loading …" placeholder.
-    // Held in state rather than a ref because it is READ during render (it goes
-    // into the editor's extensions), which is exactly what a ref is not for.
     const [stableGetAssetUrl] = useState(() => (fileName: string) =>
         getAssetUrl(fileName, markdownSessions.parentHandleOf(documentId)));
 
-    // Deleting an embedded image is the editor's only action that needs the app:
-    // it has to be confirmed first, since the picture goes to .Garbage with it.
-    // Stable for the same reason the resolver is.
     const [imageActions] = useState<ImageEmbedActions>(() => ({
         confirmDelete: (request) => {
             const adapter = markdownSessions.get(documentId), doc = adapter?.state.doc;
@@ -867,16 +568,6 @@ function DocumentPane({
         },
     }));
 
-    /**
-     * The live-preview plugin for this document, or NOTHING for a `.tex`.
-     *
-     * Markdown's readings of LaTeX are all wrong — `$x_1$` is not an italic run,
-     * `_` is a subscript, `#` is a comment nowhere — and a widget that hides the
-     * source it stands for is the last thing wanted in a file that has to compile.
-     * So a .tex is edited as plain source; reading it is TexView's job. One helper
-     * rather than three copies, because the compartment is reconfigured on ⌘E and
-     * on a cached state's re-adoption as well as being built here.
-     */
     const [imageContexts] = useState(() => ({
         read: { getAssetUrl: stableGetAssetUrl, actions: imageActions, editable: false },
         edit: { getAssetUrl: stableGetAssetUrl, actions: imageActions, editable: true },
@@ -885,8 +576,6 @@ function DocumentPane({
         (isTex || isCode ? [] : createLivePreviewPlugin(imageContexts[forMode], imageActions)),
     [isTex, isCode, imageContexts, imageActions]);
 
-    /** The full extension list for this document. Every dynamic bit goes
-     *  through a ref, so the view never has to be rebuilt. */
     const metadataUpdate = (update: MarkdownSessionUpdate) => {
         const currentPath = markdownSessions.pathOf(documentId);
         if (currentPath === undefined) return;
@@ -903,28 +592,12 @@ function DocumentPane({
         ))) rememberFolds(currentPath, update.state);
     };
     const editorExtensions = (): Extension => [
-            // ── Code files take a different editor entirely ──
-            // No line wrapping (a long line scrolls, as in any editor), no
-            // markdown grammar, no live preview, no wikilinks: everything below
-            // that is about prose is skipped for a .py or a .rkt, and
-            // codeExtensions brings the gutter, folds, brackets, completion and
-            // multiple cursors in its place.
             ...(isCode ? codeExtensions({ tabSize, language: codeLanguage, rainbow: rainbowBrackets }) : [
                 EditorView.lineWrapping,
-                // Draw a custom cursor element (.cm-cursor) instead of using the
-                // native browser caret, so the caret style/animation settings apply.
                 drawSelection(),
                 history(),
-            // Before closeBrackets so LaTeX gets first claim on $ { ( [ —
-            // the stock handler doesn't know $ at all, and refuses to pair
-            // brackets before non-whitespace, which is every keystroke
-            // inside $…$.
             mathEditingExtensions(),
             closeBrackets(),
-            // The extra resolver matters: fence infostrings are often file
-            // extensions (```py, ```rs) which matchLanguageName ignores —
-            // it only knows names and aliases — so fall back to matching
-            // them as if they were a filename's extension.
             markdown({
                 base: markdownLanguage,
                 codeLanguages: (info: string) =>
@@ -932,8 +605,6 @@ function DocumentPane({
                     ?? LanguageDescription.matchFilename(languages, `x.${info}`),
             }),
                 indentCompartment.of(indentSettings(tabSize)),
-                // Above the default keymap, which deliberately leaves Tab to the
-                // browser — here it indents (and re-nests list items) instead.
                 listIndentKeymap,
                 keymap.of([
                     ...defaultKeymap,
@@ -943,14 +614,7 @@ function DocumentPane({
                 ]),
             ]),
             themeCompartment.of(themeExtensions(theme, isCode)),
-            // ⌘F's jump is a revealMatch, as the vault-search reveal is: centred
-            // and held while pictures and diagrams above it load (the default,
-            // a one-shot nearest-edge scroll, left a match 1,445px below view).
-            // The floating ⌘F box (editor/findPanel.ts) in place of CodeMirror's
-            // full-width form.
             search({ scrollToMatch: revealMatchEffect, createPanel: findPanel(revealMatchEffect), top: true }),
-            // The search keys again, for a note that cannot take focus — run
-            // by the window listener below, never by CodeMirror itself.
             noteSearchKeymap,
             keyboardAfterSearchClose,
             readOnlyCompartment.of(modeExtensions(mode)),
@@ -981,7 +645,6 @@ function DocumentPane({
                             event.preventDefault();
                             const blob = item.getAsFile();
 
-                            // Generate a filename like Obsidian: Pasted image 20231025143000.png
                             const now = new Date();
                             const timestamp = now.getFullYear().toString() +
                                 (now.getMonth() + 1).toString().padStart(2, '0') +
@@ -990,7 +653,6 @@ function DocumentPane({
                                 now.getMinutes().toString().padStart(2, '0') +
                                 now.getSeconds().toString().padStart(2, '0');
 
-                            // Make sure we carry over the correct extension (e.g. image/png -> .png)
                             const extMatch = item.type.match(/image\/(jpeg|png|gif|webp|svg\+xml)/);
                             let ext = '.png';
                             if (extMatch) {
@@ -998,7 +660,6 @@ function DocumentPane({
                             }
                             const filename = `Pasted image ${timestamp}${ext}`;
 
-                            // Into the .Assets folder beside THIS pane's note.
                             const currentPath = markdownSessions.pathOf(documentId);
                             if (currentPath === undefined || !blob) return true;
                             const parentHandle = markdownSessions.parentHandleOf(documentId);
@@ -1029,36 +690,20 @@ function DocumentPane({
                                 onNotify(`Could not save the pasted image to “${assetFolder}”. Check that this is a writable folder, then try again.`);
                             });
 
-                            return true; // We handled the paste
+                            return true;
                         }
                     }
                     return false;
                 },
                 scroll(event, view) {
-                    // Keyed by path, not by this pane: see scrollDebounce above.
-                    // Also called by CodeMirror's IntersectionObserver at mount,
-                    // at scrollTop 0 — harmless only because a holding view
-                    // remembers nothing.
                     const currentPath = markdownSessions.pathOf(documentId);
                     if (currentPath !== undefined) rememberScroll(currentPath, view);
                 },
                 drop(event) {
-                    // A dropped .md replaces the whole note, and the pane's
-                    // onDrop does that — or refuses it, in Reading mode.
-                    // Claimed here, in both modes, so CodeMirror's own drop
-                    // handler never runs for it: in Edit mode it would first
-                    // insert the file's text at the drop point, making the
-                    // replace a second transaction that collapsed headings
-                    // could not be carried through (measured: both folds
-                    // lost). Every OTHER drop — text, a non-.md file — reaches
-                    // that handler, which refuses it in Reading mode on
-                    // readOnly. The event still bubbles to onDrop, which reads
-                    // the file.
                     const item = event.dataTransfer?.items?.[0];
                     return item?.kind === 'file' && !!item.getAsFile()?.name.endsWith('.md');
                 },
                 mousedown(event) {
-                    // Navigate when a rendered [[wikilink]] is clicked.
                     const el = (event.target as HTMLElement).closest?.('.cm-wikilink');
                     if (el) {
                         event.preventDefault();
@@ -1070,19 +715,9 @@ function DocumentPane({
             })
         ];
 
-    // Build the view as soon as the container is mounted, from this document's
-    // cached state when it has one. A cached state was configured by whichever
-    // pane last held it, so everything a SETTING feeds is re-stated here — the
-    // same reconfigure the single-view build did on a tab swap.
     const setEditorContainer = (node: HTMLDivElement | null, retried = false) => {
         if (!node || viewRef.current) return;
         const cached = markdownSessions.get(documentId);
-        // A cached state whose search panel was left open focuses that panel's
-        // Find field as the view is built (SearchPanel.mount). That is not the
-        // reader choosing this pane, so the slot's focus handler must not take
-        // it as such — measured: in a split, returning to the tab made the pane
-        // with the open panel the focused one, and ⌘E/⌘S then acted on the other
-        // note — and the keyboard goes back to where it was.
         const keyboardBefore = document.activeElement;
         buildingViewRef.current = true;
         try {
@@ -1104,15 +739,8 @@ function DocumentPane({
             const view = new EditorView({ state: adapter.state, parent: node });
             detachViewRef.current = adapter.attach(view);
             viewRef.current = view;
-            // KaTeX is fetched on demand (editor/mathWidget.ts). Start it the
-            // moment a document that could contain a formula opens, so the
-            // renderer is usually already here when one scrolls into view; a
-            // note with no `$` in it never asks for it at all.
             if (initial.includes('$')) warmMath();
             returnKeyboard(view, keyboardBefore);
-            // Every grammar is a dynamic import, so a code pane paints at once
-            // in plain text and takes its colours a tick later. A cached state
-            // already carries one, and loadCodeLanguage leaves it alone.
             if (isCode) void loadCodeLanguage(view, codeLanguage, codeLanguage === null);
 
             if (cached) {
@@ -1127,23 +755,11 @@ function DocumentPane({
                         livePreviewCompartment.reconfigure(livePreviewFor(mode)),
                         indentCompartment.reconfigure(indentSettings(tabSize)),
                         ...(!isCode && !isTex ? [readingEmphasisCompartment.reconfigure(readingEmphasisOptions({enabled: preferences.emphasis.enabled, mode, locale: ''}))] : []),
-                        // A leftover search flash from the last time this document
-                        // was on screen.
                         setRevealHighlight.of(null),
                     ],
                 });
-                // Nothing for collapsed headings: their field is in no compartment,
-                // and reads the mode from the editable facet re-stated above. Nor
-                // for an open ⌘F box, which follows `readOnly` itself
-                // (editor/findPanel.ts).
             }
 
-            // Put back where this document was left, and keep it there while the
-            // background parse draws what lies around it. After the reconfigure
-            // above, so the landing is laid out with this mode's decorations;
-            // synchronous, so no frame is painted at the note's top first. The
-            // reveal effect below runs later, in its own frame, and its revealMatch
-            // replaces this hold with its own, so it still wins.
             const anchor = rememberedScroll(path);
             if (anchor) holdScrollAnchor(view, anchor);
         } finally {
@@ -1151,29 +767,13 @@ function DocumentPane({
         }
     };
 
-    // Detach the view; the App-owned session retains the document state.
     useEffect(() => () => {
         destroyView();
-        // Scrolling and then switching tabs inside the debounce must not lose
-        // where the reader was — write it now rather than drop it. Keyed by
-        // path, so this finds the timer the handler actually armed even when
-        // that handler belongs to an earlier pane for this document. The same
-        // holds for a section collapsed just before the switch.
         const currentPath = markdownSessions.pathOf(documentId);
         if (currentPath !== undefined) { flushScroll(currentPath); flushFolds(currentPath); }
         if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
     }, [documentId, markdownSessions, destroyView]);
 
-    /* ── Live settings → the open view ────────────────────────────────────
-       The three effects below carry a CHANGE of setting into a view that is
-       already running. They must not also run at mount, which is what `settled`
-       is for: the callback ref above has just configured this view for exactly
-       these values — either by baking them into a fresh state or by
-       reconfiguring an adopted one — and re-stating them is not free.
-
-       The live-preview field now survives compartment reconfiguration; mode
-       changes still require a full render, while a context change touches only
-       the image widgets. */
     const settled = useRef(false);
     const previousCodeLanguage = useRef(codeLanguage?.description);
     useEffect(() => {
@@ -1186,9 +786,6 @@ function DocumentPane({
     useEffect(() => {
         if (!settled.current) return;
         viewRef.current?.dispatch({ effects: themeCompartment.reconfigure(themeExtensions(theme, isCode)) });
-        // `isCode` is a property of the document, so it cannot change under a
-        // mounted pane (a path is one file); it is listed because the rule
-        // cannot know that.
     }, [theme, isCode]);
 
     useEffect(() => {
@@ -1238,12 +835,6 @@ function DocumentPane({
         return () => { settled.current = false; };
     }, []);
 
-    // Jump to a search match: select it, centre it and hold it there while
-    // what surrounds it is still being drawn (revealMatch, editor/scrollAnchor.ts),
-    // and flash a highlight decoration (visible even in read mode, where the
-    // view may refuse focus so the selection alone could be invisible).
-    // Dispatched inside requestAnimationFrame, after the view is laid out; the
-    // revealMatch replaces any restored place the callback ref is holding.
     useEffect(() => {
         if (!revealRequest || revealRequest.path !== path) return;
         const { from, to } = revealRequest;
@@ -1252,15 +843,9 @@ function DocumentPane({
         requestAnimationFrame(() => {
             const view = viewRef.current;
             if (!view) return;
-            // The doc may be shorter than the searched text was (e.g. it
-            // changed on disk since indexing) — clamp rather than throw.
             const docLen = view.state.doc.length;
             const safeFrom = Math.min(from, docLen);
             const safeTo = Math.min(to, docLen);
-            // A note this jump just opened is parsed only to ~3,000 characters;
-            // without this its headings, code panels and collapsed sections
-            // around the match were redrawn after the scroll (a 34KB note landed
-            // 61px off centre, 256px with a section collapsed above the match).
             parseForReveal(view, safeTo);
             view.dispatch({
                 selection: { anchor: safeFrom, head: safeTo },
@@ -1271,9 +856,6 @@ function DocumentPane({
             });
             view.focus();
 
-            // Let the flash fade after a moment — timed from the dispatch, so the
-            // parse above does not eat into it. An earlier reveal's pending fade
-            // is cancelled so it can't cut this one short.
             if (revealClearTimerRef.current) clearTimeout(revealClearTimerRef.current);
             revealClearTimerRef.current = setTimeout(() => {
                 viewRef.current?.dispatch({ effects: setRevealHighlight.of(null) });
@@ -1283,27 +865,11 @@ function DocumentPane({
         // onRevealHandled() nulls the request and re-runs this effect.
     }, [revealRequest, path, onRevealHandled]);
 
-    // Anything at all inside a pane — a click in its text, its canvas, its
-    // header — is what makes it the focused one. mousedown as well as focus,
-    // because a canvas pane may never take DOM focus at all.
     const takeFocus = () => { if (!isFocused) onFocusPane(path); };
-    // …except a focus the view moved while it was being built (see
-    // setEditorContainer): that one arrives synchronously, mid-construction.
     const takeFocusFromEvent = () => { if (!buildingViewRef.current) takeFocus(); };
 
     const displayName = noteDisplayName(file.name);
 
-    /* ── The header's controls ────────────────────────────────────────────
-       Moved down from the view header, which used to carry one set for
-       whichever document was focused. Each pane now names its own, so the
-       per-kind branches are the same ones, retargeted at THIS pane's file:
-
-       · a note toggles Reading ⇄ Editing;
-       · a PDF reuses that same per-tab mode — read = view the real PDF, with
-         its text selectable, edit = draw on it, in that same file;
-       · a drawing, a notebook, the Help Guide and a document that could not be
-         read have no mode at all, and get NO button rather than a dead one.
-         (A notebook's one action is Export to PDF, which is in ⋯.) */
     const canAnnotate = isPdf && !unreadable;
     const canToggleRead = !file.isHelp && !isCanvas && !unreadable;
     const canToggleMode = canAnnotate || canToggleRead;
@@ -1314,21 +880,8 @@ function DocumentPane({
         ? (mode === 'read' ? <PenTool size={15} /> : <Eye size={15} />)
         : (mode === 'read' ? <Eye size={15} /> : <Edit2 size={15} />);
 
-    /** What a control announces. Split, every column draws the same three
-     *  buttons, so a bare verb does not say which document it acts on; alone,
-     *  nothing could be confused with it and the plain verb reads better. The
-     *  visible tooltip stays the bare verb either way — the document's name is
-     *  already centred between them. */
     const announce = (verb: string) => (isSplit ? `${verb} in ${displayName}` : verb);
 
-    /* The ⋯ menu: the app's own, never a bespoke dropdown — it already has the
-       grid, command and separator rows this needs, and one menu on screen at a
-       time is the whole point of the store (utils/contextMenu.ts).
-
-       Built fresh per click, so every disabled state is a snapshot of the
-       moment the user asked, as the editor's own menu is. Rows that do not
-       apply to this kind are left out; "Close this pane" applies to every kind,
-       which is what keeps ⋯ from ever being an empty menu. */
     const openPaneMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
         // FIRST, and load-bearing: the table-insert listener above is gated on
         // `isFocused`, so a ⋯ raised in a pane that does not have focus would
@@ -1352,8 +905,6 @@ function DocumentPane({
             ...(controller.printPdf ? [{kind:'command' as const,id:'pdf-print',label:'Print…',run:()=>controller.printPdf?.()}] : []),
         );
         if(canToggleMode) entries.push({kind:'command',id:'change-mode',label: canAnnotate ? 'Toggle view/annotate mode' : 'Toggle read/edit mode',run:()=>onToggleMode(path)});
-        // Not for a .tex: a markdown table is not a `tabular`, and writing one
-        // into a file that has to compile would be a syntax error.
         if (canToggleRead && !isTex && !isCode) {
             entries.push({
                 kind: 'grid',
@@ -1361,9 +912,6 @@ function DocumentPane({
                 label: 'Insert table…',
                 maxRows: TABLE_GRID_ROWS,
                 maxCols: TABLE_GRID_COLS,
-                // Reading mode blocks no programmatic dispatch, so the row is
-                // disabled rather than trusted — and it stays on screen saying
-                // why, the rule every row in this app follows.
                 disabled: mode === 'read',
                 reason: mode === 'read' ? 'Switch to editing (⌘E) to insert a table' : undefined,
                 pick: (rows, cols) => { requestTableInsert(path, rows, cols); },
@@ -1377,8 +925,6 @@ function DocumentPane({
                 run: () => onExportNotebook(file),
             });
         }
-        // Only once something precedes it: a drawing's menu is Close alone, and
-        // a separator at the top of a menu is a rule under nothing.
         if (entries.length > 0) entries.push({ kind: 'separator', id: 'sep-pane' });
         entries.push({
             kind: 'command',
@@ -1387,15 +933,10 @@ function DocumentPane({
             run: () => onClosePane(paneId),
         });
         openContextMenu({
-            // Hung off the button's bottom-left corner rather than the pointer:
-            // this menu belongs to a control, not to a place in a document, so
-            // it should land in the same spot however the button was hit.
             x: box.left,
             y: box.bottom,
-            // "<noun> actions", the form every raiser in the app uses.
             label: 'Pane actions',
             opener: button,
-            // A second press on ⋯ closes the menu (utils/contextMenu.ts).
             anchor: button,
             entries,
         });
@@ -1408,14 +949,8 @@ function DocumentPane({
             onMouseDownCapture={takeFocus}
             onFocusCapture={takeFocusFromEvent}
         >
-            {/* Drawn at EVERY pane count, a single column included: the header
-                is this pane's own chrome, not a way of telling two columns
-                apart, so it does not appear and disappear as the workspace is
-                split and unsplit. */}
             <div
                 className="editor-slot-header"
-                // This strip refuses drops locally; the window fallback also
-                // refuses unclaimed file drops elsewhere.
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => e.preventDefault()}
             >
@@ -1440,9 +975,6 @@ function DocumentPane({
                         <ArrowRight size={15} />
                     </button>
                 </div>
-                {/* The same display name the tab strip shows — a pane header
-                    that still said "Notes.md" over a tab saying "Notes" would
-                    be the inconsistency. The tooltip is already the full path. */}
                 <span className="editor-slot-title" data-tooltip={path}>{displayName}</span>
                 {tab.dirty && <span className="editor-slot-dot" aria-hidden="true" />}
                 <div className="editor-slot-actions">
@@ -1468,8 +1000,6 @@ function DocumentPane({
                     </button>
                 </div>
             </div>
-            {/* A canvas draws its own: its float stands over this slot and
-                would paint over a bar placed here. */}
             {tab.disk && (!isCanvas || isEpub) && (
                 <DiskBar readOnly={isEpub || !canReadTabText(tab)} name={file.name} state={tab.disk} unsaved={tab.dirty} path={path} onAction={onDiskAction} />
             )}
@@ -1478,10 +1008,7 @@ function DocumentPane({
                 {unreadable && (
                     <div
                         className="pdf-pane-message unread-pane"
-                        // status, not alert: this pane remounts on every tab
-                        // switch, and an alert would be read out each time.
                         role="status"
-                        // Refuse drops on the unreadable document locally.
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => e.preventDefault()}
                     >
@@ -1492,7 +1019,6 @@ function DocumentPane({
                             {unsupported
                                 ? 'This file’s format is not supported by this build. Nothing was changed, and its tab is kept.'
                                 : file.isHelp
-                                    // The guide is a part of the app, fetched when shown — not a file anyone else holds.
                                     ? 'The guide is downloaded with the app, and it could not be just now. Its tab is kept.'
                                     : 'Another program may be using it, it may not be downloaded yet, or it can’t be opened right now. Nothing was changed, and its tab is kept.'}
                         </span>
@@ -1508,11 +1034,7 @@ function DocumentPane({
                     <div
                         className="tex-slot"
                         ref={texScrollerRef}
-                        // Focusable but not in the tab order, exactly as
-                        // CodeMirror's own scroller is: what a tab-bar click
-                        // hands the keyboard to (see registerKeyboardTarget).
                         tabIndex={-1}
-                        // Refuse drops on the reading surface locally.
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => e.preventDefault()}
                     >
@@ -1521,64 +1043,12 @@ function DocumentPane({
                 )}
                 {!isCanvas && !unreadable && !texReading && (
                     <div
-                        // `is-code` turns off the prose measure and the
-                        // centring (index.css) — a code file starts at its
-                        // line numbers and runs the width of the pane.
                         className={`view-content${isCode ? ' is-code' : ''}`}
                         ref={setEditorContainer}
-                        /* The app's own menu, in place of the browser's.
-                           WHERE this handler lives is the whole safety
-                           argument, and it is the reason it is not a document
-                           listener with an exclusion list: this element is
-                           rendered `{!isCanvas && …}`, EditorPane mounts every
-                           board (CanvasPane) and PdfPane outside the slot
-                           entirely, and GraphView replaces EditorPane. So a
-                           board's own menu, a PDF's and the graph's are
-                           excluded BY CONSTRUCTION — there is no closest()
-                           list here to drift out of step as surfaces are
-                           added. (Suppressing a board's menu would be a
-                           regression, not a feature.)
-
-                           An ordinary React prop, recreated per render, rather
-                           than EditorView.domEventHandlers: those are baked
-                           into the EditorState, which outlives the pane that
-                           built it — and CodeMirror's own event dispatch
-                           refuses events raised inside a widget, which is the
-                           one place a menu is most wanted. */
                         onContextMenu={(e) => {
                             const view = viewRef.current;
                             if (!view) return;
-                            // A right-click inside a table widget raises the
-                            // TABLE menu and stops there (tableEdit's handler
-                            // is a native listener that stops propagation, so
-                            // it never reaches React's root), which means
-                            // anything arriving here is note text.
                             e.preventDefault();
-                            // Right-clicking OUTSIDE the selection moves the
-                            // caret there first, the way every editor does, so
-                            // "Insert table…" lands where the user aimed.
-                            // Inside a selection, leave it alone so Copy means
-                            // what it looks like.
-                            //
-                            // The LOOSE overload, and that is load-bearing. The
-                            // precise one returns null whenever the block under
-                            // the pointer falls outside the rendered viewport
-                            // (@codemirror/view 6.39.15 :3766-3768), and
-                            // `viewport.to <= block.from` is true for exactly
-                            // one on-screen target: the document's LAST line
-                            // when it is empty, whose from === to === doc.length
-                            // === viewport.to. That is every note that ends in a
-                            // newline, and it is the line the reader aims at to
-                            // put a table at the end of a note. Measured: the
-                            // caret never moved, so "Insert table…" wrote its
-                            // table at the previous caret — the TOP of a
-                            // freshly-opened note, under the heading — and Paste
-                            // spliced the clipboard into the middle of the title
-                            // line. Interior blank lines all resolve either way;
-                            // the loose form differs from the precise one ONLY
-                            // in that branch, where it estimates instead of
-                            // giving up, and it returns doc.length here. The
-                            // null guard below stays regardless.
                             const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
                             const sel = view.state.selection.main;
                             if (pos !== null && (sel.empty || pos < sel.from || pos > sel.to)) {
@@ -1587,27 +1057,11 @@ function DocumentPane({
                             openContextMenu({
                                 x: e.clientX,
                                 y: e.clientY,
-                                // "<noun> actions", the form every raiser uses
-                                // — the menu is announced as "Note actions
-                                // menu" wherever it was raised, rather than
-                                // this one alone reading out a file name. The
-                                // document is not in doubt: the reader's own
-                                // click is what opened it.
                                 label: 'Note actions',
                                 opener: document.activeElement as HTMLElement | null,
                                 entries: editorMenuEntries(view, onNotify),
                             });
                         }}
-                        /* A dropped .md replaces this pane's whole note. That is a
-                           programmatic dispatch, which neither half of Reading
-                           mode blocks — until #17's fix a file dropped on a note
-                           being read replaced it, and autosave wrote it to disk.
-                           So Reading mode refuses here, and SAYS so: a drop that
-                           does nothing looks broken. Both cancels stay
-                           unconditional to prevent the browser opening an unclaimed
-                           file, and the cursor is not turned into a no-drop one:
-                           `dropEffect = 'none'`
-                           would swallow the drop, and the explanation with it. */
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={async (e) => {
                             e.preventDefault();
@@ -1619,54 +1073,28 @@ function DocumentPane({
                             if (!dropped || !dropped.name.endsWith('.md')) return;
                             const view = viewRef.current;
                             if (!view) return;
-                            // Dropping onto a pane is acting on it, as a click
-                            // is — and a drop brings no mousedown. Without this,
-                            // in a split the ⌘E the refusal names toggled the
-                            // OTHER pane (measured). A keyboard still in another
-                            // pane is let go too: dragging from the desktop does
-                            // not move it, and the refusal's dialog hands focus
-                            // back to its opener on close, whose focus event
-                            // made that other pane the focused one again
-                            // (measured, typing in the right pane, dropping on
-                            // the left).
                             const slot = e.currentTarget.closest('.editor-slot');
                             const keyboard = document.activeElement;
                             if (keyboard instanceof HTMLElement && keyboard !== document.body && !slot?.contains(keyboard)) {
                                 keyboard.blur();
                             }
                             takeFocus();
-                            // Decided before the read, so a refused file is
-                            // never read at all.
                             if (!canWrite(view.state)) {
-                                // The guide is read-only in every mode: ⌘E
-                                // skips it, so naming ⌘E would be a dead end.
                                 onNotify(file.isHelp
                                     ? `“${dropped.name}” did not replace the Help Guide, which cannot be edited.`
                                     : `“${dropped.name}” did not replace “${file.name}”, which is open for reading. ${READ_MODE_REASON}, then drop the file again.`);
                                 return;
                             }
                             const text = await dropped.text();
-                            // Re-read after the await, as Paste does: a ⌘E
-                            // pressed during the read is the reader's latest word.
                             const now = viewRef.current;
                             if (!now || !canWrite(now.state)) return;
-                            // The update listener marks the tab dirty and
-                            // schedules the save.
                             now.dispatch({ changes: { from: 0, to: now.state.doc.length, insert: text } });
                         }}
                     />
                 )}
-                {/* A canvas has no surface here. EditorPane keeps one pane
-                    mounted per open PDF, whiteboard and notebook tab and
-                    positions it over this slot: each must outlive the pane, so
-                    that a tab switch neither reloads the document nor rebuilds
-                    its whole board session (components/floatingSlot.ts). */}
             </div>
         </div>
     );
 }
 
-// Memoized: EditorPane re-renders on every keystroke, and with up to five panes
-// on screen only the one being typed in has anything new to say. App replaces
-// exactly the edited tab's object, so the others' props compare equal.
 export default React.memo(DocumentPane);

@@ -27,7 +27,6 @@ const countLinks = (node: Link | null) => node?.count ?? 0;
 const idCompare: Compare = (a, b) => a.id === b.id ? 0 : a.id < b.id ? -1 : 1;
 const parentCompare: Compare = (a, b) => a.parent === b.parent ? compareOrder(a, b) : a.parent < b.parent ? -1 : 1;
 
-/** A path-copied AVL owns its links and values independently of the live mutable model. */
 export async function createSceneRecordStore(initial: Iterable<Node>, retain: Retain,
     cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<SceneRecordStore> {
     let root: Link | null = null, parentRoot: Link | null = null, disposed = false, scheduled = false, failure: unknown;
@@ -68,8 +67,6 @@ export async function createSceneRecordStore(initial: Iterable<Node>, retain: Re
         value.refs++; keep(left); keep(right);
         return { value, left, right, height: 1 + Math.max(height(left), height(right)), count: 1 + countLinks(left) + countLinks(right), refs: 1 };
     };
-    // Arguments are borrowed; the returned root owns one reference. Rotations
-    // allocate only the affected path and share every untouched subtree/value.
     const balance = (value: Value, left: Link | null, right: Link | null): Link => {
         if (height(left) - height(right) > 1) {
             const l = left!;
@@ -242,8 +239,6 @@ export async function createSceneRecordStore(initial: Iterable<Node>, retain: Re
         for (const node of initial) {
             if (count >= 256 || performance.now() - started >= 3) {
                 signal?.throwIfAborted(); await cooperate?.(); signal?.throwIfAborted();
-                // Initial path copies become unreachable immediately; let their
-                // deferred releases catch up before accepting another batch.
                 await drain();
                 count = 0; started = performance.now();
             }

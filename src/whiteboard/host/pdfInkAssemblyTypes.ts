@@ -3,7 +3,6 @@ import type { WriterSource } from '../../pdf/writing/protocol';
 import type { MediaEntry, MediaId } from '../model/media';
 import type { PdfInkSnapshot } from './pdfInkExport';
 
-/** All values and media are pinned synchronously to one board/PDF source revision. */
 export interface PinnedPdfInkSnapshot {
     readonly revision: number;
     readonly source: WriterSource;

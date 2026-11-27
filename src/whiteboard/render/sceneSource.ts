@@ -12,13 +12,6 @@ import type { PaintNodeOrder } from './paintOrder';
 import { SECURITY_LIMITS } from '../security/limits';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-/** The paint source's yield between slices. A chain of setTimeout(0) is clamped to 4 ms from its fifth link, and the streaming source
- * yields every 0.25 ms of work, so a dense tile's read of a sheet waited about 4 ms per slice with the main thread idle (measured,
- * canvas2d DPR 2, the stroke seed fitted at 1% after a hide: one read of 1,024 nodes took 1.26 s, the board 'Loading drawing…' for
- * 2.5 s). The shared yield (utils/yieldToHost.ts) gives input and rendering their turn without the clamp. */
-
-// Provenance: document-model transforms and frame clipping, paint-stream order
-// and page-stack contracts; independent traversal, no third-party source.
 export interface SceneResolveContext {
     readonly world: Affine;
     readonly clips: readonly PaintClip[];
@@ -53,16 +46,8 @@ function frameClip(node: Extract<Node, { kind: 'frame' }>, world: Affine): Paint
     return { key: `frame:${node.id}`, d, fillRule: 'nonzero', localToWorld: world };
 }
 
-/** How many nodes the traversal resolves ahead of the one it emits. A stroke resolves through a geometry-worker round trip; one
- * node at a time, a paint stream waited on each in turn with the main thread and the worker mostly idle (measured, WebGL2,
- * Strokes-3 open: main 60% idle and the geometry worker 85% idle for 7 s). Bounded, so only this many resolutions are held. */
 const RESOLVE_AHEAD = 16;
-/** How many strokes may be resolving ahead: a stroke's geometry is asked in one batch with every other the task asks for, so the
- * look-ahead is the batch, and sixteen strokes per round trip left a 10,060-stroke board's geometry phase bound by the round trips
- * (measured, WebGL2: 16 in flight for 2.7 s, 4.2 ms each). A resolved stroke holds only its paint and packed coverage. Other nodes
- * (pictures, text) keep the RESOLVE_AHEAD bound among them. */
 const RESOLVE_AHEAD_STROKES = 256;
-/** `resolve` starts a node's resolution (its answer is not awaited); `take` hands back the oldest started one, in canonical order. */
 type PaintStep = { readonly kind: 'cooperate' } | { readonly kind: 'resolve'; readonly node: Readonly<Node>; readonly context: SceneResolveContext }
     | { readonly kind: 'take' } | { readonly kind: 'emit'; readonly node: PaintNode };
 function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePaintRequest,
@@ -109,7 +94,6 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
             const clips = parent?.childClips ?? [];
             const childClips = item.kind === 'frame' ? [...clips, frameClip(item, world)] : clips;
             parent = { world, clips, childClips, opacity: (parent?.opacity ?? 1) * item.opacity, page, theme: scope.theme,
-                // A scene-precision request resolves its strokes at its band with no level of detail (the band is the request's device scale).
                 deviceScale: scope.deviceScale, sensitive: scope.sensitiveNodes.has(item.id),
                 allowInkLod: !scope.scenePrecision && !!scope.allowInkLod, previousDeviceScale: scope.previousDeviceScale };
             contexts.set(item.id, parent);
@@ -139,7 +123,6 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
         previousPath = path;
         return path;
     };
-    // The kinds of the resolutions in flight, oldest first (true: not a stroke), so a take knows which bound it frees.
     let resolving = 0, others = 0, oldest = 0;
     const heavy: boolean[] = [];
     const take = function* (): Generator<PaintStep, void, PaintNode | undefined> {

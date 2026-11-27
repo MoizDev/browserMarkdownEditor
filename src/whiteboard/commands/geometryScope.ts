@@ -16,14 +16,11 @@ import { yieldToHost } from '../../platform/yieldToHost';
 
 type Prepared = Awaited<ReturnType<BoardRuntime['render']['prepareForPick']>>;
 export interface BoardGeometryScopeOptions {
-    /** The caller owns this immutable candidate through release. */
     readonly doc?: BoardDoc;
     readonly signal?: AbortSignal;
-    /** For a candidate, this must fence its base document version and lifetime too. */
     readonly current?: () => boolean;
     readonly cooperate?: () => Promise<void>;
 }
-/** The scope's semantic geometry: the renderer's connector/box queries plus the resolved polyline tip. */
 export type BoardGeometryScopeGeometry = BoardRuntime['render']['changeGeometry'] & {
     resolvedPolylineTip(doc: BoardDoc, polyline: PolylineNode, terminal: 'start' | 'end'): Point;
 };
@@ -32,21 +29,18 @@ export interface BoardGeometryScope {
     readonly geometry: BoardGeometryScopeGeometry;
     localBounds(id: NodeId): Box;
     logicalBounds(id: NodeId): Readonly<Rect>;
-    /** Actual logical geometry in the caller's rigid target space. */
     boundsInSpace(id: NodeId, targetFromWorld: Affine): Promise<Box>;
     worldPose(id: NodeId): WorldPose;
     rank(id: NodeId): number;
     release(): void;
 }
 
-/** A read-only projection uses real C5 data/renderers without inventing a session. */
 export interface BoardGeometrySource {
     readonly doc: BoardDoc;
     readonly render: BoardRuntime['render'];
     isCurrent(): boolean;
 }
 
-/** Geometry and resources stay pinned until release; the input candidate must stay immutable. */
 export function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iterable<NodeId>, options: BoardGeometryScopeOptions = {}): Promise<BoardGeometryScope> {
     const doc = runtime.session.doc, owner = runtime.session.owner, revision = doc.rev;
     return acquireBoardGeometryProjection({ doc, render: runtime.render,
@@ -107,7 +101,6 @@ export async function acquireBoardGeometryProjection(source: BoardGeometrySource
             for (const child of doc.children.get(id) ?? []) { closure.push(child.id); if (due()) await tick(); }
         }
         if (node.kind === 'connector') for (const end of [node.start, node.end]) if (end.attach) closure.push(end.attach.target);
-        // An attached polyline's resolved ends depend on its targets' actual surfaces, so they are pinned too.
         for (const target of attachedPolylineTargets(node)) { closure.push(target); dependencies.add(target); }
         if (due()) await tick();
     }
@@ -118,7 +111,6 @@ export async function acquireBoardGeometryProjection(source: BoardGeometrySource
         const font = render.text.fonts.epoch;
         const prepared = new Map<NodeId, Prepared>(), pending = [...roots], seen = new Set<NodeId>();
         const polylinePoints = new Map<NodeId, readonly Point[]>();
-        // Attached ends resolve from the renderer's real surfaces: the cooperative crossings run inside this scope.
         const resolveAttached = async (node: Readonly<Node>): Promise<readonly Point[]> => {
             const surfaces = new Map<NodeId, AttachmentSurface>();
             for (const targetId of attachedPolylineTargets(node)) {
@@ -152,7 +144,6 @@ export async function acquireBoardGeometryProjection(source: BoardGeometrySource
         }
         const poses = new Map<NodeId, WorldPose>();
         const pose = (id: NodeId) => { let value = poses.get(id); if (!value) { value = worldPose(doc, id); poses.set(id, value); } return value; };
-        // The same generators serve the synchronous staged reader; `due` only decides where this scope yields.
         const source: LogicalSource = { prepared: id => prepared.get(id), polylinePoints: id => polylinePoints.get(id),
             children: id => doc.children.get(id) ?? [], pose, check };
         const drive = async <T>(work: Generator<void, T, void>): Promise<T> => {
@@ -204,7 +195,6 @@ export async function acquireBoardGeometryProjection(source: BoardGeometrySource
         }
         const ranks = new Map<NodeId, number>();
         for (let i = 0; i < ranked.length; i++) { ranks.set(ranked[i], i); if (due()) await tick(); }
-        // A fenced source cannot mutate behind this cooperative final sweep.
         for (const [id, node] of captured) { if (doc.nodes.get(id) !== node) throw new DOMException('Board geometry node changed', 'AbortError'); if (due()) await tick(); }
         for (const [id, value] of children) { if (doc.children.get(id) !== value) throw new DOMException('Board geometry hierarchy changed', 'AbortError'); if (due()) await tick(); }
         for (const [id, value] of incidents) { if (doc.attachedTo.get(id) !== value) throw new DOMException('Board geometry attachment changed', 'AbortError'); if (due()) await tick(); }
@@ -213,7 +203,6 @@ export async function acquireBoardGeometryProjection(source: BoardGeometrySource
             if (id) checkNode(id);
             if (render.text.fonts.epoch !== font) throw new DOMException('Board fonts changed', 'AbortError'); };
         guard();
-        // A bound end is the resolved local point from this scope's own steps, mapped by the polyline's pose.
         const polylineTip = (candidate: BoardDoc, line: PolylineNode, terminal: 'start' | 'end'): Point => {
             guard(line.id); if (candidate !== doc) throw new Error('Geometry scope document mismatch');
             const current = doc.nodes.get(line.id);

@@ -1,5 +1,3 @@
-// First P-02b witness: real UI, successful codec fetch, a null-image reply,
-// completed white paint, and no accessible incomplete-render notice.
 import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';

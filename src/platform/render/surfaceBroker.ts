@@ -19,7 +19,6 @@ interface SessionCircuit {
     losses: number[];
     pinned: boolean;
     notified: boolean;
-    /** The person has been told this document's repeated GPU errors latched it on canvas2d. */
     errorNotified: boolean;
     generation: number;
 }
@@ -57,29 +56,19 @@ interface SurfaceEntry {
     pending: Promise<GpuRequestResult> | null;
     failed: CpuFallbackReason | null;
     waiting: boolean;
-    /** Live 2D because the visible-context cap was full: the upgrade waits for a quiet moment, not a gesture. */
     budgetFallback: boolean;
-    /** A visibility change upgrades at once, without the quiet-moment wait. Consumed by the next capacity notification. */
     upgradeBypass: boolean;
     upgradeTimer: ReturnType<typeof setTimeout> | null;
-    /** Back-off for re-qualifying a timed-out restore: the Nth attempt waits REQUALIFY_MIN_MS * 2^N, capped (see armRequalify). */
     requalifyAttempts: number;
     requalifyTimer: ReturnType<typeof setTimeout> | null;
     lease: SurfaceLease;
 }
 
-/** A gesture is over once input and camera motion have been quiet this long; the upgrade waits for that, never mid-gesture. */
 const UPGRADE_QUIET_MS = 250;
 
-/** A timed-out restore is not permanent for a visible pane: the pane asks for a fresh context again after this back-off, doubling,
- * capped. Measured need: a context lost with no restore left the pane on 2D for the session, until hidden and shown. */
 const REQUALIFY_MIN_MS = 5_000;
 const REQUALIFY_MAX_MS = 60_000;
 
-/** The failures a visible pane recovers from by itself, on that back-off: a memory refusal, a context that failed to build or restore,
- * a pressure release. Each once left the pane on 2D until it was hidden and shown again, counted once and never retried: a refused
- * promotion or framebuffer at one zoom kept a document on the CPU for as long as it stayed open. A GPU error is retried by its pane
- * (gpuPaneCandidate) and latches there; `gpu-unavailable` is the device, which a back-off cannot change. */
 function requalifies(reason: CpuFallbackReason | null): boolean {
     return reason === 'restore-timeout' || reason === 'creation-failed' || reason === 'out-of-budget' || reason === 'pressure';
 }
@@ -104,12 +93,10 @@ function validateView(view: SurfaceView): void {
     }
 }
 
-/** No device, timer or DOM work at import time; all consumers share the instance below. */
 class SurfaceBroker {
     private readonly surfaces = new Map<string, SurfaceEntry>();
     private readonly circuits = new Map<string, SessionCircuit>();
     private readonly usedCanvases = new WeakSet<HTMLCanvasElement>();
-    /** Device causes the person has been told about: once per app session, whichever pane met it first. */
     private readonly notifiedCauses = new Set<GpuUnavailableCause>();
     private windowVisible = true;
     private terminalContextActive = false;
@@ -163,9 +150,6 @@ class SurfaceBroker {
                 markPresented: (stamp, generation) => this.markPresented(entry, stamp, generation),
                 failGpu: (stamp, generation, reason, latch) => {
                     if (!this.matches(entry, stamp) || entry.reservation?.generation !== generation) return;
-                    // A latched failure pins the session to 2D for good, and the person is told once: the document now draws on the
-                    // CPU for as long as it is open. Without the latch the pane returns to the GPU by itself (requalifies, or its
-                    // pane's own GPU-error retry), so a passing refusal shows nothing.
                     if (latch) {
                         entry.circuit.pinned = true;
                         auditCount('context', 'gpu-error-latched');
@@ -189,7 +173,6 @@ class SurfaceBroker {
         return entry.lease;
     }
 
-    /** Fixed reservation, even when false. The terminal shim imports no renderer to report this. */
     setTerminalContextActive(active: boolean): void {
         this.terminalContextActive = active;
     }
@@ -199,7 +182,6 @@ class SurfaceBroker {
         return { reserved: platform + RENDER_CONSTANTS.reservedTerminalContexts, platform, terminalActive: this.terminalContextActive };
     }
 
-    /** Window suspension is NOT app-pane hide: keep working resources and pause restoration time. */
     setWindowVisible(visible: boolean): void {
         if (visible === this.windowVisible) return;
         this.windowVisible = visible;
@@ -231,7 +213,6 @@ class SurfaceBroker {
         return revoked;
     }
 
-    /** Pressure/freeze teardown is explicit; browser visibility alone never calls this. */
     releaseContextsForPressure(): void {
         for (const entry of this.surfaces.values()) {
             this.setFailed(entry, 'pressure');
@@ -297,14 +278,11 @@ class SurfaceBroker {
                 }
             }
         } else if (wasVisible && !view.visible && entry.reservation?.lost) {
-            // A zero-size pane can still receive a loss while geometry is changing.
             this.abandon(entry, 'context-lost');
         } else if (!wasDrawable && drawable(entry)) {
-            // Showing a pane is a fresh chance for it: the back-off starts again.
             this.clearRequalify(entry);
             entry.failed = null;
             entry.waiting = !entry.circuit.pinned;
-            // Showing a pane is the visibility change the upgrade waits for: it is not a gesture, so it skips the quiet wait.
             entry.upgradeBypass = true;
             this.notifyAvailable();
         }
@@ -357,9 +335,6 @@ class SurfaceBroker {
             if (!this.matches(entry, stamp)) return Promise.resolve({ kind: 'stale' });
             if (!drawable(entry) || !this.windowVisible) return Promise.resolve({ kind: 'ineligible' });
             if (entry.pending || entry.reservation || entry.circuit.pinned) return this.requestGpu(entry, canvas, stamp);
-            // Shared memory is short: this pane shows 2D now and waits for the reserve to fit. Marking it failed instead kept
-            // it on 2D until an explicit retry, even after the memory freed; the waiter is the real capacity event.
-            // With no sized waiter the pane would wait for nothing: it takes the explicit retry path instead.
             if (this.awaitContextReserve()) entry.waiting = true;
             else this.setFailed(entry, 'out-of-budget');
             return Promise.resolve(this.fallback(entry, 'out-of-budget'));
@@ -408,7 +383,6 @@ class SurfaceBroker {
             let software = false;
             try {
                 if (!reservation.context) {
-                    // A StrictMode cleanup can cancel before this microtask; that canvas was never used.
                     if (this.usedCanvases.has(reservation.canvas)) throw new Error('GPU canvas already used');
                     this.usedCanvases.add(reservation.canvas);
                     // Limits/capability negotiation precedes any nonzero drawing-buffer allocation.
@@ -416,22 +390,16 @@ class SurfaceBroker {
                     reservation.context = reservation.canvas.getContext('webgl2', CONTEXT_ATTRIBUTES);
                     if (!reservation.context) { capabilityUnavailable = true; throw new Error('WebGL2 unavailable'); }
                     if (!valid()) {
-                        // A wrapped getContext may synchronously unmount; abandon could not see its result yet.
                         if (entry.reservation !== reservation) destroyContext(reservation.context);
                         return { kind: 'stale' };
                     }
                 }
-                // Asked on a restored context too: Chrome restores a context lost to a GPU process crash on SwiftShader.
                 if (softwareRenderer(reservation.context)) { software = true; throw new Error('Software WebGL2'); }
                 owner = await entry.callbacks.prepareGpu({
                     canvas: reservation.canvas, context: reservation.context, generation, signal: controller.signal,
                 });
             } catch (error) {
                 if (!valid()) return { kind: 'stale' };
-                // No usable GPU is a fallback the person is told about, never memory pressure, and no back-off retries it.
-                // Measured (Chrome 157): --use-angle=swiftshader hands out SwiftShader WebGL2 even with failIfMajorPerformanceCaveat, and
-                // the pane presented 'webgl2' at up to 584 ms a frame; --disable-gpu refuses the context, but a plain probe got SwiftShader,
-                // so the null counted as a capability failure (pressure) and the person was never told the pane draws on the CPU.
                 const cause: GpuUnavailableCause | null = software ? 'software'
                     : capabilityUnavailable ? deviceGpu()
                         : typeof error === 'object' && error !== null && 'code' in error && error.code === 'unsupported' ? 'unsupported' : null;
@@ -486,7 +454,6 @@ class SurfaceBroker {
                 }
                 return owner.resizeSurface(width, height);
             },
-            // The same lifetime checks as resizeSurface: a raise opened or presented after the grant went stale does nothing.
             openOffscreen: (width, height) => {
                 if (!this.matches(entry, stamp) || entry.reservation !== reservation ||
                     entry.generation !== generation || reservation.lost || !drawable(entry) || !this.windowVisible) return false;
@@ -501,8 +468,6 @@ class SurfaceBroker {
         };
     }
 
-    /** Pure: whether the GPU surface may be shown now. The lifecycle asks before it switches the display, so a refused
-     * switch leaves the broker's state where the picture on screen says it is. */
     private canMarkPresented(entry: SurfaceEntry, stamp: SurfaceStamp, generation: number): boolean {
         return this.matches(entry, stamp) && drawable(entry) && this.windowVisible &&
             !!entry.reservation?.owner && !entry.reservation.lost && !entry.reservation.context?.isContextLost() &&
@@ -614,13 +579,11 @@ class SurfaceBroker {
         if (drawable(entry)) this.fallback(entry, 'restore-timeout');
     }
 
-    /** Records why the pane is on 2D, and arms its back-off when it is one a visible pane recovers from by itself. */
     private setFailed(entry: SurfaceEntry, reason: CpuFallbackReason): void {
         entry.failed = reason;
         if (requalifies(reason)) this.armRequalify(entry);
     }
 
-    /** Counts a pane that has no usable GPU and tells the person once per cause (see SurfaceCallbacks.onGpuUnavailable). */
     private notifyUnavailable(entry: SurfaceEntry, cause: GpuUnavailableCause): void {
         auditCount('context', `unavailable:${cause}`);
         if (cause === 'gpu-error') {
@@ -633,9 +596,6 @@ class SurfaceBroker {
         entry.callbacks.onGpuUnavailable?.(cause);
     }
 
-    /** Re-qualifies a pane whose failure requalifies() with a fresh context after a back-off: a visible pane must not stay on 2D for the session.
-     * The wait doubles per attempt (5 s, 10 s, 20 s, ... to 60 s); a hidden or window-hidden pane arms nothing and is re-armed
-     * when it is shown. The re-qualification goes through the normal capacity path, so the context limits still apply. */
     private armRequalify(entry: SurfaceEntry): void {
         if (entry.requalifyTimer !== null || !requalifies(entry.failed) || !this.windowVisible || !drawable(entry)) return;
         const delay = Math.min(REQUALIFY_MAX_MS, REQUALIFY_MIN_MS * 2 ** Math.min(entry.requalifyAttempts, 10));
@@ -714,8 +674,6 @@ class SurfaceBroker {
         }
     }
 
-    /** One sized waiter for the whole broker: it wakes once the context reserve fits, and the waiting panes retry then. Returns
-     * false when no waiter can be registered (the allocator cannot wake one), so the caller must not wait for it. */
     private awaitContextReserve(): boolean {
         if (this.contextReserveWaiting) return true;
         if (!this.contextAllocator?.whenAvailable) return false;
@@ -725,9 +683,6 @@ class SurfaceBroker {
         return true;
     }
 
-    /** The visible-context cap is full (a sixth visible pane, or the platform ceiling). The pane is live 2D at once, through the
-     * lifecycle's real presentation, never parked on its last picture; it upgrades to GPU when a context frees, on its next
-     * visibility change or a quiet moment (see notifyAvailable). Counted: fallback:budget. */
     private fallbackBudget(entry: SurfaceEntry): GpuRequestResult {
         entry.waiting = true;
         entry.budgetFallback = true;
@@ -735,8 +690,6 @@ class SurfaceBroker {
         return this.fallback(entry, 'budget');
     }
 
-    /** Milliseconds until this pane is quiet: no input and no motion for the quiet window. A pane still moving reports one
-     * window and is asked again when it passes, so a fling or zoom that outlives its last input still holds the upgrade. */
     private quietWait(entry: SurfaceEntry): number {
         const motion = paneMotionState(entry.paneId);
         if (motion.moving) return UPGRADE_QUIET_MS;
@@ -747,7 +700,6 @@ class SurfaceBroker {
     private deferUpgrade(entry: SurfaceEntry, delay: number): void {
         if (entry.upgradeTimer !== null) return;
         auditCount('context', 'upgrade:deferred');
-        // A real deadline, not a poll: the timer fires when the quiet window of input and motion has passed, and re-arms if not.
         entry.upgradeTimer = setTimeout(() => {
             entry.upgradeTimer = null;
             if (this.current(entry)) this.notifyAvailable();
@@ -768,17 +720,14 @@ class SurfaceBroker {
             this.notificationQueued = false;
             if (!this.windowVisible) return;
             for (const entry of this.surfaces.values()) {
-                // Consumed on every visit: a visibility change's bypass covers this notification only, never a later one.
                 const bypass = entry.upgradeBypass;
                 entry.upgradeBypass = false;
                 if (!entry.waiting || !drawable(entry) || entry.circuit.pinned || entry.failed) continue;
-                // A returning kept context owns its slot already, even when all five panes are visible.
                 const others = [...this.surfaces.values()].filter(other =>
                     other !== entry && drawable(other) && other.reservation).length;
                 const hasRoom = entry.reservation || this.contextBudget.platform < PLATFORM_CONTEXT_CEILING ||
                     [...this.surfaces.values()].some(other => !other.view.visible && other.reservation);
                 if (others >= RENDER_CONSTANTS.maxVisiblePaneContexts || !hasRoom) continue;
-                // A budget fallback upgrades on a visibility change or once input has been quiet: never mid-gesture.
                 const wait = entry.budgetFallback && !bypass ? this.quietWait(entry) : 0;
                 if (wait > 0) {
                     this.deferUpgrade(entry, wait);
@@ -813,11 +762,8 @@ function zeroCanvas(canvas: HTMLCanvasElement): void {
     canvas.height = 0;
 }
 
-/** WebGL2 drawn by the CPU: SwiftShader, Mesa's llvmpipe/softpipe/lavapipe, Windows' WARP ("Microsoft Basic Render Driver"), Apple's
- * software renderer. Chrome reports them only through the unmasked renderer string. */
 const SOFTWARE_RENDERER = /swiftshader|llvmpipe|softpipe|lavapipe|basic render driver|\bwarp\b|software/i;
 
-/** One synchronous query per context build or restore, never on the frame path (rendering-platform: device creation). */
 function softwareRenderer(context: WebGL2RenderingContext): boolean {
     try {
         const info = context.getExtension('WEBGL_debug_renderer_info');
@@ -826,10 +772,6 @@ function softwareRenderer(context: WebGL2RenderingContext): boolean {
     } catch { return false; }
 }
 
-// Measured (gpu-h13): a browser with no WebGL2 returns null for every canvas, and each new GPU generation (every quality change)
-// reported that null as capability pressure, so each raise dropped the quality again. A device that cannot make a usable WebGL2
-// context is a fallback, not pressure; a fresh canvas tells that apart from a pane that merely got no context. Asked only after a
-// pane got none, so nothing is cached: a device can lose its GPU mid-session (Chrome falls back to software after GPU crashes).
 function deviceGpu(): Exclude<GpuUnavailableCause, 'unsupported' | 'gpu-error'> | null {
     try {
         const context = document.createElement('canvas').getContext('webgl2', CONTEXT_ATTRIBUTES);
@@ -838,7 +780,6 @@ function deviceGpu(): Exclude<GpuUnavailableCause, 'unsupported' | 'gpu-error'> 
             destroyContext(context);
             return software ? 'software' : null;
         }
-        // failIfMajorPerformanceCaveat refuses a software context (measured, --disable-gpu): a plain request tells it from none at all.
         const plain = document.createElement('canvas').getContext('webgl2');
         if (!plain) return 'no-webgl2';
         destroyContext(plain);

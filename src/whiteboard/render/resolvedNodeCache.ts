@@ -4,15 +4,8 @@ import type { NodeId } from '../model/ids';
 import { paintNodeBytes } from './residentBytes';
 import type { PaintNode } from './paintStream';
 
-/** Leases are taken a chunk at a time, so the charge follows the resolved set rather than each node. */
 const CHUNK = 64 * 1024;
 
-/**
- * One dense plan's resolved paint nodes, shared by its tiles and bands. A node resolves to the same items in every
- * tile of one variant (document revision, sheet, theme, precision, fonts), so the plan resolves it once. The cache
- * charges its bytes to the CPU allocator in chunks and keeps nothing a denied charge would not cover. It is disposed
- * when its plan completes or retires, which releases every chunk.
- */
 export class ResolvedNodeCache {
     #variant = '';
     #nodes = new Map<NodeId, { readonly sensitive: boolean; readonly node: PaintNode; readonly bytes: number }>();
@@ -35,8 +28,6 @@ export class ResolvedNodeCache {
         const bytes = paintNodeBytes(node), old = this.#nodes.get(id);
         const used = this.#used - (old?.bytes ?? 0) + bytes;
         if (used > this.#leased) {
-            // Work ahead of need: the cache only saves a later resolve, so a refusal is not pressure and never trims the frame's own
-            // working memory (see ReserveOptions.prefetch; the plan's node buffer is admitted the same way, planNodeBuffer.ts).
             const lease = this.memory.reserve(Math.max(CHUNK, used - this.#leased), { prefetch: true });
             if (!lease) return;
             this.#leases.push(lease); this.#leased += lease.bytes;
@@ -46,10 +37,8 @@ export class ResolvedNodeCache {
         this.#used = used;
     }
 
-    /** The bytes the resolved nodes are charged: rebuildable, never part of a floor. */
     get chargedBytes(): number { return this.#leased; }
 
-    /** Drops every resolved node and returns the bytes released; the cache stays usable (the governor's trim of a session's cache). */
     evict(): number {
         const freed = this.#leased;
         this.#nodes.clear(); this.#used = 0; this.#variant = '';
@@ -59,7 +48,6 @@ export class ResolvedNodeCache {
         return freed;
     }
 
-    /** Drops every resolved node and releases its charge; a disposed cache keeps nothing further. */
     dispose(): void {
         if (this.#closed) return;
         this.#closed = true;

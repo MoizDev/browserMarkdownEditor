@@ -113,11 +113,8 @@ async function connectorPoint(node: Readonly<ConnectorNode>, geometry: Connector
     return { result: { hit: true, distanceCss: hit.distanceCss, part: 'body' }, uncertain: false };
 }
 
-/** Queries one published Scene revision, not a second index or live paint cache. */
 export function createBoardPointQuery(options: BoardPointQueryOptions): {
-    /** `quiet`: a failure is the caller's alone (hover asks again at the next move), never the person's notice. */
     hit(point: Vec2, input: InputKind, signal: AbortSignal, quiet?: boolean): Promise<NodeId | null>;
-    /** The hover target: as `hit`, except a child of a selected group is itself (catalogue S§2). Always quiet. */
     hitHover(point: Vec2, input: InputKind, signal: AbortSignal): Promise<NodeId | null>;
     hitTarget(point: Vec2, input: InputKind, signal: AbortSignal): Promise<BoardTargetHit | null>;
     hitLocked(point: Vec2, input: InputKind, signal: AbortSignal): Promise<NodeId | null>;
@@ -164,8 +161,6 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 cursor = scene.spatialCursor({ sheetId: selection.sheet, purpose: 'selectable', includeLocked: targetMode || lockedMode,
                     request: { kind: 'point', x: point.x, y: point.y, maxDistance: 8 / camera.z } });
                 const selectionResult: { winner: Candidate | null } = { winner: null };
-                // Only the strongest two distinct ids can challenge the final winner:
-                // at most one of them can be the winner's own promoted group.
                 const uncertain: Candidate[] = [];
                 const stronger = (a: Candidate, b: Candidate) => targetMode ? a.rank > b.rank : better(a, b);
                 const rememberUncertain = (candidate: Candidate) => {
@@ -187,8 +182,6 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque'
                         || node.kind === 'stroke' || node.kind === 'polyline')) return;
                     let selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet, lockedMode);
-                    // Hover (catalogue S§2): a child of a group that is selected is hovered itself, not its group, so the outline
-                    // is the child's own. A press keeps the promotion (it selects or drags the group).
                     if (hoverMode && selected && selected !== node.id && selection.selected.includes(selected)) selected = node.id;
                     if (!selected || node.kind === 'group') return;
                     let clipped = false, clipUncertain = false, outsideFrame = false;
@@ -202,7 +195,6 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                             outsideFrame = true; clipUncertain = true;
                         }
                         const local = worldToLocal(doc, parent, point);
-                        // A halo witness near the clip edge can belong entirely to hidden geometry.
                         const halo = (input === 'touch' ? 8 : 4) + (node.kind === 'stroke' ? 4 : 0);
                         if (Math.min(local.x, local.y, parent.w - local.x, parent.h - local.y) * camera.z <= halo) clipUncertain = true;
                     }
@@ -261,7 +253,6 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         const query = { point: surface, localToSurface, input };
                         const attachment = vector.attachments;
                         if (targetMode && attachment) {
-                            // The boundary and interior attach; the exterior selection halo does not.
                             const job = createAttachmentPointJob(attachment.outline, query, { maxCommands: 8192 });
                             try {
                                 for (;;) {
@@ -294,7 +285,6 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     }
                     check();
                     if (result.hit) {
-                        // A zero-distance vector witness is the pointer itself and survives every containing clip.
                         ambiguous ||= !targetMode && clipUncertain && (outsideFrame || node.kind === 'stroke' || result.distanceCss !== 0);
                         const candidate = { id: selected, rank: resolved.rank, result, ...(target ? { target } : {}) };
                         if (ambiguous) rememberUncertain(candidate);
@@ -317,12 +307,6 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 }
                 check();
                 if (!scene.ready || scene.revision !== revision) throw cancelled();
-                // An undecided candidate is ink or a path exactly at the edge of its hit band (measured: a pointer exactly 8.0 CSS px
-                // from a straight stroke), or one whose clip cannot be certified. It is decided, never raised: a pick ANSWERS. The
-                // certain winner stands; with none, the press is a miss, which is safe (a box simply starts there). A target query
-                // is the exception: there an undecided candidate is something on top that cannot be attached to, and attaching to
-                // a shape it covers would be wrong, so it stays a miss. This threw before, on every hover move along that band and
-                // on the press, which then never started its box.
                 for (let i = 0; i < uncertain.length; i++) {
                     if ((i & 127) === 0) await tick();
                     const candidate = uncertain[i];
@@ -333,7 +317,6 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 if (!scene.ready || scene.revision !== revision) throw cancelled();
                 return selectionResult.winner;
             } catch (error) {
-                // Every pointer move aborts the previous hover pick (endHoverPick): a superseded pick is not an error.
                 if (!quiet && !isCancellation(error) && !combined.aborted) {
                     try { options.onError(error); } catch { /* Preserve the query error. */ }
                 }
@@ -343,8 +326,6 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
     return {
         async hit(point, input, signal, quiet) { return (await run(point, input, signal, false, false, quiet))?.id ?? null; },
         async hitHover(point, input, signal) { return (await run(point, input, signal, false, false, true, true))?.id ?? null; },
-        /** The topmost node under the point when that node is locked, else null. A locked node cannot be selected, so a
-         * secondary click reaches it only through this (F-CTX-006); the caller must not select it. */
         async hitLocked(point, input, signal) {
             const id = (await run(point, input, signal, false, true))?.id ?? null;
             return id !== null && options.runtime.session.doc.nodes.get(id)?.locked ? id : null;

@@ -1,8 +1,6 @@
 import type { KeyboardCursor, KeyboardCursorPoint, KeyboardCursorServices } from './keyboardCursorTypes'
 import type { Modifiers, RealSample } from './tool'
 
-// Keyboard input is an ordinary synthetic command sample, never a trusted pointer
-// event and never an input to browser delegated-ink APIs.
 export function createKeyboardCursor(services: KeyboardCursorServices): KeyboardCursor {
   let point: KeyboardCursorPoint | null = null
   let gesture = false
@@ -39,7 +37,6 @@ export function createKeyboardCursor(services: KeyboardCursorServices): Keyboard
       return true
     },
     escape() {
-      // Teardown must cancel a cursor-owned gesture even after the view becomes hidden.
       if (disposed || !point) return false
       if (gesture) { services.escape(); gesture = false; services.show(point, false) }
       else { point = null; services.show(null, false) }

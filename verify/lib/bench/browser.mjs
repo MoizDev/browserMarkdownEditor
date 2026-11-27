@@ -1,4 +1,3 @@
-// The only browser/toolbox adapter. Timed sessions never attach paused targets.
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { readFile, readdir, mkdir, mkdtemp, rm } from 'node:fs/promises';
@@ -13,8 +12,6 @@ import { noteSentinel as sentinel, noteFixtureText, noteOpenDefinition,
     installNoteObservation, prepareNoteOpen, dispatchNoteOpen, noteDefinition, noteOpenLatency } from './noteOpenMetric.mjs';
 const chromeVersion = pin.version;
 const chromePath = pinnedChromePath();
-// The folder the pinned browser's own processes (Crashpad included) run from: above the unpacked
-// archive's own folder, wherever the browser was installed.
 const pinnedInstall = (() => {
     const tail = Object.values(pin.platforms).map(entry => join(entry.executable)).find(tail => chromePath.endsWith(`${sep}${tail}`));
     return tail ? chromePath.slice(0, -tail.length - 1) : dirname(chromePath);
@@ -56,8 +53,6 @@ export async function servePreparedApp(dist, port, identity) {
             response.end(bytes);
         } catch { response.writeHead(404).end(); }
     });
-    // Chrome cancels refused proxy CONNECT sockets during startup. ECONNRESET is
-    // expected here, not an uncaught process crash that strands the method lock.
     server.on('connection', socket => socket.on('error', () => {}));
     server.on('clientError', (_error, socket) => socket.destroy());
     server.on('connect', (_request, socket) => socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'));
@@ -113,9 +108,6 @@ async function session(profile, url, artifacts, priming, expectedBuild, definiti
         const cdp = await context.newCDPSession(page);
         const pageErrors = [], network = [], cacheEvents = [], cacheResponses = [], outsideRequests = [];
         page.on('pageerror', error => pageErrors.push(error.message));
-        // Playwright routing disables HTTP cache, silently making a warm arm cold.
-        // Instead a loopback-only rejecting proxy blocks all non-loopback requests
-        // without interception; neither remote fonts nor any vault data leave here.
         page.on('request', request => {
             if (new URL(request.url()).origin !== url) outsideRequests.push(request.url());
         });
@@ -142,7 +134,6 @@ async function session(profile, url, artifacts, priming, expectedBuild, definiti
             const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle(vaultName, { create: true });
             const note = await dir.getFileHandle('first-note.md', { create: true });
             const writer = await note.createWritable(); await writer.write(text); await writer.close();
-            // One read before every session: warm disk only, deliberately no cold-disk claim.
             const bytes = await (await note.getFile()).arrayBuffer();
             return { text, sha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('') };
         }, { vaultName, text: noteFixtureText });
@@ -205,8 +196,6 @@ async function session(profile, url, artifacts, priming, expectedBuild, definiti
             hooks: { applicable: false, reason: 'Hook-free V-04 open-path metric; C9 coverage gates NOT covered' },
             scrollCalibration: { applicable: false, reason: 'No wheel input in this metric (VER-03)' } };
         if (priming) {
-            // Reset only the scenario's app state, not HTTP/code/shader caches or OPFS.
-            // This warm gate measures note open after vault setup, not restored startup (V-08).
             await page.goto(`${url}/__bench_reset`);
             await page.evaluate(async () => {
                 localStorage.clear();
@@ -250,8 +239,6 @@ export async function openVaultAdapter(config, reportDir) {
                     prime = await session(profile, servers[arm].url, primeArtifacts, true, identities[arm].sha256, definition);
                 }
                 const measured = await session(profile, servers[arm].url, artifacts, false, identities[arm].sha256, definition);
-                // CfT can omit requestServedFromCache for a disk hit. Resource
-                // Timing's same-origin transfer=0/body>0 is the independent witness.
                 const appScript = measured.observation.resources.find(x => x.name.startsWith(servers[arm].url) && x.name.endsWith('.js'));
                 measured.httpCacheWitness = { resource: appScript, cached: appScript?.transferSize === 0 && appScript?.encodedBodySize > 0 };
                 if (!appScript || measured.httpCacheWitness.cached !== (temperature === 'warm')) throw new Error('Cold/warm HTTP cache identity witness failed');
@@ -270,8 +257,6 @@ export async function openVaultAdapter(config, reportDir) {
                 delayFractionOfCurrentControl: measuredDelayMs / report.result.medians.A,
                 observedRelativeShift: report.result.interval.estimate,
                 expectedFraction: 0.10, nearTolerance: 0.03 };
-            // A rejected 30% slowdown does not prove rejection of the required 10%.
-            // Keep the results, but do not sign off a miscalibrated method witness.
             if (config.mode === 'accepted' && (Math.abs(report.mutantWitness.delayFractionOfCurrentControl - 0.10) > 0.03
                 || Math.abs(report.mutantWitness.observedRelativeShift - 0.10) > 0.03)) {
                 throw new Error('UNPROVEN method: mutant shift is not near 10% (+/-3 percentage points); recalibrate the scratch mutant, never the gate');

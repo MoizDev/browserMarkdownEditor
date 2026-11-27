@@ -1,4 +1,3 @@
-// Functional real-app reproduction/sanity, not a timed coverage benchmark.
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -86,10 +85,10 @@ try {
                     await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
                 }
                 await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, deltaX: 0, deltaY: 25 });
-                await new Promise(resolve => setTimeout(resolve, 16)); // Input cadence, not a readiness wait.
+                await new Promise(resolve => setTimeout(resolve, 16));
                 if (n === 160) {
                     const path = join(out, `${theme}-moving.png`); row.screenshots.push(path);
-                    shots.push(page.screenshot({ path })); // Do not pause the wheel stream for a screenshot.
+                    shots.push(page.screenshot({ path }));
                 }
             }
             row.frames = await page.evaluate(() => { window.__p01.active = false; return window.__p01.frames; });

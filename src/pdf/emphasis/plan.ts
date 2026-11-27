@@ -14,7 +14,6 @@ export interface EmphasisPlan {
 interface GlyphCluster { first: number; end: number; token: number; ambiguous: boolean }
 interface Candidate { token: number; glyphs: number[]; objects: number[]; cells: EmphasisCell[] }
 
-/** Plan from worker-owned metadata. Text here is a policy projection only; canonical text is unchanged. */
 export function buildEmphasisPlan(raw: RawPageText, options: { locale: string; deviceScale: number }): EmphasisPlan {
     const n = raw.n, obj = raw.objects, objectCount = obj.renderMode.length;
     if (!Number.isSafeInteger(n) || n < 0 || n > 200_000 || raw.truncated ||
@@ -146,7 +145,6 @@ export function buildEmphasisPlan(raw: RawPageText, options: { locale: string; d
         if (!(raw.flags[i] & GENERATED) && !/\s/u.test(character(raw.codepoints[i])) && !finiteBox(i)) unknownObjects.add(raw.object[i]);
     }
     active = active.filter(candidate => !candidate.objects.some(object => unknownObjects.has(object)));
-    // A rejected object's stroked suffix is no longer selected. Recheck until removal cannot expose one.
     for (let pass = 0; pass < 16; pass++) {
         const selected = new Set(active.flatMap(candidate => candidate.glyphs));
         const remaining = active.filter(candidate => !candidate.cells.some(cell => index.overlaps(cell, selected)));

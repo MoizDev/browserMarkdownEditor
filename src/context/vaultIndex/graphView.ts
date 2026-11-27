@@ -4,7 +4,6 @@ import type { IndexGraph } from '../../utils/vaultIndex/types';
 
 const filesByTree = new WeakMap<FileTreeNode[], Map<string, FileTreeFileNode>>();
 
-/** Attach the app's tree nodes to the worker's already-assembled graph. */
 export function graphForTree(snapshot: IndexGraph, tree: FileTreeNode[]): GraphData | null {
     let files = filesByTree.get(tree);
     if (!files) {

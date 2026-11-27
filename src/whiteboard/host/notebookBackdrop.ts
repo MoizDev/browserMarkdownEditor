@@ -3,7 +3,6 @@ import type { NotebookPaper } from '../../utils/paper';
 import type { PaintPathItem } from '../render/paintStream';
 import { notebookPaperItems } from './notebookPaper';
 
-/** Backdrop paint has no model nodes; only requested physical pages are generated. */
 export function* notebookBackdrop(paper: Readonly<NotebookPaper>, page: number, box: Readonly<Rect>): Generator<PaintPathItem> {
     if (!Number.isSafeInteger(page) || page < 0 || page >= paper.pageCount) throw new RangeError('Invalid notebook page');
     const appearance = `${paper.size}/${paper.orientation}/${paper.ruling}/${paper.spacing}/${paper.margin}`;

@@ -1,7 +1,6 @@
 import type { PageDisplayList, PathCommand, Rgba } from '../../platform/types';
 import { columnOffsets, marginX, paperPageSize, ruleOffsets, type NotebookPaper } from '../../utils/paper';
 
-// Shared with the procedural paper pass (proceduralPaper.ts), which draws lined, grid and blank paper from these same values.
 export const PAPER_WHITE: Rgba = [1, 1, 1, 1];
 export const PAPER_RULE: Rgba = [195 / 255, 211 / 255, 232 / 255, 1];
 export const PAPER_MARGIN: Rgba = [233 / 255, 184 / 255, 189 / 255, 1];
@@ -10,7 +9,6 @@ export const PAPER_RULE_WIDTH = 0.75, PAPER_MARGIN_WIDTH = 1, PAPER_EDGE_WIDTH =
 const WHITE = PAPER_WHITE, RULE = PAPER_RULE, MARGIN = PAPER_MARGIN, EDGE = PAPER_EDGE;
 type PaperItem = PageDisplayList['items'][number];
 
-/** Each yielded item is bounded, so a backdrop can paint incrementally. */
 export function* notebookPaperItems(paper: Readonly<NotebookPaper>): Generator<PaperItem> {
     const { width, height } = paperPageSize(paper);
     yield { kind: 'path', d: [['M', 0, 0], ['L', width, 0], ['L', width, height], ['L', 0, height], ['Z']], fill: WHITE };
@@ -44,7 +42,6 @@ export function* notebookPaperItems(paper: Readonly<NotebookPaper>): Generator<P
     stroke: { color: EDGE, width: PAPER_EDGE_WIDTH, cap: 'butt', join: 'miter' } };
 }
 
-/** One physical page in point units, shared by display and PDF output. */
 export function notebookPaperList(paper: Readonly<NotebookPaper>, page: number): PageDisplayList {
     return { page, items: [...notebookPaperItems(paper)] };
 }

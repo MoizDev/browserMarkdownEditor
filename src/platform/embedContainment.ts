@@ -32,8 +32,6 @@ export function isEmbedContainmentApproved(value: unknown): value is EmbedContai
     return !!state && !state.closed && state.ready && configured(state);
 }
 
-/** Creates only the local opaque wrapper. Caller must separately validate its current source
- * and call load() for this embed's explicit consent; construction never starts provider traffic. */
 export async function createEmbedContainment(options: EmbedContainmentOptions): Promise<EmbedContainment> {
     const { signal, container, onFailure } = options;
     signal?.throwIfAborted();
@@ -74,7 +72,6 @@ export async function createEmbedContainment(options: EmbedContainmentOptions): 
     function wait(type: 'ready' | 'mounted'): Promise<void> {
         return new Promise((resolve, reject) => {
             waiting = { type, resolve, reject };
-            // A deadline for a real outstanding handshake, never a readiness retry or poll.
             timer = setTimeout(() => fail('handshake'), 5000);
         });
     }

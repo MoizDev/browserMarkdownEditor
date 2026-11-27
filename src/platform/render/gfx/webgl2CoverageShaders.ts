@@ -1,5 +1,3 @@
-// Benchmark-only coverage reduction. These shaders operate on private R8/RGBA32UI targets;
-// they do not change the compositor's colour output or the public texture-format API.
 export const COVERAGE_REDUCE_VERTEX = `#version 300 es
 precision highp float;
 

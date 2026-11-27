@@ -1,11 +1,5 @@
 import { useEffect } from 'react';
 
-/**
- * A file or link dropped anywhere nothing claims it would make the browser
- * navigate away to it — leaving the app, with whatever was unsaved. Refused
- * here, last, so every real drop target (the tree, a canvas, the editor's own
- * text drop) still gets it first.
- */
 export function useRefuseUnclaimedDrop(): void {
   useEffect(() => {
     const refuseUnclaimedDrop = (event: DragEvent) => {

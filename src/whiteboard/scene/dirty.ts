@@ -10,16 +10,12 @@ export interface SceneDirty {
     readonly nodes: ReadonlyMap<NodeId, number>;
     readonly sheets: ReadonlySet<SheetId>;
     readonly pages: boolean;
-    /** A sheet itself was created, changed or removed: the scene's regions of that revision are unknown. A node edit inside
-     * a sheet is not this: its sheet is in `sheets` only because the sheet holds the node. */
     readonly structure: boolean;
 }
 const GEOMETRY = SceneDirtyFlag.Paint | SceneDirtyFlag.Geometry | SceneDirtyFlag.Bounds;
 const STRUCTURE = GEOMETRY | SceneDirtyFlag.Structure | SceneDirtyFlag.Order | SceneDirtyFlag.Placement | SceneDirtyFlag.Inherited;
 function property(key: string, stroke = false): number {
     switch (key) {
-        // C4's broad impact flags intentionally serve many consumers. Scene classifies the
-        // actual forward keys so translating a 1M-point stroke never invalidates tessellation.
         case 'x': case 'y': case 'rotation': return SceneDirtyFlag.Paint | SceneDirtyFlag.Placement | SceneDirtyFlag.Bounds;
         case 'parent': case 'page': return SceneDirtyFlag.Paint | SceneDirtyFlag.Structure | SceneDirtyFlag.Order | SceneDirtyFlag.Placement | SceneDirtyFlag.Bounds | SceneDirtyFlag.Inherited;
         case 'order': return SceneDirtyFlag.Paint | SceneDirtyFlag.Order;
@@ -31,7 +27,6 @@ function property(key: string, stroke = false): number {
         default: return GEOMETRY;
     }
 }
-/** The kind of a node a forward delete removed: its inverse restores it as a create, which names the kind. */
 function deletedKind(applied: Applied, id: NodeId): string | undefined {
     for (const op of applied.inverse) if (op.t === 'create' && op.node.id === id) return op.node.kind;
     return undefined;
@@ -45,8 +40,6 @@ export function sceneDirty(applied: Applied, doc: BoardDoc): SceneDirty {
     let pages = false, structure = false;
     for (const op of applied.forward) {
         switch (op.t) {
-            // A frame clips what it holds, and a node's parent or page decides what it is clipped by and drawn on: those changes
-            // reveal or hide pixels outside the nodes' own ink, so they are structural (the span is unknown), not region edits.
             case 'create': if (op.node.kind === 'frame') structure = true; add(op.node.id, STRUCTURE); break;
             case 'delete': if (deletedKind(applied, op.id) === 'frame') structure = true; add(op.id, STRUCTURE); break;
             case 'set':
@@ -59,7 +52,6 @@ export function sceneDirty(applied: Applied, doc: BoardDoc): SceneDirty {
             case 'media':
                 for (const id of doc.mediaRefs.get(op.op === 'add' ? op.entry.id : op.id) ?? []) add(id, SceneDirtyFlag.Paint);
                 break;
-            // Preserved unknown tokens are not a second authoring/style channel; an extension that names a sheet is a sheet change.
             case 'ext': if (op.target === 'sheet') structure = true; break;
         }
     }

@@ -25,10 +25,6 @@ export interface LegacyGeometryOptions {
     readonly cooperate?: () => Promise<void>;
 }
 type Prepared = Awaited<ReturnType<ReturnType<typeof createBoardRenderServices>['prepareForPick']>>;
-/** What `worldBounds` and `worldBoundsError` read of a node's prepared geometry, and nothing else: a stroke's segment ends and
- * discs as (x, y, radius) triples, a connector's paths, any other node's local box. Holding the prepared geometry itself kept
- * every stroke's exact coverage (~34 KB of typed arrays for an 18-point stroke) alive for the whole import: with legacyPrepare's
- * own pin gone too, a 10,842-stroke notebook's import worker peaked at 162 MB of heap instead of 614 MB. */
 type RecordGeometry =
     | { readonly kind: 'stroke'; readonly discs: Float64Array | null; readonly error: number }
     | { readonly kind: 'connector'; readonly connector: Prepared['connector']; readonly toLocal: Affine }
@@ -58,9 +54,6 @@ function poseMatrix(pose: ReturnType<typeof worldPose>): Affine {
     const c = Math.cos(pose.rotation), s = Math.sin(pose.rotation); return [c, s, -s, c, pose.x, pose.y];
 }
 
-/** Loads every face the nodes' text uses before any of their geometry is read, as the change-geometry pin did node by node: a
- * face that loads while geometry is read moves the font epoch, and what was read before it no longer counts. In a load's own
- * worker no face is loaded yet (measured: without this pass a board holding one text failed with "Board geometry changed"). */
 export async function loadLegacyFaces(text: { loadFaces(node: Readonly<Node>, after: () => void): Promise<void> },
     nodes: Iterable<Readonly<Node>>, after: () => void, tick: () => Promise<void>): Promise<void> {
     let work = 0;
@@ -69,8 +62,6 @@ export async function loadLegacyFaces(text: { loadFaces(node: Readonly<Node>, af
         if ((++work & 255) === 0) await tick();
     }
 }
-/** Runs `read` until the font epoch holds across it: a face found only while text is laid out can still load during it, and a
- * read it interrupted is read again at the new epoch, as the pin's second pass was. */
 export async function atStableFontEpoch<T>(fonts: BoardFonts, read: () => Promise<T>): Promise<T> {
     for (let attempt = 1; ; attempt++) {
         const epoch = fonts.epoch;
@@ -81,8 +72,6 @@ export async function atStableFontEpoch<T>(fonts: BoardFonts, read: () => Promis
         if (attempt >= 4) throw new DOMException('Board fonts kept changing while its geometry was read', 'AbortError');
     }
 }
-/** Supplies import's synchronous bounds reader from a fully prepared worker renderer.
- * Ordered records remain distinct even when legacy IDs collide. */
 export function createLegacyDraftGeometry(options: LegacyGeometryOptions): {
     readonly prepareGeometry: (nodes: readonly Node[], sheets: readonly Sheet[], signal?: AbortSignal) => Promise<void>;
     readonly geometry: LegacyGeometry;
@@ -137,8 +126,6 @@ export function createLegacyDraftGeometry(options: LegacyGeometryOptions): {
             const scale = Math.hypot(matrix[0], matrix[1], matrix[2], matrix[3]);
             if (!Number.isFinite(scale)) throw new RangeError('Legacy geometry transform overflows');
             if (node.kind === 'stroke') return (record.kind === 'stroke' ? record.error : 0) * scale;
-            // The canonical vector realization uses 0.01 path and length budgets;
-            // connector routing uses 0.01 world units (vectorGeometry/services).
             return node.kind === 'connector' ? 0.01 * scale : node.kind === 'text' ? 0 : 0.02 * scale;
         },
     };
@@ -216,9 +203,6 @@ export function createLegacyDraftGeometry(options: LegacyGeometryOptions): {
             check(signal);
             nextRenderer = createBoardRenderServices({ doc, samples: options.samples, media: options.media,
                 token: options.token, fonts: options.fonts, cooperate });
-            // Each node is prepared as it is read and reduced to its record at once; the renderer keeps no more than its byte-bounded
-            // idle cache, and a connector prepares its own targets. Pinning every node first held all their geometry together and,
-            // the pin being read only by change geometry, every node was then realized a second time here past the idle cache.
             const reader = nextRenderer;
             await loadLegacyFaces(reader.text, nodes, () => check(signal), tick);
             const prepared = await atStableFontEpoch(reader.text.fonts, async () => {
@@ -226,8 +210,6 @@ export function createLegacyDraftGeometry(options: LegacyGeometryOptions): {
                 for (let i = 0; i < nodes.length; i++) {
                     const original = nodes[i], alias = doc.nodes.get(aliases.get(original)!)!;
                     if (alias.kind === 'group') continue;
-                    // Non-connectors use the original ID: draw-style geometry is seeded
-                    // by that ID, while the projection IDs only disambiguate ownership.
                     const node = alias.kind === 'connector' ? alias : original;
                     const result = await reader.prepareForPick(node, signal, doc); check(signal);
                     if (reader.text.fonts.epoch !== fontEpoch) throw new DOMException('Legacy font geometry changed', 'AbortError');

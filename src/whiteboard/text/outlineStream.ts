@@ -21,22 +21,17 @@ interface StreamSlot {
     busy: boolean;
     closing: boolean;
     holds: number;
-    /** Resolves when the iterator's finally blocks have run: its native physical retirement. */
     ended?: Promise<void>;
-    /** Close requests waiting for an in-flight advance to finish. */
     idle: (() => void)[];
 }
 interface Admission { resolve(): void }
 
-// Slots hold a cloned paint until the consumer advances or closes the stream. A reservation is
-// admitted only when a slot is free, and waits in arrival order until a freed slot wakes it.
 const streams = new Map<string, StreamSlot>();
 const MAX_STREAMS = 8;
 const MAX_BATCH_ITEMS = 64;
 const MAX_BATCH_BYTES = 4 * 1024 * 1024;
 const IDLE_MS = 10 * 60_000;
 const waiting: Admission[] = [];
-/** Reservations admitted but not yet created as slots, so a wake never over-commits capacity. */
 let granted = 0;
 
 function itemBytes(item: OutlinePiece): number {
@@ -78,14 +73,12 @@ function proxyFor(slot: StreamSlot): WorkerContext {
     };
 }
 function capacity(): number { return MAX_STREAMS - streams.size - granted; }
-/** Wakes queued reservations in arrival order, and only as many as there is capacity for. */
 function grantWaiting(): void {
     while (waiting.length && capacity() > 0) {
         granted++;
         waiting.shift()!.resolve();
     }
 }
-/** Waits for a real free slot. Nothing polls: a slot being freed is the only wake. */
 async function admit(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     if (!waiting.length && capacity() > 0) { granted++; return; }
@@ -93,14 +86,12 @@ async function admit(signal: AbortSignal): Promise<void> {
         const entry: Admission = { resolve: () => { signal.removeEventListener('abort', abort); resolve(); } };
         const abort = () => {
             const index = waiting.indexOf(entry);
-            // A reservation already granted is consumed by its caller, which hands capacity on.
             if (index >= 0) { waiting.splice(index, 1); reject(signal.reason ?? new DOMException('Text export cancelled', 'AbortError')); }
         };
         waiting.push(entry);
         signal.addEventListener('abort', abort, { once: true });
     });
 }
-/** Removes the slot, frees its capacity for the next waiter, and ends its iterator. */
 function dispose(slot: StreamSlot): Promise<void> {
     if (streams.get(slot.id) === slot) {
         streams.delete(slot.id);
@@ -121,7 +112,6 @@ function whenIdle(slot: StreamSlot): Promise<void> {
     return new Promise<void>(resolve => { slot.idle.push(resolve); });
 }
 
-/** A worker-local sink holds the stream while it writes; idle collection is only for abandoned clients. */
 export function holdOutlineStream(id: string, owner: BoardJobIdentity): () => void {
     const slot = streams.get(id), valid = ownerOf(owner);
     if (!slot || !valid || !sameOwner(slot.owner, valid) || slot.closing) throw new Error('Text outline stream expired');
@@ -141,7 +131,6 @@ export function isOutlineStreamRequest(value: unknown): boolean {
     return record(value) && value.outlineStream === 1;
 }
 
-/** Each request holds a WorkerHost CPU permit only while the generator advances, never while its sink waits. */
 export async function handleOutlineStream(value: unknown, context: WorkerContext, create: GeneratorFactory, transfer = true): Promise<OutlineStreamReply> {
     if (!record(value) || value.outlineStream !== 1 || typeof value.id !== 'string' || !value.id || value.id.length > 128)
         throw new TypeError('Invalid text outline stream request');
@@ -176,7 +165,6 @@ export async function handleOutlineStream(value: unknown, context: WorkerContext
     }
     if (!sameOwner(slot.owner, owner)) throw new Error('Text outline stream owner changed');
     if (value.mode === 'close') {
-        // A close that races an advance waits for it to finish, so its reply means the stream is gone.
         if (slot.busy) { slot.closing = true; await whenIdle(slot); }
         await dispose(slot);
         return { kind: 'closed' };

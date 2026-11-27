@@ -6,44 +6,18 @@ import { getGraphLayout, putGraphLayout, queueGraphLayoutSave } from '../utils/g
 import type { StoredGraphLayout } from '../utils/graphLayoutStore';
 import { loadChunk } from '../platform/chunkLoad';
 
-/**
- * GraphView — an Obsidian-style "Neural Brain" graph of the vault.
- *
- * Renders notes as nodes and links between them as edges using a small
- * dependency-free force-directed simulation drawn on a <canvas>.
- *
- * Interactions:
- *   - Click a node      -> open that note (onOpenNode)
- *   - Drag a node       -> reposition it (pins while dragging)
- *   - Drag background   -> pan
- *   - Mouse wheel       -> zoom
- *   - Hover             -> highlight node + its neighbours
- */
-/**
- * Base (unzoomed) node radius from its connection count. Nodes with more
- * references render noticeably larger, like Obsidian's graph — the √degree
- * curve keeps hubs prominent without letting one node dwarf everything.
- */
 function nodeBaseRadius(n: GraphNode, maxDegree: number): number {
-    // Normalise against the most-linked note, then bias the curve upward (^1.7)
-    // so the top hubs balloon while ordinary notes stay small and similar — a
-    // modest lead in link count buys a big jump in size at the high end.
     const t = maxDegree > 0 ? Math.min(1, (n.degree || 0) / maxDegree) : 0;
     return 3 + 26 * Math.pow(t, 1.7);
 }
 
-/**
- * Vibrant node palette in the spirit of Obsidian's graph. Each note gets a
- * stable colour hashed from its id, so the graph is colourful and a given
- * note keeps the same colour across renders.
- */
 const NODE_PALETTE: string[] = [
-    '#a78bfa', '#8b5cf6', // violets
-    '#34d399', '#2dd4bf', // greens / teal
-    '#fbbf24', '#f59e0b', // ambers (the big hubs read orange)
-    '#fb7185', '#f472b6', '#ef4444', // rose / pink / red
-    '#60a5fa', '#22d3ee', // blue / cyan
-    '#a3e635', '#94a3b8', // lime / slate
+    '#a78bfa', '#8b5cf6',
+    '#34d399', '#2dd4bf',
+    '#fbbf24', '#f59e0b',
+    '#fb7185', '#f472b6', '#ef4444',
+    '#60a5fa', '#22d3ee',
+    '#a3e635', '#94a3b8',
 ];
 function nodeColor(id: string): string {
     let h = 0;
@@ -54,8 +28,6 @@ function nodeColor(id: string): string {
 const DEFAULT_SCALE = 2.5;
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 4;
-/** Screen px kept clear around a fitted graph — room for the labels under the
- *  outermost nodes. */
 const FIT_PADDING = 36;
 
 interface GraphViewProps {
@@ -79,14 +51,12 @@ interface GraphMeasurement {
     stepMs: { samples: number[]; total: number; count: number };
 }
 
-/** Pan/zoom viewport state. */
 interface GraphViewport {
     scale: number;
     offsetX: number;
     offsetY: number;
 }
 
-/** Resolved theme colors read from CSS variables. */
 interface GraphColors {
     bg: string;
     node: string;
@@ -102,7 +72,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const wrapRef = useRef<HTMLDivElement | null>(null);
 
-    // A StrictMode remount gets a fresh owner; disposal terminates its worker.
     const layoutRef = useRef<GraphLayoutClient | null>(null);
     const [layoutGeneration, setLayoutGeneration] = useState(0);
     const wakeRef = useRef<() => void>(() => {});
@@ -111,20 +80,14 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
     const gridRef = useRef<{ version: number; layout: GraphLayoutClient | null; cells: Map<string, number[]> }>({ version: -1, layout: null, cells: new Map() });
     const viewRef = useRef<GraphViewport>({ scale: DEFAULT_SCALE, offsetX: 0, offsetY: 0 });
     const draggingRef = useRef<{ id: string; x: number; y: number } | null>(null);
-    const panningRef = useRef<{ x: number; y: number } | null>(null);      // { x, y } while panning
-    const movedRef = useRef<boolean>(false);       // distinguish click vs drag
-    const hoverRef = useRef<string | null>(null);        // hovered node id
+    const panningRef = useRef<{ x: number; y: number } | null>(null);
+    const movedRef = useRef<boolean>(false);
+    const hoverRef = useRef<string | null>(null);
     const colorsRef = useRef<GraphColors>({} as GraphColors);
     const rafRef = useRef<number>(0);
     const activeRef = useRef<string | null>(activeFilePath);
-    const dirtyRef = useRef<boolean>(true);       // request a one-off redraw while at rest
-    // Framed automatically until the reader pans, zooms or drags a node (and
-    // again after Reset view). Without it the view sat at a fixed zoom around
-    // the world origin, so a sidebar or the agent panel narrowing the canvas
-    // left the outer notes off its edges (measured: 4 of 14 fixture notes
-    // unreachable with the agent panel open at 400px).
+    const dirtyRef = useRef<boolean>(true);
     const autoFitRef = useRef<boolean>(true);
-    /** The render loop's `fit`, for Reset view — it needs the loop's canvas size. */
     const fitRef = useRef<() => void>(() => {});
 
     const [hoverName, setHoverName] = useState<string | null>(null);
@@ -173,7 +136,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         }
     }, [nodes, links]);
 
-    // Adjacency map for neighbour highlighting.
     const adjacency = useMemo(() => {
         const adj = new Map<string, Set<string>>();
         for (const l of links) {
@@ -185,7 +147,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         return adj;
     }, [links]);
 
-    // Most-linked note in the vault — drives the (normalised) node sizing.
     const maxDegree = useMemo(
         () => nodes.reduce((m, n) => Math.max(m, n.degree || 0), 0),
         [nodes]
@@ -212,7 +173,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         };
     }, [vaultKey]);
 
-    // Survivors retain their worker momentum on topology updates.
     useEffect(() => {
         const layout = layoutRef.current;
         if (!layout || (!nodes.length && (indexing || updating))) return;
@@ -224,8 +184,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             try {
                 const data = measurementRef.current;
                 if (data) {
-                    // This effect reheats even a same-id topology publication;
-                    // each fresh alpha=1 run needs its own equal-step history.
                     data.ids = nodes.map(node => node.id);
                     data.ring = [];
                     data.steps = 0;
@@ -257,14 +215,12 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         return () => cancelAnimationFrame(frame);
     }, [theme]);
 
-    // Keep the highlighted node in a ref so changing it doesn't restart the loop.
     useEffect(() => {
         activeRef.current = activeFilePath;
         dirtyRef.current = true;
         wakeRef.current();
     }, [activeFilePath]);
 
-    // Main render + physics loop.
     useEffect(() => {
         const canvas = canvasRef.current;
         const wrap = wrapRef.current;
@@ -276,8 +232,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
 
         let width = 0, height = 0, dpr = 1;
 
-        /** Frame every node (and the label under it) in the canvas. Capped at
-         *  the default zoom, so a small vault is not blown up to fill it. */
         const fit = () => {
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
             for (const n of nodes) {
@@ -312,9 +266,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             if (autoFitRef.current) {
                 fit();
             } else if (before > 0 && width > 0 && width !== before) {
-                // A view the reader framed by hand keeps its framing: scaled
-                // with the WIDTH, which is what the sidebar and the agent panel
-                // change, so opening and then closing one restores it exactly.
                 const view = viewRef.current;
                 const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, view.scale * (width / before)));
                 const k = scale / view.scale;
@@ -336,22 +287,17 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             const c = colorsRef.current;
             const hovered = hoverRef.current;
             const active = activeRef.current;
-            // Dimming/highlighting is driven by HOVER only — at rest every node
-            // and edge is fully visible. The active note just gets a ring + label.
             const neighbours = hovered ? adjacency.get(hovered) : null;
 
             ctx.save();
             ctx.scale(dpr, dpr);
             ctx.clearRect(0, 0, width, height);
 
-            // World transform: center origin then apply pan/zoom.
             const cx = width / 2 + view.offsetX;
             const cy = height / 2 + view.offsetY;
             const tx = (x: number) => cx + x * view.scale;
             const ty = (y: number) => cy + y * view.scale;
 
-            // Edges. When a node is focused its links glow blue and radiate out,
-            // while every other edge fades right back (the Obsidian focus look).
             for (const l of links) {
                 const s = layout.index.get(l.source), t = layout.index.get(l.target);
                 if (s === undefined || t === undefined) continue;
@@ -377,9 +323,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             ctx.globalAlpha = 1;
             ctx.lineWidth = 1;
 
-            // Nodes. Labels stay hidden at the default zoom (a clean colourful
-            // cloud) and only appear on hover, on the active note, or once you
-            // zoom in — so the graph never turns into a wall of text.
             const showAllLabels = view.scale > 1.5;
             const fontSize = Math.max(9, 11 * Math.min(1.3, view.scale));
             const font = `${fontSize}px var(--font-ui), sans-serif`;
@@ -408,8 +351,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                         y + r + 3 + fontSize * 2 >= 0 && y + r + 3 - fontSize <= height;
                 }
                 if (!circleVisible && !labelVisible) continue;
-                // At rest every node is fully opaque. Only while hovering does the
-                // hovered node stay at 100% while the rest fade back.
                 let nodeAlpha = 1;
                 if (hovered && !isHovered) nodeAlpha = isNeighbour ? 0.5 : 0.12;
 
@@ -419,7 +360,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                 ctx.fillStyle = n.unresolved ? c.faint : nodeColor(n.id);
                 ctx.fill();
 
-                // Ring marks the hovered node, or the active note when not hovering.
                 if (ringed) {
                     ctx.lineWidth = 2;
                     ctx.strokeStyle = c.ring;
@@ -504,7 +444,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         };
     }, [nodes, links, adjacency, maxDegree, vaultKey, layoutGeneration]);
 
-    // ── Pointer interaction ────────────────────────────────────────────────
     const screenToWorld = (clientX: number, clientY: number) => {
         const wrap = wrapRef.current;
         const view = viewRef.current;
@@ -591,7 +530,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
             wakeRef.current();
             return;
         }
-        // Hover detection.
         const hit = hitTest(e.clientX, e.clientY);
         const id = hit ? hit.id : null;
         if (id !== hoverRef.current) {
@@ -625,7 +563,6 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
         const newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, view.scale * factor));
         autoFitRef.current = false;
-        // Zoom toward the cursor.
         view.offsetX -= mx * (newScale / view.scale - 1);
         view.offsetY -= my * (newScale / view.scale - 1);
         view.scale = newScale;

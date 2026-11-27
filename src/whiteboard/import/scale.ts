@@ -3,7 +3,6 @@ import type { Node, ConnectorEnd, Point } from '../model/nodes';
 function point(p: Point, scale: number): Point { return { x: p.x * scale, y: p.y * scale }; }
 function end(p: ConnectorEnd, scale: number): ConnectorEnd { return { ...point(p, scale), attach: p.attach }; }
 
-// C2.3: uniformly transform the entire root subtree into the PDF display-box coordinates.
 export function scaleImportedNode(node: Node, scale: number): Node {
     if (!Number.isFinite(scale) || scale <= 0) throw new Error('Invalid legacy page scale');
     const base = { ...node, x: node.x * scale, y: node.y * scale };

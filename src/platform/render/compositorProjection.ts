@@ -4,9 +4,6 @@ import type { CompositorPage } from './compositor.types';
 import type { PageStack } from './pageStack';
 import type { ReadySurfaceMetrics } from './surfaceMetrics';
 
-/** The fractional outline and its integer scissor envelope are different (design §4.1:396–399).
- * Both backends use the camera's ONE page-rest correction, including for input/overlays (C1.2).
- */
 export function projectPage(stack: Readonly<PageStack> | null, view: ViewState, index: number): CompositorPage | null {
     if (!stack || !Number.isSafeInteger(index) || index < 0 || index >= stack.rects.length) return null;
     const rect = stack.rects[index];
@@ -28,7 +25,6 @@ export function worldDeviceTransform(view: ViewState): Affine {
     return [scale, 0, 0, scale, -view.camera.x * scale, -view.camera.y * scale];
 }
 
-/** Only a matching prepared view and its actual backing can establish the displayed CSS mapping. */
 export function paneCssTransform(view: ViewState, prepared: ViewState, metrics: ReadySurfaceMetrics | null): Affine | null {
     if (!metrics || view.epoch !== prepared.epoch || view.camera.x !== prepared.camera.x || view.camera.y !== prepared.camera.y
         || view.camera.z !== prepared.camera.z || view.viewport.width !== prepared.viewport.width
@@ -42,7 +38,6 @@ export function paneCssTransform(view: ViewState, prepared: ViewState, metrics: 
     return result.every(Number.isFinite) ? Object.freeze(result) : null;
 }
 
-/** Scopes restore even if a producer throws; layers receive the original ViewState (C4.3; design §4.1). */
 export function paintWorldScope(ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void): void {
     ctx.save();
     try {

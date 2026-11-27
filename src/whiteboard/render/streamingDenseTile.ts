@@ -26,9 +26,7 @@ export interface StreamingDenseTileOptions {
     readonly rect: Readonly<Rect>;
     readonly scale: number;
     readonly band: PaintBand;
-    /** Live node ids of this band. Each is a barrier the frame draws itself; its pixels are never here. */
     readonly barriers: ReadonlySet<string>;
-    /** Sensitive nodes paint at precision, so a tile touching one is not reusable document pixels. */
     readonly sensitive?: ReadonlySet<string>;
     readonly token: RenderToken;
     readonly revision: number;
@@ -37,24 +35,16 @@ export interface StreamingDenseTileOptions {
     readonly host: LayerHost;
     readonly onError: (error: unknown) => void;
     readonly signal?: AbortSignal;
-    /** While true, a finished read-ahead slice starts the next one itself (yielding to the event loop between slices)
-     * instead of waiting for a frame: a first picture is otherwise paced at one short read per frame. */
     readonly eager?: () => boolean;
-    /** Gives back what the owner holds ahead of need (its plan's node buffer and resolved nodes) and returns the bytes released. A
-     * refused run or path asks this before its refusal is pressure: the room the tile needs may be held by its own plan's caches. */
     readonly shed?: () => number;
 }
-/** One rasterized sub-run of a tile: a single blend, drawn by the frame before `end`. The receiver
- * owns `bitmap` and `bytesLease` and must release both through `releaseDenseTilePart`. */
 export interface DenseTilePart {
     readonly bitmap: ImageBitmap;
     readonly rect: Readonly<Rect>;
     readonly blend: Blend;
-    /** The barrier node this part precedes, or null when it precedes the band's end. */
     readonly end: string | null;
     readonly bytesLease: ByteLease;
     readonly owner: MemoryAllocator;
-    /** Image pixels depend on acquisition, so such a part is never kept as a complete session tile. */
     readonly hasImage: boolean;
 }
 export function releaseDenseTilePart(part: DenseTilePart): void {
@@ -71,9 +61,6 @@ interface Run {
     hasImage: boolean;
 }
 
-/** One tile of one band, built from its own bounded stream. The stream is read in canonical order;
- * items split into sub-runs at blend changes and at barriers, so the frame can interleave the
- * tile's parts with the live items it draws. No node or item array is kept. */
 export class StreamingDenseTileJob {
     private readonly controller = new AbortController();
     private readonly apron: Readonly<Rect>;
@@ -83,7 +70,6 @@ export class StreamingDenseTileJob {
     private stream: ScenePaintNodeStream | null = null;
     private opening = false;
     private pumping = false;
-    /** Nodes read ahead in background slices; the render loop consumes them without awaiting. */
     private readonly queue: PaintNode[] = [];
     private readerEnded = false;
     private node: PaintNode | null = null;
@@ -129,13 +115,10 @@ export class StreamingDenseTileJob {
         if (options.signal?.aborted) this.cancel();
     }
     get blocked(): boolean { return this.blockedValue; }
-    /** Stopped without parts: cancelled because its source went stale, or failed (already reported). */
     get stopped(): boolean { return this.state === 'cancelled' || this.state === 'failed'; }
     get failed(): boolean { return this.state === 'failed'; }
     get isComplete(): boolean { return this.state === 'complete'; }
     get isEmpty(): boolean { return this.state === 'empty'; }
-    /** The tile's only part when no barrier split it: the complete band content of this apron. */
-    /** True when the apron met a barrier or a sensitive node: such a tile is never published to the cache. */
     get touchedLive(): boolean { return this.touched; }
     get singlePart(): DenseTilePart | null {
         return this.barriers === 0 && this.finished.length === 1 && (this.state === 'complete') ? this.finished[0] : null;
@@ -149,16 +132,13 @@ export class StreamingDenseTileJob {
     get cpuWorkingSet(): number {
         return this.memoryBytes + (this.state === 'start' ? 2 * BITMAP_BYTES : this.state === 'estimate' && !this.pathLease ? this.estimate : 0);
     }
-    /** A denied reservation waits for a real capacity change: the owner is woken once, never polled. */
     private waitForMemory(): void {
         this.blockedValue = true;
         this.options.host.allocator.cpu.whenAvailable?.(() => this.options.host.invalidate('dense-memory'));
     }
-    /** A read-ahead or open is in flight. Its completion invalidates, and the frame keeps coming until it lands. */
     get awaiting(): boolean { return this.opening || this.pumping; }
     needsFrame(): boolean {
         if (this.blockedValue) return false;
-        // Work in flight is still pending work: frames keep coming while it runs, so a lost completion wake cannot stall the tile.
         if (this.awaiting) return true;
         if (this.state === 'item') return !!this.adapter?.needsFrame();
         return this.state === 'start' || this.state === 'read' || this.state === 'items' || this.state === 'bounds' || this.state === 'estimate';
@@ -175,10 +155,6 @@ export class StreamingDenseTileJob {
         this.adapter = null; this.pathLease = null; this.item = null; this.bounds = null;
         try { adapter?.dispose(); } finally { if (lease) this.options.host.allocator.cpu.release(lease); }
     }
-    /** The tile's own working memory: first a quiet ask, then, when the owner gave back what it held ahead of need, a quiet ask again,
-     * and only then a normal one, whose refusal is pressure. The owner's caches sit in the same pane cache as these runs, which the
-     * governor never evicts while its layer is mid-frame, so only the owner can take them back for the tile (measured: a 1 MB run
-     * refused for good with 29 MB of the same plan's cached nodes in the 33.6 MB pool). */
     private reserve(bytes: number): ByteLease | null {
         if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Streaming dense path estimate overflows');
         const cpu = this.options.host.allocator.cpu, size = Math.max(1, bytes);
@@ -190,7 +166,6 @@ export class StreamingDenseTileJob {
         }
         return cpu.reserve(size);
     }
-    /** Discards a sub-run's pixels and returns both of its leases. */
     private releaseRun(run: Run): void {
         try { run.canvas.width = 0; run.canvas.height = 0; }
         finally {
@@ -203,7 +178,6 @@ export class StreamingDenseTileJob {
             try { releaseDenseTilePart(part); } catch (error) { this.report(error); }
         }
     }
-    /** Ends the current sub-run: pixels become a sealed part, an unpainted run returns its leases. */
     private closeRun(): void {
         const run = this.run;
         if (!run) return;
@@ -215,7 +189,6 @@ export class StreamingDenseTileJob {
         this.sealed.push({ bitmap, rect: this.rect, blend: run.blend, end: null, bytesLease: run.bitmapLease,
             owner: this.options.host.allocator.cpu, hasImage: run.hasImage });
     }
-    /** Every sealed part precedes this barrier, in the order they were rasterized. */
     private sealUntil(barrier: string | null): void {
         this.closeRun();
         for (const part of this.sealed.splice(0)) this.finished.push({ ...part, end: barrier });
@@ -288,21 +261,16 @@ export class StreamingDenseTileJob {
             } catch (error) { this.stop(true, error); }
         }, error => { this.opening = false; if (!this.controller.signal.aborted) this.stop(true, error); });
     }
-    /** Consumes the next read-ahead node, or starts a background slice that refills the queue. */
     private readNext(): void {
         if (this.queue.length) { this.node = this.queue.shift()!; this.itemIndex = 0; this.state = 'items'; return; }
         if (this.readerEnded) { this.finish(); return; }
         this.refill();
     }
-    /** Starts one read-ahead slice that refills the queue. Its completion invalidates the frame, or, while `eager` holds,
-     * starts the next slice on its own. */
     private refill(): void {
         if (this.pumping) return;
         const stream = this.stream!; this.pumping = true;
         const started = performance.now();
         const slice = (async () => {
-            // Bounded read-ahead: the queue holds at most 64 nodes, and a slice ends after 4 ms. Eight refilled once per
-            // frame, so a tile meeting ~1,800 nodes needed over 200 frames before it could finish.
             while (!this.controller.signal.aborted && !this.readerEnded && this.queue.length < 64 && performance.now() - started < 4) {
                 const node = await stream.next();
                 if (this.controller.signal.aborted) return;
@@ -372,7 +340,6 @@ export class StreamingDenseTileJob {
             try { this.options.host.invalidate('streaming-dense-image'); } catch (error) { this.report(error); }
         } }, (_ctx, _view, paint) => paint(), error => this.stop(true, error));
     }
-    /** Takes the sealed parts of a finished tile. The caller now owns every returned bitmap and lease. */
     takeParts(): readonly DenseTilePart[] {
         if (this.state !== 'complete' && this.state !== 'empty') throw new Error('Streaming tile is not finished');
         if (!this.valid()) { this.cancel(); throw new DOMException('Streaming tile is stale', 'AbortError'); }
@@ -384,7 +351,6 @@ export class StreamingDenseTileJob {
     prepare(view: ViewState, budget: FrameBudget): void {
         if (!this.needsFrame() && !this.blockedValue) return;
         this.blockedValue = false;
-        // The frame budget alone bounds a slice: a fixed 0.25 ms cap left a tile over ~1,800 nodes hundreds of frames long.
         const sliced: FrameBudget = { ...budget, shouldYield: () => budget.shouldYield(),
             claimUpload: bytes => budget.claimUpload(bytes) };
         try {
@@ -398,7 +364,6 @@ export class StreamingDenseTileJob {
                     const item = items[this.itemIndex++];
                     if (this.options.barriers.has(item.nodeId) || this.options.sensitive?.has(item.nodeId)) this.touched = true;
                     if (this.options.barriers.has(item.nodeId)) {
-                        // A node's items are contiguous in its band, so one barrier event per node.
                         if (this.lastBarrier !== item.nodeId) {
                             this.lastBarrier = item.nodeId; this.barriers++;
                             this.sealUntil(item.nodeId);

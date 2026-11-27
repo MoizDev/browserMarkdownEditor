@@ -3,7 +3,6 @@ import type { IsolationReservation as DeviceReservation } from './gfx/webgl2Isol
 import type { IsolationShortfall } from './gfx/webgl2Isolation';
 import { ArenaError } from './resourceArena';
 
-/** Local structural view until the shared LayerHost isolation declaration lands. */
 export interface LayerIsolationDeclaration {
     readonly depth: number;
     readonly maskDepth: number;
@@ -20,9 +19,6 @@ interface Entry {
     format: TextureFormat; samples: Samples; stencil: boolean;
 }
 
-/** One prep snapshot, bounded by physical surface extents. Target classes merge declaration
- * peaks rather than allocating once per layer, because layers are composed sequentially (C4.3).
- */
 export class GpuIsolationPlan {
     readonly #entries = new Map<string, Entry>();
     readonly #width: number;
@@ -62,8 +58,6 @@ export class GpuIsolationPlan {
 
     finish(): DeviceReservation[] {
         if (this.#multiply) {
-            // Every multiply reads a single-sampled backdrop in its own target's format.
-            // Union all potentially active classes before adding those backdrop entries.
             const entries = [...this.#entries.values()];
             for (const entry of entries) {
                 const backdrop = this.#entry({ x: entry.left, y: entry.top, width: entry.right - entry.left,

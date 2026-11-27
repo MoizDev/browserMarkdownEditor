@@ -19,7 +19,6 @@ export interface PdfTiledPresentation {
     readonly staleVersion: false;
 }
 
-/** One App-session-owned source, never a component/pane lifetime. */
 export interface PdfTiledSource {
     readonly session: PdfTiledDocumentSession;
     readonly version: Promise<DiskVersion>;
@@ -31,8 +30,6 @@ export interface PdfTiledSource {
     readonly bridge: PdfVersionBridge | null;
 }
 
-/** Implemented in the lazy PDF route; the caller supplies only the app's
- * snapshot capability and its full reader/session identity. */
 export interface PdfTiledSourceFactory {
     open(reading: PdfReadingBinding, signal: AbortSignal): Promise<PdfTiledSource>;
 }

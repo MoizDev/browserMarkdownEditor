@@ -18,8 +18,6 @@ import type { SelectionState } from '../selection';
 import type { PinnedBoardBuild } from './contentSource';
 import type { BoardContentSource, BoardSession } from './BoardSession';
 
-/** Recovery owns its journal transport and retained media/sample payloads; callbacks are synchronous
- * until the returned append or drain, so pagehide captures a fixed revision without waiting. */
 export interface BoardBuildCapture {
     readonly overrides: readonly SerializerRecordOverride[];
     readonly context: unknown;
@@ -55,14 +53,12 @@ export interface BoardSessionFactoryOptions {
     readonly historyLimitReached: () => void;
     readonly finishGesture: () => void;
     readonly finishComposition: () => void;
-    /** Pin media restoration and, for PDF ink, display lists against the same revision synchronously. */
     readonly captureBuild?: (revision: number) => BoardBuildCapture;
     readonly pinBuild: (base: SerializerCheckpoint, revision: number, context: unknown) => PinnedBoardBuild;
     readonly afterWritten?: (revision: number, context: unknown) => void | Promise<void>;
     readonly onFailure: (error: unknown) => void;
 }
 
-/** O(changed) record-set union; the factory owns the mutable instance. */
 export interface PendingRecordChanges {
     readonly touched: TouchedSet;
     readonly revision: number;
@@ -80,9 +76,7 @@ export type ComposedBoardSession = BoardSession & SessionAdapter & {
     /** An edit the person asked for that lands later (a paste, a duplicate): pending, and waited for by `settle` and
      * `drain`, until it settles. It must not wait for either. */
     trackEdit<T>(work: Promise<T>): Promise<T>;
-    /** Resolves once no gesture hold is open and no tracked edit is running (SessionAdapter `settle`). */
     settle(): Promise<void>;
-    /** Revokes at once; resolves when retirement has settled every build that could read a released source. */
     dispose(): Promise<void>;
 };
 export type CreateBoardSession = (options: BoardSessionFactoryOptions) => ComposedBoardSession;

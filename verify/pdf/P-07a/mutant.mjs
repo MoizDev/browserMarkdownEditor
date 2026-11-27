@@ -9,13 +9,12 @@ const kind = process.argv[2];
 if (process.argv.length !== 4 || !['hyphen', 'abort'].includes(kind)) throw new Error('Usage: mutant.mjs <hyphen|abort> <fresh scratch root>');
 const base = resolve(process.argv[3]), sourceRoot = resolve('.');
 if (!base.startsWith(`${scratchRoot}/`)) throw new Error(`Mutants stay under the scratch folder ${scratchRoot}`);
-await mkdir(base); // A stale source/build is not a mutant witness.
+await mkdir(base);
 const root = resolve(base, 'source'), scratch = resolve(base, 'build');
 await mkdir(root);
 for (const file of ['src', 'shared', 'public', 'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'index.html', 'THIRD_PARTY_NOTICES']) {
     await cp(resolve(file), resolve(root, file), { recursive: true });
 }
-// A private copy of this worktree's own install (an APFS clone on macOS); never shared/hardlinked.
 if (process.platform === 'darwin') execFileSync('/bin/cp', ['-cR', resolve('node_modules'), resolve(root, 'node_modules')]);
 else await cp(resolve('node_modules'), resolve(root, 'node_modules'), { recursive: true, verbatimSymlinks: true });
 const changes = [];

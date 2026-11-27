@@ -1,10 +1,3 @@
-// The repository's own lint rules: the static half of the invariants in
-// `AGENTS.md` that no stock rule can state. Each rule's error on a deliberately
-// violating line was recorded when it was added (the commit that added it says
-// which line), so a rule that silently matches nothing is caught at that point.
-//
-// They are plain ESLint rules over the syntax tree: the repo's lint has no type
-// information (eslint.config.ts), so they judge by names and paths, never types.
 import path from 'node:path'
 import type { Rule } from 'eslint'
 
@@ -13,7 +6,6 @@ const rel = (file: string) => path.relative(ROOT, file).split(path.sep).join('/'
 
 type Node = Rule.Node & Record<string, unknown>
 
-/** The source of every static import, re-export, dynamic import() and require(). */
 function onImport(context: Rule.RuleContext, report: (node: Rule.Node, source: string) => void): Rule.RuleListener {
   const check = (node: Rule.Node, src: unknown) => { if (typeof src === 'string') report(node, src) }
   return {
@@ -22,15 +14,11 @@ function onImport(context: Rule.RuleContext, report: (node: Rule.Node, source: s
     ExportNamedDeclaration: (n) => { if (n.source) check(n, n.source.value) },
     ImportExpression: (n) => {
       if (n.source.type === 'Literal') check(n, n.source.value)
-      // a template with no substitutions is a literal by another name (r-gates on I-0)
       else if (n.source.type === 'TemplateLiteral' && n.source.expressions.length === 0) check(n, n.source.quasis[0].value.cooked)
     },
     CallExpression: (n) => {
       if (n.callee.type === 'Identifier' && n.callee.name === 'require' && n.arguments[0]?.type === 'Literal') check(n, n.arguments[0].value)
     },
-    // Type positions count too: `import('tldraw').TLShape` and `import x = require('tldraw')`
-    // pull no runtime code, but they are still another package's material in the
-    // engine (found by the auditor on I-0: a type import passed every zone).
     TSImportType: (n: unknown) => {
       const arg = (n as { argument?: { type: string; literal?: { value?: unknown } } }).argument
       if (arg?.type === 'TSLiteralType') check(n as Rule.Node, arg.literal?.value)
@@ -42,7 +30,6 @@ function onImport(context: Rule.RuleContext, report: (node: Rule.Node, source: s
   }
 }
 
-/** A relative import resolved to a repo-relative path; a bare specifier as written. */
 function target(file: string, source: string): { local: string | null; bare: string | null } {
   if (source.startsWith('.') || source.startsWith('/')) {
     const abs = source.startsWith('/') ? source : path.resolve(path.dirname(file), source)
@@ -54,23 +41,15 @@ function target(file: string, source: string): { local: string | null; bare: str
 const under = (p: string, dir: string) => p === dir || p.startsWith(dir + '/') || p.startsWith(dir + '.')
 
 interface Zone {
-  /** files this zone applies to (repo-relative directory prefixes) */
   files: string[]
-  /** files inside the zone may not import these local directories... */
   noLocal?: string[]
-  /** ...nor these packages (exact name or `name/…`) */
   noPackage?: string[]
-  /** files OUTSIDE `files` may not import into it (a dark zone) */
   dark?: boolean
-  /** directories outside the zone that a dark zone still lets in */
   darkExcept?: string[]
-  /** files outside the zone that may reach it ONLY by a dynamic import() or a type-only import, so
-   *  wiring a switch never puts the engine's code in the importer's chunk */
   darkLazy?: string[]
   message: string
 }
 
-/** No runtime code crosses: `import type`, an import whose every specifier is a type, or `import('x').T`. */
 function typeOnly(node: Rule.Node): boolean {
   const n = node as Node
   if ((n.type as string) === 'TSImportType') return true
@@ -79,9 +58,6 @@ function typeOnly(node: Rule.Node): boolean {
   return n.type === 'ImportDeclaration' && specs.length > 0 && specs.every(sp => sp.importKind === 'type')
 }
 
-// G-INV-06's engine half and I-0's dark zone (contracts C6.3). The new engines
-// stay imported by nothing until the package that wires their switch adds its
-// importer to `darkExcept`, in a reviewed diff of eslint.config.ts.
 const importZones: Rule.RuleModule = {
   meta: { type: 'problem', schema: [{ type: 'array' }] },
   create(context) {
@@ -107,18 +83,12 @@ const importZones: Rule.RuleModule = {
   },
 }
 
-// G-INV-04: code-based tests are banned (AGENTS.md, "Checks"). A test file by
-// name, or an import of a test runner. A `test` script in package.json is
-// caught by review, not here.
 const RUNNERS = ['bun:test', 'node:test', 'vitest', 'jest', '@jest/globals', 'mocha', 'chai', 'ava', 'tap', 'uvu', 'jasmine', '@playwright/test', '@testing-library/react', '@testing-library/dom']
 const noTests: Rule.RuleModule = {
   meta: { type: 'problem', schema: [] },
   create(context) {
     const file = rel(context.filename)
     const listeners = onImport(context, (node, source) => {
-      // The browser-run driver is the `playwright` library root; every other entry point
-      // it exports (`playwright/test`, `/lib/runner`, `/types/test`, ...) is its test
-      // runner or that runner's machinery (r-gates on I-0: `playwright/test` passed).
       const playwrightRunner = source.startsWith('playwright/') && source !== 'playwright/package.json'
       if (playwrightRunner || RUNNERS.some(r => source === r || source.startsWith(r + '/'))) {
         context.report({ node, message: `Code-based tests are banned (AGENTS.md): no test runner may be imported (${source}). Verify with a browser run driving the real app.` })
@@ -137,10 +107,6 @@ const noTests: Rule.RuleModule = {
 
 interface SinkAllow { file: string; names: string[]; rhs: 'any' | 'constant'; identifiers?: string[] }
 
-// G-INV-22: HTML-string sinks occur only where listed (AGENTS.md: two places
-// turn note text into innerHTML). Banned wherever the name appears; an
-// allow-list entry is by path and, unless it is one of the two note-text sinks,
-// requires a right-hand side that is a module constant built from literals.
 const SINK_PROPS = new Set(['innerHTML', 'outerHTML', 'srcdoc', 'insertAdjacentHTML', 'setHTMLUnsafe', 'createContextualFragment'])
 const htmlSinks: Rule.RuleModule = {
   meta: { type: 'problem', schema: [{ type: 'array' }] },
@@ -209,11 +175,6 @@ const htmlSinks: Rule.RuleModule = {
   },
 }
 
-// G-INV-FS: only src/context/ touches the File System Access API (AGENTS.md,
-// the four layers). Bans the method names only that API has. The baseline of
-// files that break the rule today is the rule's option in eslint.config.ts and
-// may only shrink. getFile and iteration are not banned by name (no type
-// information can tell a handle from a Map); the browser runs cover them.
 const FS_NAMES = new Set(['getFileHandle', 'getDirectoryHandle', 'createWritable', 'removeEntry', 'showDirectoryPicker', 'queryPermission', 'requestPermission', 'isSameEntry'])
 const fsAccess: Rule.RuleModule = {
   meta: { type: 'problem', schema: [{ type: 'array' }] },
@@ -222,7 +183,6 @@ const fsAccess: Rule.RuleModule = {
     const file = rel(context.filename)
     if (under(file, 'src/context') || baseline.has(file)) return {}
     return {
-      // the picker is also a global: a bare `showDirectoryPicker()` (r-gates on I-0)
       Identifier(n) {
         const parent = (n as Node).parent as Node
         if (FS_NAMES.has(n.name) && parent.type === 'CallExpression' && parent.callee === n) {
@@ -240,9 +200,6 @@ const fsAccess: Rule.RuleModule = {
   },
 }
 
-// P1-dev exports every public symbol; the worker adapter may use only the
-// canonical 136-export surface. An explicit dev import guard is also required
-// so a static import cannot silently carry its manifest into a shipping chunk.
 const pdfiumBoundaries: Rule.RuleModule = {
   meta: { type: 'problem', schema: [{ type: 'array', items: { type: 'string' } }] },
   create(context) {

@@ -20,7 +20,6 @@ function role(ink: InkRef, marks: Marks): InkRef {
     return { swatch: ink.swatch, role: marks.link ? 'link' : marks.code ? 'code' : ink.role };
 }
 
-/** A session owns one instance and its append-only face table. */
 export class BoardTextLayout implements TextLayoutEngine {
     private faces: Face[] = [];
     private faceIds = new Map<string, number>();
@@ -75,8 +74,6 @@ export class BoardTextLayout implements TextLayoutEngine {
             const key = faceKey(request.style.font, item.marks, heading);
             const face = this.face(key, size), text = block.text.slice(a, b);
             const width = this.measurer.measure(this.faces[face], text, !!(item.level & 1), request.fontEpoch).width * size / 64;
-            // Canvas exposes no glyph IDs: cmap rules out unsupported codepoints, while
-            // presentation sequences remain conservative for export's raster fallback.
             const fallback = !this.fonts.isLoaded(key) || !fontSupports(key, text);
             pieces.push({ from: a, to: b, item, face, ink: role(request.style.ink, item.marks), text, width, fallback });
         }

@@ -10,7 +10,6 @@ export interface ProjectionWindow {
     readonly text: string;
 }
 export interface ProjectionReadOptions extends PlainTextOptions {
-    /** A capture owner may fence this immutable revision across scheduler yields. */
     readonly current?: () => boolean;
 }
 
@@ -22,14 +21,12 @@ function units(value: number, name: string): void {
     if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`Invalid projection ${name}`);
 }
 
-/** A revision-affine reader over the newline projection; it never stores a flattened document. */
 export class TextProjectionReader {
     constructor(readonly text: RichText) {}
     get length(): number { return projectionLength(this.text); }
     position(offset: number): TextProjectionPosition { return projectionPosition(this.text, offset); }
     slice(from: number, to: number): string { return projectionSlice(this.text, from, to); }
 
-    /** Select an input window on real grapheme boundaries, even across runs or CRLF. */
     window(offset: number, before: number, after: number, affinity: 'before' | 'after' = 'after'): ProjectionWindow {
         units(offset, 'offset'); units(before, 'window'); units(after, 'window');
         if (offset > this.length || (affinity !== 'before' && affinity !== 'after')) throw new RangeError('Invalid projection window');
@@ -39,7 +36,6 @@ export class TextProjectionReader {
         return { from, to, cursor, text: projectionSlice(this.text, from, to) };
     }
 
-    /** Chunks end on grapheme boundaries; a single oversized grapheme is never split. */
     *chunks(from = 0, to = this.length, maximum = 4096,
         options?: { readonly signal?: AbortSignal; readonly current?: () => boolean }): Generator<string> {
         units(from, 'start'); units(to, 'end'); units(maximum, 'chunk size');
@@ -58,7 +54,6 @@ export class TextProjectionReader {
         cancelled(options);
     }
 
-    /** Consumer backpressure and scheduler cooperation both keep large reads bounded. */
     async *chunksCooperative(from: number, to: number, maximum: number, options: ProjectionReadOptions): AsyncGenerator<string> {
         const budget = options.sliceMilliseconds ?? 3;
         if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid projection read time slice');

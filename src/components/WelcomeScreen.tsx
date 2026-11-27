@@ -9,11 +9,9 @@ interface WelcomeScreenProps {
   onOpenLinkedVault: () => void;
   onPickDirectory: () => void;
   onRestoreVault: () => void;
-  /** Drawn over the screen: the app's dialog and the update notice. */
   children?: ReactNode;
 }
 
-/** What shows before any vault is open. */
 export function WelcomeScreen({ linkedVault, previousVault, onOpenLinkedVault, onPickDirectory, onRestoreVault, children }: WelcomeScreenProps) {
   return (
   <div className="welcome-screen">
@@ -27,9 +25,6 @@ export function WelcomeScreen({ linkedVault, previousVault, onOpenLinkedVault, o
         </svg>
       </div>
       <h1 className="welcome-title">{APP_TITLE}</h1>
-      {/* A link named a vault this browser knows, but the grant has lapsed.
-          Browsers only let requestPermission ask from a user gesture, so
-          the link cannot open itself — this button is that gesture. */}
       <p className="welcome-subtitle">
         {linkedVault
           ? <>This link opens <strong>{linkedVault.label}</strong>. Allow access to it to continue.</>
@@ -66,12 +61,10 @@ export function WelcomeScreen({ linkedVault, previousVault, onOpenLinkedVault, o
   );
 }
 
-/** Folder names and paths, as the screens show them: the vault's own top level has the empty path. */
 function folderLabel(vault: string | null, path: string): string {
   return path ? path : (vault ?? 'the vault folder');
 }
 
-/** What the step is, in words, for the loading screen. */
 function stepText(snapshot: StartupSnapshot): ReactNode {
   const vault = snapshot.vault ? <strong>{snapshot.vault}</strong> : 'your vault';
   switch (snapshot.step) {
@@ -83,7 +76,6 @@ function stepText(snapshot: StartupSnapshot): ReactNode {
   }
 }
 
-/** Why a step can stall, and what helps — the part a person can act on. */
 function stepHint(step: StartupStep): string {
   switch (step) {
     case 'recent-vaults':
@@ -99,21 +91,14 @@ function stepHint(step: StartupStep): string {
 
 const seconds = (ms: number) => `${Math.max(1, Math.round(ms / 1000))} s`;
 
-/** How long "Keep waiting" puts the choices away before offering them again. */
 const KEEP_WAITING_MS = 30_000;
 
 interface LoadingScreenProps {
-  /** The picker: offered only while the wait is on the file system, which another folder can be free of. */
   onOpenOther: () => void;
   onReload: () => void;
   children?: ReactNode;
 }
 
-/**
- * While the vault last used is being reopened and walked. Every step of that waits on a browser call with no
- * deadline of its own, so after a few seconds this names the step (and the folder the walk is waiting on) and offers
- * a way on — drawn in the app's own buttons, never the browser's dialogs. utils/startupProgress.ts logs the same once.
- */
 export function LoadingScreen({ onOpenOther, onReload, children }: LoadingScreenProps) {
   const [now, setNow] = useState(() => performance.now());
   const [waitUntil, setWaitUntil] = useState(0);
@@ -121,12 +106,8 @@ export function LoadingScreen({ onOpenOther, onReload, children }: LoadingScreen
     const timer = setInterval(() => setNow(performance.now()), 500);
     return () => clearInterval(timer);
   }, []);
-  // Polled, not subscribed (see startupProgress.ts): the tick above is what re-renders this.
   const snapshot = readStartup();
   const slow = !!snapshot && snapshot.stepMs >= STARTUP_SLOW_MS;
-  // A walk is stalled when ONE folder has not answered, not when the walk is long: a healthy vault of many thousands
-  // of folders takes longer than this to read, and it was told its folders were "usually on a cloud drive" and
-  // offered a way out on every load while its counts were still climbing. Every other step is a single call.
   const stalled = slow && (snapshot.step !== 'walk' || snapshot.waitingMs >= STARTUP_SLOW_MS);
   const choices = stalled && now >= waitUntil;
   const fileSystem = snapshot?.step === 'walk' || snapshot?.step === 'permission';
@@ -171,11 +152,6 @@ interface VaultProblemScreenProps {
   children?: ReactNode;
 }
 
-/**
- * The vault's folder list could not be read. The tree is all-or-nothing (FileSystemContext's FolderReadError says
- * why), so instead of the empty sidebar this used to leave — no tabs, no word of why — the folder that failed is
- * named, with the browser's reason, and nothing is changed until the person picks a way on.
- */
 export function VaultProblemScreen({ problem, onRetry, onOpenOther, children }: VaultProblemScreenProps) {
   const [retrying, setRetrying] = useState(false);
   return (

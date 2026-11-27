@@ -24,21 +24,17 @@ import type { NearestVisitor, QueryBuffer, SpatialQuery } from './query';
 import type { SceneBounds, ScenePaintBinding, ScenePaintRequest, SceneQueryOptions, SceneSnapshot, SceneSpatial } from './types';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-/** Exact-bounds realisations in flight at once (ensureExactBoundsMany): enough to keep the geometry worker's queue fed across
- * its round trips; each waits on the worker, so more would only queue there. */
 const EXACT_BOUNDS_CONCURRENCY = 8;
 
 export interface SessionSceneOptions {
     readonly doc: BoardDoc;
     readonly token: RenderToken;
     readonly bounds: BoundsProvider;
-    /** Leases refer to captured node versions, not the current document record. */
     retainNode(node: Readonly<Node>): { release(): void };
     retainRenderer?(): { release(): void };
     realize(node: Readonly<Node>, signal: AbortSignal): Promise<LocalGeometryBounds>;
     preparePaint(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder): Promise<PaintNodeSource>;
     preparePaintStream?(doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, resolved?: ResolvedNodeCache | null): ScenePaintNodeStream;
-    /** Requests bounded platform work; never starts a private animation loop. */
     invalidate(): void;
     onError(error: unknown): void;
     cooperate?(): Promise<void>;
@@ -46,11 +42,8 @@ export interface SessionSceneOptions {
     subscribeInvalidation?(listener: (ids: ReadonlySet<NodeId>) => void): () => void;
 }
 
-/** Slots one rebuild step visits; the frame's deadline bounds how many slices a frame runs. */
 const REBUILD_SLICE = 1024;
 
-/** Session-owned Scene, independent of pane lifetime. Publication is blocked while
- * an incremental order splice is in progress; no query observes half of a move. */
 export class SessionScene implements SceneSpatial {
     private readonly cache = new SceneGeometryCache();
     private readonly versions = new Map<NodeId, number>();
@@ -60,7 +53,6 @@ export class SessionScene implements SceneSpatial {
     private readonly pendingNodes = new Map<NodeId, number>();
     private readonly pendingSheets = new Set<SheetId>();
     private pages = false;
-    /** Whether a pending change is a sheet change (see SceneDirty.structure); cleared with the pending sets. */
     private pendingStructure = false;
     private serial = 0;
     private disposed = false;
@@ -170,19 +162,14 @@ export class SessionScene implements SceneSpatial {
             { ids: dirty.nodes.keys(), structural: dirty.structure || dirty.pages });
         return next;
     }
-    /** Called by the platform's bounded CPU preparation task, including after a
-     * packed-worker ready callback. No RAF/polling belongs to this Scene. */
     step(maxWork: number, deadline = Infinity): 'pending' | 'complete' {
         if (this.disposed) return 'complete';
         if (!Number.isSafeInteger(maxWork) || maxWork < 1 || Number.isNaN(deadline)) throw new RangeError('Invalid scene work budget');
         // One unit is always admitted: a frame whose prepare slice is spent can never leave the Scene behind forever.
-        // A unit is one bounded generator step (the update yields every 256 items), so the floor is bounded too.
         let work = 0;
         while (work++ < maxWork && (work === 1 || performance.now() < deadline)) {
             if (!this.active) {
                 if (!this.pendingNodes.size && !this.pendingSheets.size && !this.pages && this.state.revision === this.options.doc.rev) {
-                    // The rebuild's passes are stepped in slices up to the same deadline: the view now asks for as many units as the
-                    // frame has time for (attachView), and one call with that whole count would visit every slot past the deadline.
                     for (let units = Math.max(1, maxWork - work); units > 0; units -= REBUILD_SLICE) {
                         if (this.rebuild.step(Math.min(units, REBUILD_SLICE)) !== 'pending' || performance.now() >= deadline) break;
                     }
@@ -216,17 +203,9 @@ export class SessionScene implements SceneSpatial {
         if (!this.ready) return { revision: this.options.doc.rev, quality: BoundsQuality.Pending, ink: null, selectable: null };
         return this.live.worldBounds(id);
     }
-    /** One node's exact bounds, on the bounded path of ensureExactBoundsMany: a group's members are realised a few at a time,
-     * never all at once (a 10,000-member group started 10,000 geometry builds together). A member that changed meanwhile keeps
-     * the bounds it has, which its own invalidation publishes; the answer is the node's bounds once the scene has published. */
     async ensureExactBounds(id: NodeId, signal?: AbortSignal): Promise<SceneBounds | null> {
         return (await this.ensureExactBoundsMany([id], signal)).get(id) ?? null;
     }
-    /** Exact bounds for many nodes, published once. The geometry is realised a few at a time and the scene steps to ONE
-     * publication for them all: a node whose geometry changed meanwhile keeps the bounds it has (its own invalidation publishes).
-     * One ensureExactBounds per node published once per node, and every publication restarted the viewer's paint: opening an old
-     * drawing of 5,640 pen strokes (no exact bounds yet) fitted its camera through 5,643 publications, 5,624 dropped paint frames
-     * and 29,413 geometry builds, 37 s before the first complete picture (CfT 157, M4 Pro, one pane). */
     async ensureExactBoundsMany(ids: readonly NodeId[], signal?: AbortSignal): Promise<ReadonlyMap<NodeId, SceneBounds | null>> {
         if (this.disposed) throw new DOMException('Scene is disposed', 'AbortError');
         const cooperate = this.options.cooperate ?? yieldToHost, stop = signal ?? this.controller.signal;
@@ -264,9 +243,6 @@ export class SessionScene implements SceneSpatial {
         for (const id of ids) out.set(id, this.worldBounds(id));
         return out;
     }
-    /** The nodes whose own geometry bounds `node`: itself, or for a group every member through nested groups. A group has no
-     * geometry of its own (the publication aggregates its members), and realising one threw "Groups aggregate child geometry
-     * in Scene": every old board with a group failed to open, its first fit asking for the group's exact bounds. */
     private geometryOwners(node: Readonly<Node>): Readonly<Node>[] {
         if (node.kind !== 'group') return [node];
         const owners: Readonly<Node>[] = [], stack: Readonly<Node>[] = [node];
@@ -302,8 +278,6 @@ export class SessionScene implements SceneSpatial {
         this.paintBinding = Object.freeze({ token: Object.freeze({ ...token }), preparePaint: binding.preparePaint,
             preparePaintStream: binding.preparePaintStream, retainRenderer: binding.retainRenderer });
     }
-    /** The node ids the live scene published in (from, to]: null when that span is not retained or a structural change makes
-     * every node unknown. Read live (not from a pinned frame), so a viewer can judge a frame older than the published revision. */
     changedNodesSince(from: number, to: number = this.options.doc.rev): ReadonlySet<NodeId> | null {
         if (this.disposed) return null;
         return this.boundsVersions.changedNodesSince(from, to);

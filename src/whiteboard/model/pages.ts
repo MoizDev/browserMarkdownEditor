@@ -5,7 +5,6 @@ import type { HostBlock } from './doc';
 
 const stacks = new WeakMap<object, PageStack>();
 
-// Apply replaces paper or PDF page arrays on geometry changes; host metadata changes need no relayout.
 export function boardPageStack(host: HostBlock): Readonly<PageStack> | undefined {
     if (host.kind === 'whiteboard') return undefined;
     const key = host.kind === 'notebook' ? host.paper : host.pages;
@@ -27,7 +26,6 @@ export interface PageAnchor {
 
 export type PageMove = PageAnchor;
 
-// Missing PDF pages retain their stored index; only their displayed origin is clamped (E-DOC-14).
 export function pageOrigin(stack: Readonly<PageStack>, page: number): Rect | undefined {
     if (!Number.isSafeInteger(page) || page < 0) throw new RangeError('Invalid page index');
     return stack.rects[Math.min(page, stack.rects.length - 1)];
@@ -42,7 +40,6 @@ export function pageWorldTransform(
     return [cos, sin, -sin, cos, origin.x + anchor.x, origin.y + anchor.y];
 }
 
-// Called only at commit: during a gesture the original page remains the anchor.
 export function reanchorPage(
     stack: Readonly<PageStack>, anchor: PageAnchor, worldBounds: Readonly<Rect>,
 ): PageMove | undefined {

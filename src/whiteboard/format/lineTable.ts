@@ -7,8 +7,6 @@ import type { EncodedRecord, RecordIdentity, WriteResult } from './writeTypes';
 
 export interface RecordIntegrity { readonly count: number; readonly digest: string; }
 
-// R-W16: a consistency token for a missing/wrong record table, NOT a security property or file hash.
-// The serializer's separate Blob SHA-256 belongs to W-D2b. Each lane adds/subtracts modulo 2^32.
 const DIGEST_SEEDS = [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35] as const;
 const DIGEST_PRIME = 0x01000193;
 function revisionValid(revision: number): boolean { return Number.isSafeInteger(revision) && revision >= 0; }
@@ -26,8 +24,6 @@ export class RecordKeyDigest {
     private count = 0;
     private readonly lanes = new Uint32Array(4);
 
-    // The session owns revisions; this accumulator owns no by-id registry or document metadata.
-    // Supplying the previous revision lets both session and worker update in O(touched ids).
     replace(identity: RecordIdentity, before: number | null, after: number | null): WriteResult<RecordIntegrity> {
         if (!identityValid(identity) || (before !== null && !revisionValid(before)) || (after !== null && !revisionValid(after))) {
             return writeFailure('invalid', 'Record revision must be a non-negative safe integer');
@@ -73,7 +69,7 @@ export interface LinePosition {
 export interface LineAssembly {
     readonly kind: 'built' | 'unchanged';
     readonly blob: Blob;
-    readonly revision: number; // Content epoch, not a document or per-record revision.
+    readonly revision: number;
     readonly integrity: RecordIntegrity;
 }
 function sameIntegrity(a: RecordIntegrity, b: RecordIntegrity): boolean {
@@ -132,8 +128,6 @@ export class LineTable {
     get dirtyCount(): number { return this.dirty.size; }
     integrity(): RecordIntegrity { return this.keyDigest.snapshot(); }
 
-    // Snapshot tables share immutable lines; edits replace entries, never mutate shared entries.
-    // The worker can therefore assemble an older pinned revision after later edits arrive.
     fork(): LineTable {
         const copy = new LineTable();
         copy.entries = new Map(this.entries);
@@ -198,7 +192,6 @@ export class LineTable {
         return { ok: true, value: changed };
     }
 
-    /** A checkpoint fork may replace bytes, never create a record or change its revision. */
     override(record: EncodedRecord): WriteResult<boolean> {
         if (!identityValid(record.identity)) return writeFailure('invalid', 'Invalid override record identity');
         const key = recordKey(record.identity), previous = this.entries.get(key);
@@ -267,8 +260,6 @@ export class LineTable {
             return writeFailure('integrity', 'Record count or revision-key digest does not match the session');
         }
         if (!this.header) return writeFailure('header', 'The native header is missing');
-        // R-W30: the end record's unknown fields come from the model too. Cache by immutable
-        // owner and count, but never reuse an assembly whose footer bytes changed.
         if (!this.end || this.end.ext !== endExt || this.end.count !== expected.count) {
             const encoded = encodeEnd(expected.count, endExt);
             if (!encoded.ok) return encoded;
@@ -297,8 +288,6 @@ export class LineTable {
         return { ok: true, value: { kind: 'built', blob, revision: this.epoch, integrity } };
     }
 
-    /** Assemble an immutable snapshot without blocking on document-sized sorting or parts lists.
-     * Publication is atomic: another table mutation invalidates the work before it can commit. */
     async assembleAsync(expected: RecordIntegrity, endExt: ExtBag | null, options: {
         readonly signal?: AbortSignal; cooperate(): Promise<void>;
     }): Promise<WriteResult<LineAssembly>> {
@@ -363,8 +352,6 @@ export class LineTable {
         }
     }
 
-    /** Positions in the canonical Blob produced by assemble(). Consumed in the worker to
-     * retain a compact recovery index without posting a whole board's record table to App. */
     *positions(): Iterable<LinePosition> {
         if (!this.header || this.dirty.size) throw new Error('Cannot index an incomplete line table');
         if (!this.ordered) this.ordered = [...this.entries.values()].sort(compare);

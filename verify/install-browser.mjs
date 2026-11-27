@@ -1,8 +1,3 @@
-// Installs the one browser every headless run uses: Chrome for Testing at the version in
-// browser-pin.json, for this machine's platform, into the per-user cache (`browserCache()`).
-// Launched by path because installed Chrome updates itself mid-run and Playwright's bundled
-// Chromium crashed reading a stored folder handle (verify-in-browser). Usage:
-//   node verify/install-browser.mjs        (again: a no-op that prints the path)
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
@@ -44,7 +39,6 @@ try {
         throw new Error(`Downloaded archive does not match the pin: ${bytes} bytes sha256 ${sha256}; expected ${entry.bytes} bytes sha256 ${entry.sha256}`);
     }
     await mkdir(staging);
-    // ditto keeps the macOS app bundle's symlinks and attributes; Windows 10+ ships bsdtar.
     const [command, ...args] = process.platform === 'darwin' ? ['ditto', '-x', '-k', archive, staging]
         : process.platform === 'win32' ? ['tar', '-xf', archive, '-C', staging]
             : ['unzip', '-q', archive, '-d', staging];

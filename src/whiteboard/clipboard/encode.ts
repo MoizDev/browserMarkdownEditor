@@ -50,7 +50,6 @@ function render(snapshot: CopySnapshot, encoded: string, cacheOnly: boolean): Cl
     return { html, plain: rendition.plain, encoded, cacheOnly };
 }
 
-/** Synchronous copy never waits for media reads or compression. */
 export function encodeClipboardNow(snapshot: CopySnapshot, inline: ReadonlyMap<MediaId, string>): ClipboardEnvelope {
     let total = 0, complete = true;
     const media: Record<string, string> = Object.create(null) as Record<string, string>;
@@ -61,8 +60,6 @@ export function encodeClipboardNow(snapshot: CopySnapshot, inline: ReadonlyMap<M
         if (bytes === undefined) complete = false;
         else media[entry.id] = bytes;
     }
-    // A just-changed selection may not have inline bytes yet. Native records
-    // still carry identities and sizes, so another window can resolve by hash.
     if (total > INLINE_LIMIT || !complete) for (const key of Object.keys(media)) delete media[key];
     const payload: BoardPayload = { ...snapshot.payload, media };
     const estimate = payload.records.reduce((sum, line) => sum + line.length, 0) + Object.values(media).reduce((sum, value) => sum + value.length, 0);
@@ -72,7 +69,6 @@ export function encodeClipboardNow(snapshot: CopySnapshot, inline: ReadonlyMap<M
     return render(snapshot, `u.${base64url(bytes)}`, false);
 }
 
-/** Call off the copy event; the session owns the source blobs and verifies their hashes. */
 export async function prepareInlineMedia(snapshot: CopySnapshot, read: (id: MediaId, signal: AbortSignal) => Promise<Blob | null>, signal: AbortSignal): Promise<ReadonlyMap<MediaId, string>> {
     const result = new Map<MediaId, string>();
     const total = snapshot.media.reduce((sum, entry) => sum + entry.bytes, 0);

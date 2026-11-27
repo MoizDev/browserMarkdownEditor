@@ -4,11 +4,6 @@ const MAX_BYTES = MAX_TEXT_LENGTH * 4;
 const MAX_DEPTH = 128;
 const MAX_VALUES = 1_000_000;
 
-/**
- * Encode data-only JSON without a giant JSON.stringify call. Unknown lexical
- * spans take the reader's raw path instead; this is the fallback for values
- * which entered without source tokens. Getters and lossy JS values are refused.
- */
 export function* encodeOpaqueJsonSteps(value: unknown): Generator<void, string> {
     const active = new Set<object>(), pieces: string[] = [];
     let batch: string[] = [], length = 0, work = 0;
@@ -45,7 +40,6 @@ export function* encodeOpaqueJsonSteps(value: unknown): Generator<void, string> 
         active.add(item);
         try {
             if (Array.isArray(item)) {
-                // Neither sparse entries nor additional fields have a faithful JSON-array form.
                 for (const key in item) {
                     if (!Object.hasOwn(item, key)) throw new TypeError('Unsupported rich array has inherited data');
                     const index = Number(key);

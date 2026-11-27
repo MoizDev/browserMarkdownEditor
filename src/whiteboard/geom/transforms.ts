@@ -7,7 +7,6 @@ export interface ResizePreview {
     readonly box: OrientedBox;
     readonly scaleX: number;
     readonly scaleY: number;
-    /** Signed extents retain the crossing direction even at a collapsed preview. */
     readonly signedWidth: number;
     readonly signedHeight: number;
     readonly anchor: Vec2;
@@ -70,8 +69,6 @@ export function snapRotation(orientation: number, shift: boolean): number {
     const step = Math.PI / 12;
     return shift ? Math.round(orientation / step) * step : orientation;
 }
-/** A released rotation lands on whole degrees; a coarse (touch) release also takes the nearest right angle within 5 degrees
- * (catalogue S§9, S§19). The drag itself stays continuous: only the release commits the rounded angle. */
 export function snapReleasedRotation(orientation: number, coarse: boolean): number {
     if (!Number.isFinite(orientation)) throw new RangeError('Invalid rotation');
     const degree = Math.PI / 180, quarter = Math.PI / 2;

@@ -12,7 +12,6 @@ export function markdownSourceDocument(source: ContentSource | undefined): Text 
     return source && typeof source !== 'string' ? sourceDocs.get(source) : undefined;
 }
 
-/** The adapter owns the immutable document and undo history, including while viewless. */
 export function createMarkdownSession(owner: SourceOwner, initial: EditorState,
     latestSource: () => ContentSource | undefined): MarkdownSessionAdapter {
     let state = initial, revision = 0, configured = false, disposed = false;

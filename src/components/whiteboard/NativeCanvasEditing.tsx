@@ -42,16 +42,12 @@ export interface NativeEditingRenderContext {
     readonly chrome: (context: NativeEditingChromeContext) => ReactNode;
     readonly inverted: boolean;
     readonly setInverted: (value: boolean) => void;
-    /** The board's notices, shown together (boardNotices.tsx). */
     readonly notices: BoardNotices;
     readonly editable: boolean;
-    /** Editing is still being admitted: the session is sealed read-only only until its services connect (or admission fails). */
     readonly admitting: boolean;
     readonly canMutate: () => boolean;
 }
 
-/** This mounts actual editing input and chrome against the acquired document. The temporary
- * admission seal remains until the complete per-embed presentation service is connected. */
 export function NativeCanvasEditing({ props, board, adapter, factory, createLease, renderView, inversion, onError, onUnavailable }: {
     readonly props: NativeEditingViewProps;
     readonly board: ComposedBoardSession;
@@ -60,7 +56,6 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     readonly createLease: (editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void,
         clearNotice: (message: string) => void) => Promise<NativeViewLease>;
     readonly renderView: (context: NativeEditingRenderContext) => ReactNode;
-    /** PDF keeps its existing view preference outside the retokened shell. */
     readonly inversion?: { readonly value: boolean; readonly set: (value: boolean) => void };
     readonly onError: (error: unknown) => void;
     readonly onUnavailable: (error: unknown) => void;
@@ -70,16 +65,13 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const { identity, nativeCanvasHost: host } = props;
     const current = useCallback(() => host.isCurrent(identity), [host, identity]);
     const language = useNativeBoardLanguage(onUnavailable);
-    // The capability factory's translator outlives the render that created it, so it reads the language through a ref.
     const languageRef = useRef(language);
     useLayoutEffect(() => { languageRef.current = language; }, [language]);
     const dialogs = useNativeBoardDialogs({ documentId: identity.documentId, session: identity.session, isVisible: props.isVisible, currentOwner: current });
     const importNotice = adapter.importNotice;
-    // Dismissed, the conversion notice is done for this session; another notice beside it no longer counts as dismissing it.
     const dismissImport = useCallback((message: string) => { if (importNotice && message === importNotice.text) importNotice.dismiss(); }, [importNotice]);
     const notices = useBoardNotices(importNotice && !importNotice.isDismissed() ? [importNotice.text] : [], dismissImport);
     const setNotice = notices.show, clearNotice = notices.clear;
-    // The DiskBar's question answered, what the board said about it no longer holds (utils/diskHeldNotice.ts).
     const diskHeld = props.diskHeld;
     useEffect(() => {
         if (!diskHeld) { clearNotice(DISK_CHANGED_BOARD_NOTICE); clearNotice(DISK_DELETED_BOARD_NOTICE); }
@@ -89,14 +81,11 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const [lease, setLease] = useState<NativeViewLease | null>(null), [clipboard, setClipboard] = useState<NativeClipboardService | null>(null);
     const [capabilities, setCapabilities] = useState<NativeEditingCapabilities | null>(null), [attached, setAttached] = useState(false);
     const commandRef = useRef<((id: string, event: KeyboardEvent) => boolean) | null>(null), linksRef = useRef<Links | null>(null);
-    // The palette's opener is registered by ConnectedEditor; the text editor reaches it through this ref (Cmd/Ctrl+K in a text edit).
     const paletteRef = useRef<(() => void) | null>(null);
     const contextMenuRef = useRef<ReturnType<typeof createNativeBoardContextMenu> | null>(null), embedControllerRef = useRef<NativeEmbedController | null>(null);
     const [lifetime, setLifetime] = useState<AbortController | null>(null);
     const viewRef = useRef<NativeViewLease | null>(null), chromeMountedRef = useRef(false), styleRef = useRef<Styles | null>(null);
-    // The editing view's keys are bound once per view, so Ctrl/Cmd+P reads the current print route (ConnectedEditor's) through this ref.
     const printRef = useRef<() => boolean>(() => false);
-    // Populated only when the real presentation port AND semantic per-node Load service are attached.
     const embedPortRef = useRef<EmbedPresentationPort | null>(null);
     const [embedPort, setEmbedPort] = useState<EmbedPresentationPort | null>(null);
     const canMutateView = useCallback(() => !!viewRef.current?.editing?.isAttached() && chromeMountedRef.current && !!styleRef.current && !!embedPortRef.current, []);
@@ -121,7 +110,6 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
                     commands: { run(id, event) { const run = commandRef.current; if (!run) throw new Error('Board commands are not attached'); return run(id, event); } },
                     ui: { mac: /Mac|iPhone|iPad/.test(navigator.platform), shortcutsEnabled: () => getBoardPreferences().areKeyboardShortcutsEnabled,
                         edgeScrolling: () => getBoardPreferences().edgeScrolling, mouseWheel: mouseInputChosen, invertMouseZoom: mouseZoomInverted,
-                        // The chips on an embed or link card: consent and the controller are the embed host's; the address and preview are the card's own.
                         cards: { embedState: id => embedControllerRef.current?.state(id) ?? 'inert',
                             loadEmbed(id) { const target = embedControllerRef.current; return target ? target.load(id) : Promise.reject(new Error('Embeds are unavailable')); },
                             unloadEmbed(id) { return embedControllerRef.current?.unload(id) ?? Promise.resolve(); },
@@ -190,7 +178,6 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const current = useCallback(() => ownerCurrent() && lease.isCurrent(), [ownerCurrent, lease]);
     const mac = /Mac|iPhone|iPad/.test(navigator.platform);
     const shortcutRef = useRef<(() => void) | null>(null);
-    // The chrome registers its palette opener while mounted; the keyboard and the actions reach it through here.
     const openCommandPalette = useCallback(() => { if (!paletteRef.current) return false; paletteRef.current(); return true; }, [paletteRef]);
     const [chromeReady, setChromeReady] = useState(false), [thumbnails, setThumbnails] = useState(false);
     const [admissionFailed, setAdmissionFailed] = useState(false);
@@ -205,7 +192,6 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const shortcutsAvailable = useCallback(() => !!shortcutRef.current, []);
     const openShortcuts = useCallback(() => { if (!shortcutRef.current) throw new Error('Shortcuts are unavailable'); shortcutRef.current(); }, []);
     const canWrite = useCallback(() => canMutateView() && host.canWrite(identity), [canMutateView, host, identity]);
-    // The menu's crop row starts the same crop the picture's own toolbar and double-click start: one session per document.
     const openCrop = useCallback((id: MediaRowId) => {
         clipboard.crop.open(id).catch(error => { if (!isCancellation(error)) report(error); });
     }, [clipboard, report]);
@@ -213,9 +199,6 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const link = useMemo(() => createNativeLinkOperations({ runtime, lease, current, canWrite,
         requestText: dialogs.requestText, requestTextChoice: dialogs.requestTextChoice, notice: setNotice, t: translate }), [runtime, lease, current, canWrite, dialogs.requestText, dialogs.requestTextChoice, setNotice, translate]);
     useLayoutEffect(() => { linksRef.current = link; return () => { if (linksRef.current === link) linksRef.current = null; }; }, [linksRef, link]);
-    // Print and PDF export belong to the clipboard service that owns this board's focused print pin.
-    // With a selection on a whiteboard, the app's own dialog asks what to print (catalogue c.10): the selection, or the whole sheet.
-    // A paged board prints its pages whatever is selected, so it is not asked.
     const runPrint = useCallback((): boolean => {
         if (runtime.session.doc.kind !== 'whiteboard' || !runtime.selection.getSnapshot().selected.length) return clipboard.print();
         void dialogs.chooseOne({ title: translate('chrome.print'), body: translate('print.scopeBody'),
@@ -246,14 +229,12 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         const extra = createNativeEditingKeyboard({ runtime, lease, commands, camera, preferences: clipboard.preferences,
             openShortcuts: () => { if (!shortcutRef.current) return false; shortcutRef.current(); return true; },
             openCommandPalette,
-            // I inverts the one picture selected, and does nothing when no picture is (it is never a page command).
             invertPicture: () => {
                 const picture = clipboard.media.selection(canWrite());
                 if (!picture || picture.kind !== 'picture' || picture.blocked !== null || picture.video) return false;
                 try { clipboard.media.invert(picture.id); } catch (error) { report(error); }
                 return true;
             },
-            // Enter on the one picture selected opens the same crop editor as the picture's menu.
             cropPicture: () => {
                 const picture = clipboard.media.selection(canWrite());
                 if (!picture || picture.kind !== 'picture' || picture.blocked !== null || picture.video || !clipboard.media.cropSource(picture.id)) return false;
@@ -326,8 +307,6 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
 
     if (!owned) return <>{dialogs.dialogs}<div role="status">Preparing board commands…</div></>;
     const editable = attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity);
-    // A writable source is sealed read-only only until the services above connect and the effect admits it; saying "read-only"
-    // meanwhile flashed on every board load (measured: 34 ms, under "Loading drawing…"). A refused admission says so.
     const admitting = !editable && !admissionFailed && host.canWriteSource(identity);
     return <>{dialogs.dialogs}{renderView({ lease, chrome: editingChrome, inverted, setInverted, notices,
             editable, admitting, canMutate: lease.canMutateView })}</>;

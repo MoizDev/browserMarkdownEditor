@@ -9,8 +9,6 @@ import type { PageTextReply, PdfDocKey, PdfTextDetail } from './protocol';
 
 const MAX_CHARS = 200_000, MAX_OBJECTS = 20_000, MAX_FONTS = 512, MAX_STRUCT = 20_000;
 interface PreparedText { geometry: string; projection: Schema2Projection; digest?: string; lines?: LineTable }
-// The runtime retains at most four raw pages per worker. Weak keys make the
-// canonical projection follow precisely that raw-page lifetime.
 const prepared = new WeakMap<RawPageText, PreparedText>();
 function invalid(): never { throw new RangeError('Invalid or oversized PDF text response'); }
 function validBox(values: Float32Array, i: number, width: number, height: number): boolean {
@@ -19,7 +17,6 @@ function validBox(values: Float32Array, i: number, width: number, height: number
         x0 >= -width / 2 && x1 <= width * 1.5 && y0 >= -height / 2 && y1 <= height * 1.5;
 }
 
-/** Validate the engine-owned arrays before any builder can allocate from them. */
 export function validateRawPdfText(raw: RawPageText, geometry: PageGeometry): void {
     const n = raw.n, objects = raw.objects.renderMode.length;
     if (!Number.isSafeInteger(n) || n < 0 || n > MAX_CHARS || !Number.isFinite(geometry.width) ||

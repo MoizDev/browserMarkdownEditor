@@ -1,4 +1,3 @@
-// Bind served bytes to the source snapshot on both sides of the production build.
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';

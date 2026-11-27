@@ -1,5 +1,3 @@
-// Observed pull/download identities, not registry tags or a host browser that updates itself.
-// First acquisition: 2026-11-13; local raw metadata is retained in scratch/v-b/image/.
 export const PINS = {
     schema: 1,
     platform: 'linux/amd64',

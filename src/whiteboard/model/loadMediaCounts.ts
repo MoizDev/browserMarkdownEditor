@@ -3,8 +3,6 @@ import type { RawJson } from './json';
 import type { MediaId } from './media';
 import { extRawValues, hostRawValues, nodeRawValues, preservedRawValues, scanRawMediaIncremental } from './rawMedia';
 
-// Provenance: document-model §9.3 and R-W25/R-W40; existing raw-carrier and
-// incremental scanner contracts. Independent glue, no third-party source.
 export async function recountLoadMedia(input: BoardDocInput, cooperate?: () => Promise<void>,
     signal?: AbortSignal): Promise<ReadonlyMap<MediaId, number>> {
     const counts = new Map<MediaId, number>();

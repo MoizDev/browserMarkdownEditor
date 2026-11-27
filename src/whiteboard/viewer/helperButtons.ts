@@ -1,6 +1,3 @@
-/** The helper buttons (Exit pen mode, Back to content): one column under the top bar in the board's top-left corner.
- * Each button is created where its state lives, so they share the column through this one stack, and CSS orders them
- * (Exit pen mode first, as tldraw stacks them). */
 const SVG = 'http://www.w3.org/2000/svg';
 const stacks = new WeakMap<HTMLElement, HTMLDivElement>();
 

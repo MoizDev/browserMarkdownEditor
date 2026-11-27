@@ -27,7 +27,6 @@ export interface ConnectorHeadOptions {
     readonly cooperate?: () => Promise<void>;
 }
 
-/** Endpoint double activation is a single guarded head-style transaction. */
 export function toggleConnectorHead(options: ConnectorHeadOptions): boolean {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), node = doc.nodes.get(options.id);
@@ -47,7 +46,6 @@ export function toggleConnectorHead(options: ConnectorHeadOptions): boolean {
         try {
             check(); font = runtime.render.text.fonts.epoch;
             const key = options.terminal === 'start' ? 'headStart' : 'headEnd';
-            // Default: an existing nonempty head toggles off; an empty head toggles to the ordinary arrow.
             const ops: NodeSetOp[] = [{ t: 'set', id: node.id, key, value: node[key] === 'none' ? 'arrow' : 'none' }];
             const project = (value: readonly NodeSetOp[]) => projectBoardGeometrySets(doc, value,
                 { signal: controller.signal, current, cooperate: options.cooperate });

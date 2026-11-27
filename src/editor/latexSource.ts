@@ -11,14 +11,10 @@ import { codeRangesForTree } from '../utils/mathRegions';
 export { findMathRegions } from '../utils/mathRegions';
 export type { MathRegion } from '../utils/mathRegions';
 
-/** Ranges where $ is literal text: fenced/indented code blocks and inline
- *  backticks. Shared by the live preview and the math bracket handler. */
 export function collectCodeRanges(state: EditorState): CharRange[] {
     return codeRangesForTree(syntaxTree(state));
 }
 
-// States without the field (such as a future non-preview view) retain the full
-// analysis fallback. Ordinary Markdown states read the incremental field.
 const memo = new WeakMap<Text, { tree: unknown; value: DocAnalysis }>();
 export function analyzeDoc(state: EditorState): DocAnalysis {
     const current = state.field(docAnalysisField, false);
@@ -30,20 +26,6 @@ export function analyzeDoc(state: EditorState): DocAnalysis {
     return value;
 }
 
-/**
- * Index of the first math region that could overlap a range starting at `from`.
- *
- * findMathRegions returns regions sorted by `from` and DISJOINT: a block regex
- * consumes its match so blocks cannot nest or overlap, inline regions
- * overlapping a block are dropped, and inline matches likewise consume. Sorted
- * and disjoint implies also sorted by `to`, so a binary search over `mathEnds`
- * is exact.
- *
- * This replaced a linear scan over every region, run for every node of the
- * whole syntax tree — an O(nodes x regions) product that dominated the rebuild
- * on math-heavy notes (measured ~186 million comparisons, ~138ms per keystroke
- * on a 400KB note, versus ~3ms for the bare tree walk).
- */
 export function firstMathFrom(analysis: DocAnalysis, from: number): number {
     const ends = analysis.mathEnds;
     let lo = 0, hi = ends.length;
@@ -55,17 +37,6 @@ export function firstMathFrom(analysis: DocAnalysis, from: number): number {
     return lo;
 }
 
-/**
- * True when some math region intersects [from, to) without being contained in
- * it — the node is really LaTeX. The rule buildDecorations' tree walk applies to
- * every node, and headingFold.ts applies to every heading, so a section
- * boundary can never fall inside a formula the live preview draws as one widget.
- * Nodes that CONTAIN a whole region (a paragraph, a heading line) are not.
- *
- * Disjoint regions can only partly intersect a node by straddling one of its
- * edges. Two searches also keep Document/list/paragraph ancestors O(log M),
- * rather than visiting every formula they contain on every tree walk.
- */
 export function mathSkipsRange(analysis: DocAnalysis, from: number, to: number): boolean {
     const start = analysis.mathRegions[firstMathFrom(analysis, from)];
     if (start && start.from < from) return true;
@@ -73,31 +44,25 @@ export function mathSkipsRange(analysis: DocAnalysis, from: number, to: number):
     return !!end && end.from < to;
 }
 
-/** True when [from, to) overlaps any math region. */
 export function overlapsMath(analysis: DocAnalysis, from: number, to: number): boolean {
     const i = firstMathFrom(analysis, from);
     return i < analysis.mathRegions.length && analysis.mathRegions[i].from < to;
 }
 
-/* ── Source highlighting (revealed math) ──
-   A lightweight LaTeX tokenizer, matched Obsidian's editor look: green $
-   delimiters, coral \commands, purple numbers and ^/_ scripts, green
-   operators, muted brackets, teal variable text. One alternation, first
-   match wins; whitespace (and anything exotic) simply stays unstyled. */
 const TOKEN_RE = new RegExp(
-    '(\\\\(?:[a-zA-Z]+\\*?|.))' +                      // 1 \command  \left  \\  \{
-    '|([0-9]+(?:\\.[0-9]+)?)' +                        // 2 number
-    '|([\\^_])' +                                      // 3 ^/_ script marker (reads red, like commands)
-    '|([{}\\[\\]])' +                                  // 4 brace — reads with the command it follows
-    '|([()])' +                                        // 5 paren — reads with the variables it wraps
-    "|([=+\\-*/<>,;:!|&'])" +                          // 6 operator
-    '|(\\$+)' +                                        // 7 $ / $$ delimiter
-    "|([^\\s\\\\0-9^_{}\\[\\]()=+\\-*/<>,;:!|&'$]+)",  // 8 variable text
+    '(\\\\(?:[a-zA-Z]+\\*?|.))' +
+    '|([0-9]+(?:\\.[0-9]+)?)' +
+    '|([\\^_])' +
+    '|([{}\\[\\]])' +
+    '|([()])' +
+    "|([=+\\-*/<>,;:!|&'])" +
+    '|(\\$+)' +
+    "|([^\\s\\\\0-9^_{}\\[\\]()=+\\-*/<>,;:!|&'$]+)",
     'g'
 );
 
 const GROUP_CLASS = [
-    '', // (whole-match placeholder)
+    '',
     'cm-latex-command',
     'cm-latex-number',
     'cm-latex-script',
@@ -108,27 +73,10 @@ const GROUP_CLASS = [
     'cm-latex-var',
 ];
 
-/** One Decoration per token class, built once. A Decoration is positionless and
- *  immutable — .range() makes the positioned value — so sharing instances is the
- *  supported pattern, and it stops latexSourceDecorations allocating a fresh
- *  Decoration for every LaTeX token on every rebuild. */
 const GROUP_MARK = GROUP_CLASS.map(cls => (cls ? Decoration.mark({ class: cls }) : null));
 const MATH_SRC_MARK = Decoration.mark({ class: 'cm-math-src' });
 
-/* ── Code-editor bracket behavior inside math ──
-   The stock closeBrackets extension only auto-closes when the NEXT character
-   is whitespace or one of ")]}:;>" — inside $…$ the next character is usually
-   the closing $, a backslash, or a letter, so braces never pair exactly where
-   you want them most. These handlers pair unconditionally, but ONLY in math. */
-
-/** True when `pos` sits inside a math region — or, while a formula is still
- *  being composed (no closing $ yet), when an odd number of unescaped $s
- *  appear earlier on the same line (an opener is pending). */
 export function isInMathContext(state: EditorState, pos: number): boolean {
-    // Through the memo: this runs synchronously INSIDE the keystroke, before
-    // the transaction dispatches, so it is input latency and not merely
-    // garbage. It essentially always follows a buildDecorations pass on the
-    // same state, so it is a cache hit.
     const { mathRegions } = analyzeDoc(state);
     if (straddlesPoint(mathRegions, pos)) return true;
     const line = state.doc.lineAt(pos);
@@ -140,20 +88,9 @@ const BRACKET_PAIRS: Record<string, string> = { '{': '}', '(': ')', '[': ']' };
 const CLOSERS = new Set(Object.values(BRACKET_PAIRS));
 
 function inCodeRange(state: EditorState, pos: number): boolean {
-    // Memoized: this used to walk the whole syntax tree afresh on every `$`.
     return straddlesPoint(analyzeDoc(state).codeRanges, pos);
 }
 
-/**
- * Dollar-sign pairing, active EVERYWHERE except code and after a \ escape:
- *  - a selection gets wrapped in $…$;
- *  - a bare $ spawns the pair:            $|$
- *  - a second $ inside a fresh empty pair expands it to block math: $$|$$
- *    (only when that pair's opener is the sole $ before the cursor on the
- *    line — otherwise the $ is a CLOSER being typed out of habit, and it
- *    steps over the existing one instead: $$x$|$ + $ → $$x$$|, not junk);
- *  - typing $ when the next char is $ steps over it.
- */
 function handleDollar(view: EditorView, from: number): boolean {
     const { state } = view;
     if (inCodeRange(state, from)) return false;
@@ -176,26 +113,17 @@ function handleDollar(view: EditorView, from: number): boolean {
         const dollarsBefore = state.sliceDoc(line.from, pos).match(/\$/g)?.length ?? 0;
 
         if (prev === '$' && next === '$' && dollarsBefore === 1) {
-            // $|$ → $$|$$
             return { changes: { from: pos, insert: '$$' }, range: EditorSelection.cursor(pos + 1) };
         }
         if (next === '$') {
-            // step over
             return { range: EditorSelection.cursor(pos + 1) };
         }
-        // spawn the pair
         return { changes: { from: pos, insert: '$$' }, range: EditorSelection.cursor(pos + 1) };
     });
     view.dispatch({ ...changes, userEvent: 'input.type', scrollIntoView: true });
     return true;
 }
 
-/**
- * Code-editor keys for LaTeX: $ pairing/wrapping app-wide (see handleDollar),
- * {, ( and [ auto-pairing inside math (wrapping the selection if there is
- * one), type-over of already-present closers, and Backspace deleting both
- * halves of a fresh empty pair.
- */
 export function mathEditingExtensions(): Extension {
     return [
         Prec.high(EditorView.inputHandler.of((view, from, _to, text) => {
@@ -206,7 +134,6 @@ export function mathEditingExtensions(): Extension {
             const { state } = view;
             if (!isInMathContext(state, from)) return false;
 
-            // Closer: typing it over an identical next char just steps past.
             if (!isOpen) {
                 if (state.selection.main.empty && state.sliceDoc(from, from + 1) === text) {
                     view.dispatch({ selection: EditorSelection.cursor(from + 1), userEvent: 'input.type' });
@@ -215,7 +142,6 @@ export function mathEditingExtensions(): Extension {
                 return false;
             }
 
-            // Opener: spawn the pair, or wrap the selection in it.
             const changes = state.changeByRange((range) => range.empty
                 ? {
                     changes: { from: range.from, insert: text + BRACKET_PAIRS[text] },
@@ -242,8 +168,6 @@ export function mathEditingExtensions(): Extension {
                     && (BRACKET_PAIRS[pair[0]] === pair[1] || pair === '$$');
                 if (!isPair) return false;
                 if (inCodeRange(state, range.from)) return false;
-                // Brackets only pair inside math, so only un-pair them there;
-                // an empty $ pair un-pairs anywhere, matching how it spawned.
                 if (pair !== '$$' && !isInMathContext(state, range.from)) return false;
                 view.dispatch({
                     changes: { from: range.from - 1, to: range.from + 1 },
@@ -255,10 +179,6 @@ export function mathEditingExtensions(): Extension {
     ];
 }
 
-/**
- * Decorations for one revealed math region: a whole-region mark carrying the
- * Fira Code italic "math source" look, plus a color mark per token.
- */
 export function latexSourceDecorations(source: string, offset: number): Range<Decoration>[] {
     const out: Range<Decoration>[] = [];
     out.push(MATH_SRC_MARK.range(offset, offset + source.length));

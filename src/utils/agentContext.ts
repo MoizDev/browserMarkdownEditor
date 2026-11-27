@@ -1,27 +1,3 @@
-// The <bme-context> block: what the user is looking at, built FRESH for every
-// message and prefixed to it, so the agent never has to be told "I'm on page 3"
-// and stays right when the user scrolls, switches tab or draws between two
-// messages of the same chat.
-//
-// Sources, all live: App's workspace snapshot (vault, panes, tabs) plus each
-// mounted pane's reporter in utils/viewRegistry.ts — asked here, at send time,
-// never on a timer. Nothing is read from storage except, for a tab with no
-// mounted pane, the position it will reopen at (`workspace.remembered`).
-//
-// Filled in a fixed priority against CONTEXT_CHAR_BUDGET:
-//   1. vault name + id, local date and time
-//   2. the pane layout: panes left→right, their tabs, the focused one
-//   3. one line per open tab, with its exact position
-//   4. the FOCUSED document — a note in full (unsaved edits, ⟦sel⟧/⟦cursor⟧
-//      markers), a PDF's visible page text, a canvas's shapes in view
-//   5. the other VISIBLE panes — only what is on screen in them
-// Whatever does not fit is cut with an explicit `…[truncated N chars; read with
-// vault_read]`, so the agent knows to go and read it. No file tree: the agent
-// has vault_list / vault_search for that.
-//
-// Pure apart from awaiting reporters (which may render, for the picture). No
-// React, no board or PDF engine — this runs on every send, on the panel's path.
-
 import { CONTEXT_CLOSE_TAG, CONTEXT_OPEN_TAG } from '../../shared/vaultAgentProtocol';
 import type { AgentTabInfo, AgentWorkspaceSnapshot, RememberedPosition } from '../types/vaultAgent';
 import { getView, type ShapeSummary, type ViewInfo, type ViewReporter } from './viewRegistry';
@@ -30,28 +6,18 @@ import { formatShape } from './canvasFileSummary';
 import { REPLY_MODE_LINE, type ReplyMode } from './agentReplyMode';
 
 export interface BuiltContext {
-    /** The <bme-context>…</bme-context> block (ends with a newline). */
     text: string;
-    /** A PNG of the focused canvas/PDF view, only when it changed since `lastImageHash`. */
     image: { mimeType: 'image/png'; data: string; hash: string } | null;
 }
 
-/** The whole block's size, in characters (~15k tokens). */
 export const CONTEXT_CHAR_BUDGET = 60_000;
 
-/** A reporter that takes longer than this is left out rather than holding up
- *  the send. describe() is meant to be cheap; text extraction and a capture
- *  may render. */
 const DESCRIBE_TIMEOUT_MS = 2_000;
 const PDF_TEXT_TIMEOUT_MS = 6_000;
 const CAPTURE_TIMEOUT_MS = 8_000;
-/** Visible PDF pages whose text goes in, at most. */
 const MAX_PDF_PAGES = 4;
-/** The tab list may take this share of the budget before it is cut. */
 const TAB_LIST_SHARE = 0.25;
-/** Room kept back from the focused document for each other visible pane. */
 const OTHER_PANE_RESERVE = 4_000;
-/** A single line (a minified file, a data URI) is cut at this. */
 const MAX_LINE = 2_000;
 
 const truncMarker = (chars: number, where = '') =>
@@ -67,7 +33,6 @@ function withTimeout<T>(value: T | Promise<T>, ms: number): Promise<T | null> {
     });
 }
 
-/** Cut `text` to `budget` chars with a marker saying how much went. */
 function fit(text: string, budget: number): string {
     if (text.length <= budget) return text;
     const keep = Math.max(0, budget - 90);
@@ -82,10 +47,7 @@ function neutralize(text: string): string {
     return text.replace(TAG_RE, '‹$1$2');
 }
 
-/* ───────────────────────── small formatters ───────────────────────── */
-
 const pct = (fraction: number) => `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%`;
-/** A zoom factor as a percentage — unclamped: 1.5 is 150%. */
 const zoomPct = (z: number) => `${Math.round(z * 100)}%`;
 const r1 = (n: number) => String(Math.round(n * 10) / 10);
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -135,8 +97,6 @@ function livePosition(info: ViewInfo): string {
         case 'epub': return `EPUB ${info.title?JSON.stringify(info.title):''}${info.author?' by '+info.author:''} ${info.status}${info.locator ? `, section ${info.locator.spineIndex+1}` : ', location unavailable'}; read-only canonical text`;
         case 'markdown': {
             const parts = [
-                // Named where it is known: "Python" tells the agent more than
-                // ".py" does, and a .rkt is Racket however it is parsed.
                 ...(info.language ? [`${info.language} source`] : []),
                 `lines ${info.visibleLines.from}–${info.visibleLines.to} of ${info.lineCount} on screen`,
                 `cursor ${info.cursor.line}:${info.cursor.col}`,
@@ -196,15 +156,10 @@ function shapeBlock(shapes: ShapeSummary[] | undefined, total: number | undefine
     return lines.join('\n');
 }
 
-/* ───────────────────────── markdown with markers ───────────────────────── */
-
 function cutLine(line: string): string {
     return line.length > MAX_LINE ? `${line.slice(0, MAX_LINE)}…[line cut: ${line.length} chars]` : line;
 }
 
-/** The note's text with ⟦sel⟧…⟦/sel⟧ around each selection and ⟦cursor⟧ at a
- *  cursor that is not already a selection's end. Markers hold no newline, so
- *  line numbers are the file's. */
 function markText(info: Extract<ViewInfo, { kind: 'markdown' }>): string {
     const marks: Array<{ at: number; order: number; text: string }> = [];
     for (const s of info.selections) {
@@ -224,18 +179,13 @@ function markText(info: Extract<ViewInfo, { kind: 'markdown' }>): string {
     return out + info.text.slice(at);
 }
 
-/**
- * Numbered lines of `text`, all of them if they fit in `budget`; otherwise the
- * window that does fit, grown outward from the lines on screen (and the
- * cursor), with what was left out marked above and below.
- */
 function numberedWindow(text: string, budget: number, focus: { from: number; to: number; anchor: number }): string {
     const lines = text.split('\n').map((l, i) => `${i + 1}\t${cutLine(l)}`);
     const total = lines.reduce((n, l) => n + l.length + 1, 0);
     if (total <= budget) return lines.join('\n');
 
     const n = lines.length;
-    const room = Math.max(0, budget - 240); // the two markers
+    const room = Math.max(0, budget - 240);
     const clamp = (x: number) => Math.max(1, Math.min(n, x));
     let lo = clamp(focus.anchor);
     let hi = lo;
@@ -246,7 +196,6 @@ function numberedWindow(text: string, budget: number, focus: { from: number; to:
         used += cost;
         return true;
     };
-    // The screen first, then outward on both sides.
     const vFrom = clamp(focus.from);
     const vTo = clamp(focus.to);
     while (hi < vTo && tryAdd(hi + 1)) hi++;
@@ -265,8 +214,6 @@ function numberedWindow(text: string, budget: number, focus: { from: number; to:
     return out.join('\n');
 }
 
-/* ───────────────────────── per-document sections ───────────────────────── */
-
 async function pdfPagesText(view: ViewReporter, pages: number[], budget: number): Promise<string> {
     if (!view.pdfText || !pages.length) return '';
     const wanted = [...pages].sort((a, b) => a - b).slice(0, MAX_PDF_PAGES);
@@ -278,7 +225,6 @@ async function pdfPagesText(view: ViewReporter, pages: number[], budget: number)
     return fit(`Text of the pages on screen:\n${parts.join('\n')}`, budget);
 }
 
-/** The focused document in as much detail as `budget` allows. */
 async function focusedSection(tab: AgentTabInfo, view: ViewReporter | undefined, info: ViewInfo | undefined, budget: number, imageLine: string | null): Promise<string> {
     const head = [`=== Focused document: ${tab.path} (${kindLabel(tab, info)}${tab.dirty ? ', unsaved changes' : ''}) ===`];
     if (tab.unreadable) head.push('Its tab could not read the file, so what it shows is not the file\'s content.');
@@ -333,7 +279,6 @@ async function focusedSection(tab: AgentTabInfo, view: ViewReporter | undefined,
     }
 }
 
-/** Another pane on screen: only what the user can see in it. */
 async function visibleSection(paneNo: number, tab: AgentTabInfo, view: ViewReporter | undefined, info: ViewInfo | undefined, budget: number): Promise<string> {
     const head = `=== Also on screen, pane ${paneNo}: ${tab.path} (${kindLabel(tab, info)}${tab.dirty ? ', unsaved changes' : ''}) ===`;
     if (!info || !view) return `${head}\n${tab.kind==='epub'?'Book not loaded; unopened chapter extraction is unavailable.':'(not available right now; read it with vault_read)'}`;
@@ -362,8 +307,6 @@ async function visibleSection(paneNo: number, tab: AgentTabInfo, view: ViewRepor
     }
 }
 
-/* ───────────────────────── the block ───────────────────────── */
-
 function wrap(body: string): string {
     return `${CONTEXT_OPEN_TAG}\n${neutralize(body)}\n${CONTEXT_CLOSE_TAG}\n`;
 }
@@ -384,18 +327,13 @@ export async function buildAgentContext(
     const onScreen = workspace.mainView === 'editor';
     const tabsByPath = new Map(workspace.tabs.map(t => [t.path, t]));
 
-    // Ask every mounted pane where the user is — in parallel, each bounded.
     const views = new Map<string, ViewReporter>();
     const infos = new Map<string, ViewInfo>();
     const wholeSheet = new Set<string>();
     const unreadable = new Map<string, string>();
     await Promise.all(workspace.tabs.map(async tab => {
         const view = getView(tab.path);
-        // A mounted native board is read through the host's live view below, exactly like one with no pane.
         if (!view || view.live) {
-            // An open native canvas with no mounted pane (a drawing, notebook or PDF ink board) is read from its own
-            // session, bounded like a view. A failure or a refusal is named on its tab line, never silently skipped.
-            // A PDF or notebook that is not native has no session here and keeps its remembered position.
             if (tab.kind !== 'drawing' && tab.kind !== 'notebook' && tab.kind !== 'pdf') return;
             if (!workspace.nativeView) { if (tab.kind === 'drawing') unreadable.set(tab.path, 'its board is not available to read'); return; }
             try {
@@ -414,14 +352,12 @@ export async function buildAgentContext(
         if (info) infos.set(tab.path, info);
     }));
 
-    /* 1. vault and time */
     const out: string[] = [
         PREAMBLE,
         `Vault: "${workspace.vaultName}" (id ${opts.vaultUuid}). Paths below are vault-relative, as the vault_* tools take them.`,
         `Local time: ${localTime()}`,
     ];
 
-    /* 2. the layout */
     const { panes, activeId } = workspace.layout;
     const focusedPane = panes.find(p => p.id === activeId) ?? null;
     if (!onScreen) {
@@ -438,7 +374,6 @@ export async function buildAgentContext(
         });
     }
 
-    /* 3. every open tab, where it is */
     const paneOf = (path: string) => panes.findIndex(p => p.paths.includes(path));
     const tabLines: string[] = [];
     for (const tab of workspace.tabs) {
@@ -458,7 +393,6 @@ export async function buildAgentContext(
         out.push(fit(tabLines.join('\n'), Math.floor(CONTEXT_CHAR_BUDGET * TAB_LIST_SHARE)));
     }
 
-    /* the picture, when the focused tab is a canvas or a PDF */
     const focusedPath = onScreen ? workspace.focusedPath : null;
     const focusedTab = focusedPath ? tabsByPath.get(focusedPath) : undefined;
     const focusedView = focusedPath ? views.get(focusedPath) : undefined;
@@ -484,7 +418,6 @@ export async function buildAgentContext(
         }
     }
 
-    /* 4 + 5. the focused document, then the other visible panes */
     let used = out.reduce((n, l) => n + l.length + 1, 0) + CONTEXT_OPEN_TAG.length + CONTEXT_CLOSE_TAG.length + 4;
     const others = onScreen
         ? panes.map((p, i) => ({ pane: p, no: i + 1 })).filter(({ pane }) => pane !== focusedPane && tabsByPath.has(pane.activePath))
@@ -511,16 +444,11 @@ export async function buildAgentContext(
         used += section.length + 2;
     }
 
-    // Last, so it is the instruction closest to the user's own words — and
-    // outside the budget arithmetic above, which is about what is being SHOWN.
-    // One line is not what makes a context block too big.
     out.push('', REPLY_MODE_LINE[opts.mode]);
 
     return { text: wrap(out.join('\n')), image };
 }
 
-/** The user's own words: `text` minus a leading <bme-context> block (and the
- *  line break after it). Anything else is returned untouched. */
 export function stripAgentContext(text: string): string {
     const start = text.length - text.trimStart().length;
     if (!text.startsWith(CONTEXT_OPEN_TAG, start)) return text;

@@ -22,9 +22,6 @@ let activeFindQuery:string|undefined;
 const pending=new Map<number,{resolve(value:ResourceData):void;reject(error:unknown):void;queryId?:string;chunks:Uint8Array[];total:number;length:number;timer:ReturnType<typeof setTimeout>}>();
 const states=new Map<number,SectionState>(),jumpTrail:EpubLocator[]=[],findCancelled=new Set<string>();
 interface SectionState { item:ArchiveSection; canonical:CanonicalText; doc:Document; digest:string; root:HTMLElement; style:HTMLStyleElement; map:RenderMap; fixed:boolean; emphasis:NativeEmphasis; viewport:{w:number;h:number} }
-// Measured: rapid source-window rotations exceeded 120 control messages/s once
-// resource acknowledgements were added. Pace the producer, keeping the strict receiver
-// limit and at most one unacknowledged chunk per resource.
 const outgoing:{op:string;payload:unknown;id:number;transfer:Transferable[]}[]=[];
 let sendTimer:ReturnType<typeof setTimeout>|undefined,lastSent=-Infinity;
 function drainMessages(){sendTimer=undefined;if(disposed)return;const delay=10-(performance.now()-lastSent);if(delay>0){sendTimer=setTimeout(drainMessages,delay);return}const m=outgoing.shift();if(!m)return;lastSent=performance.now();port.postMessage({v:1,session,token,id:m.id,op:m.op,payload:m.payload},m.transfer);if(outgoing.length)sendTimer=setTimeout(drainMessages,10)}
@@ -89,8 +86,6 @@ async function loadSection(index:number):Promise<SectionState>{
 }
 const renderedStates=new WeakSet<SectionState>();
 async function render(state:SectionState){if(state.digest==='unavailable')return;
- // A section's publisher DOM is mounted once. Preference changes paint the existing
- // glyphs, so publisher span selectors, shaping and source endpoints cannot change.
  const count=nodeCount(state.map.root)+3;if(count>100000)throw Error('DOM_SECTION_BUDGET');const total=32+count+[...states.values()].filter(s=>s!==state&&s.root.isConnected).reduce((n,s)=>n+nodeCount(s.root),0);if(!await reserveBudget('dom',total))throw Error('DOM_BOOK_BUDGET');if(disposed)return;renderedStates.add(state)
 }
 function refreshEmphasis(){for(const state of states.values())if(state.root.isConnected)state.emphasis.update(prefs.emphasis.enabled)}
@@ -117,8 +112,6 @@ async function windowAt(index:number,clear=false){
  const ordered=[...wanted].sort((a,b)=>a-b);
  for(const i of ordered){try{await loadSection(i)}catch(error){if(i===index)throw error;const doc=document.implementation.createHTMLDocument('Unavailable section'),content=doc.createElement('div');doc.body.append(content);const canonical=projectCanonical(content),root=document.createElement('section'),style=document.createElement('style');root.dataset.section='s'+i;root.className='chapter';const message=document.createElement('p');message.textContent='Section '+(i+1)+' unavailable: '+(error instanceof Error?error.message:'Unsupported content');root.append(message);const map=renderCanonical(content,canonical);states.set(i,{item:info.spine[i],doc,canonical,digest:'unavailable',root,style,map,fixed:false,viewport:{w:600,h:800},emphasis:new NativeEmphasis(canonical,map,metadata.language)});status(message.textContent)}}
  if(disposed)return false;
- // Move existing roots rather than destroying their descendants; saved source endpoints
- // restore a backwards selection as well as a forwards one after window rotation.
  const total=32+ordered.reduce((n,i)=>n+nodeCount(states.get(i)!.root),0);if(!await reserveBudget('dom',total))throw Error('DOM_BOOK_BUDGET');const finalSelection=selectionEndpoints();
  // Removing even an unchanged root collapses live Selection/Highlight ranges.
  // The retained roots are already ordered; insert only newcomers between them.
@@ -135,9 +128,6 @@ let lastReadingAnchor:EpubLocator|null=null;
 function capture():EpubLocator|null {const locator=measureAnchor();if(locator)lastReadingAnchor=locator;return locator}
 function measureAnchor():EpubLocator|null {
  const box=surface.getBoundingClientRect();
- // A point in the outer margin resolves to the paragraph's first character,
- // even when that character is above the viewport. Probe the actual text edge
- // and reject clipped lines so typography/resize anchors keep a whole word visible.
  for(const candidate of [...states.values()].sort((a,b)=>a.item.index-b.item.index)){
  const bounds=candidate.root.getBoundingClientRect();if(candidate.fixed||bounds.bottom<=box.top||bounds.top>=box.bottom)continue;
  const x=metadata?.direction==='rtl'?Math.min(box.right-1,bounds.right-1):Math.max(box.left+1,bounds.left+1);
@@ -171,8 +161,6 @@ function place(state:SectionState,offset:number,alignHint=12){if(!state.canonica
  else surface.scrollTop+=rect.top-box.top-alignHint;
 }
 async function navigate(target:EpubLocator|{sectionIndex:number;fragment?:string},cause:LocationCause='user-navigation'){
- // A saved ordinal belongs to an edition. Resolve section identity before bounds
- // or text context; a removed chapter must never make a valid book unopenable.
  let index:number;
  if('sectionIndex'in target)index=target.sectionIndex;
  else {const saved=target;const match=info.spine.find(s=>s.href===saved.normalizedHref&&s.occurrence===saved.spineOccurrence);
@@ -193,8 +181,6 @@ async function navigate(target:EpubLocator|{sectionIndex:number;fragment?:string
 async function configure(value:ReaderPreferences,revision=inputRevision){
  clearTimeout(scrollTimer);const anchor=capture(),saved=selectionEndpoints(),layoutChanged=JSON.stringify({...prefs,emphasis:null})!==JSON.stringify({...value,emphasis:null});layoutBusy=true;
  try{prefs=value;requestedFlow=value.flow??requestedFlow;
-  // Emphasis is paint only, including fixed pages: do not restore an approximate
-  // locator over a perfectly stable camera or replace native selection nodes.
   if(layoutChanged){applyAppearance();await settle();if(disposed)return;if(revision===inputRevision){restoreSelection(saved);if(anchor){const state=states.get(anchor.spineIndex);if(state){if(anchor.kind==='text')place(state,anchor.offsetUTF16,anchor.alignHint);else {surface.scrollTop=anchor.viewport.y;surface.scrollLeft=anchor.viewport.x*(metadata.direction==='rtl'?-1:1)}}}}}
   refreshEmphasis();const state=states.get(currentIndex);if(state)capabilities(state);if(anchor)send('location',{locator:capture()??anchor,cause:'layout'});
  }finally{layoutBusy=false}
@@ -241,10 +227,8 @@ surface.addEventListener('keydown',event=>{
 let selectionTimer:ReturnType<typeof setTimeout>|undefined;
 document.addEventListener('selectionchange',()=>{if(disposed||layoutBusy)return;inputRevision++;clearTimeout(selectionTimer);selectionTimer=setTimeout(()=>{try{send('selection',selected())}catch(error){status(String(error))}},100)});
 let resizeTimer:ReturnType<typeof setTimeout>|undefined;
-const resizeObserver=new ResizeObserver(()=>{if(!metadata||layoutBusy||disposed)return;// ResizeObserver runs after reflow: measuring here would anchor the NEW line.
+const resizeObserver=new ResizeObserver(()=>{if(!metadata||layoutBusy||disposed)return;
  const anchor=lastReadingAnchor??capture(),revision=inputRevision;clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{void runLayout(async()=>{applyAppearance();if(anchor&&revision===inputRevision){const s=states.get(anchor.spineIndex);if(s){if(anchor.kind==='text')place(s,anchor.offsetUTF16,anchor.alignHint);else {surface.scrollTop=anchor.viewport.y;surface.scrollLeft=anchor.viewport.x*(metadata.direction==='rtl'?-1:1)}refreshEmphasis();report('layout')}}}).catch(()=>{});},100)});resizeObserver.observe(surface);
-// A slow local font decode can finish after settle's bounded wait. Keep the last
-// source word rather than measuring a new anchor after its fallback face reflows.
 function fontsSettled(){if(disposed||layoutBusy||!metadata||!lastReadingAnchor)return;const anchor=lastReadingAnchor,revision=inputRevision;
  void runLayout(async()=>{if(revision!==inputRevision)return;layoutBusy=true;try{const state=states.get(anchor.spineIndex);if(state&&anchor.kind==='text')place(state,anchor.offsetUTF16,anchor.alignHint);refreshEmphasis();report('layout')}finally{layoutBusy=false}}).catch(()=>{});
 }
@@ -277,8 +261,6 @@ async function dispatch(op:string,payload:unknown,receivedRevision=inputRevision
   try{
    check();if(state.digest==='unavailable')throw Error('SECTION_UNAVAILABLE');
    const hits:FindHit[]=[],offsets:number[]=[];let folded='',nextYield=65536;
-   // Case folding retains a source index for expansions. Yield for cancellation
-   // independently of the number of matches, including huge unmatched sections.
    for(let at=0;at<state.canonical.text.length;){const cp=String.fromCodePoint(state.canonical.text.codePointAt(at)!),lower=cp.toLowerCase();for(let n=0;n<lower.length;n++)offsets.push(at);folded+=lower;at+=cp.length;if(at>=nextYield){nextYield+=65536;await new Promise(r=>setTimeout(r,0));check()}}
    const query=p.query.toLowerCase();let at=0,transportTruncated=false,hitBytes=0;
    while(query&&(at=folded.indexOf(query,at))>=0&&hits.length<500){const offset=offsets[at],hit={locator:textLocator(state.item,state.canonical,state.digest,offset),snippet:state.canonical.text.slice(Math.max(0,offset-48),offset+p.query.length+96)},size=JSON.stringify(hit).length;if(hitBytes+size>192*1024){transportTruncated=true;break}hitBytes+=size;hits.push(hit);at+=Math.max(1,query.length);if(hits.length%32===0){await new Promise(r=>setTimeout(r,0));check()}}
@@ -302,8 +284,6 @@ addEventListener('message',function handshake(event:MessageEvent){
   if(m.op==='dispose'){dispose();return}
   if(m.op==='cancel-find'){void dispatch(m.op,m.payload);return}
   if(queuedControls>=64){if(m.id)send('reply',{ok:false,error:'Reader busy; wait for the current navigation.'},m.id);return}queuedControls++;
-  // A queued appearance update must not restore over input that arrived while
-  // it waited behind font/resource settling in an earlier command.
   const receivedRevision=inputRevision;
   controls=controls.then(()=>runLayout(async()=>{if(disposed)return;try{const value=await dispatch(m.op,m.payload,receivedRevision);if(m.id)send('reply',{ok:true,value},m.id)}catch(error){const message=error instanceof Error?error.message:'Reader failed';if(m.id)send('reply',{ok:false,error:message.slice(0,1000)},m.id);else status(message)}})).catch(error=>{if(!disposed)status(String(error))}).finally(()=>{queuedControls--});
  };port.start();send('ready');

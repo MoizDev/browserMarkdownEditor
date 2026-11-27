@@ -14,7 +14,6 @@ export interface ProjectionLimits { readonly entries: number; readonly character
 export type AdmissionResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: string };
 export interface ImportAdmission<T extends ImportData> {
     prepare(input: unknown, context: JobContext): AdmissionResult<ValidatedImport<T>>;
-    /** One-shot: only the issuing authority's actual running job can consume it. */
     take(token: ValidatedImport<T>, context: JobContext): T;
 }
 
@@ -78,9 +77,6 @@ function ownProjection(value: ImportData, limits: ProjectionLimits): ImportData 
     return root;
 }
 
-/** The caller creates one issuer with its trusted fixed-shape schema validator. The issuer keeps
- * its registry private: a marker, structurally identical object or structured-cloned reply cannot
- * authorize commit, and an issuer made by a different caller cannot mint one of its tokens. */
 export function createImportAdmission<T extends ImportData>(authority: JobAuthority, limits: ProjectionLimits,
     validate: (input: unknown) => ImportValidation<T>): ImportAdmission<T> {
     const owned = new WeakMap<object, { readonly job: ContentJob; readonly value: T }>();

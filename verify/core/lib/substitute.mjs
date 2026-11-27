@@ -7,7 +7,6 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
-/** Interim identity shape matching V-01a. Files are emitted build artefacts, never vault files. */
 export async function buildIdentity({ worktree, distDir, patch } = {}) {
     const files = [];
     const walk = async dir => {
@@ -31,9 +30,6 @@ export async function buildIdentity({ worktree, distDir, patch } = {}) {
     };
 }
 
-/** Rules bind a served URL AND an exact anchor count. A missed/drifted anchor is a harness fault,
- * never a silent no-op. Reports retain both byte hashes. Install helper/fault endpoint routes after
- * this binder so their protocol responses are not mistaken for build artefacts. */
 export async function bindServedBodies(context, { identity, origin, mode = 'production', rules = [], record = () => {} }) {
     const emitted = new Map((identity?.files ?? []).map(file => [file.path, file]));
     const bodies = [];

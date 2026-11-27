@@ -5,7 +5,6 @@ import {
 import type { RecoveryEntry } from './recoveryJournal';
 import { groupRecovery } from './recoveryOffers';
 
-/** The one bridge C-20 calls from the funnel. No pane owns a journal timer. */
 export function createRecoveryJournal(options: { failed(error: unknown): void }) {
     const pending = new Map<string, RecoveryEntry>();
     const acknowledged = new Map<string, number>();
@@ -29,7 +28,6 @@ export function createRecoveryJournal(options: { failed(error: unknown): void })
                 if ((acknowledged.get(id) ?? -1) >= entry.revision) continue;
                 try { await writeRecoveryEntry(entry); }
                 catch (error) {
-                    // Keep every uncommitted capture for the next checkpoint.
                     for (const [remainingId, remaining] of entries.slice(i)) {
                         if ((acknowledged.get(remainingId) ?? -1) >= remaining.revision) continue;
                         const newer = pending.get(remainingId);
@@ -52,7 +50,6 @@ export function createRecoveryJournal(options: { failed(error: unknown): void })
             catch (error) { options.failed(error); return; }
             if (timer === undefined) timer = setTimeout(() => { void flush().catch(() => {}); }, 500);
         },
-        /** Called on hide/pagehide as well as by the timer. */
         flush,
         acknowledge(vaultId: string, journalId: string, revision: number): Promise<void> {
             const id = key(vaultId, journalId);
@@ -61,7 +58,6 @@ export function createRecoveryJournal(options: { failed(error: unknown): void })
             return enqueue(() => acknowledgeRecovery(vaultId, journalId, revision));
         },
         retarget(vaultId: string, from: string, to: string, folder: boolean): Promise<void> {
-            // Flush the old names first; the transaction changes every existing record together.
             void flush().catch(() => {});
             return enqueue(() => retargetRecovery(vaultId, from, to, folder));
         },

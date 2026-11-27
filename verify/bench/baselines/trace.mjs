@@ -23,8 +23,6 @@ export function saveBusyTime(events) {
     const input = marker('bme-v08-keyup'), complete = marker('bme-v08-save-complete'), tail = marker('bme-v08-trace-tail');
     const raw = events.filter(e => e.pid === input.pid && e.tid === input.tid && e.ph === 'X' && e.dur > 0 && e.cat?.split(',').includes('toplevel'))
         .map(e => ({ start: e.ts, end: e.ts + e.dur, names: [e.name] })).sort((a, b) => a.start - b.start || b.end - a.end);
-    // Some trace categories emit nested top-level aliases. Their interval union
-    // counts the renderer's task once, never CPU twice for nested instrumentation.
     const tasks = [];
     for (const task of raw) {
         const last = tasks.at(-1);

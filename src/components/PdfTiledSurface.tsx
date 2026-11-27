@@ -12,7 +12,6 @@ interface Props {
     filePath: string;
     visible: boolean;
     focused: boolean;
-    /** Open the shared source without mounting the Original compositor. */
     sourceOnly?: boolean;
     sourceHash?: string;
     findMemory: PdfFindMemory;
@@ -25,8 +24,6 @@ interface Props {
     notify(message: string): void;
 }
 
-/** A view can come and go; the factory parks its immutable source in the
- * App-owned document slot, with no extra document or worker on a graph trip. */
 export default function PdfTiledSurface(props: Props) {
     const { reading, onSource } = props;
     const identity = useSyncExternalStore(subscribeSessionIdentity,
@@ -65,7 +62,6 @@ export default function PdfTiledSurface(props: Props) {
                 value.session.token.documentId === reading.identity.documentId && value.session.token.session === identity?.serial &&
                 value.session.token.bytesGeneration === identity.bytesGeneration) { setLoaded({ key, source: value }); setError(null); }
         }, failure => {
-            // An engine failure arrives wrapped in worker-host prefixes; the reader sees only the engine's own sentence.
             if (!controller.signal.aborted) setError({ key, message: failure instanceof Error ? failure.message.replace(/^.*\bEngineBroken: /, '') : 'PDF could not be opened.' });
         });
         return () => controller.abort();

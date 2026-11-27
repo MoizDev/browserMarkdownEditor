@@ -5,7 +5,6 @@ import { validNotebookSourcePath } from './notebookPointer';
 import type { IncrementalEmittedPdf } from './incrementalTypes';
 export type { IncrementalEmittedPdf } from './incrementalTypes';
 
-/** The incremental PDF is generated output, never an imported-source editing capability. */
 export async function buildNativeNotebookFromEmittedPdf(emitted: IncrementalEmittedPdf,
     notebookSource: { readonly path: string }, options: { readonly signal: AbortSignal }): Promise<Uint8Array> {
     options.signal.throwIfAborted();
@@ -27,7 +26,6 @@ export async function buildNativeNotebookFromEmittedPdf(emitted: IncrementalEmit
     const writer = typedPdfWriter(await getSharedPdfPool().writer({ signal: options.signal }));
     try {
         options.signal.throwIfAborted();
-        // The pool independently verifies the mark, transferred bytes, pointer union and every page corner.
         const output = await writer.request('writer.buildNotebook', args, { signal: options.signal, priority: 2 });
         options.signal.throwIfAborted();
         if (output.revision !== revision || output.writeId !== writeId) throw new Error('Notebook writer returned another build');

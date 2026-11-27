@@ -1,11 +1,6 @@
 import type { PaintItem, PaintTextItem } from './paintStream';
 
-/** The contributions of one item. Items are immutable and a rebuilt index meets the same item objects again (a session's resolved paint
- * is shared across frames), so the expansion is computed once per item and kept on it. */
 const contributionsOf = new WeakMap<PaintItem, readonly PaintItem[]>();
-/** Multiply is applied per native paint operation, not once to an invented isolated node.
- * Ordinary grouping/opacity remains inherited. The caller composites each yielded source
- * against the real destination at its original position in the stream. */
 export function paintContributions(item: PaintItem): readonly PaintItem[] {
     const known = contributionsOf.get(item);
     if (known) return known;

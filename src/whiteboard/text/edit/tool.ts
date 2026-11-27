@@ -1,8 +1,6 @@
 import type { GestureOwner, Modifiers, RealSample, Tool } from '../../input/tool';
 
 export interface TextToolContext {
-    // The tool supplies geometry; the view creates through the shared apply path
-    // and then enters editing on the created node.
     createText(x: number, y: number, width: number | null, seed?: string): void;
     worldToScreen(x: number, y: number): { readonly x: number; readonly y: number };
     previewTextColumn(x: number, y: number, width: number | null): void;
@@ -16,8 +14,6 @@ export const textTool: Tool<TextToolContext> = {
         const origin = context.worldToScreen(first.x, first.y);
         let last = first;
         let width: number | null = null, ended = false, fixed = false;
-        // A deliberate drag makes fixed width once, and it stays fixed: held 150 ms and moved horizontally past the threshold.
-        // A click, or a shorter drag, is auto-sized (the catalogue's text-tool drag rule).
         const update = (sample: RealSample) => {
             if (ended) return;
             last = sample;

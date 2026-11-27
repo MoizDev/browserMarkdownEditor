@@ -27,12 +27,10 @@ function* pathData(commands: readonly Readonly<PathCommand>[]): Generator<void, 
         parts.push(op === 'Z' ? op : `${op} ${command.slice(1).join(' ')}`);
         if (++count >= 64 || performance.now() - started >= 0.25) { yield; count = 0; started = performance.now(); }
     }
-    // The final string and DOM attribute may be large even after incremental serialization.
     yield;
     return parts.join(' ');
 }
 
-/** Detached SVG resources; the pane owns admission, attachment and atomic publication. */
 export function* createEmbedClipJob(node: EmbedPresentedNode,
     viewport: Readonly<{ width: number; height: number }>): Generator<void, EmbedClipDom> {
     if (![viewport.width, viewport.height, node.rect.x, node.rect.y, node.rect.width, node.rect.height].every(Number.isFinite) ||

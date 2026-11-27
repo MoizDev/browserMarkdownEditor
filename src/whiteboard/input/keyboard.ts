@@ -11,17 +11,12 @@ export interface KeyBinding {
   readonly alt?: boolean
   readonly accel?: boolean
   readonly repeat?: boolean
-  /** Dispatched like any binding but never listed: the listed sibling (Cmd+=) is the chord a person reads. */
   readonly alias?: boolean
-  /** Listed in the shortcuts dialog but never dispatched: a momentary mode, or a family the dispatcher reads from the key itself. */
   readonly dialogOnly?: boolean
-  /** The key cap the dialog shows in place of the dispatch key, such as the four arrows as one cap. */
   readonly chordKey?: string
-  /** Still works while the keyboard-shortcuts preference is off: Delete, and the accessibility keys the preference never silences. */
   readonly required?: boolean
 }
 
-// This one table supplies both dispatch and the shortcut dialog.
 export const boardBindings: readonly KeyBinding[] = [
   { id: 'tool.select', group: 'tools', label: 'Select', key: 'v' },
   { id: 'tool.hand', group: 'tools', label: 'Hand', key: 'h' },
@@ -40,11 +35,8 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'tool.laser', group: 'tools', label: 'Laser', key: 'k' },
   { id: 'tool.frame', group: 'tools', label: 'Frame', key: 'f' },
   { id: 'tool.lock', group: 'tools', label: 'Tool lock', key: 'q' },
-  // The bar's nine primary tools by position: 1–9 press the Nth tool the bar shows, not a fixed tool. The bar has no tenth
-  // slot, so 0 is unbound. The keys are dispatched but not listed: one dialog row (below) names them all, as a family the dispatcher reads from the key.
   ...(['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const).map(key => ({ id: `tool.bar.${key}`, group: 'tools', label: `Tool on the bar by position`, key, alias: true })),
   { id: 'tool.bar.position', group: 'tools', label: 'Tool on the bar by position', key: '1', chordKey: '1–9', dialogOnly: true },
-  // Comma presses the pointer at the keyboard cursor and lifting the key releases it (K§10.6).
   { id: 'pointer.hold', group: 'tools', label: 'Pointer down', key: ',' },
   { id: 'style.white', group: 'preferences', label: 'White', key: 't', alt: true },
   { id: 'style.fill', group: 'preferences', label: 'Fill', key: 'f', alt: true },
@@ -54,13 +46,10 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'preferences.theme', group: 'preferences', label: 'Toggle theme', key: '/', accel: true },
   { id: 'preferences.grid', group: 'preferences', label: 'Toggle grid', key: "'", accel: true },
   { id: 'help.shortcuts', group: 'accessibility', label: 'Keyboard shortcuts', key: '/', accel: true, alt: true, required: true },
-  // Cmd/Ctrl+K toggles the command palette. Inside a text edit the board's keys do not run, so the editor keeps it.
   { id: 'commandPalette.open', group: 'accessibility', label: 'Command palette', key: 'k', accel: true },
   { id: 'accessibility.repeat', group: 'accessibility', label: 'Repeat announcement', key: 'r', alt: true, required: true },
   { id: 'accessibility.contextMenu', group: 'accessibility', label: 'Open context menu', key: 'Enter', accel: true, shift: true, required: true },
   { id: 'edit.start', group: 'edit', label: 'Edit selected text', key: 'Enter' },
-  // K§10.8: Cmd/Ctrl+Enter moves focus into the style panel. Enter (above) is the edit key, so this replaces the old
-  // Cmd/Ctrl+Enter alias for editing. It is a required accessibility action, so the shortcuts preference does not stop it.
   { id: 'style.adjust', group: 'accessibility', label: 'Adjust shape styles', key: 'Enter', accel: true, required: true },
   { id: 'undo', group: 'edit', label: 'Undo', key: 'z', accel: true },
   { id: 'redo', group: 'edit', label: 'Redo', key: 'z', accel: true, shift: true },
@@ -75,8 +64,6 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'frame.remove', group: 'edit', label: 'Remove frame', key: 'g', accel: true, alt: true, shift: true },
   { id: 'lock', group: 'edit', label: 'Lock', key: 'l', shift: true },
   { id: 'duplicate', group: 'edit', label: 'Duplicate', key: 'd', accel: true },
-  // The clipboard chords run from the view's own keydown, which handles them before this table sees them (native copy and paste
-  // events are never routed here); these rows name them for the shortcuts dialog. Plain Paste is the native paste event, not listed.
   { id: 'clipboard.pastePlain', group: 'edit', label: 'Paste as plain text', key: 'v', accel: true, shift: true },
   { id: 'clipboard.pasteAtCursor', group: 'edit', label: 'Paste at cursor', key: 'v', accel: true, alt: true },
   { id: 'clipboard.pastePlainAtCursor', group: 'edit', label: 'Paste plain text at cursor', key: 'v', accel: true, alt: true, shift: true },
@@ -106,7 +93,6 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'scale.enlarge', group: 'transform', label: 'Enlarge', key: '=', accel: true, alt: true, shift: true },
   { id: 'scale.shrink', group: 'transform', label: 'Shrink', key: '-', accel: true, alt: true, shift: true },
   { id: 'flatten', group: 'transform', label: 'Flatten', key: 'f', shift: true },
-  // Arrow keys are read from the key itself (navigation), so these entries exist to dispatch the accel form and to list the family.
   ...(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'] as const).flatMap(key => [
     { id: `nudge.${key}`, group: 'transform', label: `Nudge ${key.slice(5).toLowerCase()}`, key, repeat: true, alias: true },
     { id: `nudge.coarse.${key}`, group: 'transform', label: `Nudge ${key.slice(5).toLowerCase()} farther`, key, shift: true, repeat: true, alias: true },
@@ -127,7 +113,6 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'text.numbered', group: 'text-formatting', label: 'Numbered list', key: '7', accel: true, shift: true },
   { id: 'text.link', group: 'text-formatting', label: 'Link', key: 'k', accel: true, shift: true },
   ...(['0', '1', '2', '3', '4', '5', '6'] as const).map(key => ({ id: `text.heading.${key}`, group: 'text-formatting', label: key === '0' ? 'Paragraph' : `Heading ${key}`, key, accel: true, alt: true })),
-  // Cmd/Ctrl+= and Cmd/Ctrl+- are the browser's zoom keys: the board takes them so the page itself never zooms (K§5).
   { id: 'camera.zoomIn', group: 'view', label: 'Zoom in', key: '=', accel: true, repeat: true },
   { id: 'camera.zoomIn', group: 'view', label: 'Zoom in', key: '=', repeat: true, alias: true },
   { id: 'camera.zoomOut', group: 'view', label: 'Zoom out', key: '-', accel: true, repeat: true },
@@ -141,20 +126,16 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'camera.reset', group: 'view', label: 'Reset zoom', key: '0', shift: true },
   { id: 'camera.fit', group: 'view', label: 'Zoom to fit', key: '1', shift: true },
   { id: 'camera.selection', group: 'view', label: 'Zoom to selection', key: '2', shift: true },
-  // Both axes walk the sheets: Left/Up back and Right/Down forward, each route listed in the shortcut sheet (R-4).
   { id: 'sheet.previous', group: 'view', label: 'Previous sheet', key: 'ArrowLeft', alt: true },
   { id: 'sheet.previous', group: 'view', label: 'Previous sheet', key: 'ArrowUp', alt: true, alias: true },
   { id: 'sheet.next', group: 'view', label: 'Next sheet', key: 'ArrowRight', alt: true },
   { id: 'sheet.next', group: 'view', label: 'Next sheet', key: 'ArrowDown', alt: true, alias: true },
-  // Space held pages the camera by one viewport with an arrow; the dispatcher reads Space itself (K§10.5).
   { id: 'pan.camera', group: 'accessibility', label: 'Pan camera', key: ' ', chordKey: 'Space ↑→↓←', dialogOnly: true },
 ]
 
 const keyNames: Readonly<Record<string, string>> = { ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓' }
 
-/** The chord a person reads for a binding: modifiers then the key cap, joined with symbols on Mac and "+" elsewhere. */
 export function bindingChord(binding: KeyBinding, mac: boolean): string {
-  // Delete and Backspace draw the ⌫ cap on Mac, where the key is the one that erases backwards; elsewhere the name is clearer.
   const keyCap = binding.chordKey ?? (binding.key.length === 1 ? binding.key.toUpperCase()
     : binding.key === 'Delete' || binding.key === 'Backspace' ? (mac ? '⌫' : 'Del') : keyNames[binding.key] ?? binding.key)
   return [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '', binding.shift ? (mac ? '⇧' : 'Shift') : '', keyCap]
@@ -167,7 +148,6 @@ export interface ShortcutGroup {
   readonly bindings: readonly { readonly id: string; readonly label: string; readonly chord: string }[]
 }
 
-/** `paperHost` drops the theme row: on notebooks and PDF ink Mod+/ does nothing (R-26), so it is not advertised. */
 export function shortcutGroups(mac: boolean, paperHost = false): readonly ShortcutGroup[] {
   const groups = new Map<string, { id: string; label: string; chord: string }[]>()
   for (const binding of boardBindings) {
@@ -191,7 +171,6 @@ export interface KeyboardActions {
   readonly cursor?: KeyboardCursor
   navigation?(): KeyboardNavigationPriority
   gestureActive?(): boolean
-  /** Printable text on a selected editable node is offered only for keys no shortcut binds: a bound key is a shortcut. */
   typeText?(text: string): boolean
   clearLatches(): void
 }
@@ -203,25 +182,13 @@ function textOwned(target: EventTarget | null, root: HTMLElement): boolean {
   return !!listbox && listbox !== root
 }
 
-// The browser's zoom keys belong to the page, so the board takes them while it has the keyboard (catalogue I§1.5).
-/** How far the pointer moves over a paged board while Space is held before the hold counts as reaching to pan (`spaceMoved`):
- * past a pen's hover tremor and a resting mouse's drift. */
 const SPACE_REACH_CSS = 8
 const BROWSER_ZOOM_KEYS: ReadonlySet<string> = new Set(['+', '0'])
 
 export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac: boolean): () => void {
-  // The shortcut each held key started, by physical key. A held key may repeat the shortcut it started and nothing else:
-  // releasing Shift mid-hold must not turn a repeating Shift+Arrow into a plain Arrow (K§0.2, K§15.6).
   const started = new Map<string, string>()
   let spaceHeld = false
-  /** On a paged board, the page a Space press moves by, kept until it is known what the press was: released alone it pages; held
-   * while the pointer is pressed it was the hand, and pages nothing. Paged at once on the key-down, a notebook or PDF jumped a
-   * screen and the drag that followed drew a box instead of panning (measured: frame 230 → -185 px, selection dropped). */
   let spacePage: 'Space' | 'ShiftSpace' | null = null, spacePressed = false, spaceRepeated = false
-  /** What else the hold was used for. A Space+arrow page or a wheel turn made it a modifier, not a page tap: paged again on
-   * release, Space+↓ moved two pages (measured on a PDF: 576 px for the arrow, then 518 more on release). A pointer moving over
-   * the board is a hand reaching to pan: from then on its repeats page nothing, or a pen landing after the key-repeat delay
-   * (about half a second) found the page it meant to grab gone. */
   let spaceUsed = false, spaceMoved = false, spaceRepeatSeen = false, spaceFrom: { x: number, y: number } | null = null
   const pressDuringSpace = (): void => { if (spaceHeld) spacePressed = true }
   const wheelDuringSpace = (): void => { if (spaceHeld) spaceUsed = true }
@@ -234,8 +201,6 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
     if (root.contains(event.target as Node)) {
       const accelDown = mac ? event.metaKey : event.ctrlKey
       if (accelDown && !event.altKey && BROWSER_ZOOM_KEYS.has(event.key)) event.preventDefault()
-      // Windows opens the menu bar when Alt is released alone; a gesture or zoom that Alt joins must not reach it.
-      // The press is still reported as a modifier: the early return below would otherwise hide Alt from a zoom hold's cursor.
       if (event.key === 'Alt' && actions.gestureActive?.()) {
         event.preventDefault()
         actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: mac ? event.metaKey : event.ctrlKey })
@@ -252,7 +217,6 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
     const modifiers: Modifiers = { shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel }
     const cursor = actions.cursor
     const consume = (): void => { event.preventDefault(); event.stopPropagation() }
-    // A press that fired a shortcut records it; its repeats may only fire that same shortcut again.
     const mayRepeat = (id: string): boolean => !event.repeat || started.get(code) === id
     const fired = (id: string): void => { if (!event.repeat) started.set(code, id); consume() }
     if (cursor?.active && accel && !event.altKey && !event.shiftKey && key === 'z' && cursor.undo()) { consume(); return }
@@ -272,7 +236,6 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       const scrollKey = event.key === ' ' ? (event.shiftKey ? 'ShiftSpace' : 'Space') : event.key
       if (navigation.paged && !actions.gestureActive?.() && (scrollKey === 'PageUp' || scrollKey === 'PageDown' || scrollKey === 'Home' || scrollKey === 'End' || scrollKey === 'Space' || scrollKey === 'ShiftSpace')) {
         if ((scrollKey === 'Space' || scrollKey === 'ShiftSpace') && actions.shortcutsEnabled?.() !== false) {
-          // Held without a press, its repeats page as before.
           if (event.repeat) {
             spaceRepeatSeen = true
             if (spacePage && !spacePressed && !spaceUsed && !spaceMoved) { spaceRepeated = true; navigation.scroll(spacePage) }
@@ -287,7 +250,6 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
         if (navigation.scroll(scrollKey)) { consume(); return }
       }
       if (/^Arrow(Left|Right|Up|Down)$/.test(event.key) && actions.shortcutsEnabled?.() !== false) {
-        // Space held pages the camera; otherwise an arrow nudges a selection or pans the view (K§10.4, K§10.5).
         const paging = spaceHeld && !!navigation.page
         const id = paging ? 'camera.page' : navigation.hasSelection && actions.enabled() ? (event.shiftKey ? 'nudge.coarse' : 'nudge') : (event.shiftKey ? 'pan.coarse' : 'pan')
         if (!mayRepeat(id)) { consume(); return }
@@ -298,14 +260,11 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
     }
     const physical: Record<string, string> = { Period: '.', Comma: ',', Equal: '=', Minus: '-', Slash: '/', Quote: "'", BracketLeft: '[', BracketRight: ']' }
     const letter = /^Key([A-Z])$/.exec(event.code)
-    // A layout whose letters are not ASCII (Cyrillic, Greek) still reaches the letter bindings by its physical key.
     const matchingKey = event.shiftKey && /^Digit[012]$/.test(event.code) ? event.code.slice(-1)
       : event.altKey && /^Key[A-Z]$/.test(event.code) ? event.code.slice(-1).toLowerCase()
       : (event.altKey || event.shiftKey || accel) && physical[event.code] ? physical[event.code]
       : letter && !/^[\x20-\x7e]$/.test(event.key) ? letter[1].toLowerCase() : key
     const binding = boardBindings.find(item => !item.dialogOnly && item.key === matchingKey && !!item.shift === event.shiftKey && !!item.alt === event.altKey && !!item.accel === accel)
-    // A bound key is a shortcut before it is text: ⌘⌥/ (Ctrl+Alt+/ off macOS) opens the shortcuts dialog and never types '/' into a label.
-    // Space is never the first character of a new label: it holds the camera (K§10.5), so it does not start editing.
     if (actions.enabled() && !accel && !event.altKey && !event.ctrlKey && !event.metaKey && !binding
       && event.key.length === 1 && event.key !== ' ' && actions.typeText?.(event.key)) {
       consume(); return
@@ -326,12 +285,10 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
   const keyup = (event: KeyboardEvent): void => {
     started.delete(event.code || event.key)
     if (actions.visible() && !actions.modalOpen() && !actions.editing() && root.contains(document.activeElement)) {
-      // macOS still reports metaKey on Meta's own key-up, so the release is read as released here (catalogue I§1.4).
       const accel = mac ? event.key !== 'Meta' && event.metaKey : event.ctrlKey
       actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel })
     }
     if (event.key === ' ' || event.code === 'Space') {
-      // Released after reaching to pan (held past its first repeat with the pointer moving) it pages nothing either.
       const page = spacePage, paged = spacePressed || spaceRepeated || spaceUsed || spaceMoved && spaceRepeatSeen
       spaceHeld = false; spacePage = null; spaceFrom = null; actions.run('pan.release', event)
       const navigation = page && !paged ? actions.navigation?.() : undefined
@@ -342,7 +299,6 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
   }
   const clear = (): void => { started.clear(); spaceHeld = false; spacePage = null; spaceFrom = null; actions.clearLatches() }
   const blur = (): void => { clear() }
-  // A tab or window hidden with a key held never sees its key-up here (and a hidden tab is not always blurred first).
   const visibility = (): void => { if (document.visibilityState === 'hidden') clear() }
   const focusout = (event: FocusEvent): void => {
     if (!(event.relatedTarget instanceof Node) || !root.contains(event.relatedTarget)) clear()

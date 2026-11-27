@@ -14,18 +14,14 @@ export type TextPasteContent =
 export interface TextPasteReader {
     readonly classifier: ClipboardClassifierHost;
     readonly html: ClipboardHtmlFrameHost;
-    /** Yields between slices of a long paste; the host default is one macrotask. */
     readonly cooperate?: () => Promise<void>;
-    /** C5-admitted private payload; null means anything other than one text node. */
     privateText(encoded: string, plain: string | null, signal: AbortSignal): Promise<RichFragment | null>;
 }
 
-/** Classification and the network-denied HTML projection are shared with board paste. */
 export async function classifyTextPaste(input: ClipboardInput, plain: boolean, reader: TextPasteReader,
     signal: AbortSignal): Promise<TextPasteContent> {
     const result = await classifyClipboard(input, plain ? 'paste-plain' : 'paste', reader.classifier, signal);
     signal.throwIfAborted();
-    // Pasted text can be large: its ingress is sliced, so the paste never holds the main thread for one walk.
     const ingress: PlainTextOptions = { signal, cooperate: reader.cooperate ?? yieldToHost };
     switch (result.kind) {
         case 'empty': return { kind: 'empty' };

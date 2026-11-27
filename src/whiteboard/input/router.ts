@@ -6,7 +6,6 @@ export interface InkPanSuspension {
   end(): void
 }
 
-// One session owns the gesture; a replaced view cannot finish its successor's contact.
 export class InputRouter<Context> {
   private token: InputToken | null = null
   private owner: GestureOwner | null = null
@@ -85,8 +84,6 @@ export class InputRouter<Context> {
     return true
   }
 
-  // Undo/escape seal ink but discard reversible previews. The owner implements
-  // the atomic finish-and-undo transaction for an ink undo.
   interrupt(token: InputToken, reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
     if (!this.isCurrent(token) || !this.owner) return false
     const owner = this.owner

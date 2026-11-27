@@ -52,8 +52,6 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
     let memoryEventAt = -Infinity;
     const channel = new MessageChannel();
     const turns: Array<() => void> = [];
-    // Reply validation can yield after its native serial turn has ended. A per-call
-    // onmessage replacement strands that reply when the next render yields too.
     channel.port1.onmessage = () => { turns.shift()?.(); };
     const yieldTurn = () => new Promise<void>(resolve => { turns.push(resolve); channel.port2.postMessage(0); });
     const serial = (fn: (value: unknown, context: WorkerContext) => unknown | Promise<unknown>) =>
@@ -144,8 +142,6 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
         if (previous !== undefined && previous !== signature) throw bad('EngineBroken', 'PDF page geometry changed');
         if (previous === undefined) {
             item.geometry.set(page, signature);
-            // Status events are hints, not reply authority. Fast canonical-find
-            // extraction must not exceed C5's small-event rate budget.
             if (performance.now() - geometryEventAt >= 500) {
                 geometryEventAt = performance.now(); ctx.emit('page.geometry', { docKey: key, geometry: result });
             }

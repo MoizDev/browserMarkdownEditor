@@ -21,7 +21,6 @@ export interface BoardSelectionNavigationOptions {
     readonly cooperate?: () => Promise<void>;
 }
 
-/** Selection navigation uses the last compositor-presented frame and the session's geometry scope. */
 export function createBoardSelectionNavigation(options: BoardSelectionNavigationOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     let disposed = false, view: ViewState | null = null, geometry: AbortController | undefined;

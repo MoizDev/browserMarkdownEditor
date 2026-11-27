@@ -4,7 +4,6 @@ import { validateRichFragmentCooperative } from './richTransaction';
 import type { PlainTextOptions } from './plainText';
 
 export interface FragmentSnapshotOptions extends PlainTextOptions {
-    /** The capture owner can reject a source revision which changed across a yield. */
     readonly current?: () => boolean;
 }
 
@@ -19,11 +18,6 @@ function record(value: unknown): value is Record<string, unknown> {
     return prototype === Object.prototype || prototype === null;
 }
 
-/**
- * Snapshot a rich fragment before crossing an asynchronous clipboard/import seam.
- * No source getter is invoked; every published container is newly frozen and
- * opaque JSON strings remain independent values, not concatenated carriers.
- */
 export async function snapshotRichFragmentCooperative(fragment: RichFragment, options: FragmentSnapshotOptions): Promise<RichFragment> {
     const budget = options.sliceMilliseconds ?? 3;
     if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich fragment snapshot time slice');

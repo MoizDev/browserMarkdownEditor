@@ -18,7 +18,6 @@ function copyBounds(bounds: LocalGeometryBounds): LocalGeometryBounds {
     return Object.freeze({ ink: copy(bounds.ink), ...(bounds.hit === undefined ? {} : { hit: copy(bounds.hit) }) });
 }
 
-/** Geometry generations are caller-owned; no live document or renderer is retained here. */
 export class SceneGeometryCache {
     private readonly entries = new Map<NodeId, Entry>();
     private readonly latest = new Map<NodeId, number>();

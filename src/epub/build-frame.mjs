@@ -1,7 +1,3 @@
-/** Regenerate the fixed opaque bootstrap after runtime/core/vendor changes.
- * Vite runs this before dev/build; node may also regenerate it standalone.
- * CSP hashes the exact inline IIFE, not its source or pre-minification bytes.
- */
 import { version } from 'esbuild';
 import { bundleContainedRuntime, sha256Hex } from '../platform/containedFrameBuild.mjs';
 import { readFile, writeFile, rm } from 'node:fs/promises';

@@ -9,7 +9,6 @@ export interface PdfLinkDestination {
     zoom?: number;
 }
 export interface PdfLinkPoint { x: number; y: number }
-/** Coordinates from page.links are already in the rotated PageGeometry frame. */
 export interface RawPdfLink {
     rect: Rect;
     quads?: readonly (readonly [PdfLinkPoint, PdfLinkPoint, PdfLinkPoint, PdfLinkPoint])[];
@@ -23,7 +22,6 @@ export type PdfLinkTarget =
     | { kind: 'destination'; page: number; view?: PdfLinkView; params?: readonly number[]; zoom?: number }
     | { kind: 'named'; name: 'NextPage' | 'PrevPage' | 'FirstPage' | 'LastPage' };
 export interface PdfPageLink {
-    /** Separate clipped polygons: never combine disjoint quads into a bounding hit box. */
     regions: readonly (readonly PdfLinkPoint[])[];
     target: PdfLinkTarget;
 }
@@ -79,7 +77,6 @@ function clipRegion(points: readonly PdfLinkPoint[], width: number, height: numb
     return Number.isFinite(area) && Math.abs(area) > 0 ? out : [];
 }
 
-/** Validate untrusted worker data into inert page-space targets. No DOM or navigation occurs here. */
 export function pdfPageLinks(raw: readonly RawPdfLink[], page: Pick<PageGeometry, 'width' | 'height'>, pageCount: number): PdfPageLink[] {
     if (!Number.isFinite(page.width) || !Number.isFinite(page.height) || page.width <= 0 || page.height <= 0 ||
         !Number.isSafeInteger(pageCount) || pageCount <= 0) return [];

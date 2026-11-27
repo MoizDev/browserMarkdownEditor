@@ -5,13 +5,10 @@ import type { PdfSelectionState } from './selectionState';
 
 export interface PdfSelectionGestureHost {
     selection: PdfSelectionState;
-    /** hit() must have loaded the page before returning its point. */
     cached(page: number): PdfSelectionReply | undefined;
     locale?(page: number, line: number): string | undefined;
 }
 
-/** Adapts pointer points into canonical word/line ranges without retaining
- * DOM or page geometry. A pane can discard/rebuild this adapter at will. */
 export class PdfSelectionGestures {
     private seed: { start: TextPoint; end: TextPoint } | undefined;
     private fixedAnchor = false;

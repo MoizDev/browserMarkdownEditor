@@ -13,8 +13,6 @@ import type { BoardDoc } from '../model/doc';
 import type { PdfRecoveryRecipe } from './pdfRecovery';
 import { isSafeMediaFile, type MediaEntry, type MediaId } from '../model/media';
 
-// Provenance: C-20 journal capture, serializer delta/integrity and media lease
-// contracts; independently implemented, no third-party source.
 type Dirty = { readonly revision: number; readonly change: SerializerChange | null; readonly identity: RecordIdentity };
 type Hold = { path: string | null; readonly lease?: { release(): void }; asset?: RecoveryMediaAsset };
 type BoardCapture = JournalCapture & { payload: BoardRecoveryRecipe };
@@ -32,7 +30,6 @@ export function createBoardRecoveryCapture(options: {
     baseline: SerializerPrime; doc: BoardDoc; encoder: EncoderContext; records: Iterable<RecordVersion>;
     representation: 'drawing' | 'notebook' | 'pdf-ink'; mediaPath: (id: MediaId) => string | null;
     mediaAsset: (id: MediaId) => RecoveryMediaAsset | undefined;
-    /** PDF copy must wrap the native recipe in a complete containing-PDF recipe. */
     pdfCopy?: (board: BoardRecoveryRecipe, context: unknown) => PdfRecoveryRecipe;
     retainMedia?: (id: MediaId) => { release(): void };
 }): { record(applied: Applied, revision: number): void; capture(context: unknown): JournalCapture | undefined;
@@ -93,13 +90,7 @@ export function createBoardRecoveryCapture(options: {
             const source = options.mediaAsset(id) ?? hold.asset;
             const path = options.mediaPath(id) ?? hold.path;
             if (!source) {
-                // A PDF embeds its pictures, and its open refuses one that is missing, so a PDF copy always has them.
                 if (options.representation === 'pdf-ink') throw new Error(`Recovery media bytes unavailable for ${id}`);
-                // A picture whose file was not in `.Assets` when the board opened (moved without its folder, not yet
-                // synced, deleted by hand) has no bytes to hold. Its reference is in the baseline and the delta exactly as
-                // the file has it, so a recovered board names it as before and shows it again once the file is back; only
-                // the bytes are left out, with their metadata row, which materializing pairs with them. Refusing here
-                // closed the board on its first stroke ("Recovery media bytes unavailable") and lost every stroke after.
                 if (path) { hold.path = path; mediaRefs.push(path); }
                 continue;
             }

@@ -4,8 +4,6 @@ import type { ExactPoint } from './homogeneous';
 import { add, subtract, multiply, interval, sqrtInterval, dyadic, dyadicMultiply, dyadicSubtract, type Dyadic, type Interval } from './numeric';
 
 const plus = (a: Dyadic, b: Dyadic): Dyadic => dyadicSubtract(a, { n: -b.n, e: b.e });
-/** Matrix coefficients and source coordinates are exact binary64 inputs. Do not
- * make a rounded world vertex the authority for clipping a distant thin frame. */
 export function exactAffinePoint(matrix: Affine, point: Vec2): ExactPoint {
     if (matrix.length !== 6 || !matrix.every(Number.isFinite) || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new RangeError('Invalid exact affine input');
     const x = dyadic(point.x), y = dyadic(point.y);
@@ -16,8 +14,6 @@ function square(value: Interval): Interval {
     const result = multiply(value, value);
     return { lo: Math.max(0, result.lo), hi: result.hi };
 }
-/** An affine round cap is an ellipse. Inner/outer singular radii bound that
- * ellipse, including the small non-orthogonality of composed rotation matrices. */
 export function affineRadiusScale(matrix: Affine): Interval {
     if (matrix.length !== 6 || !matrix.every(Number.isFinite)) throw new RangeError('Invalid affine radius input');
     const [a, b, c, d] = matrix.map(interval);

@@ -9,7 +9,6 @@ const BLOCK_BYTES = 64 * 1024;
 const DESCRIPTOR_BYTES = 512;
 const EMPTY = new Float64Array(0);
 
-/** Outward-rounded transformed local hull; uncertain arithmetic keeps the primitive. */
 function intersects(item: PaintInkItem, data: Float64Array, offset: number, stride: 3 | 6, rect: Readonly<Rect>): boolean {
     const x0 = data[offset], y0 = data[offset + 1], r0 = data[offset + 2];
     const x1 = stride === 6 ? data[offset + 3] : x0, y1 = stride === 6 ? data[offset + 4] : y0;
@@ -25,7 +24,6 @@ function intersects(item: PaintInkItem, data: Float64Array, offset: number, stri
         || worldY.hi < rect.y || worldY.lo > nextUp(rect.y + rect.height));
 }
 
-/** Derived views borrow canonical primitive buffers; the source pin remains the caller's. */
 export class InkTileCoverageJob {
     private readonly chunks: readonly InkCoverage[];
     private readonly selected: InkCoverage[] = [];
@@ -75,7 +73,6 @@ export class InkTileCoverageJob {
         this.run = -1;
         return true;
     }
-    /** One unit visits at most one primitive or seals one run. */
     step(maxWork: number): boolean {
         if (!Number.isSafeInteger(maxWork) || maxWork < 1) throw new RangeError('Invalid ink tile work budget');
         if (this.phase === 'disposed') throw new Error('Ink tile coverage was disposed');

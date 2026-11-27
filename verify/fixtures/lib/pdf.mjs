@@ -13,7 +13,6 @@ export function pinPdfMetadata(document, { id, version = 1, seed }) {
     document.context.trailerInfo.ID = document.context.obj([
         PDFHexString.of(digest), PDFHexString.of(digest),
     ]);
-    // Embedded font/image resource names use this PRNG, separate from fixture content randomness.
     document.context.rng.seed = seed;
     return document;
 }

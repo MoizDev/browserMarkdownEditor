@@ -16,7 +16,6 @@ export function spellingAtOffset(ranges: readonly Misspelling[], offset: number,
     return range && range.from <= offset && (includeEnd ? offset <= range.to : offset < range.to) ? range : null;
 }
 
-/** Clip a local horizontal segment against the transformed viewport, with room for its antialiasing. */
 function visibleSpan(matrix: Affine, viewport: ViewSize, left: number, right: number, y: number): readonly [number, number] | null {
     const pad = 3;
     for (const [slope, origin, limit] of [
@@ -34,7 +33,6 @@ function visibleSpan(matrix: Affine, viewport: ViewSize, left: number, right: nu
     return Number.isFinite(left) && Number.isFinite(right) ? [left, right] : null;
 }
 
-/** Only visible lines/ranges become SVG geometry; a zoomed-out subpixel line has no discernible underline. */
 export function* visibleSpellingPaths(paint: TextPaint, ranges: readonly Misspelling[], matrix: Affine, viewport: ViewSize,
     rects: (from: number, to: number) => readonly Rect[]): Generator<VisibleSpellingPath> {
     if (!ranges.length || !paint.lines.length || !(viewport.width > 0 && viewport.height > 0)) return;

@@ -1,5 +1,3 @@
-// Whole-chunk boot faults only (not role/guard logic). The source build stays
-// untouched; shared identity binds the actual separately served fault bytes.
 import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -19,7 +17,6 @@ const original = await readFile(path.join(baseDist, worker.path));
 if (sha(original) !== worker.sha256) throw new Error('Base role-worker bytes changed');
 await mkdir(destination);
 const dist = path.join(destination, 'dist');
-// An APFS clone on macOS; a plain copy elsewhere.
 if (process.platform === 'darwin') execFileSync('/bin/cp', ['-cR', baseDist, dist]);
 else await cp(baseDist, dist, { recursive: true, verbatimSymlinks: true });
 const body = Buffer.from(bodies[fault]);

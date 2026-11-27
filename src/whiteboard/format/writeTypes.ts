@@ -8,7 +8,7 @@ export interface RecordIdentity {
 }
 export interface EncodedRecord {
     readonly identity: RecordIdentity;
-    readonly text: string; // One JSON object, no delimiter or physical line break.
+    readonly text: string;
 }
 export interface WriteRefusal {
     readonly code: 'invalid' | 'limit' | 'points' | 'allocation' | 'integrity' | 'dirty' | 'header';

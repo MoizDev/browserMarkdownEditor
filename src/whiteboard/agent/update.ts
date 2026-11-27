@@ -13,7 +13,6 @@ export interface UpdateContext {
     readonly sheet: SheetId;
     readonly builder: CommandBuilder;
     resolve(reference: string): NodeId;
-    /** Computes placement/resize with authoritative staged scene geometry, or refuses. */
     placement(node: Node, op: UpdateOp): { readonly ops: readonly NodeSetOp[]; readonly notes?: readonly string[] };
 }
 
@@ -28,8 +27,6 @@ export function editableNode(doc: BoardDoc, sheet: SheetId, id: NodeId): Node {
     return node;
 }
 
-// The scene computes world-axis changes; no unrotated box approximation may
-// report a successful resize. Styles/text below never request geometry work.
 export function stageAgentUpdate(op: UpdateOp, context: UpdateContext): { updated: readonly NodeId[]; notes: readonly string[] } {
     const id = context.resolve(op.id), node = editableNode(context.doc, context.sheet, id), builder = context.builder;
     const geometry = op.page !== undefined || op.x !== undefined || op.y !== undefined || op.w !== undefined
@@ -66,8 +63,6 @@ export function stageAgentUpdate(op: UpdateOp, context: UpdateContext): { update
             }
         }
     }
-    // Text/style changes can change bounds. Measure the staged node, not its
-    // stale pre-op record; a refusal rolls all of these changes back together.
     const placement = geometry ? context.placement(context.doc.nodes.get(id)!, op) : { ops: [] as readonly NodeSetOp[], notes: [] as readonly string[] };
     for (const change of placement.ops) builder.push(change);
     return { updated: [id], notes: placement.notes ?? [] };

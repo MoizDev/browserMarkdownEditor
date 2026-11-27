@@ -9,8 +9,6 @@ import type { VectorNarrowDescriptor, VectorNarrowResult } from './vectorNarrow'
 type ClippedVectorRegionResult = VectorNarrowResult | Readonly<{ status: 'empty' }>;
 const PENDING: ClippedVectorRegionResult = Object.freeze({ status: 'pending' });
 
-/** Every visible realized stroke and semantic fill participates in containment;
- * any one certified component can establish ordinary overlap. */
 export function createClippedVectorRegionJob(descriptor: VectorNarrowDescriptor, query: RegionQuery, frames: readonly PointClipContour[]): {
     step(budget: { readonly deadline: number; readonly maxWork: number }): ClippedVectorRegionResult; cancel(): void;
 } {

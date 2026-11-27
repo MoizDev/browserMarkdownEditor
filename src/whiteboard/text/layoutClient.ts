@@ -28,14 +28,9 @@ function layoutClass(request: TextLayoutRequest): string {
 export interface LayoutProduct {
     readonly paint: TextPaint;
     readonly measurement: TextMeasurement;
-    /** The particular append-only face table that owns this paint's indices. */
     readonly faces: readonly Face[];
 }
 
-/**
- * The worker is shared with parsing. Session/revision guards reject replies after an edit or
- * vault switch; an unsupported, failed or discrepant worker falls back to main-thread layout.
- */
 export class TextLayoutClient {
     private readonly versions = new Map<string, number>();
     private readonly pending = new Map<string, AbortController>();
@@ -46,7 +41,6 @@ export class TextLayoutClient {
     constructor(private readonly main: BoardTextLayout, private readonly fonts: BoardFonts, private readonly worker?: BoardWorkerClient, onFontArrival?: (key: FontKey) => void) {
         const changed = (key: FontKey) => { this.compatibleClasses.clear(); this.different = false; onFontArrival?.(key); };
         this.unsubscribe.push(fonts.subscribe((_epoch, key) => changed(key)));
-        // A worker FontFaceSet is shared; the request identity that relays an arrival is not the only affected board.
         if (worker) this.unsubscribe.push(worker.on('fontEpoch', payload => {
             if (!payload || typeof payload !== 'object' || !('key' in payload)) return;
             const key = payload.key as Partial<FontKey> | null;
@@ -54,7 +48,6 @@ export class TextLayoutClient {
             changed(key as FontKey);
         }));
     }
-    /** Call on every vault/session switch, including a switch to a same-path document. */
     beginSession(): void {
         this.epoch++;
         this.versions.clear();
@@ -76,7 +69,6 @@ export class TextLayoutClient {
         if (!paint.faceTable) throw new Error('Text paint has no owning face table');
         return { paint, measurement, faces: paint.faceTable.faces };
     }
-    /** Edited or immediately visible content never waits on a queued open-time job. */
     layoutNow(node: string, request: TextLayoutRequest): LayoutProduct {
         this.next(node);
         this.versions.delete(node);

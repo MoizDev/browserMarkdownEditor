@@ -2,13 +2,11 @@ import type { EmphasisCell, EmphasisPoint } from './composite';
 
 export interface GlyphFrame {
     origin: EmphasisPoint;
-    /** Full font-em-to-page linear transform: [a,b,c,d], including font size once. */
     basis: readonly [number, number, number, number];
     ascent: number;
     descent: number;
 }
 
-/** Construct a single native glyph cell without flattening rotation or shear. */
 export function emphasisGlyphCell(frame: GlyphFrame, nextOrigin: EmphasisPoint | null,
     lastInkCorners?: readonly EmphasisPoint[]): EmphasisCell | null {
     const { origin, basis: [a, b, c, d], ascent, descent } = frame;

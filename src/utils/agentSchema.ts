@@ -1,13 +1,3 @@
-// Validates an agent's tool arguments against the JSON Schemas the helper
-// serves the CLI (shared/vaultAgentTools.ts VAULT_TOOLS) — the SAME objects,
-// so what the executor accepts can never drift from what the agent was told.
-//
-// Only the keywords those schemas use: type, properties, required,
-// additionalProperties:false, enum, const, minimum, maximum, exclusiveMinimum,
-// minLength, minItems, maxItems, items, oneOf. A schema using anything else
-// would be silently under-checked, so one does not get past review unnoticed:
-// an unknown keyword is reported as an internal error, not skipped.
-
 type Schema = Record<string, unknown>;
 
 const KNOWN = new Set([
@@ -28,7 +18,6 @@ function show(v: unknown): string {
     return JSON.stringify(v);
 }
 
-/** The `const` discriminators of a oneOf branch, e.g. {op:'create', type:'text'}. */
 function discriminators(branch: Schema): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     const props = (branch.properties ?? {}) as Record<string, Schema>;
@@ -117,14 +106,12 @@ function check(schema: Schema, value: unknown, at: string, errors: string[]): vo
                 }
                 continue;
             }
-            // An explicit null for an optional argument reads as "not given".
             if (v === null && !(schema.required as string[] | undefined)?.includes(key)) continue;
             check(sub, v, at ? `${at}.${key}` : key, errors);
         }
     }
 }
 
-/** Human-readable problems with `value` against `schema`; empty = valid. */
 export function validateAgainstSchema(schema: Record<string, unknown>, value: unknown): string[] {
     const errors: string[] = [];
     check(schema, value, '', errors);

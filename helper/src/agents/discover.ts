@@ -1,8 +1,3 @@
-// Finding the agent CLIs. The helper runs under launchd / Task Scheduler /
-// systemd, which give it no login-shell PATH, so `claude` et al. are looked up
-// in the places their installers actually use, then (POSIX) once through the
-// user's login shell as a last resort.
-
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, join } from 'node:path';
@@ -10,11 +5,8 @@ import type { AgentId } from '../../../shared/vaultAgentProtocol.ts';
 import { runCapture } from '../proc.ts';
 
 export interface FoundBinary {
-    /** What to spawn: the binary itself, or [node, script] for an npm `.cmd` shim on Windows. */
     command: string[];
-    /** The resolved file (for display and for PATH). */
     path: string;
-    /** Folders to put first on the child's PATH (the CLI's own, node's). */
     pathDirs: string[];
 }
 
@@ -32,7 +24,6 @@ function isExecutable(p: string): boolean {
 function nvmBins(home: string): string[] {
     const root = join(home, '.nvm', 'versions', 'node');
     try {
-        // Newest first: nvm's `default` alias is usually the newest install.
         return readdirSync(root)
             .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
             .map(v => join(root, v, 'bin'));
@@ -41,16 +32,15 @@ function nvmBins(home: string): string[] {
     }
 }
 
-/** Candidate folders, most specific first. Exported for tests. */
 export function candidateDirs(home = homedir(), env: NodeJS.ProcessEnv = process.env): string[] {
     const pathDirs = (env.PATH ?? env.Path ?? '').split(delimiter).filter(Boolean);
     if (IS_WIN) {
         const appData = env.APPDATA ?? join(home, 'AppData', 'Roaming');
         const local = env.LOCALAPPDATA ?? join(home, 'AppData', 'Local');
         return [
-            join(home, '.local', 'bin'),                 // Claude Code native installer
-            join(home, '.opencode', 'bin'),              // OpenCode install script
-            join(appData, 'npm'),                        // npm -g
+            join(home, '.local', 'bin'),
+            join(home, '.opencode', 'bin'),
+            join(appData, 'npm'),
             join(local, 'Microsoft', 'WinGet', 'Links'),
             join(home, 'scoop', 'shims'),
             join(local, 'Programs', 'opencode'),
@@ -60,9 +50,9 @@ export function candidateDirs(home = homedir(), env: NodeJS.ProcessEnv = process
         ];
     }
     return [
-        join(home, '.local', 'bin'),        // Claude Code native installer, pipx-style installs
-        join(home, '.claude', 'local'),     // older Claude Code "local" installs
-        join(home, '.opencode', 'bin'),     // OpenCode install script
+        join(home, '.local', 'bin'),
+        join(home, '.claude', 'local'),
+        join(home, '.opencode', 'bin'),
         '/opt/homebrew/bin',
         '/usr/local/bin',
         join(home, '.bun', 'bin'),
@@ -84,13 +74,7 @@ function names(agent: AgentId): string[] {
     return IS_WIN ? [`${agent}.exe`, `${agent}.cmd`] : [agent];
 }
 
-/**
- * npm on Windows installs `x.cmd` shims, which can only run through cmd.exe —
- * and passing arguments through cmd.exe is exactly the shell parsing we refuse.
- * The shim names the script it runs; we run that script with node directly.
- */
 export function resolveCmdShim(shimPath: string, shimText: string, nodePath: string | null): string[] | null {
-    // Current `claude` and `opencode-ai` ship a native exe behind the shim: run it directly.
     const exe = /"%(?:~?dp0)%\\([^"]+\.exe)"/i.exec(shimText);
     if (exe) return [join(dirname(shimPath), exe[1])];
     const m = /"%(?:~?dp0)%\\([^"]+\.(?:js|cjs|mjs))"/i.exec(shimText);
@@ -162,7 +146,6 @@ export async function findAgentBinary(agent: AgentId, refresh = false): Promise<
     return found;
 }
 
-/** First `x.y.z` in `<bin> --version`. */
 export function parseVersion(text: string): string | null {
     return /(\d+\.\d+\.\d+)/.exec(text)?.[1] ?? null;
 }

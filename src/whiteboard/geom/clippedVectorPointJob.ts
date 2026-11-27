@@ -6,8 +6,6 @@ import type { VectorNarrowDescriptor, VectorNarrowResult } from './vectorNarrow'
 
 const PENDING: VectorNarrowResult = Object.freeze({ status: 'pending' });
 
-/** Preserve provider part priority while certifying each semantic fill or
- * realized stroke against all ancestor frame clips. */
 export function createClippedVectorPointJob(descriptor: VectorNarrowDescriptor, query: PointQuery, frames: readonly PointClipContour[]): {
     step(budget: { readonly deadline: number; readonly maxWork: number }): VectorNarrowResult; cancel(): void;
 } {

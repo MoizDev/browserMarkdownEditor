@@ -6,7 +6,6 @@ import { QuadList } from '../layer/quadList';
 import { auditCount } from '../../platform/render/renderAudit';
 
 export interface PdfHighlightRects {
-    /** World-space rectangles, already clipped to their physical pages. */
     readonly find: readonly Readonly<Rect>[];
     readonly current: readonly Readonly<Rect>[];
     readonly selection: readonly Readonly<Rect>[];
@@ -17,7 +16,6 @@ export interface PdfHighlightPalette {
     readonly selection: Rgba;
 }
 
-/** Writes the rect's device-pixel placement into `out`: a frame draws every highlight, so no object is made per rect. */
 function deviceRect(rect: Readonly<Rect>, view: ViewState, out: Rect): Rect {
     const scale = view.camera.z * view.viewport.dpr;
     out.x = (rect.x - view.camera.x) * scale;
@@ -33,7 +31,6 @@ function visible(rect: Rect, view: ViewState): boolean {
 function channel(value: number): number { return Math.round(Math.max(0, Math.min(1, value)) * 255); }
 function css(color: Rgba): string { return `rgba(${channel(color[0])}, ${channel(color[1])}, ${channel(color[2])}, ${Math.max(0, Math.min(1, color[3]))})`; }
 
-/** Find is painted below the selection, as chrome so the PDF invert filter never touches it. */
 export class PdfTextHighlightLayer implements Layer {
     private rects: PdfHighlightRects = { find: [], current: [], selection: [] };
     private texture: { device: GfxDevice; handle: TextureHandle } | null = null;
@@ -41,11 +38,8 @@ export class PdfTextHighlightLayer implements Layer {
     private pending = false;
     private lease: ByteLease | null = null;
     private readonly scratch: Rect = { x: 0, y: 0, width: 0, height: 0 };
-    /** Every highlight of a frame, in find, current, selection order, drawn as one batch from the palette texture. */
     private readonly quads = new QuadList();
-    /** A palette the device refused: counted once, and drawn without highlights until the palette changes. */
     private paletteRefused = false;
-    /** A governor waiter for the palette's 12 bytes is outstanding. */
     private awaiting = false;
 
     constructor(private readonly host: LayerHost, private palette: PdfHighlightPalette) {}
@@ -94,12 +88,10 @@ export class PdfTextHighlightLayer implements Layer {
             this.texture = { device, handle };
         } catch { device.destroy(handle); this.refusePalette(); }
     }
-    /** A refused or failed palette is counted and not retried per frame: the layer draws no highlights until setPalette. */
     private refusePalette(): void {
         this.paletteRefused = true;
         auditCount('pdf-text-highlight', 'palette-refused');
     }
-    /** A refused reservation wakes the layer when the governor would admit its 12 bytes. Without a waiter it retries each frame. */
     private awaitCapacity(): void {
         const allocator = this.host.allocator.gpu;
         if (!allocator.whenAvailable) { this.pending = true; return; }
@@ -110,7 +102,6 @@ export class PdfTextHighlightLayer implements Layer {
     drawGpu(pass: GpuPass, view: ViewState): void {
         const texture = this.texture;
         if (!texture || texture.device !== this.host.device() || this.disposed) return;
-        // Each group samples its own texel of the 3×1 palette texture (find, current, selection).
         const quads = this.quads;
         quads.reset();
         this.addGpuGroup(quads, view, this.rects.find, 0);
@@ -127,7 +118,6 @@ export class PdfTextHighlightLayer implements Layer {
             this.draw2dGroup(ctx, view, this.rects.selection, this.palette.selection);
         } finally { ctx.restore(); }
     }
-    /** Queues the visible rects of one group, each sampling its texel. One scratch rect serves every rect. */
     private addGpuGroup(quads: QuadList, view: ViewState, rects: readonly Readonly<Rect>[], texel: number): void {
         const source = { x: texel, y: 0, width: 1, height: 1 };
         for (const rect of rects) {

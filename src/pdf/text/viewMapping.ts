@@ -2,7 +2,6 @@ import { pdfTextAnchor } from '../../utils/pdfReadingText';
 import type { PdfTextAnchor, PdfTextReader } from '../../utils/pdfReadingText';
 import type { PdfViewPos } from '../../utils/pdfViewState';
 
-/** Map the original page checkpoint to the nearest canonical item. */
 export async function tiledOriginalToText(reader: PdfTextReader, position: PdfViewPos, signal?: AbortSignal): Promise<PdfTextAnchor> {
     const page = await reader.getPage(position.page, signal, 0);
     const [, b, , d, , f] = page.geometry.viewportTransform;
@@ -17,8 +16,6 @@ export async function tiledOriginalToText(reader: PdfTextReader, position: PdfVi
     return pdfTextAnchor(page, offset);
 }
 
-/** Preserve the original zoom while mapping a canonical text anchor back to
- * its physical page; unavailable glyph geometry falls back to the page top. */
 export async function tiledTextToOriginal(reader: PdfTextReader, anchor: PdfTextAnchor,
     checkpoint: PdfViewPos, signal?: AbortSignal): Promise<{ position: PdfViewPos; mapped: boolean }> {
     const page = await reader.getPage(anchor.physicalPageIndex, signal, 0);

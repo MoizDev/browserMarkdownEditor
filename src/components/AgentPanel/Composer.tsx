@@ -1,12 +1,3 @@
-// Where the user writes. Our own design (aicss's input box is a paid Pro
-// component), drawn in the free components' language: one 12px card with a
-// hairline ring, the thumbnail tray above the text, and a bar below it with
-// attach, the model chip and the send/stop button.
-//
-// Enter sends, Shift+Enter is a newline (and Enter during IME composition is
-// the composition's). Images come by paste, by drop anywhere on the panel
-// (AgentPanel forwards it here) and by the attach button.
-
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ClipboardEvent, KeyboardEvent, ReactNode } from 'react';
 import { MAX_IMAGES_PER_MESSAGE } from '../../../shared/vaultAgentProtocol';
@@ -19,27 +10,14 @@ const MAX_TEXTAREA_PX = 220;
 const ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
 
 export interface ComposerProps {
-    /** Why sending is impossible right now (no agent, history read-only…); null = it is possible. */
     blockedReason: string | null;
     running: boolean;
     stopping: boolean;
     imagesAllowed: boolean;
-    /** The model chip. */
     chip: ReactNode;
     onSend: (text: string, images: PreparedImage[]) => void;
     onStop: () => void;
-    /** AgentPanel hands dropped files here. */
     registerDrop: (handler: ((files: File[]) => void) | null) => void;
-    /**
-     * Where to keep an unsent message, so closing the tab mid-sentence does not
-     * throw it away — `<vault>|<chat>`, or null when there is no vault to key
-     * it by. One draft per chat: typing a question in one chat and switching to
-     * another must not carry the words across.
-     *
-     * Images are deliberately NOT kept: a prepared image is an object URL and
-     * some megabytes of data URL, neither of which belongs in localStorage or
-     * survives the page that minted it.
-     */
     draftKey: string | null;
 }
 
@@ -53,10 +31,6 @@ export function Composer({ blockedReason, running, stopping, imagesAllowed, chip
     const imagesRef = useRef(images);
     useEffect(() => { imagesRef.current = images; });
 
-    // Follow the chat: the draft on screen belongs to the chat on screen, so a
-    // switch puts this one away and brings that one out. Keyed reads, not a
-    // remount, because the composer holds the image tray and the textarea's
-    // height, neither of which should be thrown away by a chat switch.
     const lastDraftKey = useRef(draftKey);
     useEffect(() => {
         if (lastDraftKey.current === draftKey) return;
@@ -64,11 +38,8 @@ export function Composer({ blockedReason, running, stopping, imagesAllowed, chip
         setText(readDraft(draftKey));
     }, [draftKey]);
 
-    // Written on every keystroke: a draft is a few hundred bytes, and the one
-    // moment it has to be right is the one nobody announces — the tab closing.
     useEffect(() => { writeDraft(draftKey, text); }, [draftKey, text]);
 
-    // Thumbnails still in the tray when the panel unmounts are nobody's.
     useEffect(() => () => { for (const img of imagesRef.current) URL.revokeObjectURL(img.url); }, []);
 
     useLayoutEffect(() => {
@@ -130,7 +101,6 @@ export function Composer({ blockedReason, running, stopping, imagesAllowed, chip
 
     const submit = () => {
         if (!canSend) return;
-        // The thumbnails' object URLs now belong to the sent message.
         onSend(text.trim(), images);
         setText('');
         setImages([]);
@@ -147,8 +117,6 @@ export function Composer({ blockedReason, running, stopping, imagesAllowed, chip
     const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
         const files = Array.from(e.clipboardData.files).filter(looksLikeImage);
         if (!files.length) return;
-        // A screenshot pastes as a picture only; text that comes with a
-        // picture (a copied web page) still pastes as text.
         if (!e.clipboardData.getData('text/plain')) e.preventDefault();
         void addFiles(files);
     };
@@ -242,12 +210,6 @@ export function Composer({ blockedReason, running, stopping, imagesAllowed, chip
     );
 }
 
-/* ───────────────────────── the unsent message ─────────────────────────
-   One localStorage key holding every chat's draft, so a tab closed mid-sentence
-   comes back with the sentence. Per browser, not per vault file, for the reason
-   the open-chat memory is (openChatMemory.ts): this is one window's state, not
-   something to push into a vault other machines sync. */
-
 const DRAFTS_KEY = 'vaultAgentDrafts';
 
 function readDrafts(): Record<string, string> {
@@ -269,8 +231,6 @@ function readDraft(key: string | null): string {
     return readDrafts()[key] ?? '';
 }
 
-/** Keep the thirty most recent drafts. Deleting a chat does not come past
- *  here, so without a cap an abandoned draft would outlive its chat for ever. */
 const MAX_DRAFTS = 30;
 
 function writeDraft(key: string | null, text: string): void {
@@ -278,11 +238,11 @@ function writeDraft(key: string | null, text: string): void {
     try {
         const drafts = readDrafts();
         if (!text.trim()) {
-            if (!(key in drafts)) return;        // nothing to clear
+            if (!(key in drafts)) return;
             delete drafts[key];
         } else {
-            if (drafts[key] === text) return;    // unchanged
-            delete drafts[key];                  // re-insert, so this key is the youngest
+            if (drafts[key] === text) return;
+            delete drafts[key];
             drafts[key] = text;
         }
         const keys = Object.keys(drafts);

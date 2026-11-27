@@ -1,4 +1,3 @@
-// Outside-only reconnaissance of the real reference app's DOM and network metadata.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { launchRuntime, frames } from '../harness/runtime.mjs';
 import { vaultHelpers } from '../harness/vault.mjs';

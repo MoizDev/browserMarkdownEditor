@@ -1,7 +1,3 @@
-/**
- * The types App's modules hand each other. Kept here, out of any one hook, so
- * that two modules sharing a value never have to import each other to name it.
- */
 import type React from 'react';
 import type { OpenTab, TabLayout } from '../types';
 import type { ReaderIdentity } from '../types/reading';
@@ -14,19 +10,15 @@ import type { useIndexGraph } from '../context/vaultIndex/useIndexGraph';
 export type SetTabs = React.Dispatch<React.SetStateAction<OpenTab[]>>;
 export type SetLayout = React.Dispatch<React.SetStateAction<TabLayout>>;
 
-/** What one pass of the save funnel did (flushTab). */
 export type FlushOutcome = 'written' | 'changed' | 'deleted' | 'skipped' | 'failed';
-/** `'rewrite'` also writes a canvas whose checkpoint is already saved: Keep mine, over a file somebody else replaced. */
 export type FlushTab = (
   path: string | null, force?: boolean | 'rewrite', closing?: boolean,
   vaultRoot?: FileSystemDirectoryHandle | null, trashOwned?: boolean, serializerCallback?: boolean,
 ) => Promise<FlushOutcome>;
 
-/** A document's standoff with its file — the DiskBar's two states. */
 export type DiskHold = 'conflict' | 'deleted';
 export type SetDiskState = (id: string, state: DiskHold | null) => void;
 
-/** What a native canvas session was admitted with (onNativeCanvasReady), by document id. */
 export interface NativePolicy {
   session: number;
   sourceGeneration: number;
@@ -34,7 +26,6 @@ export interface NativePolicy {
   activation: number;
   kind: 'drawing' | 'notebook' | 'pdfInk';
   emergencyReadOnly: boolean;
-  /** The session holds an old-format board, which is never written (utils/oldBoards.ts). */
   oldBoard?: boolean;
   pdfWriteAuthority?: { canWriteSource(): boolean; canWrite(): boolean };
 }
@@ -49,7 +40,6 @@ export interface PdfRebuildEntry {
   approved: boolean;
 }
 
-/** One asset reconcile, queued by a save (see useAssetLifecycle). */
 export type AssetOutcome = 'retired' | 'kept' | 'skipped-detached' | 'failed';
 export interface ReconcileJob {
   activation: number; path: string; parentHandle: FileSystemDirectoryHandle | null;

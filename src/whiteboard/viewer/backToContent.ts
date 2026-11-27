@@ -13,17 +13,13 @@ export interface BackToContentOptions {
     cooperate?(): Promise<void>;
 }
 
-/** tldraw shows the button after the content has been off screen for a second, so a brief pan does not flicker it. */
 const SHOW_DELAY_MS = 1000;
 
-/** View chrome only: a bounded spatial query decides whether the sheet's ink
- * intersects the presented viewport. The button never edits or selects nodes. */
 export function createBackToContent(options: BackToContentOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     const cooperate = options.cooperate ?? yieldToHost;
     let disposed = false, generation = 0, key = '', controller: AbortController | undefined, button: HTMLButtonElement | undefined;
     let showTimer: ReturnType<typeof setTimeout> | undefined;
-    /** Set by a click: the content is coming back, so the button stays away until it is on screen again. */
     let suppressed = false;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
     const hide = () => {
@@ -41,7 +37,6 @@ export function createBackToContent(options: BackToContentOptions) {
     const contextMenu = (event: MouseEvent) => {
         event.preventDefault(); event.stopPropagation();
         if (!current()) return;
-        // The board surface owns the menu; the floating button must not expose a native one.
         options.surface.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window,
             clientX: event.clientX, clientY: event.clientY, button: 2, buttons: event.buttons,
             altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey }));
@@ -93,7 +88,6 @@ export function createBackToContent(options: BackToContentOptions) {
             } finally { cursor.cancel(); }
             if (!active()) return;
             if (found) { suppressed = false; return; }
-            // The button waits a second, and any later change of view or content cancels the wait (see hide).
             showTimer = setTimeout(() => {
                 showTimer = undefined;
                 if (current() && generation === turn && key === next && !suppressed) show();

@@ -1,48 +1,16 @@
-// Page thumbnails: a narrow strip down the left edge of a PDF, shared by the
-// reader (PdfViewer) and the annotate canvas.
-//
-// Built so a 1,000-page document costs what a 10-page one does:
-//
-//  · WINDOWED. Only the rows in view, plus OVERSCAN either side, exist in the
-//    DOM. Every row's height follows from its page's aspect ratio, so the
-//    strip's scroll height and each row's position are arithmetic, never a
-//    layout measurement.
-//  · ONE RENDER AT A TIME, nearest the middle of the view first, re-deciding
-//    after every render. A row scrolled past before its turn is simply never
-//    rendered, instead of a queue of hundreds of stale requests working through
-//    the same pdf.js worker the page you are reading needs.
-//  · JPEG OBJECT URLS, CAPPED. A thumbnail is a few KB as a JPEG and ~250KB as
-//    a live canvas bitmap; past MAX_CACHED the rows farthest from view are let
-//    go and simply re-rendered if you scroll back.
-//  · THE CURRENT PAGE ARRIVES THROUGH A HANDLE, NOT A PROP. Scrolling the
-//    document re-renders this strip — two dozen rows — and never the host: the
-//    reader keeps its page number out of React state for exactly this reason,
-//    since re-rendering it means re-rendering every page div.
-//
-// A host keys it on whatever makes existing thumbnails wrong wholesale (a
-// reloaded PDF, a notebook re-ruled or rotated). Pages appended to the end need
-// no remount, and a page whose content changed is refreshed through
-// `invalidate`, which keeps the old image up until its replacement is ready.
-
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './PdfRenderNotice.css';
 
 export interface PdfThumbnailsHandle {
-    /** Mark `index` as the page on screen and bring its row into view. */
     setCurrentPage(index: number): void;
-    /** These pages' content changed: re-render them as they come into view. */
     invalidate(pages: Iterable<number>): void;
 }
 
 interface PdfThumbnailsProps {
-    /** Every page's size at scale 1. Only the aspect ratio matters here. */
     sizes: ReadonlyArray<{ width: number; height: number }>;
-    /** Rasterize page `index` (0-based) at `scale` to an object URL, which the
-     *  strip then owns and revokes. */
     renderThumbnail: (index: number, scale: number) => Promise<string>;
     onSelect: (index: number) => void;
     initialPage: number;
-    /** A late decoder failure can invalidate an already-cached thumbnail. */
     failedPages?: ReadonlySet<number>;
 }
 
@@ -90,18 +58,13 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage, failedPa
             if (url) { URL.revokeObjectURL(url); urlsRef.current.delete(i); }
         }
     }, [failedPages]);
-    /** Pages whose image no longer matches their content. Kept on screen until
-     *  replaced, so a refresh never blanks a thumbnail. */
     const staleRef = useRef<Set<number>>(new Set());
-    /** Bumped per invalidation, so a render that started before one does not
-     *  clear the staleness it could not have seen. */
     const staleGenRef = useRef<Map<number, number>>(new Map());
     const aliveRef = useRef(true);
     const pumpingRef = useRef(false);
     const renderRef = useRef(renderThumbnail);
     useEffect(() => { renderRef.current = renderThumbnail; }, [renderThumbnail]);
 
-    /** First row whose bottom edge is below `y`. */
     const rowAt = useCallback((y: number) => {
         const { tops, imageHeights } = geometry;
         let lo = 0, hi = n - 1;
@@ -146,7 +109,6 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage, failedPa
                     const url = await renderRef.current(next, (THUMB_WIDTH * dpr) / (sizes[next].width || 1));
                     if (!aliveRef.current) { URL.revokeObjectURL(url); return; }
                     if (knownFailures.current.has(next)) { URL.revokeObjectURL(url); continue; }
-                    // Swap, never blank: the old image stays up until this one exists.
                     const old = urlsRef.current.get(next);
                     if (old) URL.revokeObjectURL(old);
                     urlsRef.current.set(next, url);
@@ -154,8 +116,6 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage, failedPa
                     evict();
                     setVersion(v => v + 1);
                 } catch (err) {
-                    // No automatic retry loop; a failed capture must not look
-                    // like a successfully rendered blank page.
                     failedRef.current.add(next);
                     if (aliveRef.current) {
                         console.warn(`Could not render the thumbnail for page ${next + 1}:`, err);
@@ -186,7 +146,6 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage, failedPa
         frameRef.current = requestAnimationFrame(() => { frameRef.current = 0; measure(); });
     }, [measure]);
 
-    /** Scroll the strip just enough to show row `i`, if it is not already shown. */
     const reveal = useCallback((i: number) => {
         const el = scrollRef.current;
         if (!el) return;
@@ -214,8 +173,6 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage, failedPa
         },
     }), [clampPage, reveal, pump]);
 
-    // Open on the page being read, then keep the visible range true as the
-    // strip itself is resized (a window resize, a split being dragged).
     useLayoutEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
@@ -269,8 +226,6 @@ function PdfThumbnails({ sizes, renderThumbnail, onSelect, initialPage, failedPa
     );
 }
 
-/** The button that opens and closes the strip — one component so the reader
- *  and the annotate canvas cannot drift apart. */
 export function ThumbnailsToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
     return (
         <button

@@ -1,11 +1,8 @@
-// The render platform can attach accounting to an endpoint without making the worker host
-// depend on rendering. Keys are incarnations, never the stable client.
 const releases = new WeakMap<object, () => void>();
 const stopped = new WeakSet<object>();
 const memory = new Map<object, number>();
 const listeners = new Set<(worker: object, bytes: number | null) => void>();
 
-/** Current reports belong to endpoints, and disappear when that incarnation stops. */
 export function workerMemoryReports(): ReadonlyMap<object, number> {
     return new Map(memory);
 }

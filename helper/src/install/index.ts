@@ -1,9 +1,3 @@
-// install / uninstall for the three OSes. Everything is per-user and
-// user-owned, so the helper can remove itself from the panel without a password.
-//
-// `root` (tests, CI smoke): files are laid out under that folder and nothing is
-// registered with the OS — no launchctl, schtasks or systemctl.
-
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readlinkSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -20,9 +14,7 @@ import {
 export interface InstallOptions {
     platform: HelperPlatform;
     root?: string;
-    /** The executable to copy in (default: this process's). */
     sourceBinary?: string;
-    /** macOS pkg postinstall: it bootstraps the agent itself, as root, into the user's GUI domain. */
     skipLaunchctl?: boolean;
 }
 
@@ -62,11 +54,6 @@ function windowsUserId(): string {
     return domain ? `${domain}\\${user}` : user;
 }
 
-/**
- * Linux without systemd: a helper started detached (XDG fallback) has no service
- * to stop, so find it by its executable — which reads `<path> (deleted)` once a
- * reinstall has renamed a new binary over it — and ask it to exit.
- */
 function stopDetachedHelpers(binary: string): void {
     if (process.platform !== 'linux') return;
     let pids: string[];
@@ -80,7 +67,7 @@ function stopDetachedHelpers(binary: string): void {
         try {
             exe = readlinkSync(`/proc/${pid}/exe`);
         } catch {
-            continue; // another user's process, or already gone
+            continue;
         }
         if (exe !== binary && exe !== `${binary} (deleted)`) continue;
         try {
@@ -97,13 +84,8 @@ export async function install(opts: InstallOptions): Promise<InstallLayout> {
 
     if (l.platform === 'macos') {
         writeFileAtomic(l.registrationFile!, launchdPlist(l));
-        // Before the helper's own bootstrap: the helper's `serve` runs the same step
-        // at start, and two racing bootstraps of one label would fail the loser. The
-        // host is best effort (the terminal falls back to the in-process PTY
-        // without it), so it never fails an install.
         await ensurePtyHost(l, { register: register && !opts.skipLaunchctl });
         if (register && !opts.skipLaunchctl) {
-            // bootout first: a reinstall replaces the running old version.
             await bootoutAndWait(LAUNCHD_LABEL);
             const code = await bootstrapWithRetry(l.registrationFile!);
             if (code !== 0) throw new Error(`launchctl bootstrap failed (${code})`);
@@ -133,10 +115,8 @@ export async function install(opts: InstallOptions): Promise<InstallLayout> {
             }
         }
         if (!viaSystemd) {
-            // No systemd user session (some desktops, WSL, containers): XDG autostart.
             writeFileAtomic(l.autostartFile!, autostartDesktop(l));
             if (register) {
-                // A reinstall: the old helper would keep its port and the new one take the next.
                 stopDetachedHelpers(l.binary);
                 detached([l.binary, 'serve']);
             }
@@ -159,11 +139,6 @@ function removeFiles(l: InstallLayout): void {
     }
 }
 
-/**
- * Remove registration, binary and logs. `~/.bme-agent-sessions` is kept (the
- * CLIs' own sessions are recorded against those folders). When this process IS
- * the registered service, the step that stops it comes last.
- */
 export async function uninstall(opts: { platform: HelperPlatform; root?: string }): Promise<void> {
     const l = installLayout(opts.platform, opts.root);
     const register = !opts.root;
@@ -181,13 +156,12 @@ export async function uninstall(opts: { platform: HelperPlatform; root?: string 
         if (register) await systemctl('disable', SYSTEMD_UNIT);
         removeFiles(l);
         if (register) {
-            stopDetachedHelpers(l.binary); // the XDG-autostart case; never this process
+            stopDetachedHelpers(l.binary);
             await systemctl('daemon-reload');
-            await systemctl('stop', SYSTEMD_UNIT); // stops us, if we are it
+            await systemctl('stop', SYSTEMD_UNIT);
         }
         return;
     }
-    // Windows: the Inno Setup uninstaller owns the files and the Apps & Features entry.
     const uninstaller = join(l.appDir, 'unins000.exe');
     if (register && existsSync(uninstaller)) {
         detached([uninstaller, '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART']);
@@ -196,22 +170,16 @@ export async function uninstall(opts: { platform: HelperPlatform; root?: string 
     if (register) await uninstallService();
     removeFiles(l);
     if (register && existsSync(l.appDir) && !/["%]/.test(l.appDir)) {
-        // Our own .exe is still running; delete the folder once we are gone. `ping`
-        // as the delay, not `timeout`: with no console (stdio 'ignore') `timeout`
-        // fails at once ("Input redirection is not supported") and the rmdir ran
-        // while the .exe was still locked.
         detachedCmd(`ping -n 4 127.0.0.1 >nul & rmdir /s /q "${l.appDir}"`);
     }
 }
 
-/** Windows: what the Inno uninstaller runs before deleting files — drop the task, stop the other helpers. */
 export async function uninstallService(): Promise<void> {
     await schtasks('/End', '/TN', WINDOWS_TASK);
     await schtasks('/Delete', '/TN', WINDOWS_TASK, '/F');
     await runCapture(['taskkill.exe', '/F', '/IM', 'vaultagent.exe', '/FI', `PID ne ${process.pid}`], { timeoutMs: 15_000 });
 }
 
-/** The panel's "Uninstall": remove everything, then exit. */
 export async function selfUninstall(platform: HelperPlatform): Promise<never> {
     try {
         await uninstall({ platform });

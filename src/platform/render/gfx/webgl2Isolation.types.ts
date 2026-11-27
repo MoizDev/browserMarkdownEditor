@@ -1,6 +1,5 @@
 import type { Samples, TextureFormat } from './api';
 
-/** One charged target class, bounded to the union of declared physical device rectangles. */
 export interface IsolationReservation {
     readonly width: number;
     readonly height: number;
@@ -10,7 +9,6 @@ export interface IsolationReservation {
     readonly count: number;
 }
 
-/** Platform-only device admission, always called before a draw callback. */
 export interface GpuIsolationAdmission {
     readonly frameResourcesReady: boolean;
     prepareFrameResources(): void;

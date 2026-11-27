@@ -13,7 +13,6 @@ import { createPdfInkPreviewHost } from './inkPreviewHost';
 import type { PdfLegacyInkAcquisition, PdfLegacyInkAcquisitionOptions, PdfLegacyConversionReady, PdfLegacyPrepareOptions } from './legacyInkAcquisition.types';
 
 const prepared = new WeakSet<PdfLegacyConversionReady>();
-/** Only the admission/backup path can mint a conversion capability. */
 export function isPreparedPdfLegacyConversion(value: PdfLegacyConversionReady): boolean { return prepared.has(value); }
 const stale = () => new DOMException('PDF legacy source is no longer current', 'AbortError');
 const memoryBlob = (value: unknown): value is Blob => value instanceof Blob &&
@@ -36,7 +35,6 @@ function samePage(a: Readonly<PageGeometry>, b: Readonly<PageGeometry>): boolean
         a.toUserSpace.length === 6 && b.toUserSpace.length === 6 && a.toUserSpace.every((n, i) => n === b.toUserSpace[i]);
 }
 
-/** Explicit conversion capability. No writer, editor or empty board is exposed by inspection. */
 export async function acquireLegacyPdfInkCandidate(options: PdfLegacyInkAcquisitionOptions): Promise<PdfLegacyInkAcquisition> {
     if (!memoryBlob(options.outer)) throw new RangeError('PDF conversion requires a nonempty memory-backed Blob below 2 GiB');
     const token = Object.freeze({ ...options.token }), controller = new AbortController();

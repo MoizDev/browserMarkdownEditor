@@ -1,4 +1,3 @@
-// Generate Unicode property intervals from the pinned UCD, not from host ICU.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -62,7 +61,6 @@ const tables = {
     eastAsianWidth: encode(properties('EastAsianWidth.txt', 'N')),
     category: encode(categories()),
 };
-// emoji-data contains overlapping properties: retain Extended_Pictographic only.
 const emoji = Array(limit).fill('N');
 for (const line of read('emoji/emoji-data.txt').split(/\r?\n/)) {
     const fields = line.split('#')[0].split(';').map(s => s.trim());

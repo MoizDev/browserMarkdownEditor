@@ -9,7 +9,6 @@ export interface SearchBatch {
     scanned?: number; total?: number;
 }
 
-/** Stable app-owned access; no editor state travels through the file tree. */
 export interface SearchController {
     search(query: string, onBatch: (batch: SearchBatch) => void, signal: AbortSignal): Promise<void>;
     subscribe(listener: () => void): () => void;

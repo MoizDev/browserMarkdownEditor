@@ -10,8 +10,6 @@ import type { Attachment } from '../model/nodes';
 import { SECURITY_LIMITS } from '../security/limits';
 import { htmlPreflight } from './htmlPreflight';
 
-// Provenance: private clipboard envelope, SEC-W1/W4, native limits and C5
-// transport contracts; independent bounded worker decoder, no third-party source.
 export const CLIPBOARD_JSON_LIMIT = SECURITY_LIMITS.clipboardExpandedBytes;
 export const CLIPBOARD_INLINE_LIMIT = SECURITY_LIMITS.inlineMediaBytes;
 export const CLIPBOARD_ENCODED_LIMIT = SECURITY_LIMITS.clipboardHtmlBytes;

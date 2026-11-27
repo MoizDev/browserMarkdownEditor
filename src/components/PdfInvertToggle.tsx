@@ -1,11 +1,3 @@
-// The invert button beside a PDF's thumbnails button, in the reader and in the
-// annotate canvas.
-//
-// A VIEW preference. Pages, and while annotating the ink over them, are shown
-// through a CSS colour inversion; the file on disk and any PDF exported from it
-// keep their real colours. It reads and writes the shared store itself, so every
-// PDF on screen flips together. See utils/pdfViewState.ts.
-
 import { useSyncExternalStore } from 'react';
 import { getPdfInverted, setPdfInverted, subscribePdfInverted } from '../utils/pdfViewState';
 

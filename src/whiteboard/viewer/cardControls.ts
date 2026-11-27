@@ -11,7 +11,6 @@ import type { NodeId } from '../model/ids';
 import type { EmbedNode, LinkcardNode, Node } from '../model/nodes';
 import { isCancellation } from '../../platform/workers/envelope';
 
-/** What a card's controls may do. Embed consent is session-only and never saved; opening and fetching are explicit gestures. */
 export interface BoardCardActions {
     embedState(id: NodeId): 'inert' | 'loading' | 'loaded';
     loadEmbed(id: NodeId): Promise<unknown>;
@@ -26,7 +25,6 @@ export interface CardControlOptions {
     readonly view: () => ViewState;
     readonly current: () => boolean;
     readonly invalidate: () => void;
-    /** The mapping that presented a physical sample to the surface, shared with the other handles. */
     readonly sampleToSurface: (sample: RealSample) => Vec2;
     readonly actions: BoardCardActions | null;
     readonly error: (error: unknown) => void;
@@ -36,15 +34,11 @@ type Action = 'load' | 'unload' | 'fetch' | 'open';
 interface Chip { readonly action: Action | null; readonly label: string }
 interface PlacedChip extends Chip { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
 
-// Screen pixels, not world units: a card's chips keep their size at any zoom, and a chip is a touch target as well as a label.
 const INSET = 12, HEIGHT = 26, GAP = 6, CHARACTER = 7.2, CHIP_PAD = 20;
-/** Above any embed slot (stacked by node order, a small number) in the board overlay. */
 const CHIP_LAYER = 2_147_483_000;
 const SVG_NS = 'http://www.w3.org/2000/svg';
-// A signal that is never aborted: the picking geometry is read as the current revision, not cancelled.
 const NEVER = new AbortController().signal;
 let maskSeq = 0;
-/** A node's ink on the surface, as a box: the nearest thing the picking geometry offers to its outline. */
 interface SurfaceBox { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number }
 
 function toWorld(runtime: BoardRuntime, node: Readonly<CardNode>, x: number, y: number): Vec2 {
@@ -57,25 +51,17 @@ function toLocal(runtime: BoardRuntime, node: Readonly<CardNode>, world: Vec2): 
     return { x: c * dx + s * dy, y: -s * dx + c * dy };
 }
 
-/**
- * The chips drawn on an embed or link card: Load, Stop or Loading for an embed; Fetch preview (until a preview is stored)
- * and Open link for a link card. They are a view of the card, never saved content, and they hit-test like the sticky handles:
- * the select tool asks `begin` before it selects, so a chip press never starts a move. A ⌘/Ctrl press on a link card's body
- * opens its address, which is the card's link area.
- */
 export function createCardControls(options: CardControlOptions) {
     const { runtime } = options, session = runtime.session;
     let svg: SVGSVGElement | undefined, disposed = false;
     const presented = new PresentedHistory<ViewState['camera']>();
     const current = () => !disposed && options.current();
     const report = (error: unknown) => { if (!isCancellation(error)) options.error(error); };
-    /** The sheet's nodes in paint order (the last is the topmost); groups have no ink of their own, and their children are listed. */
     const sheetNodes = (): Node[] => {
         const out: Node[] = [];
         forEachNodeInZOrder(session.doc, runtime.selection.getSnapshot().sheet, node => { if (node.kind !== 'group') out.push(node); });
         return out;
     };
-    /** A node's ink box on the surface; null for a kind this does not box (a connector's line and label, an opaque record). */
     const surfaceBox = (node: Readonly<Node>, camera: ViewState['camera']): SurfaceBox | null => {
         if (node.kind === 'connector' || node.kind === 'opaque') return null;
         let ink: readonly number[];
@@ -90,7 +76,6 @@ export function createCardControls(options: CardControlOptions) {
         }
         return { x0, y0, x1, y1 };
     };
-    /** Whether a node above `from` in paint order covers the surface point: such a node is what a press there reaches. */
     const coveredAbove = (boxes: readonly (SurfaceBox | null)[], from: number, p: Vec2): boolean => {
         for (let j = from; j < boxes.length; j++) {
             const b = boxes[j];
@@ -109,7 +94,6 @@ export function createCardControls(options: CardControlOptions) {
         chips.push({ action: 'open', label: 'Open link' });
         return chips;
     };
-    /** Chips laid from the card's top-left corner in surface pixels; none is drawn when the card is too small to hold them. */
     const layout = (node: Readonly<CardNode>, actions: BoardCardActions, camera: ViewState['camera']): PlacedChip[] => {
         const chips = chipsFor(node, actions);
         const widths = chips.map(chip => Math.round(chip.label.length * CHARACTER + CHIP_PAD));
@@ -137,7 +121,6 @@ export function createCardControls(options: CardControlOptions) {
     const invalidate = () => { if (current()) options.invalidate(); else clear(); };
     const stopSelection = runtime.selection.subscribe(invalidate), stopSession = session.subscribe(invalidate);
     const stopEmbeds = options.actions?.subscribeEmbeds(invalidate) ?? (() => {});
-    /** A press that stays put completes its action on release; a drag past the slop turns into nothing. */
     const gesture = (sample: RealSample, down: Vec2, action: () => void): GestureOwner => {
         const pointerIds = new Set([sample.pointerId]);
         let ended = false;
@@ -154,7 +137,6 @@ export function createCardControls(options: CardControlOptions) {
         };
     };
     return {
-        /** The gesture for a press on a card's chip, or on a link card's body with ⌘/Ctrl; null leaves the press to the select tool. */
         begin(surface: Vec2, sample: RealSample, accel: boolean): GestureOwner | null {
             const actions = options.actions, camera = presented.at(sample.time);
             if (!actions || !camera || !current() || ![surface.x, surface.y].every(Number.isFinite)) return null;
@@ -182,8 +164,6 @@ export function createCardControls(options: CardControlOptions) {
             presented.present(frame.timestamp, { ...frame.view.camera });
             if (!svg) {
                 svg = document.createElementNS(SVG_NS, 'svg'); svg.setAttribute('aria-hidden', 'true');
-                // Above the live embed frames (embedPresentation stacks each by its node order): under them, a loaded embed's frame
-                // covered its own Stop chip and took the press, so a person could stop it only from the context menu.
                 svg.style.cssText = `position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible;z-index:${CHIP_LAYER}`;
                 options.overlay.append(svg);
             }
@@ -192,7 +172,6 @@ export function createCardControls(options: CardControlOptions) {
             for (let k = 0; k < nodes.length; k++) {
                 const node = nodes[k];
                 if (node.kind !== 'embed' && node.kind !== 'linkcard') continue;
-                // A chip is clipped by whatever is above its card, so the card's chips never show through a node drawn over them.
                 let host: SVGElement = svg;
                 const above = boxes.slice(k + 1).filter((b): b is SurfaceBox => b !== null);
                 if (above.length) {
@@ -215,8 +194,6 @@ export function createCardControls(options: CardControlOptions) {
                 for (const chip of layout(node, actions, frame.view.camera)) {
                     const group = document.createElementNS(SVG_NS, 'g');
                     group.setAttribute('opacity', chip.action === null ? '0.55' : '1');
-                    // A chip nothing covers takes its own press, so a live frame beneath cannot: the press bubbles to the board's input
-                    // root, whose select tool asks `begin` as for any chip press. A masked chip (a node above its card) stays see-through.
                     if (host === svg && chip.action !== null) group.style.pointerEvents = 'auto';
                     const rect = document.createElementNS(SVG_NS, 'rect');
                     rect.setAttribute('x', String(chip.x)); rect.setAttribute('y', String(chip.y));

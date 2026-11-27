@@ -7,7 +7,6 @@ import { richEditAdapter } from './richAdapter';
 import { TextEditSession, type EditLayout, type EditSessionServices } from './session';
 import type { TextEditBinding, TextEditBindingOptions } from './bindingTypes';
 
-/** Binds one pane's input endpoint to the session and its renderer's layout authority. */
 export function bindTextEditor(options: TextEditBindingOptions): TextEditBinding {
     const { session, node: id, key, view, layoutEngine } = options;
     let closed = false, overlay: TextChange | null = null, overlayRevision = 0;

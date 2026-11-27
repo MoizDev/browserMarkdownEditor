@@ -3,17 +3,14 @@ import type { PlainTextOptions } from './plainText';
 import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
 export interface RepairedText {
-    /** CR and CRLF are normalized to LF, which represents a block separator. */
     readonly text: string;
     readonly surrogates: number;
     readonly controls: number;
-    /** UTF-16 units excluding LF separators, which the block builder accounts for. */
     readonly contentLength: number;
 }
 
 export function* repairLegacyCharacterSteps(value: string, limit: number): Generator<void, RepairedText> {
     if (!Number.isSafeInteger(limit) || limit < 0 || limit > MAX_TEXT_LENGTH) throw new RangeError('Invalid rich text repair limit');
-    // Even complete CRLF contraction cannot fit a longer input.
     if (value.length > MAX_TEXT_LENGTH * 2) throw new RangeError('Rich text exceeds limits');
     let surrogates = 0, controls = 0, contentLength = 0, separators = 0, last = 0, checkpoint = 4096;
     let batch: string[] = [];
@@ -29,7 +26,6 @@ export function* repairLegacyCharacterSteps(value: string, limit: number): Gener
             replace(index, end, '\n'); index = end - 1;
             if (++separators >= MAX_TEXT_BLOCKS) throw new RangeError('Rich text exceeds block limit');
         } else if (code === 10) {
-            // The block builder accounts for the separator exactly once.
             if (++separators >= MAX_TEXT_BLOCKS) throw new RangeError('Rich text exceeds block limit');
         } else if (code >= 0xd800 && code <= 0xdbff) {
             const next = value.charCodeAt(index + 1);
@@ -49,7 +45,6 @@ export function* repairLegacyCharacterSteps(value: string, limit: number): Gener
     return { text: pieces.join(''), surrogates, controls, contentLength };
 }
 
-/** Repair malformed legacy text; unknown carriers are not inspected or rewritten. */
 export function repairLegacyCharacters(value: string, contentLimit = MAX_TEXT_LENGTH): RepairedText {
     return finishTextSteps(repairLegacyCharacterSteps(value, contentLimit));
 }

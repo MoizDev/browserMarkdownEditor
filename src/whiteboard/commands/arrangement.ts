@@ -26,8 +26,6 @@ export interface BoardArrangementPlan {
     cancel(): void;
 }
 
-/** Every arrangement is projected before mutation; source and final geometry
- * remain leased until the one commit or cancellation. */
 export function createBoardArrangementCommands(options: BoardArrangementCommandOptions) {
     const { runtime } = options, cooperate = options.cooperate ?? yieldToHost;
     async function prepare(ids: readonly NodeId[], action: ArrangementAction, signal = new AbortController().signal): Promise<BoardArrangementPlan> {
@@ -131,7 +129,6 @@ export function createBoardArrangementCommands(options: BoardArrangementCommandO
                 final = await acquireBoardGeometryScope(runtime, eligible, { doc: finalDoc, signal, current, cooperate }); check();
                 const frozen: NodeSetOp[] = [];
                 for (const op of ops) { frozen.push(Object.freeze(op)); await tick(); }
-                // A notebook arrangement that reaches the paper edge grows it in the same step, as every notebook edit does (R-24).
                 const growth = await prepareNotebookTransform({ runtime, ids: eligible, preview: { doc: finalDoc, ops: frozen }, signal, current, cooperate });
                 if (growth) paperGrowth = growth;
                 check(); return plan(growth ? growth.preview.doc : finalDoc, growth ? growth.ops : frozen, transaction);

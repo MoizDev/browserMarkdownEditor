@@ -4,7 +4,6 @@ import type { EmbedContainment, EmbedContainmentFactory, EmbedFrameManifest } fr
 import { checkContentUrl, type UrlEnvironment } from '../security/urlPolicy';
 import { validBoardIdentity, type BoardJobIdentity } from '../workers/protocol';
 
-// Provenance: SEC-6 exact-provider consent; the platform alone owns the opaque bootstrap and its private capability.
 // Each provider maps a link a person can paste to that provider's own embeddable page. Each rule matches its path with
 // identifier-only segments, so a link cannot smuggle a second address into the frame.
 const ORIGINS: readonly string[] = EMBED_PROVIDER_ORIGINS;
@@ -13,13 +12,8 @@ export type EmbedManifest = EmbedFrameManifest;
 export type EmbedProvider = 'youtube' | 'vimeo' | 'figma' | 'canva' | 'google-maps' | 'val-town' | 'codesandbox' | 'codepen'
     | 'scratch' | 'google-calendar' | 'google-slides' | 'replit' | 'felt' | 'spotify' | 'observable' | 'desmos' | 'tldraw';
 export interface EmbedCandidate { readonly provider: EmbedProvider; readonly url: string }
-/** The providers the Insert embed dialog lists (catalogue c.7's provider table), in its order, by the name each one goes by. */
 export const EMBED_PROVIDER_NAMES: readonly string[] = Object.freeze(['YouTube', 'Vimeo', 'Figma', 'Canva', 'Google Maps', 'Val Town',
     'CodeSandbox', 'CodePen', 'Scratch', 'Google Calendar', 'Google Slides', 'Replit', 'Felt', 'Spotify', 'Observable', 'Desmos', 'tldraw']);
-/** The size a pasted embed opens at, in world units. Most provider pages are 16:9; Spotify's player is a fixed-height strip,
- * which at 16:9 would leave most of the card empty. */
-// Default size of a new embed per provider, in world units (the catalogue's per-provider table); Spotify opens at its
-// player strip's height, and an unlisted provider uses the common size.
 const EMBED_SIZES: Readonly<Partial<Record<EmbedProvider, { readonly w: number; readonly h: number }>>> = Object.freeze({
     youtube: { w: 800, h: 450 }, vimeo: { w: 640, h: 360 }, codepen: { w: 520, h: 400 }, scratch: { w: 520, h: 400 },
     desmos: { w: 700, h: 450 }, spotify: { w: 800, h: 352 },
@@ -28,8 +22,6 @@ const EMBED_SIZE_DEFAULT = Object.freeze({ w: 720, h: 500 });
 export function embedCardSize(provider: EmbedProvider): { readonly w: number; readonly h: number } {
     return EMBED_SIZES[provider] ?? EMBED_SIZE_DEFAULT;
 }
-/** Every size the app gives an embed (and 800×450, the size every embed had before), so a card still at one of them takes
- * the size of its new kind on conversion. */
 export const EMBED_CARD_SIZES: readonly { readonly w: number; readonly h: number }[] = [
     { w: 800, h: 450 }, EMBED_SIZE_DEFAULT, ...Object.values(EMBED_SIZES).filter(size => size !== undefined),
 ];
@@ -39,7 +31,6 @@ function enabledOrigins(manifest: EmbedManifest | undefined): readonly string[] 
         || manifest.origins.some(origin => !ORIGINS.some(allowed => allowed === origin))) return null;
     return Object.freeze([...manifest.origins]);
 }
-/** One rule per provider: the hosts a link may come from, and the embeddable address its path names. */
 interface ProviderRule { readonly provider: EmbedProvider; readonly hosts: readonly string[]; readonly embed: (source: URL) => string | null }
 const PROVIDERS: readonly ProviderRule[] = [
     { provider: 'figma', hosts: ['www.figma.com', 'figma.com'], embed: source => {
@@ -146,7 +137,6 @@ export function resolveEmbedCandidate(input: string, environment: UrlEnvironment
         if (!rule || !embedded) return null;
         provider = rule.provider; url = embedded;
     }
-    // The address the frame loads must sit on an origin this manifest enables, or the provider is not offered.
     if (!origins.includes(new URL(url).origin)) return null;
     return Object.freeze({ provider, url });
 }
@@ -156,7 +146,6 @@ export interface EmbedLease {
     update(visible: boolean, input: string): void;
     dispose(): void;
 }
-/** Only a semantic per-node Load calls this. Restoration, painting and URL recognition never do. */
 export async function activateEmbed(options: {
     readonly input: string; readonly environment: UrlEnvironment; readonly manifest: EmbedManifest; readonly container: HTMLElement;
     readonly identity: BoardJobIdentity; readonly signal?: AbortSignal;
@@ -181,7 +170,6 @@ export async function activateEmbed(options: {
     signal.addEventListener('abort', dispose, { once: true });
     try {
         check();
-        // Full consent lifetime, not a five-second setup signal. The platform owns handshake deadlines.
         value = await options.containment({ container: options.container, url: candidate.url, manifest: options.manifest, signal,
             onFailure(reason) {
                 failure = new Error(`Embed containment failed: ${reason}`); dispose();

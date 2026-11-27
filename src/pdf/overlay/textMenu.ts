@@ -2,14 +2,10 @@ import { openContextMenu } from '../../utils/contextMenu';
 import type { ContextMenuEntry } from '../../utils/contextMenu';
 import { pdfSelectionQuery } from '../../utils/pdfTextMenu';
 
-/** The viewer resolves a right-click outside the selection to a word before
- * opening this menu. Text is canonical, not reconstructed from the mirror. */
 export interface PdfTextMenuOptions {
     x: number; y: number; opener: HTMLElement | null; page: number;
     hasSelection: boolean;
-    /** A bounded canonical selection preview, gathered before opening. */
     selectedText: string;
-    /** False if the bounded preview omits any part of the selection. */
     selectedTextComplete: boolean;
     copy(): void | Promise<void>;
     copyQuote(): void | Promise<void>;
@@ -30,7 +26,6 @@ export function openPdfTextMenu(options: PdfTextMenuOptions): void {
     ];
     if (hasSelection) {
         const query = pdfSelectionQuery(selectedText);
-        // app-context-menu keeps note contents out of labels; only the query carries selection text.
         entries.push({ kind: 'command', id: 'search-vault', label: 'Search vault for selection', disabled: !query,
             reason: query ? undefined : 'Select searchable text', run: () => options.searchVault(query) });
         if (query && options.selectedTextComplete && !/[\r\n]/u.test(selectedText) && selectedText.length <= 256)

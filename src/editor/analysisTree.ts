@@ -2,7 +2,6 @@ import type { ChangeDesc, Text } from '@codemirror/state';
 import type { SyntaxNode, Tree } from '@lezer/common';
 import type { CharRange } from '../utils/rangeSearch';
 
-/** Coalesce overlapping tree and scanner invalidations before passing them to the renderer. */
 export function mergeAnalysisRanges(input: readonly CharRange[]): CharRange[] {
     const ranges = input.map(range => ({ ...range })).sort((a, b) => a.from - b.from || a.to - b.to);
     const result: CharRange[] = [];
@@ -14,13 +13,11 @@ export function mergeAnalysisRanges(input: readonly CharRange[]): CharRange[] {
     return result;
 }
 
-/** Compare node type and mapped extent, without relying on Lezer subtree identity. */
 export function sameMappedNode(old: SyntaxNode, next: SyntaxNode, changes: ChangeDesc): boolean {
     return old.type.id === next.type.id && changes.mapPos(old.from, 1) === next.from
         && changes.mapPos(old.to, -1) === next.to;
 }
 
-/** The parser frontier may finish inside nested containers, not at a top-level block. */
 export function lastLeafStart(tree: Tree): number {
     let node = tree.topNode;
     while (node.lastChild) node = node.lastChild;
@@ -32,7 +29,6 @@ export function lastLeafStart(tree: Tree): number {
 
 const CONTAINERS = new Set(['Document', 'BulletList', 'OrderedList', 'ListItem', 'Blockquote']);
 
-/** Align children by mapped positions and type. A changed non-container is invalidated whole. */
 export function treeDelta(oldTree: Tree, newTree: Tree, changes: ChangeDesc,
     newDoc: Text, oldDoc?: Text): CharRange[] {
     const dirty: CharRange[] = [], edits: CharRange[] = [];
@@ -64,8 +60,6 @@ export function treeDelta(oldTree: Tree, newTree: Tree, changes: ChangeDesc,
                 && oldFrom > firstA.to && oldTo < lastA.from;
         };
         const compareRun = (oldParent: SyntaxNode, newParent: SyntaxNode): void => {
-            // Find an unchanged predecessor, walking backwards across every
-            // mismatched sibling rather than assuming the immediate neighbour is stable.
             let a = oldParent.childBefore(Math.min(oldTo + 1, oldParent.to));
             let b = newParent.childBefore(Math.min(newTo + 1, newParent.to));
             while (a && b) {
@@ -74,7 +68,6 @@ export function treeDelta(oldTree: Tree, newTree: Tree, changes: ChangeDesc,
                 if (af >= b.from) a = a.prevSibling;
                 if (af <= b.from) b = b.prevSibling;
             }
-            // Only a matched pair is an anchor; otherwise start at the first child.
             const anchored = !!a && !!b;
             a = anchored ? a!.nextSibling : oldParent.firstChild;
             b = anchored ? b!.nextSibling : newParent.firstChild;

@@ -2,12 +2,8 @@ import type { Rect } from '../../platform/types';
 import type { NodeId } from '../model/ids';
 import type { Box } from './bounds';
 
-/** Side of an index cell in world units. Fixed rather than tuned per document: a cell is only a
- * candidate filter, and exact bounds still decide every node, so the choice affects speed only. */
 export const CELL_SIDE = 1024;
-/** A node covering more cells than this is kept as always-candidate, never partially indexed. */
 const MAX_CELLS_PER_NODE = 256;
-/** A query covering more cells than this returns every node: conservative, never a miss. */
 const MAX_CELLS_PER_QUERY = 4096;
 
 function cover(box: Readonly<Box>): readonly [number, number, number, number] | null {
@@ -21,17 +17,12 @@ function cover(box: Readonly<Box>): readonly [number, number, number, number] | 
 }
 const key = (cx: number, cy: number) => `${cx},${cy}`;
 
-/** A sheet's ordered cell index, built once per pinned revision in canonical preorder.
- * Ordinals (positions in `ids`) ascend within every list, so a query merges sorted lists.
- * Nodes without a usable bound are always candidates, which keeps every query conservative. */
 export class SceneCellIndex {
-    /** Ordinal to node id, in canonical preorder. */
     readonly ids: NodeId[] = [];
     private readonly cells = new Map<string, number[]>();
     private readonly always: number[] = [];
     private closed = false;
 
-    /** Adds the next node in canonical preorder; `box` is its usable ink bound, if any. */
     add(id: NodeId, box: Readonly<Box> | null): void {
         if (this.closed) throw new Error('Scene cell index is closed');
         const ordinal = this.ids.length;
@@ -45,7 +36,6 @@ export class SceneCellIndex {
             if (list) list.push(ordinal); else this.cells.set(cell, [ordinal]);
         }
     }
-    /** Every ordinal whose bound may meet `world`, ascending. Absent world means the whole sheet. */
     candidates(world: Readonly<Rect> | undefined): number[] {
         if (this.closed) throw new Error('Scene cell index is closed');
         const all = (): number[] => Array.from({ length: this.ids.length }, (_, ordinal) => ordinal);
@@ -66,8 +56,6 @@ export class SceneCellIndex {
         merged.length = write;
         return merged;
     }
-    /** Upper bound on `candidates(world).length`, read from list lengths without merging: a node
-     * spanning k cells is counted k times. Cheap enough to run before every frame. */
     countCandidates(world: Readonly<Rect>): number {
         if (this.closed) throw new Error('Scene cell index is closed');
         const x0 = Math.floor(world.x / CELL_SIDE), y0 = Math.floor(world.y / CELL_SIDE);
@@ -77,7 +65,6 @@ export class SceneCellIndex {
         for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) count += this.cells.get(key(cx, cy))?.length ?? 0;
         return count;
     }
-    /** Occupied cells, for coarse summaries; an always-candidate node is not a cell. */
     get occupiedCells(): number { return this.cells.size; }
     get alwaysCandidates(): number { return this.always.length; }
     close(): void {

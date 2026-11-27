@@ -1,4 +1,3 @@
-// Dense Float64 scene state; slot generation lives in HybridIndex, not in an object per node.
 export class SceneColumns {
     capacity = 16;
     world = new Float64Array(16 * 6);

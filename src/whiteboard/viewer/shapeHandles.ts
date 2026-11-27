@@ -53,9 +53,7 @@ export interface ShapeHandleOptions {
     readonly cancelCommit: () => void;
     readonly clear: () => void;
     readonly resolveAttachment: (point: Vec2, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
-    /** The arrow target hint: the shape an endpoint drag would bind to, or null. */
     readonly hint: (target: NodeId | null) => void;
-    /** The bound ends' stubs of the selected arrow, or null. */
     readonly binding: (segments: readonly BindingSegment[] | null) => void;
     readonly editText: (id: NodeId) => void | Promise<void>;
     readonly error: (error: unknown) => void;
@@ -63,15 +61,12 @@ export interface ShapeHandleOptions {
 }
 type Handle = { readonly hit: ShapeHandleHit; readonly point: Vec2 };
 
-/** Shape handles borrow current canonical geometry and never infer endpoint positions from b. */
 export function createShapeHandles(options: ShapeHandleOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     let handles: readonly Handle[] = [], selected: NodeId | null = null, generation = 0, disposed = false;
     let controller: AbortController | undefined, svg: SVGSVGElement | undefined, group: SVGGElement | undefined;
-    // The group's translation in surface pixels, as last written: a drag's offset moves every handle by one transform.
     let groupX = Number.NaN, groupY = Number.NaN;
     let rendered: readonly Handle[] | null = null, renderedCount = 0, renderedCoarse = false;
-    // The camera the group was built for: x, y, z as numbers, NaN until built.
     const renderedCamera = new Float64Array(3).fill(Number.NaN);
     const presented = new PresentedHistory<{ camera: ViewState['camera']; handles: readonly Handle[]; count: number }>();
     let controlPending: AbortController | undefined, headBusy = false;
@@ -127,7 +122,6 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                         { hit: { kind: 'connector-end', terminal: 'end' }, point: geometry.end.tipWorld });
                     const a = geometry.start.aimWorld, b = geometry.end.aimWorld;
                     if (node.route === 'elbow') {
-                        // Default, calibration cut by owner: the dominant axis exposes the elbow midpoint.
                         const t = node.elbowMid, p = Math.abs(b.x - a.x) >= Math.abs(b.y - a.y)
                             ? { x: a.x * (1 - t) + b.x * t, y: (a.y + b.y) / 2 }
                             : { x: (a.x + b.x) / 2, y: a.y * (1 - t) + b.y * t };
@@ -138,8 +132,6 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                         const body = connectorBody(a, b, Math.abs(node.bend) <= threshold ? 0 : node.bend, 0.01);
                         next.push({ hit: { kind: 'connector-control', control: 'bend' }, point: connectorBodyPoint(body, .5) });
                     }
-                    // Listed after the bend or elbow: at its default place the label sits on that handle, and begin() decides the press
-                    // (a click edits the label, a drag still bends).
                     if (node.label) next.push({ hit: { kind: 'connector-control', control: 'label' }, point: geometry.editMetrics.anchorWorld });
                 }
                 if (!active()) return; selected = node.id; handles = Object.freeze(next); options.invalidate();
@@ -148,9 +140,6 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     };
     const stopSelection = runtime.selection.subscribe(refresh), stopSession = session.subscribe(refresh);
     refresh();
-    // The handles are built once per camera, in surface pixels, and a drag's translation moves them all as one group transform:
-    // a moving translation rebuilds no node, it writes one attribute when its offset changed. By reading: the frame left them
-    // at rest while the preview moved, and a rebuild per move would cost a node per handle of a large polyline.
     const SVG_NS = 'http://www.w3.org/2000/svg';
     const paint = (camera: ViewState['camera'], moving: Vec2 | null): boolean => {
         if (!svg || !group) {
@@ -159,13 +148,10 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             group = document.createElementNS(SVG_NS, 'g'); svg.append(group); options.overlay.append(svg);
             rendered = null; renderedCount = 0; groupX = Number.NaN; groupY = Number.NaN;
         }
-        // Checked first and unconditionally, so the cache tracks the camera even on a frame rebuilt for the handles alone.
         const cameraMoved = cameraChanged(renderedCamera, camera);
-        // The dots are drawn at their coarse size for a finger or a pen (catalogue I§4.5), so a change of pointer redraws them.
         if (rendered !== handles || cameraMoved || renderedCoarse !== pointerIsCoarse()) {
             group.replaceChildren(); rendered = handles; renderedCount = 0; renderedCoarse = pointerIsCoarse();
         }
-        // A large imported polyline cannot rebuild thousands of SVG commands in one frame.
         const limit = Math.min(handles.length, renderedCount + 1024);
         while (renderedCount < limit) {
             const path = document.createElementNS(SVG_NS, 'path'), parts: string[] = [];
@@ -198,7 +184,6 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             }
             return null;
         },
-        /** Whether a press here is on an endpoint or a label: the handles a Cmd press brushes over. */
         isEndOrLabel(surface: Vec2, time?: number): boolean {
             const hit = this.hit(surface, false, time);
             return !!hit && (hit.kind === 'connector-end' || (hit.kind === 'connector-control' && hit.control === 'label'));
@@ -210,14 +195,11 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                 finishCommit: options.finishCommit, cancelCommit: options.cancelCommit,
                 clear: options.clear, error: options.error, cooperate: options.cooperate };
             const snap = { zoom: () => options.view().camera.z, alwaysSnap: options.alwaysSnap, guides: options.guides };
-            // Cmd (or Ctrl) pressed on an endpoint or a label starts a brush, as on any handle (catalogue S§11.1, S§11.3): the select
-            // gesture takes the press. Pressed later, during the drag, Cmd only stops the end from binding (catalogue a.4).
             if (modifiers.accel && (hit.kind === 'connector-end' || (hit.kind === 'connector-control' && hit.control === 'label'))) return null;
             if (hit.kind === 'polyline-vertex' || hit.kind === 'polyline-midpoint') return polylineHandleGesture(sample, modifiers,
                 { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint', snap });
             if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal, hint: options.hint, binding: options.binding,
                 sampleToSurface: options.sampleToSurface, resolveAttachment: options.resolveAttachment });
-            // A bend or elbow press on the label's own spot (its default place) is a click-to-edit when it does not drag.
             const label = handles.find(handle => handle.hit.kind === 'connector-control' && handle.hit.control === 'label');
             const clickEdits = !!label && hit.kind === 'connector-control' && (hit.control === 'bend' || hit.control === 'elbow')
                 && Math.hypot(options.sampleToSurface(sample).x - worldToSurface(label.point, options.view().camera).x,

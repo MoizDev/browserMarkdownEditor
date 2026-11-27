@@ -22,11 +22,6 @@ function* tokenize(text: string): Generator<void, Tokens | null> {
     return { values, offsets };
 }
 
-/**
- * Find separated edits in a bounded changed window. Larger or adversarial diffs
- * fall back to one safe splice, so input cost and retained memory remain bounded.
- * Returned maps use evolving coordinates and can be applied in their given order.
- */
 export function* deriveRichTextChangesSteps(before: RichText, after: RichText): Generator<void, readonly TextSpliceMap[]> {
     const change = yield* deriveRichTextChangeSteps(before, after);
     if (!change) return [];
@@ -49,8 +44,6 @@ export function* deriveRichTextChangesSteps(before: RichText, after: RichText): 
     }
     let i = 0, j = 0, startOld = -1, startNew = -1, delta = 0, valid = true;
     const maps: TextSpliceMap[] = [];
-    // Boundary proofs walk long blocks, so they yield like every other traversal here.
-    // An expression, not a hoisted declaration: it keeps the narrowing of the const diff state.
     const flush = function* (): Generator<void, void> {
         if (startOld < 0) return;
         const oldFrom = change.from + old.offsets[startOld], oldTo = change.from + old.offsets[i];

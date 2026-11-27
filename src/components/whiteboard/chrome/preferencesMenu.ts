@@ -21,11 +21,9 @@ export interface PreferenceMenuOptions {
     readonly local: LocalPreferencesView;
     readonly label: (key: PreferenceLabel) => string;
     readonly theme?: ContextMenuSubmenu | null;
-    /** The chord of a keyboard binding, by its binding id, when the row has one (Tool lock Q, Show grid, Focus mode). */
     readonly chord?: (bindingId: string) => string | undefined;
 }
 
-/** The catalogue's order: the view and session toggles, then Accessibility, Input device and Theme under one divider. */
 export function preferenceEntries({ local, label, theme, chord }: PreferenceMenuOptions): ContextMenuSubmenu['entries'] {
     const global = getBoardPreferences();
     const toggle = (id: PreferenceLabel, checked: boolean, run: () => void, disabled = false,

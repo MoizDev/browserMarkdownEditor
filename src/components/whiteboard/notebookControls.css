@@ -15,9 +15,6 @@
 .notebook-page-number { white-space: nowrap; }
 .notebook-page-number input { width: 3.5em; text-align: center; }
 
-/* The paper bar, in the chrome column under the header (see BoardChrome). Its row, buttons and
-   selects are the chrome's own (chrome.css); this only lays them out. The slot is centred and
-   wraps the bar, and the thumbnails panel hangs from the bar's own box, not from the window. */
 .board-paper-slot {
     display: flex;
     justify-content: center;
@@ -33,7 +30,6 @@
 
 .board-paper-controls {
     font: -webkit-small-control;
-    /* One row (PagedBar moves what does not fit into its popover). Wrapped, a 339px pane's bar took four rows over the page. */
     flex-wrap: nowrap;
     align-items: center;
     max-width: 100%;
@@ -41,7 +37,6 @@
     color: var(--text-normal);
 }
 
-/* The bar and its popover: the popover hangs from the bar's own box, like the thumbnails panel. */
 .board-paper-collapse {
     position: relative;
     min-width: 0;
@@ -50,8 +45,6 @@
 
 .board-paper-more-button { flex: none; }
 
-/* Centred under the bar, which is centred in the pane, and never wider than the pane (the viewer host is the size
-   container, viewerHost.css): at the 200px minimum pane width it still opens inside the pane. */
 .board-paper-more {
     position: absolute;
     z-index: 2;
@@ -95,7 +88,6 @@
 
 .board-paper-controls .notebook-page-number input { width: 3.5em; text-align: center; }
 
-/* A page preview in the thumbnails panel: a button around the picture, marked on the current page. */
 .board-thumb-button {
     padding: 4px;
     border: 1px solid transparent;

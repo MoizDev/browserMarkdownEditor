@@ -1,19 +1,8 @@
-// `.tldraw` (the old app's drawings), tldraw's own `.tldr` and `.notebook` can
-// contain old-format text canvases, which open read-only and are never written
-// (utils/oldBoards.ts); `.drawing` is reserved for native boards and must never
-// be decoded as a text buffer.
-// Canvas documents are not prose and must not be content-indexed by search.
-
 export const DRAWING_EXT = '.tldraw';
 export const NATIVE_DRAWING_EXT = '.drawing';
 
-/** A notebook is a board on ruled pages, with an export to PDF. Its own
- *  extension rather than a flag inside a drawing, so the file tree can say
- *  which is which and "New notebook" makes something unambiguous. */
 export const NOTEBOOK_EXT = '.notebook';
 
-/** An old-app drawing name: `.tldraw`, or tldraw's own `.tldr` (a text file otherwise, which the text editor would
- *  happily have written). Its bytes still decide whether it is an old board (utils/oldBoards.ts). */
 export function isDrawingFile(name: string): boolean {
     const lower = name.toLowerCase();
     return lower.endsWith(DRAWING_EXT) || lower.endsWith('.tldr');
@@ -27,12 +16,10 @@ export function isNotebookFile(name: string): boolean {
     return name.toLowerCase().endsWith(NOTEBOOK_EXT);
 }
 
-/** Canvas document, including native binary whiteboards. */
 export function isCanvasFile(name: string): boolean {
     return isDrawingFile(name) || isNativeDrawingFile(name) || isNotebookFile(name);
 }
 
-/** Append `.notebook` unless the user already typed it. */
 export function ensureNotebookExt(name: string): string {
     return isNotebookFile(name) ? name : `${name}${NOTEBOOK_EXT}`;
 }
@@ -43,22 +30,7 @@ export function isMarkdownFile(name: string): boolean {
     return name.toLowerCase().endsWith(MD_EXT);
 }
 
-/* ── Code ───────────────────────────────────────────────────────── */
-
-/**
- * Source files, which open in a code pane rather than the markdown editor
- * (editor/codeEditor.ts): line numbers, the user's syntax colours, brackets,
- * folds and several cursors.
- *
- * A LIST, not a call into `@codemirror/language-data`'s filename matcher, even
- * though that is what resolves the grammar later: this module is imported by
- * nearly everything (tabs, the tree, the agent host), and a grammar table in
- * here would ship in every chunk that touches a path. The two can disagree only
- * in the harmless direction — an extension listed here with no grammar opens as
- * plain, uncoloured code.
- */
 const CODE_EXTENSIONS = new Set([
-    // the course's languages first: Racket, C, Python
     'rkt', 'racket', 'rktl', 'rktd', 'scrbl', 'scm', 'ss', 'lisp', 'el', 'clj', 'cljs', 'cljc', 'edn',
     'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'hh', 'hxx', 'ipp', 'm', 'mm', 'cs',
     'py', 'pyw', 'pyi', 'rb', 'pl', 'pm', 'lua', 'r', 'jl', 'php',
@@ -71,7 +43,6 @@ const CODE_EXTENSIONS = new Set([
     'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'env', 'diff', 'patch',
 ]);
 
-/** Files whose NAME is the type: no extension to go on. */
 const CODE_NAMES = new Set([
     'makefile', 'dockerfile', 'containerfile', 'rakefile', 'gemfile', 'brewfile',
     'justfile', 'procfile', 'cmakelists.txt', '.gitignore', '.gitattributes',
@@ -85,61 +56,17 @@ export function isCodeFile(name: string): boolean {
     return dot > 0 && CODE_EXTENSIONS.has(lower.slice(dot + 1));
 }
 
-/* ── LaTeX ───────────────────────────────────────────────────────── */
-
-/**
- * A LaTeX source file: ordinary text on disk like any note, but markdown is the
- * wrong reading of every line in it, so reading mode typesets it instead
- * (components/TexView.tsx) and edit mode leaves the source alone.
- *
- * `.tex` only. A `.sty` or `.cls` is a package, not a document, and a `.bib` is
- * a database — all three are better read as the plain text they are.
- */
 export function isTexFile(name: string): boolean {
     return name.toLowerCase().endsWith('.tex');
 }
 
-/**
- * What a note is CALLED, as opposed to what its file is named: "Notes.md" -> "Notes".
- * Display only — never pass the result to anything that writes to disk.
- *
- * Anchored on `.md` and on nothing else, deliberately: the Help guide's tab is a bare
- * name ("Help Guide"), and a vault may hold extensionless or .txt files that open in the
- * editor just the same (utils/vaultSearch.ts's isTextFile is a deny-list, not an .md
- * allow-list). A lastIndexOf('.') strip turns "Help Guide" into "Help Guid".
- */
 export function noteDisplayName(name: string): string {
-    // A file named exactly ".md" strips to nothing, and nothing is an unclickable
-    // tab and a blank tree row. buildFileTree hides no dotfile but its own, so such
-    // a file does reach the UI; showing it whole is the only reading that is legible.
     return name.replace(/\.md$/i, '') || name;
 }
 
-/**
- * An image a plain `<img>` can show — what the trash bin previews inline.
- *
- * Deliberately narrower than "not text": a PDF is not text either, and
- * previewing one would mean pulling pdf.js into the main bundle (see
- * components/prefetchPanes.ts for why that split is load-bearing).
- */
 export function isImageFile(name: string): boolean {
     return /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(name);
 }
-
-/* ── PDFs ────────────────────────────────────────────────────────────────
- * A PDF opens in a pane with two modes: View (the real PDF — scrollable,
- * text selectable) and Annotate (the app's own board over the pages).
- * Annotating writes into THAT FILE: it stays a genuine PDF, the ink drawn into
- * its pages, and gains the pristine original and the board's ink as embedded
- * attachments — so it opens in any viewer AND the ink stays editable here. See
- * src/pdf/writing/ and pdf/session/inkAcquisition.ts. A PDF annotated in the
- * older format is converted explicitly before it can be annotated again.
- *
- * There is deliberately NO name test for "is this annotated". A PDF's role is
- * read from its attachments, so a renamed one of ours is still ours and a file
- * someone else called "… (annotated).pdf" is not. Files this app made under
- * the old spawn-a-sibling behaviour keep working for exactly that reason.
- * ──────────────────────────────────────────────────────────────────────── */
 
 export const PDF_EXT = '.pdf';
 
@@ -151,13 +78,10 @@ function stripExt(name: string): string {
     return name.slice(0, -PDF_EXT.length);
 }
 
-/** "Assignment.pdf" -> "Assignment". Exported so the notebook a PDF came from
- *  can be looked for beside it by name, when the stored path has gone stale. */
 export function stripPdfExt(name: string): string {
     return isPdfFile(name) ? stripExt(name) : name;
 }
 
-/** "Assignment 3.notebook" -> "Assignment 3.pdf", the file Export writes. */
 export function notebookPdfName(name: string): string {
     return `${isNotebookFile(name) ? name.slice(0, -NOTEBOOK_EXT.length) : name}${PDF_EXT}`;
 }

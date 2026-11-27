@@ -11,7 +11,6 @@ export interface NotebookExportPage {
     readonly displayList: PageDisplayList;
 }
 
-/** The caller pins a document revision and its media before supplying this reader. */
 export interface NotebookPdfStream {
     append(page: NotebookExportPage, signal: AbortSignal): Promise<void>;
     finish(signal: AbortSignal): Promise<Uint8Array>;
@@ -29,8 +28,6 @@ export interface NotebookExportSnapshot {
     writeSheetPage?(sheet: SheetId, page: number, sink: IncrementalPdfPage, signal: AbortSignal): Promise<void>;
 }
 
-/** Native export emits procedural paper and every logical sheet into one physical page,
- * without collecting text outlines, a page display list or all notebook pages first. */
 export async function exportIncrementalNotebookPdf(snapshot: NotebookExportSnapshot, sourcePath: string,
     writer: IncrementalPdfWriter, signal: AbortSignal): Promise<Uint8Array> {
     const { revision, writeSheetPage } = snapshot, paper = { ...snapshot.paper }, sheets = [...snapshot.sheets];
@@ -44,7 +41,6 @@ export async function exportIncrementalNotebookPdf(snapshot: NotebookExportSnaps
         for (let index = 0; index < paper.pageCount; index++) {
             signal.throwIfAborted();
             const page = await output.beginPage({ index, ...size }, signal);
-            // Paper paths are bounded procedural geometry, not user text/ink arrays.
             for (const item of notebookPaperList(paper, index).items) {
                 if (item.kind !== 'path') throw new Error('Notebook paper contains unsupported incremental geometry');
                 const { d, ...style } = item;
@@ -74,7 +70,6 @@ async function contentOnPage(snapshot: NotebookExportSnapshot, sheets: readonly 
     return displayList;
 }
 
-/** Thumbnail consumers ask for one page, not the entire notebook. */
 export async function notebookThumbnailPage(snapshot: NotebookExportSnapshot, page: number, signal: AbortSignal): Promise<NotebookExportPage> {
     const paper = { ...snapshot.paper };
     if (!Number.isInteger(page) || page < 0 || page >= paper.pageCount) throw new RangeError('Invalid notebook page');
@@ -87,7 +82,6 @@ function isIncrementalWriter(writer: NotebookPdfStreamWriter | IncrementalPdfWri
     return 'kind' in writer && writer.kind === 'incremental-pdf';
 }
 
-/** A physical page is handed off before the next one is built, including every sheet. */
 export async function streamNotebookPdf(snapshot: NotebookExportSnapshot, sourcePath: string,
     writer: NotebookPdfStreamWriter | IncrementalPdfWriter, signal: AbortSignal): Promise<Uint8Array> {
     signal.throwIfAborted();

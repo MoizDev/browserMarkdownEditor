@@ -4,7 +4,6 @@ import type { NativeClipboardBinding } from './useNativeClipboard';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import { isCancellation } from '../../platform/workers/envelope';
 
-/** Uses the same document-owned clipboard/ingest controller as paste and drop. */
 export function createNativeImportAdapter(binding: NativeClipboardBinding, runtime: BoardRuntime, currentOwner: () => boolean,
     onError: (error: unknown) => void) {
     let picker: HTMLInputElement | null = null, disposed = false;
@@ -26,11 +25,9 @@ export function createNativeImportAdapter(binding: NativeClipboardBinding, runti
             if (picker !== current || disposed) return;
             const files = Array.from(current.files ?? []); closePicker();
             if (!files.length) return;
-            // Every outcome of a chosen file is reported: a silent drop here is what made a picked image vanish.
             if (!currentOwner() || runtime.session.isReadOnly) {
                 onError(new Error('The board is read-only, so the chosen media was not inserted.')); return;
             }
-            // The rev and sheet decide whether the target still exists; the selection object changes on any tool's cleanup.
             if (runtime.session.doc.rev !== revision || runtime.selection.getSnapshot().sheet !== selection.sheet) {
                 onError(new Error('The board changed while choosing media; choose the files again.')); return;
             }

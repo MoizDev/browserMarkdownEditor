@@ -37,7 +37,6 @@ function mime(value: 'image/png' | 'image/jpeg'): string {
 function rgb(value: Rgba): string { return `rgb(${value.slice(0, 3).map(channel => number(channel * 255)).join(' ')})` }
 function bytes64(bytes: Uint8Array): string {
   const chunks: string[] = []
-  // A multiple of three keeps intermediate chunks unpadded and bounds each binary string.
   for (let i = 0; i < bytes.length; i += 32766) chunks.push(btoa(String.fromCharCode(...bytes.subarray(i, i + 32766))))
   return chunks.join('')
 }
@@ -55,7 +54,6 @@ function pathAttributes(item: Extract<PageDisplayItem, { kind: 'path' }>): strin
   return `${fill}${stroke}${effects(undefined, item.blend)}`
 }
 
-/** Chunkable writer; admitted image bytes are embedded before the caller releases its leases. */
 export function createSvgWriter(bounds: Readonly<Rect>): {
   append(item: PageDisplayItem): void
   appendCooperative(item: PageDisplayItem, context: WorkerContext, isCurrent: () => boolean): Promise<void>
@@ -86,8 +84,6 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
     }
   }
   function clipKey(clip: NonNullable<Extract<PageDisplayItem, { kind: 'group' }>['clip']>): string | null {
-    // Exported text fragments repeat their enclosing frame clips. Keep this cache bounded even
-    // for arbitrary user paths; large, unique clips still serialize normally.
     return clip.d.length <= 512 ? `${rule(clip.fillRule)}\0${pathData(clip.d)}` : null
   }
   function rememberClip(key: string, id: string): void {
@@ -276,7 +272,6 @@ export function createSvgWriter(bounds: Readonly<Rect>): {
   }
 }
 
-/** A self-contained SVG; all image bytes have already been admitted and pinned by export. */
 export function displayListSvg(list: PageDisplayList, bounds: Readonly<Rect>): Blob {
   const writer = createSvgWriter(bounds)
   for (const item of list.items) writer.append(item)

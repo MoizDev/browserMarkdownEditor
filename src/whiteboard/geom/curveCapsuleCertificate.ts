@@ -16,8 +16,6 @@ function split(value: Work): readonly [Work, Work] {
     return [{ points: left, depth }, { points: right, depth }];
 }
 
-/** Exact curve/closed-capsule intersection: end disks plus a certified finite
- * projection of the strip polynomial. Every polynomial step remains resumable. */
 export function createCurveCapsuleCertificate(points: Curve, start: ExactCurvePoint, end: ExactCurvePoint, radius: number | Dyadic, options: {
     readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number; readonly maxBits?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): CurveCapsuleResult; cancel(): void } {

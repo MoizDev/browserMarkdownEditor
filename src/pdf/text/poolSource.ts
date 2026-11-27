@@ -5,7 +5,6 @@ import { validatePdfTextReply } from './validate';
 import { exactPdfTextGeometry } from './exactGeometry';
 import { getPdfFontEpoch, subscribePdfFontEpoch } from '../fonts/profiles';
 
-/** The session's retained pool lease is the only engine-facing text source. */
 export function pdfPoolTextSource(document: PdfPoolDocument): PdfPoolTextSource {
     const docKey = document.docKey;
     const request = async (page: number, detail: PdfTextDetail, priority: 0 | 1 | 2 | 3, signal: AbortSignal): Promise<PageTextReply> => {

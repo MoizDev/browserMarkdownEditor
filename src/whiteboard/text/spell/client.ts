@@ -23,7 +23,6 @@ async function misspellings(value: unknown, text: string, signal: AbortSignal): 
     return packedMisspellings(text, value);
 }
 
-/** Loaded on first text edit; dictionaries survive worker failure without another fetch. */
 export class BoardSpellClient {
     private host: WorkerClient | null = null;
     private ready: Promise<void> | null = null;
@@ -113,7 +112,6 @@ export class BoardSpellClient {
         await this.waitForDictionary();
         const host = this.host;
         if (!host || this.disposed) throw new DOMException('Spelling client closed', 'AbortError');
-        // nspell is synchronous: recycle a worker that cannot finish a suggestion promptly.
         const value = await host.request<unknown>('suggest', { word }, { priority: 0, deadlineMs: 250, terminateOnDeadline: true });
         if (!Array.isArray(value) || value.length > 5 || value.some(item => typeof item !== 'string' || item.length > 256))
             throw new Error('Invalid spelling suggestion response');
@@ -148,7 +146,6 @@ export class BoardSpellClient {
         this.checkAbort = null;
     }
 
-    /** Only the latest edited-node text is reported, even if an older check returns late. */
     check(text: string, publish: (ranges: readonly Misspelling[]) => void, error: (reason: unknown) => void, delay = 300): void {
         this.cancelCheck();
         const generation = this.generation;
@@ -176,7 +173,6 @@ export class BoardSpellClient {
         }, Number.isFinite(delay) ? Math.max(0, Math.min(delay, 10_000)) : 300);
     }
 
-    /** A hidden pane must release both the worker and its parsed dictionary source strings. */
     suspend(): void {
         this.cancelCheck();
         const host = this.host;

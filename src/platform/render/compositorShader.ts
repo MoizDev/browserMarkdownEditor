@@ -7,9 +7,6 @@ const uniforms = `layout(std140) uniform GfxUniforms0 {
     vec4 sourceSizeOpacity;
 };`;
 
-/** Texel-space crop includes only the requested interior, not a tile's gutter (design §5.1).
- * Float destinations retain motion phase; GL storage is bottom-left, API rectangles top-left (§2.5).
- */
 export const TEXTURED_QUAD_SHADER: ShaderModule = {
     id: 'platform-textured-quad', revision: 2,
     glsl: {

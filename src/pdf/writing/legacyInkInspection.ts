@@ -11,7 +11,6 @@ async function fingerprint(bytes: Uint8Array, cooperate: () => Promise<void>): P
     return digest.digest();
 }
 
-/** Explicit legacy conversion inspection, never an editable-source fallback. */
 export async function inspectLegacyPdfInk(blob: Blob, cooperate: () => Promise<void>): Promise<PdfLegacyInspection> {
     if (!(blob instanceof Blob) || typeof File !== 'undefined' && blob instanceof File || blob.size < 1 || blob.size > 0x7fffffff) {
         return { kind: 'read-only', reason: 'invalid-source' };

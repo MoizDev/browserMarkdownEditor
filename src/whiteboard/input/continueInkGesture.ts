@@ -14,8 +14,6 @@ export interface InkContinuationGestureOptions {
     readonly error: (error: unknown) => void;
 }
 
-/** The transient straight segment uses the same wet packet and dry acknowledgement
- * as ordinary ink. The original stroke stays immutable until one guarded apply. */
 export class InkContinuationGesture implements GestureOwner {
     readonly kind = 'node-edit' as const;
     readonly pointerIds: ReadonlySet<number>;
@@ -51,7 +49,6 @@ export class InkContinuationGesture implements GestureOwner {
         for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) this.endpoint = sample;
         if (samples.length) { this.dirty = true; this.options.invalidate(); }
     }
-    /** Called from the shared input frame, never by an independent animation loop. */
     publish(): void {
         if (this.ended || !this.dirty || !this.valid()) return;
         const first = this.plan.first, end = snapStraightEnd(first, this.plan.toLocal(this.endpoint), this.snapAngle);

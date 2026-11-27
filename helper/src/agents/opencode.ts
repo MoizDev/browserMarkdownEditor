@@ -1,30 +1,3 @@
-// OpenCode adapter: one `opencode serve` on a free loopback port per message
-// (and per history/delete/model query), driven over its HTTP API + SSE.
-//
-// The CLI runs with its full tools and allow-all permission — the user's
-// decision; nobody could answer a permission prompt in the panel. `question`
-// stays denied, which is OpenCode's own default the catch-all would otherwise
-// override: nobody can answer a question either. The vault is still reached
-// only through our MCP server, which the prompt insists on.
-//
-// Verified against opencode 1.18.34 with scratch XDG_* folders and a local fake
-// OpenAI-compatible provider: the model was offered bash, read, edit, write,
-// glob, grep, task, todowrite, webfetch, websearch, skill and our vault_*
-// tools, and read outside the working folder with no `permission.asked`.
-//
-// What stays excluded, by stable single switches only (never a list of names
-// tracked per CLI version). The global config is still read, so the user's
-// providers, models and credentials keep working exactly as in their terminal:
-//   • OPENCODE_PURE=1 / `--pure`: no external plugins load (verified: a plugin
-//     in the global config dir did not run);
-//   • every MCP server of the user's is set `enabled: false`, by the names read
-//     from their own config (verified: not even contacted);
-//   • OPENCODE_DISABLE_PROJECT_CONFIG=1: no opencode.json / .opencode found by
-//     walking up from the working folder (e.g. in ~), so AGENTS.md / CLAUDE.md
-//     are named explicitly in `instructions` instead.
-// Custom tools in the user's global config folder are imported by OpenCode at
-// startup and offered like in their terminal.
-
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -45,31 +18,13 @@ import {
 
 const IS_WIN = process.platform === 'win32';
 export const OPENCODE_AGENT = 'vaultagent';
-/** OpenCode names MCP tools `<server>_<tool>`: ours are `vault_vault_read`, `vault_canvas_apply`. */
 const OWN_TOOL_PREFIX = `${MCP_SERVER_NAME}_`;
 
-/**
- * Order matters: OpenCode applies the LAST matching rule, so the catch-all goes
- * first. `*` allow also overrides OpenCode's `external_directory`, `doom_loop`
- * and `.env`-read "ask" defaults (verified on 1.18.34) — never-ask is the point.
- */
 export const OPENCODE_PERMISSION: Record<string, string> = {
     '*': 'allow',
     question: 'deny',
 };
 
-/**
- * Give the vault's working folder its OWN OpenCode project. OpenCode files
- * every folder outside a git repository under one shared "global" project, so
- * the panel's sessions showed up in `opencode session list` (and `--continue`)
- * in any non-git folder the user works in — interference with their own use.
- * A git repo gets its own project, whose id OpenCode reads from
- * `<git dir>/opencode` before asking git for a root commit (verified against
- * 1.18.29: a session created here carried exactly this id). The repo is laid
- * out by hand — HEAD, config, empty objects/refs — so the helper never runs
- * git (on a Mac without the command-line tools that pops an install dialog).
- * Nothing is committed and nothing else in the folder changes.
- */
 export function ensureOpencodeProject(cwd: string): void {
     const git = join(cwd, '.git');
     try {
@@ -81,7 +36,6 @@ export function ensureOpencodeProject(cwd: string): void {
         }
         const idFile = join(git, 'opencode');
         if (!existsSync(idFile)) {
-            // Stable per vault folder, in OpenCode's own id shape (40 hex).
             writeFileSync(idFile, createHash('sha1').update(`bme-agent-sessions:${basename(cwd)}`).digest('hex'));
         }
     } catch {
@@ -89,8 +43,6 @@ export function ensureOpencodeProject(cwd: string): void {
     }
 }
 
-/** A free loopback port for `opencode serve`: its `--port 0` binds OpenCode's
- *  default 4096 (observed), colliding with the user's own `opencode serve`. */
 async function freeLoopbackPort(): Promise<number> {
     return new Promise((res, rej) => {
         const srv = createServer();
@@ -104,7 +56,6 @@ async function freeLoopbackPort(): Promise<number> {
     });
 }
 
-/** Strips // and /* *\/ comments and trailing commas (JSONC → JSON), respecting strings. */
 export function stripJsonc(text: string): string {
     let out = '';
     let i = 0;
@@ -140,7 +91,6 @@ export function stripJsonc(text: string): string {
     return out.replace(/,(\s*[}\]])/g, '$1');
 }
 
-/** Config files OpenCode reads outside the working folder (read here, never written). */
 export function opencodeGlobalConfigFiles(env: NodeJS.ProcessEnv = process.env, home = homedir()): string[] {
     const xdg = env.XDG_CONFIG_HOME && env.XDG_CONFIG_HOME.trim() ? env.XDG_CONFIG_HOME : join(home, '.config');
     const dirs = [join(xdg, 'opencode'), join(home, '.opencode'), ...(env.OPENCODE_CONFIG_DIR ? [env.OPENCODE_CONFIG_DIR] : [])];
@@ -163,25 +113,20 @@ export function userOpencodeMcpServers(files = opencodeGlobalConfigFiles()): str
 
 export interface OpencodeConfigInput {
     cwd: string;
-    /** null for a serve that runs no turn (models, history, delete): no MCP server at all. */
     mcpBaseUrl: string | null;
     userMcpServers: string[];
 }
 
-/** OPENCODE_CONFIG_CONTENT — merged last, over the user's config. Pure; the adapter tests assert on it. */
 export function buildOpencodeConfig(input: OpencodeConfigInput): Record<string, unknown> {
     const mcp: Record<string, unknown> = {};
     for (const name of input.userMcpServers) if (name !== MCP_SERVER_NAME) mcp[name] = { enabled: false };
     if (input.mcpBaseUrl) {
         mcp[MCP_SERVER_NAME] = {
             type: 'remote',
-            // `{env:X}` is substituted by OpenCode (verified in url and headers):
-            // the run token stays out of argv and out of the config text.
             url: `${input.mcpBaseUrl}{env:${MCP_TOKEN_ENV}}`,
             headers: { Authorization: `Bearer {env:${MCP_TOKEN_ENV}}` },
             oauth: false,
             enabled: true,
-            // Per tool call; longer than ours so our timeout is the one the model reads.
             timeout: TOOL_CALL_TIMEOUT_MS + 30_000,
         };
     } else {
@@ -191,7 +136,7 @@ export function buildOpencodeConfig(input: OpencodeConfigInput): Record<string, 
         $schema: 'https://opencode.ai/config.json',
         share: 'disabled',
         autoupdate: false,
-        snapshot: false,   // snapshots are git commits of the working folder
+        snapshot: false,
         lsp: false,
         formatter: false,
         instructions: [join(input.cwd, 'AGENTS.md'), join(input.cwd, 'CLAUDE.md')],
@@ -214,13 +159,10 @@ export function opencodeEnv(bin: FoundBinary, password: string, config: Record<s
         OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
         OPENCODE_PURE: '1',
         OPENCODE_DISABLE_PROJECT_CONFIG: '1',
-        // OpenCode offers `websearch` only for its own provider unless one of these
-        // is set (verified in 1.18.29's tool registry); Exa's endpoint needs no key.
         OPENCODE_ENABLE_EXA: '1',
         OPENCODE_DISABLE_AUTOUPDATE: '1',
         OPENCODE_DISABLE_SHARE: '1',
         OPENCODE_DISABLE_LSP_DOWNLOAD: '1',
-        // We own the permission set; an inherited override must not change it.
         OPENCODE_PERMISSION: undefined,
         [MCP_TOKEN_ENV]: token ?? undefined,
     });
@@ -229,8 +171,6 @@ export function opencodeEnv(bin: FoundBinary, password: string, config: Record<s
 export function buildOpencodeServeArgs(port: number): string[] {
     return ['serve', '--hostname', '127.0.0.1', '--port', String(port), '--pure'];
 }
-
-/* ───────────────────────── one serve process ───────────────────────── */
 
 export class OpencodeServer {
     private constructor(readonly proc: Subprocess<'pipe', 'pipe', 'pipe'>, readonly base: string, private readonly auth: string) {}
@@ -289,7 +229,6 @@ export class OpencodeServer {
         return (text ? JSON.parse(text) : null) as T;
     }
 
-    /** SSE `/event`, one parsed event per callback, until `signal` aborts or the server goes. */
     async events(onEvent: (ev: Foreign) => void, signal: AbortSignal): Promise<void> {
         const r = await fetch(`${this.base}/event`, { headers: { Authorization: this.auth, accept: 'text/event-stream' }, signal });
         if (!r.ok || !r.body) throw new Error(`opencode /event → ${r.status}`);
@@ -315,11 +254,8 @@ export class OpencodeServer {
     }
 }
 
-/* ───────────────────────── events → AgentEvents ───────────────────────── */
-
 export interface OpencodeError { name: string; message: string }
 
-/** Maps `/event` payloads for one session. Pure; fixture-tested. */
 export class OpencodeEventMapper {
     busySeen = false;
     idle = false;
@@ -386,14 +322,10 @@ export class OpencodeEventMapper {
 
     private tool(part: Foreign): void {
         const name = String(part.tool ?? '');
-        // Ours reach the panel as `tool.call`; never twice.
         if (!name || name.startsWith(OWN_TOOL_PREFIX)) return;
         const status = part.state?.status;
         const mapped = status === 'completed' ? 'done' : status === 'error' ? 'error' : 'running';
         const key = String(part.callID ?? part.id);
-        // The `pending` update carries `input: {}`; the real input arrives with
-        // `running` (observed), so an empty → filled input is news too. Nothing
-        // else re-emits: streaming updates repeat the same state.
         const input = part.state?.input;
         const hasInput = !!input && typeof input === 'object' && Object.keys(input).length > 0;
         const state = `${mapped}:${hasInput}`;
@@ -420,8 +352,6 @@ export function opencodeOutcome(m: OpencodeEventMapper, sessionId: string, cance
     if (crashed) return { kind: 'error', reason: 'crashed', message: crashed };
     return { kind: 'done', status: 'ok', sessionId, usage: m.usage };
 }
-
-/* ───────────────────────── history & models ───────────────────────── */
 
 export function mapOpencodeMessages(messages: Foreign[]): HistoryItem[] {
     const out: HistoryItem[] = [];
@@ -452,7 +382,6 @@ export function mapOpencodeMessages(messages: Foreign[]): HistoryItem[] {
     return out;
 }
 
-/** `GET /config/providers` (+ the configured default model) → ModelInfo[]. */
 export function mapOpencodeModels(providersRes: Foreign, configuredModel: string | null): ModelInfo[] {
     const out: ModelInfo[] = [];
     const providers: Foreign[] = Array.isArray(providersRes?.providers) ? providersRes.providers : [];
@@ -467,7 +396,7 @@ export function mapOpencodeModels(providersRes: Foreign, configuredModel: string
                 id,
                 label: `${m.name ?? m.id} · ${p.name ?? p.id}`,
                 efforts,
-                defaultEffort: null, // no variant = the model's own default
+                defaultEffort: null,
                 images: m.capabilities?.input?.image === true,
                 ...(configuredModel === id ? { isDefault: true } : {}),
             });
@@ -483,8 +412,6 @@ function sameDir(a: string, b: string): boolean {
     return IS_WIN ? x.toLowerCase() === y.toLowerCase() : x === y;
 }
 
-/* ───────────────────────── adapter ───────────────────────── */
-
 export function createOpencodeAdapter(opts: { sessionsRoot: string }): AgentAdapter {
     let statusCache: { at: number; status: AgentStatus } | null = null;
     let modelCache: { at: number; models: ModelInfo[] } | null = null;
@@ -492,8 +419,6 @@ export function createOpencodeAdapter(opts: { sessionsRoot: string }): AgentAdap
     async function withServer<T>(cwd: string, fn: (s: OpencodeServer) => Promise<T>): Promise<T> {
         const bin = await findAgentBinary('opencode');
         if (!bin) throw new RunRefused('agent-missing', 'OpenCode is not installed.');
-        // A vault's folder, never the sessions root (the model listing runs
-        // there): a repo at the root would contain every vault folder.
         if (resolve(cwd) !== resolve(opts.sessionsRoot)) ensureOpencodeProject(cwd);
         const server = await OpencodeServer.start(bin, cwd, null, null);
         try {
@@ -525,7 +450,6 @@ export function createOpencodeAdapter(opts: { sessionsRoot: string }): AgentAdap
             };
             if (!bin) return (statusCache = { at: Date.now(), status: { ...base, loggedIn: false } }).status;
             const ver = await runCapture([...bin.command, '--version'], { env: agentEnv(bin.pathDirs), timeoutMs: 15_000 });
-            // "Logged in" for OpenCode = at least one model it can actually use.
             let loggedIn: boolean | null = null;
             try {
                 const models = await loadModels();
@@ -553,7 +477,6 @@ export function createOpencodeAdapter(opts: { sessionsRoot: string }): AgentAdap
             const early: Foreign[] = [];
             let eventsDone: Promise<void>;
             try {
-                // Subscribe before prompting so no event is missed.
                 eventsDone = server.events(ev => (mapper ? mapper.feed(ev) : early.push(ev)), abort.signal).catch(() => {});
                 if (ctx.sessionId) {
                     const r = await server.request('GET', `/session/${ctx.sessionId}`);
@@ -593,9 +516,6 @@ export function createOpencodeAdapter(opts: { sessionsRoot: string }): AgentAdap
 
             const m = mapper;
             let cancelled = false;
-            // Never ask: with `"*": "allow"` nothing should ask, so this is the
-            // backstop — a permission is granted once, and a question (which
-            // nobody can answer in the panel) is rejected.
             const answered = new Set<string>();
             const original = m.feed.bind(m);
             m.feed = (ev: Foreign) => {
@@ -664,7 +584,6 @@ export function createOpencodeAdapter(opts: { sessionsRoot: string }): AgentAdap
                 const r = await s.request('GET', `/session/${sessionId}`);
                 if (!r.ok) return false;
                 const info: Foreign = await r.json();
-                // Only a session recorded in this vault's folder is ours to delete.
                 if (!info?.directory || !sameDir(info.directory, cwd)) return false;
                 const d = await s.request('DELETE', `/session/${sessionId}`);
                 return d.ok;

@@ -7,12 +7,10 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isUuid } from '../../shared/vaultAgentProtocol.ts';
 
-/** `~/.bme-agent-sessions` (Windows: `%USERPROFILE%\.bme-agent-sessions`). */
 export function sessionsRootFor(home: string = homedir()): string {
     return join(home, '.bme-agent-sessions');
 }
 
-/** True when `child` is `parent` itself or somewhere below it (after resolving). */
 export function isInside(parent: string, child: string): boolean {
     const rel = relative(resolve(parent), resolve(child));
     return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
@@ -25,7 +23,6 @@ export class BadRequest extends Error {
     }
 }
 
-/** One vault's working folder: `<root>/<vaultId>`. The id must be a UUID. */
 export function vaultDir(sessionsRoot: string, vaultId: unknown): string {
     if (!isUuid(vaultId)) throw new BadRequest('vaultId must be a UUID');
     const dir = resolve(sessionsRoot, vaultId.toLowerCase());
@@ -33,7 +30,6 @@ export function vaultDir(sessionsRoot: string, vaultId: unknown): string {
     return dir;
 }
 
-/** Owner-only: the folder holds copies of the user's instructions and the pasted images. */
 export function ensureDir(path: string): string {
     mkdirSync(path, { recursive: true, mode: 0o700 });
     return path;

@@ -17,7 +17,6 @@ export interface EmphasisVerdictIdentity {
     backgroundProfile: string;
 }
 
-/** JSON tuple encoding keeps independent fields unambiguous, including arbitrary doc keys. */
 export function emphasisVerdictKey(identity: EmphasisVerdictIdentity): string {
     if (!Number.isSafeInteger(identity.page) || identity.page < 0 ||
         ![identity.docKey, identity.locale, identity.engineBuild, identity.assetsRevision,
@@ -32,8 +31,6 @@ export function emphasisVerdictKey(identity: EmphasisVerdictIdentity): string {
 const failure = (name: ProbeFailure['name'], code: ProbeFailure['code'], message: string): ProbeGeometryResult =>
     ({ ok: false, error: { name, code, message, retryable: false } });
 
-/** Fixed whole-page geometry. Neither view state nor a user preference enters
- * the profile; exceptional dimensions produce an engine-mappable failure. */
 export function planEmphasisProbeGeometry(width: number, height: number, maxPixels: number, maxEdge: number): ProbeGeometryResult {
     if (![width, height].every(value => Number.isFinite(value) && value > 0))
         return failure('RangeError', 'invalid-geometry', 'Invalid emphasis page geometry');
@@ -61,8 +58,6 @@ export function planEmphasisProbeGeometry(width: number, height: number, maxPixe
     return { ok: true, geometry: { profile: EMPHASIS_PROBE_PROFILE, scale, ...size } };
 }
 
-/** Compatibility for callers already using width/height; the thrown name is
- * the typed engine error, not an unsupported-page verdict. */
 export function emphasisProbeGeometry(width: number, height: number, maxPixels: number, maxEdge: number): {
     scale: number; width: number; height: number;
 } {

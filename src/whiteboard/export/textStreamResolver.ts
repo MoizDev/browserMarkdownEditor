@@ -40,7 +40,6 @@ function resolver(source: PaintNodeSource, signal: AbortSignal, chunkPaths: bool
   }
 }
 
-/** Pull display items for consumers that require a complete path per text fragment. */
 export function createStreamingExportTextResolver(source: PaintNodeSource, signal: AbortSignal) {
   const resolve = resolver(source, signal, false)
   return async function* displayItems(item: PaintTextItem, pageScale: number, requestSignal?: AbortSignal): AsyncGenerator<PageDisplayItem> {
@@ -51,7 +50,6 @@ export function createStreamingExportTextResolver(source: PaintNodeSource, signa
   }
 }
 
-/** A sink must preserve start/chunk/end as one path and fill it only once. */
 export function createStreamingExportTextPieces(source: PaintNodeSource, signal: AbortSignal) {
   return resolver(source, signal, true)
 }

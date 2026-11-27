@@ -29,7 +29,6 @@ export function transferHelpers(h) {
     if(files.some(p=>!(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(p))))throw Error('Native CDP drag files must be absolute fixture paths');
     const before=h.nativeReceipts.length,data={items:Object.entries(items).map(([mimeType,data])=>({mimeType,data})),files,dragOperationsMask:operationsMask};
     for(const type of ['dragEnter','dragOver','drop'])await h.cdp.send('Input.dispatchDragEvent',{type,x:point.x,y:point.y,data});
-    // Node-side journal survives a default navigation/close that destroys the original page.
     await new Promise(resolve=>setTimeout(resolve,50));const sequenceReceipts=h.nativeReceipts.slice(before).filter(e=>['dragenter','dragover','drop'].includes(e.type)),receipts=sequenceReceipts.filter(e=>e.type==='drop');
     return {route:'CDP-native-drag',receipts,sequenceReceipts,trusted:receipts.some(e=>e.trusted),browserDragTrusted:sequenceReceipts.some(e=>e.trusted),syntheticAlso:receipts.some(e=>!e.trusted)};
   };

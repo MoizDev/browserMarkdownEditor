@@ -13,7 +13,6 @@ export interface MainMenuSource extends BoardCommandSource {
     runAction(id: MainAction): void | Promise<void>;
     sectionLabel(id: MainSection): string;
     readonly preferences: ContextMenuSubmenu['entries'];
-    /** Top level, not under Preferences. */
     readonly language?: ContextMenuSubmenu | null;
     readonly copyAsLabel: string;
     readonly transparentLabel: string;
@@ -22,7 +21,6 @@ export interface MainMenuSource extends BoardCommandSource {
     toggleTransparent(): void;
 }
 
-/** The main menu writes its chords as '⌘ I' (the context menus keep '⌘I'). */
 export function spacedChord(chord: string | undefined): string | undefined {
     return chord?.replace(/([⌘⇧⌥⌃])(?=\S)/gu, '$1 ');
 }
@@ -34,7 +32,6 @@ export function mainMenuEntries(source: MainMenuSource): ContextMenuEntry[] {
     };
     const action = (id: MainAction): ContextMenuCommand => {
         const state = source.actionState(id);
-        // Keyboard shortcuts… is an opener with the chord of its own binding, as the palette's Command palette row shows its ⌘K.
         const shortcut = spacedChord(source.actionShortcut(id));
         return { kind: 'command', id, label: source.actionLabel(id), shortcut,
             disabled: !state.enabled, reason: state.enabled ? undefined : state.reason, run: () => source.runAction(id) };
@@ -42,8 +39,6 @@ export function mainMenuEntries(source: MainMenuSource): ContextMenuEntry[] {
     const section = (id: MainSection, entries: ContextMenuSubmenu['entries']): ContextMenuSubmenu => ({
         kind: 'submenu', id, label: source.sectionLabel(id), entries,
     });
-    // Groups are separated as the catalogue's Edit menu separates them: history, clipboard and conversions, the Misc
-    // shape commands, the lock pair, then Select all.
     const divider = (id: string): ContextMenuSeparator => ({ kind: 'separator', id });
     const transparent: ContextMenuCommand = { kind: 'command', id: 'transparent', label: source.transparentLabel,
         checked: source.transparent, run: () => source.toggleTransparent() };

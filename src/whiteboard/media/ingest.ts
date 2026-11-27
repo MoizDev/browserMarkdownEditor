@@ -29,13 +29,10 @@ export interface InspectedMedia {
     readonly animated: boolean;
 }
 
-// The inspector is the bounded worker/isolated-profile admission boundary. The host
-// store is the sole authority that can write an asset or stage a PDF attachment.
 export interface MediaIngestHost {
     inspectMedia(blob: Blob, options: { signal: AbortSignal; identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean }): Promise<InspectedMedia>;
     readonly storeMedia: StoreMedia;
     rememberMedia(id: MediaId, blob: Blob): void;
-    /** Commit the active gesture before capturing the paste target. */
     finishGesture(): void;
     isCurrent(): boolean;
     select(ids: readonly NodeId[]): void;
@@ -44,7 +41,6 @@ export interface MediaIngestHost {
 export interface MediaSource {
     readonly blob: Blob;
     readonly name: string;
-    /** Accepted only for our private PNG clipboard type, after its pHYs is checked. */
     readonly pixelsPerWorldUnit?: number;
 }
 export interface MediaPlacement {
@@ -52,17 +48,13 @@ export interface MediaPlacement {
     readonly page: number;
     readonly x: number;
     readonly y: number;
-    /** Parent-relative angle; the row and each media node share this orientation. */
     readonly rotation?: number;
 }
 export interface MediaIngestOptions {
     readonly origin: TransactionOrigin;
     readonly signal?: AbortSignal;
     readonly placement: MediaPlacement;
-    /** Where this call's refusals are named, in place of the ingestor's own notice: the caller then knows a refusal was shown and
-     * does not cover it with 'Nothing was inserted.' (measured: a refused 10.5 MB picture showed only that line). */
     readonly noticeRefused?: (files: readonly { readonly name: string; readonly reason: string }[]) => void;
-    /** The selection when the insertion was asked for (change/insertionLanding.ts `selectLanded`). */
     readonly selectionBefore?: SelectionSnapshot;
 }
 
@@ -97,8 +89,6 @@ function checkResult(info: InspectedMedia): void {
 const STATIC_PICTURE_MIMES: ReadonlySet<string> = new Set(['image/jpeg', 'image/png', 'image/webp']);
 function box(info: InspectedMedia, pixelsPerWorldUnit?: number): { w: number; h: number } {
     if (pixelsPerWorldUnit !== undefined && (info.mime !== 'image/png' || !Number.isFinite(pixelsPerWorldUnit) || pixelsPerWorldUnit <= 0)) throw new RangeError('Invalid private PNG density');
-    // Only static pictures are capped at 5000 units; a video, an animated picture or a vector keeps its natural size (catalogue c.9,
-    // isStaticImageType): a long clip is not shrunk on insert.
     const capped = STATIC_PICTURE_MIMES.has(info.mime);
     const scale = pixelsPerWorldUnit === undefined ? (capped ? Math.min(1, 5000 / Math.max(info.width, info.height)) : 1) : 1 / pixelsPerWorldUnit;
     return { w: info.width * scale, h: info.height * scale };
@@ -111,7 +101,6 @@ function setMediaFile(id: MediaId, file: string | null): Op {
     return { t: 'media', op: 'set-file', id, file };
 }
 
-// Call synchronously inside the session's save/gesture queue after storing bytes.
 export function updateMediaFile(session: BoardSession, locations: MediaLocationWriter, id: MediaId, file: string | null): void {
     if (!isSafeMediaFile(file)) throw new Error('Invalid stored media name');
     const existing = session.doc.media.get(id);
@@ -142,9 +131,6 @@ export class MediaIngestor {
         this.jobs.assertContext(context);
         if (options.signal && options.signal !== context.signal) throw new TypeError('In-job media must use its owning context signal');
         if (!sources.length || sources.length > SECURITY_LIMITS.mediaBatch) return Promise.reject(new RangeError('Select between 1 and 100 media files'));
-        // A paste or drop already in its job was asked for before any gesture now under way, and lands after it (run's queued
-        // apply): refusing here threw a pasted picture away with "Finish the current gesture before pasting." when a press came
-        // while it was read.
         return this.run(sources, { ...options, signal: context.signal }, context);
     }
 
@@ -221,8 +207,6 @@ export class MediaIngestor {
     private async run(sources: readonly MediaSource[], options: MediaIngestOptions, context: JobContext): Promise<readonly NodeId[]> {
         const signal = context.signal, basis = insertionBasis(this.session.doc);
         const identity: BoardJobIdentity = { session: context.job.session, epoch: context.job.vaultEpoch, revision: this.session.doc.rev };
-        // No revision fence: a stroke or a move committed while the pictures are read and stored is no reason to drop them; what
-        // lands is carried over to the board as it is then (rebaseInsertion).
         const isCurrent = (): boolean => this.jobs.isCurrent(context.job) && this.host.isCurrent() && this.session.doc === basis.doc;
         const current = (): void => {
             context.assertCurrent();

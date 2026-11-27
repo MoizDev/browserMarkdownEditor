@@ -9,7 +9,6 @@ import { CaptureQueue } from './captureQueue';
 import { GpuIsolationPlan } from './gpuIsolationPlan';
 import type { RenderToken } from './types';
 
-/** One queue across every session; it never starts work or retains a pane by itself (design §4.6). */
 const queue = new CaptureQueue();
 let cacheSerial = 0;
 
@@ -19,7 +18,6 @@ interface CaptureGpuScope {
 type ScopedCaptureOwner = CaptureGpuOwner & CaptureGpuScope;
 const gpuOwners = new Map<string, { readonly token: RenderToken; readonly getOwner: () => ScopedCaptureOwner | null }>();
 
-/** Internal pane adapter capability; document/PDF code never receives a WebGL owner. */
 export function registerCaptureGpu(paneId: string, token: RenderToken, getOwner: () => ScopedCaptureOwner | null): () => void {
     if (gpuOwners.has(paneId)) throw new Error('A GPU capture route is already registered for this pane');
     const route = { token: Object.freeze({ ...token }), getOwner };
@@ -27,7 +25,6 @@ export function registerCaptureGpu(paneId: string, token: RenderToken, getOwner:
     return () => { if (gpuOwners.get(paneId) === route) gpuOwners.delete(paneId); };
 }
 
-/** Callbacks remain bound to the originating generation, including a loss during readback. */
 export function captureGpuOwner(owner: Webgl2Owner, compositor: CaptureGpuScope): ScopedCaptureOwner {
     return {
         resources: owner.resources,
@@ -47,14 +44,10 @@ export function captureGpuOwner(owner: Webgl2Owner, compositor: CaptureGpuScope)
 export interface PlatformCapturerOptions {
     readonly paneId: string;
     readonly owner: MemorySessionOwner;
-    /** Synchronously retain one immutable revision and its resources. */
     snapshot(request: CaptureRequest, memory: MemoryAllocator): CaptureSnapshot;
     readonly encodePngTiles?: CapturePngEncoder;
 }
 
-/** Session-owned, never view-owned: a hide/unmount removes only the optional GPU route.
- * CPU temporary backing is admitted separately from the producer's retained source leases.
- */
 export function createPlatformCapturer(options: PlatformCapturerOptions): {
     captureRegion(worldRect: Rect, maxSidePx: number, options: CaptureOptions): Promise<ImageBitmap>;
     captureBlob(worldRect: Rect, maxSidePx: number, options: CaptureOptions): Promise<Blob>;

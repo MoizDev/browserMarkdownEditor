@@ -1,4 +1,3 @@
-/** The English source of every board message: the key set and the placeholder names every locale must match. */
 export const english = {
     "styles.colour": "Colour",
     "styles.fill": "Fill",

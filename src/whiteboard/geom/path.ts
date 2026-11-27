@@ -9,7 +9,6 @@ export type PathOp =
 export interface Cubic { readonly p0: Vec2; readonly p1: Vec2; readonly p2: Vec2; readonly p3: Vec2 }
 export interface Arc { readonly centre: Vec2; readonly radius: number; readonly start: number; readonly sweep: number }
 
-// Bernstein coefficients bound the degree-six squared-radius error throughout a cubic.
 function radialBound(points: readonly Vec2[]): number {
     const choose3 = [1, 3, 3, 1], choose6 = [1, 6, 15, 20, 15, 6, 1];
     const uncertain = (x: number): Interval => ({ lo: nextDown(nextDown(x)), hi: nextUp(nextUp(x)) });

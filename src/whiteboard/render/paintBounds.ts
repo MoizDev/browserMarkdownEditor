@@ -9,8 +9,6 @@ function transform(box: Rect, m: Affine): Rect {
     return { x: x + Math.min(0, ax) + Math.min(0, bx), y: y + Math.min(0, ay) + Math.min(0, by),
         width: Math.abs(ax) + Math.abs(bx), height: Math.abs(ay) + Math.abs(by) };
 }
-/** Conservative allocation/culling envelope of ALREADY realised paint, not a second hit/shape
- * authority. Cubic control hulls overselect, and each step consumes one command/chunk. */
 export class PaintBoundsJob {
     private index = 0;
     private loX = Infinity;
@@ -39,7 +37,6 @@ export class PaintBoundsJob {
         this.done = true;
         if (this.loX === Infinity) return;
         const stroke = this.item.kind === 'path' ? this.item.material.stroke : undefined;
-        // A diagonal square cap reaches sqrt(2)*halfWidth; a miter reaches miterLimit*halfWidth.
         const expansion = stroke ? stroke.width / 2 * Math.max(Math.SQRT2, stroke.miterLimit) : 0;
         this.value = transform({ x: this.loX - expansion, y: this.loY - expansion,
             width: this.hiX - this.loX + 2 * expansion, height: this.hiY - this.loY + 2 * expansion }, this.item.localToWorld);

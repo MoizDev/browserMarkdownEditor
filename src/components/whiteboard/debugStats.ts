@@ -1,7 +1,5 @@
 import type { DebugOverlayProps } from './chrome/DebugOverlay';
 
-/** The Debug overlay's live values. Frame time and backend come from the presentations as they land; the rest is
- * sampled on a timer while Debug mode is on. Replaced, never mutated, so a snapshot compares by identity. */
 export interface BoardDebugStats {
     readonly frameTimeMs: number;
     readonly backend: string;
@@ -23,16 +21,12 @@ export function subscribeBoardDebugStats(listener: () => void): () => void {
     return () => { listeners.delete(listener); };
 }
 
-/** Frame time is the interval between two presented frames, measured where the board presents them. A gap of a
- * second or more is idleness, not a frame, so it keeps the last frame time. */
 export function recordBoardPresentation(at: number, backend: string): void {
     const interval = at - lastPresentedAt;
     lastPresentedAt = at;
     stats = { ...stats, backend, frameTimeMs: Number.isFinite(interval) && interval > 0 && interval < 1000 ? interval : stats.frameTimeMs };
 }
 
-/** Publishes the accumulated values to the overlay. The sampler calls this on its timer, so the chrome re-renders
- * at the sampling rate rather than once per presented frame. */
 export function publishBoardDebugStats(patch: Partial<Omit<BoardDebugStats, 'backend' | 'frameTimeMs'>>): void {
     stats = { ...stats, ...patch };
     for (const listener of listeners) listener();

@@ -13,7 +13,6 @@ function clampCamera(camera: Camera, viewport: Viewport, stack: Readonly<PageSta
         y: Math.min(bounds.maxY, Math.max(bounds.minY, camera.y)) };
 }
 
-/** Jump retains the exact zoom and centers the selected physical page, subject to document bounds. */
 export function jumpToPhysicalPage(
     camera: Camera, viewport: Viewport, stack: Readonly<PageStack>, page: number, insets: ViewportInsets, limits: ZoomLimits,
 ): Camera | null {
@@ -26,7 +25,6 @@ export function jumpToPhysicalPage(
     return next && clampCamera(next, viewport, stack, insets, limits);
 }
 
-/** Keep the physical page and offset when paper geometry changes, without scaling content or zoom. */
 export function reframePaper(
     camera: Camera, viewport: Viewport, previous: Readonly<PageStack>, next: Readonly<PageStack>,
     insets: ViewportInsets, limits: ZoomLimits,

@@ -25,14 +25,10 @@ interface WorkerInspection {
     readonly decodePixels: number;
 }
 const worker = boardWorker('decode');
-/** Content ids whose bytes passed the whole-picture verification decode in this page. The id is the worker's SHA-256 of the
- * actual bytes, so the same id is the same bytes and the same answer: a picture is verified once, not again at each later
- * inspection (the insert, then the paint's first frame and its first tile source). Bounded; forgetting one only costs a decode. */
 const verifiedIds = new Set<MediaId>();
 const VERIFIED_LIMIT = 4096;
 const inspected = new WeakMap<InspectedMedia, { input: Blob; bytes: Blob; identity: BoardJobIdentity; current(): boolean }>();
 
-/** Storage consumes the actual verified immutable bytes, never a descriptor-shaped claim. */
 export function inspectedMediaBytes(info: InspectedMedia, input: Blob, identity: BoardJobIdentity): Blob {
     const ticket = inspected.get(info);
     if (!ticket || ticket.input !== input || ticket.identity.session !== identity.session || ticket.identity.epoch !== identity.epoch
@@ -46,8 +42,6 @@ function validSize(width: number, height: number): boolean {
 
 export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; svg?: SvgAdmissionProfile; memory: MemoryAllocator;
     identity: BoardJobIdentity; isCurrent: (identity: BoardJobIdentity) => boolean }): Promise<InspectedMedia> {
-    // File objects carry path-like metadata and are refused by the worker host;
-    // a Blob slice preserves the bytes without sending that metadata across.
     const input = blob;
     blob = blob.slice(0, blob.size, blob.type);
     const identity = Object.freeze({ ...options.identity });
@@ -62,8 +56,6 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         worker.request<T>(op, payload, options.identity, { priority: 1, deadlineMs, signal }, options.isCurrent);
     signal.throwIfAborted();
     if (!checkMediaBytes(blob.size, 'raster').ok) throw new RangeError('Media files must be at most 10 MiB');
-    // Raced against the signal (which carries the 10 s limit above): a Blob backed by a file that never arrives does
-    // not settle this read, and nothing else here would ever look at the signal again.
     const prefix = new Uint8Array(await new Promise<ArrayBuffer>((resolve, reject) => {
         const abort = () => reject(signal.reason ?? new DOMException('Media inspection timed out', 'TimeoutError'));
         signal.addEventListener('abort', abort, { once: true });
@@ -117,12 +109,6 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         || !Number.isSafeInteger(result.decodePixels) || result.decodePixels < result.width * result.height || result.decodePixels > 2 ** 26) {
         throw new Error('Invalid media worker reply');
     }
-    // The probe below decodes the whole picture once, inside the media worker, only to verify it, and drops it: worker-transient
-    // memory, not a raster this board keeps, so it is not charged to the board's CPU raster pool. Charged there, every picture
-    // over the pool's whole target (32 MB minimum, so about 8.4 MP) was refused outright, while the media limits admit 2^26 px
-    // (measured: a 4000x3000 PNG or JPEG inserted, dropped or pasted placed nothing on any board, both backends). The pixel and
-    // byte limits still bound it (decodePixels <= 2^26 checked above, 10 MiB files). A video's probe frame and transfer copy come
-    // back to this thread, so those stay charged.
     {
         let duration: number | null = null;
         if (result.mime.startsWith('video/')) {
@@ -140,7 +126,6 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
             try {
                 await call<boolean>('probe', { blob, width: result.width, height: result.height, animated: result.animated, mime: result.mime }, 10000);
             } catch (error) {
-                // Only cancellation can leave the native decoder running after the request settles.
                 if (signal.aborted) await worker.recycle('cancelled image probe').catch(() => undefined);
                 throw error;
             }

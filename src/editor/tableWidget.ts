@@ -14,82 +14,12 @@ import { emphasisRanges } from '../utils/readingEmphasis';
 import type { Utf16Range } from '../utils/readingEmphasis';
 import type { ReadingEmphasisOptions } from './readingEmphasisConfig';
 
-/* ── A rendered table is an OBJECT with an inside ─────────────────────────
- *
- * Like an embedded image (imageWidget.ts), a table is never revealed by the
- * cursor and its range is atomic — but unlike a picture it has parts, so the
- * object model goes one level further: each <th>/<td> is a
- * contenteditable="plaintext-only" ISLAND, and every keystroke in one writes
- * the narrowest possible markdown change back through view.dispatch. The file
- * on disk still holds ordinary GFM pipe markdown; this is a layer over it, not
- * a new document format.
- *
- * CodeMirror deliberately stands back from a widget's internals, and this rests
- * on four facts of the pinned 6.39.15 source rather than on luck:
- *   · readMutation discards every DOM mutation inside a widget (:7329-7332),
- *   · onSelectionChange ignores a selection inside one (:7092-7105),
- *   · updateSelection never moves the DOM selection while focus is not on the
- *     contentDOM (:2994-3002),
- *   · eventBelongsToEditor is false for any event whose path crosses a widget
- *     that ignores events (:4775-4785), so NO keymap fires inside a cell.
- * The last one is why tableEdit.ts has to bind Tab, the arrows, Escape and even
- * ⌘Z itself: inside a cell this app's whole keymap stack is simply not running.
- *
- * ignoreEvent() is therefore NOT overridden. Keeping CodeMirror's default
- * (true) is what buys all four.
- */
-
-/* ── What a cell may contain ──
-   A table cell is the only place in this app where note text reaches the DOM
-   as HTML rather than as text. That is what makes `<br>` — the only way to get
-   a line break inside a cell — work at all, and left unrestricted it equally
-   lets a note run script in the app's origin. This origin is not an ordinary
-   one: it holds the vault's directory handle in IndexedDB with permission
-   already granted, so a note carrying `<img src=x onerror=…>` would get
-   read/write over every file in the vault the moment it was opened, silently
-   and with no prompt. Notes arrive from elsewhere all the time — cloned,
-   downloaded, synced from a shared folder — so that is a live path, not a
-   theoretical one.
-
-   Hence: everything is escaped except a fixed set of tags that take NO
-   attributes, and those are re-emitted from this pattern's own alternation
-   rather than copied out of the input. So no untrusted markup is ever parsed,
-   and no attribute is ever emitted — which is the property that makes this
-   safe to read at a glance, and the one to preserve if the list is extended.
-   `<a href>` and `<img src>` need attributes and are deliberately absent; they
-   render as the text they were written as.
-
-   Editable cells do not widen this by one character. The text handed to
-   renderInlineMarkdown is the same unescaped cell text it has always been
-   given; the ONLY other way anything reaches a cell is textContent, which is a
-   text node and can never be markup; and a paste into a cell is intercepted
-   and re-inserted as plain text on top of plaintext-only's own guarantee.
-
-   Math does not widen it either, and is why this allowlist now has exactly ONE
-   WRITE SITE (renderCellContent) where it used to have three. A formula is
-   lifted OUT of the cell text before the allowlist runs and comes back as DOM
-   that katex.render built with createElement/createTextNode — a DOM builder,
-   never an HTML-string sink. The only string that reaches innerHTML here is
-   still the allowlist's own output, over text with the formulas masked out.
-
-   "The app's ONE innerHTML sink" is the claim this file used to make and it was
-   never quite true: mermaidWidget.renderInto writes mermaid's rendering of a
-   note's ```mermaid block, leaning on that library's securityLevel:'strict'
-   DOMPurify pass instead of on an allowlist. (A literal NUL in that module made
-   it read as binary, so plain grep never turned it up.) This is still the only
-   place note text is turned into markup by CODE IN THIS REPO. */
 const CELL_HTML = /<(\/?)(br|b|i|u|s|em|strong|code|kbd|mark|small|sub|sup)\s*\/?>/gi;
 
-/** `<` and `>` only: an entity can't open a tag, so leaving `&` alone keeps a
- *  cell that spells out `&lt;br&gt;` showing what it meant to show. */
 function escapeText(text: string): string {
     return text.replace(/[<>]/g, ch => (ch === '<' ? '&lt;' : '&gt;'));
 }
 
-/**
- * Minimal inline markdown for cell contents: bold, italic, bold+italic, code —
- * over text that has been escaped down to the allowlist above.
- */
 function renderInlineMarkdown(text: string): string {
     let html = '';
     let last = 0;
@@ -102,76 +32,21 @@ function renderInlineMarkdown(text: string): string {
     html += escapeText(text.slice(last));
 
     return html
-        // Bold+Italic: ***text***
         .replace(/\*{3}(.+?)\*{3}/g, '<strong><em>$1</em></strong>')
-        // Bold: **text** or __text__
         .replace(/\*{2}(.+?)\*{2}/g, '<strong>$1</strong>')
         .replace(/_{2}(.+?)_{2}/g, '<strong>$1</strong>')
-        // Italic: *text* or _text_
         .replace(/\*(.+?)\*/g, '<em>$1</em>')
         .replace(/_(.+?)_/g, '<em>$1</em>')
-        // Inline code: `text`
         .replace(/`(.+?)`/g, '<code>$1</code>');
 }
 
-/* ── Math in a cell ──
-   A formula must not go through the allowlist above, in either direction. On
-   the way in, `$a_1 + b_2$` comes back with its subscripts eaten by the
-   `_(.+?)_` italic rule — the cell did not merely fail to render maths, it
-   MANGLED it. On the way out, KaTeX's output is markup the allowlist would
-   (rightly) escape into visible tag text.
-
-   So the formula is lifted OUT of the text first, the remaining text goes
-   through the one unmodified allowlist, and the KaTeX DOM is spliced into the
-   parsed result. katex.render builds its tree with createElement /
-   createTextNode, so maths adds no innerHTML of its own, and collecting the
-   three former call sites here makes this allowlist's sink its only write site
-   as well.
-
-   MASKED rather than split at the math boundaries. Splitting the cell at each
-   `$…$` and running renderInlineMarkdown over the pieces would break emphasis
-   that spans a formula: `**bold $x$ end**` would lose its bold and show the
-   literal asterisks, because neither piece contains a matched pair. The
-   emphasis rules have to see the whole cell, so what they see is the whole
-   cell with each formula standing in as one inert token. */
 const SLOT_OPEN = '\uE000';   // Private Use Area, written here as an ESCAPE and never
 const SLOT_CLOSE = '\uE001';  // as a literal character. Nothing a note can mean uses
                               // these, and they are stripped from the cell text below.
-/* A slot, OR a lone sentinel — because stripping them from the CELL TEXT is not
-   enough to make every sentinel in the parsed fragment one of ours. `escapeText`
-   deliberately leaves `&` alone (see there), so a cell holding the character
-   reference `&#xE000;9&#xE001;` survives every string stage and the HTML parser
-   then decodes it into real sentinels inside the very text node fillMathSlots
-   walks. Measured: one such cell beside any real formula threw `undefined.latex`
-   out of toDOM, React unmounted, and #root was left EMPTY on every open of that
-   note; the in-range form `&#xE000;0&#xE001;` instead rendered region 0 TWICE —
-   the doubled `cell.textContent` that `output: 'html'` exists to prevent.
-   Escaping `&` would close it and break the cell that means to show `&lt;br&gt;`,
-   so the LOOKUP is authoritative instead: a token naming no region, or one
-   already used, is a forgery and is deleted — exactly what the strip does to a
-   literal sentinel. */
 const MATH_SLOT = /\uE000(\d+)\uE001|[\uE000\uE001]/;
 
-/* One reusable parser, and it must be an ELEMENT rather than a <template>.
-   Fragment parsing takes its insertion mode from the context element, and
-   `<template>` parses "in template", whose "any other end tag → ignore the
-   token" rule silently drops a stray `</br>` that `<td>` — and any ordinary
-   element — treats as `<br>`. CELL_HTML admits `</br>` (that is what its
-   `(\/?)` group is for) and re-emits it, so a cell reading `one</br>two`
-   broke a line in every build before the three innerHTML sites collapsed into
-   one, and rendered `onetwo` after. Measured across all thirteen allowlisted
-   tags, open and close: that is the only place the two contexts disagree.
-
-   A detached <div> is inert enough here: the allowlist emits no attributes at
-   all, so there is no `src` to fetch, and innerHTML never runs a script. Its
-   children are MOVED out below rather than cloned, so it is clean on the way
-   in — and a table re-dressing every cell allocates no parser per cell. */
 const CELL_PARSER = document.createElement('div');
 
-/** Inline-code spans, found with the SAME regex renderInlineMarkdown uses, so
- *  the two agree on what is code and a `$` inside backticks stays literal.
- *  Both regex and Lezer code spans are sorted/disjoint: findMathRegions now
- *  binary-searches them instead of scanning every span for each formula. */
 function inlineCodeRanges(text: string): { from: number; to: number }[] {
     const out: { from: number; to: number }[] = [];
     const re = /`(.+?)`/g;
@@ -180,16 +55,7 @@ function inlineCodeRanges(text: string): { from: number; to: number }[] {
     return out;
 }
 
-/**
- * Put `text` into `cell` as rendered content: the app's one allowlisted
- * innerHTML sink, with KaTeX-built DOM spliced in wherever the cell held maths.
- *
- * Rendering depends on source plus explicit presentation options, never on
- * selection. The authored text and the allowlist stay identical On and Off.
- */
 function renderCellContent(cell: HTMLElement, text: string, emphasis?: ReadingEmphasisOptions): void {
-    // A note cannot forge a slot: the sentinels are removed before masking, so
-    // every SLOT_OPEN in the masked string is one this function just wrote.
     const clean = text.replace(/[\uE000\uE001]/g, '');
     const regions = findMathRegions(clean, inlineCodeRanges(clean));
 
@@ -205,29 +71,13 @@ function renderCellContent(cell: HTMLElement, text: string, emphasis?: ReadingEm
     }
 
     CELL_PARSER.innerHTML = renderInlineMarkdown(masked);   // ← the allowlist's one sink
-    // Run even with no regions of our own, because the parser may have DECODED
-    // a sentinel out of a character reference (see MATH_SLOT) and a cell that
-    // held one must not keep it. `&` is the cheap NECESSARY condition for that:
-    // a reference cannot exist without one, and a literal sentinel is already
-    // gone — so this cannot miss a forgery, and it costs a scan of the cell's
-    // own text rather than serializing the parsed subtree per cell.
     if (regions.length || clean.includes('&')) fillMathSlots(CELL_PARSER, regions);
     cell.textContent = '';
     while (CELL_PARSER.firstChild) cell.appendChild(CELL_PARSER.firstChild);
-    // A cell holding an over-wide formula is a scroll container (see index.css's
-    // `td:has(.cm-table-math)`), and replacing its children does NOT reset that
-    // scroll. Measured: a cell scrolled 13px to read the tail of an integral kept
-    // the offset through a click-in/edit/blur cycle and came back with the
-    // formula's LEFT edge cut off instead of its right — new content, stale view.
-    // Only a maths cell can ever scroll (that `:has()` is the only source of
-    // overflow on a cell), and on a CONNECTED cell this setter forces a style
-    // and layout flush — which updateDOM does inside DocView.update.
     if (regions.length) cell.scrollLeft = 0;
     if (emphasis?.enabled && emphasis.mode === 'read' && cell.tagName !== 'TH') emphasizeCell(cell, emphasis.locale);
 }
 
-/** Run collection finishes before any text node is split. No HTML strings,
- * semantic strong tags, generated text or per-word accessibility labels. */
 function emphasizeCell(cell: HTMLElement, locale: string): void {
     interface Holder { node: Text; from: number; to: number }
     let text = '', holders: Holder[] = [], exclusions: Utf16Range[] = [];
@@ -252,7 +102,6 @@ function emphasizeCell(cell: HTMLElement, locale: string): void {
     for (const run of runs) {
         const ranges = emphasisRanges({ text: run.text, exclusions: run.exclusions, locale });
         for (const holder of run.holders) {
-            // Work right-to-left: earlier offsets remain in the original node.
             for (let i = ranges.length - 1; i >= 0; i--) {
                 const from = Math.max(ranges[i].from, holder.from), to = Math.min(ranges[i].to, holder.to);
                 if (from >= to) continue;
@@ -266,9 +115,6 @@ function emphasizeCell(cell: HTMLElement, locale: string): void {
     }
 }
 
-/** Swap every slot in the parsed subtree's text for its rendered formula, and
- *  delete every token that is not one — see MATH_SLOT for how a note gets one
- *  in here. `used` is what stops a forged duplicate rendering a formula twice. */
 function fillMathSlots(root: Element, regions: MathRegion[]): void {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const holders: Text[] = [];
@@ -276,8 +122,6 @@ function fillMathSlots(root: Element, regions: MathRegion[]): void {
         const v = n.nodeValue;
         if (v && (v.includes(SLOT_OPEN) || v.includes(SLOT_CLOSE))) holders.push(n as Text);
     }
-    // Collected in full FIRST: splitText mutates the tree the walker is walking,
-    // and the walker's position does not survive having its current node split.
     const used = new Set<number>();
     for (const holder of holders) {
         let rest = holder;
@@ -294,16 +138,8 @@ function fillMathSlots(root: Element, regions: MathRegion[]): void {
                 used.add(index);
                 const span = document.createElement('span');
                 span.className = 'cm-table-math';
-                // The formula's source is the cell's only accessible text now:
-                // KaTeX's `output: 'html'` tree is entirely aria-hidden and
-                // carries no MathML, so without this a maths cell is announced
-                // as EMPTY — where before it at least read out its `$…$`.
                 span.setAttribute('role', 'math');
                 span.setAttribute('aria-label', region.latex);
-                // displayMode false even for `$$…$$`: a cell is one line, and
-                // .katex-display is `display:block; margin:1em 0; text-align:center`,
-                // which would break the row's rhythm and the fitter's height
-                // accounting (which is what keeps the caret from being stranded).
                 renderMath(span, region.latex, false);
                 slot.replaceWith(span);
             } else {
@@ -314,24 +150,11 @@ function fillMathSlots(root: Element, regions: MathRegion[]): void {
     }
 }
 
-/**
- * The live state of one rendered table, hanging off its DOM.
- *
- * The DOM outlives the widget INSTANCE that built it — CodeMirror hands an
- * existing element to a later widget's updateDOM rather than rebuilding it —
- * so nothing attached to this element may close over the widget that happened
- * to create it. The delegated listeners read data-row/data-col off the event's
- * target and this model off the container, exactly as the image widget's
- * buttons read ImageModel.
- */
 export interface TableModel {
-    /** The markdown this DOM was last dressed from. */
     source: string;
     canEdit: boolean;
     emphasis: ReadingEmphasisOptions;
     columns: number;
-    /** The UNESCAPED text each rendered cell was built from, so a re-dress can
-     *  touch only the cells that really changed. */
     cellText: string[][];
     view: EditorView;
     table: HTMLTableElement;
@@ -341,7 +164,6 @@ export interface TableModel {
 const MODEL = Symbol('tableModel');
 type TableDom = HTMLElement & { [MODEL]?: TableModel };
 
-/** The model hanging off a rendered table, if this element is one of ours. */
 export function tableModelOf(dom: HTMLElement): TableModel | null {
     return (dom as TableDom)[MODEL] ?? null;
 }
@@ -349,19 +171,9 @@ export function tableModelOf(dom: HTMLElement): TableModel | null {
 function alignClass(align: ColumnAlign): string {
     if (align === 'center') return ' cm-table-align-center';
     if (align === 'right') return ' cm-table-align-right';
-    return '';                                  // left is the stylesheet's default
+    return '';
 }
 
-/**
- * Everything about one cell except its contents: which cell it is, how it is
- * aligned, whether it can be typed in, and whether the source actually backs it.
- *
- * `data-pad` marks a cell the row is too short to have — a body row with fewer
- * segments than the header, which GFM renders as empty. It is editable like any
- * other; the flag exists only so the first write into it knows to widen the line
- * first. Deriving it needs no document position: parseGrid reports how many
- * segments each line really has, which is all toDOM has to work from.
- */
 function dressCell(cell: HTMLTableCellElement, grid: Grid, row: number, col: number, canEdit: boolean): void {
     cell.className = 'cm-table-cell' + alignClass(grid.align[col]);
     cell.dataset.row = String(row);
@@ -383,12 +195,9 @@ function buildRow(grid: Grid, row: number, tag: 'th' | 'td', canEdit: boolean, e
     return tr;
 }
 
-/** Build (or rebuild in place) the colgroup, head and body of one table. */
 function buildTable(table: HTMLTableElement, grid: Grid, canEdit: boolean, emphasis: ReadingEmphasisOptions): HTMLTableColElement[] {
     table.textContent = '';
 
-    // One <col> per column: the fitter writes each column's share of the width
-    // here, so the table needs no per-cell styling to be laid out.
     const colgroup = document.createElement('colgroup');
     const cols: HTMLTableColElement[] = [];
     for (let i = 0; i < grid.columns; i++) {
@@ -413,16 +222,6 @@ function cellTextOf(grid: Grid): string[][] {
     return grid.rows.map(row => row.cells.map(cell => cell.text));
 }
 
-/**
- * Put a cell's RENDERED contents back, from the source the model last saw.
- *
- * This is the "leaving a cell" HTML path, and it is here rather than in
- * tableEdit so that every route from note text to innerHTML goes through the
- * one allowlist above. It reads the text out of the current source rather than
- * out of model.cellText, because a write-back deliberately leaves cellText
- * stale for the cell being typed in (updateDOM must not touch a cell holding
- * the caret).
- */
 export function restoreRenderedCell(dom: HTMLElement, cell: HTMLElement): void {
     const model = tableModelOf(dom);
     if (!model || !cell.isConnected) return;
@@ -439,20 +238,12 @@ export function restoreRenderedCell(dom: HTMLElement, cell: HTMLElement): void {
     renderCellContent(cell, grid.rows[row].cells[col].text, model.emphasis);
 }
 
-/** The two corner chips, in the shape imageWidget's toolButton established. */
 function controlButton(cls: string, title: string, onPress: () => void): HTMLButtonElement {
     const button = document.createElement('button');
-    // The base class is INERT — `opacity: 0` and `pointer-events: none` — and
-    // the modifier is what the edge-reveal rule keys off to undo both. So a
-    // button given only the base class is an invisible div, and one given only
-    // the modifier is an unclickable one; each needs the other.
     button.className = `cm-table-control ${cls}`;
     button.type = 'button';
     button.dataset.tooltip = title;
     button.setAttribute('aria-label', title);
-    // Never a tab stop: these live inside the document's contenteditable, where
-    // tabbing to them would interrupt the note's own Tab handling — and inside
-    // a table Tab is bound to walking the cells.
     button.tabIndex = -1;
     button.addEventListener('mousedown', (event) => {
         event.preventDefault();
@@ -470,14 +261,6 @@ function emphasisKey(options: ReadingEmphasisOptions, canEdit: boolean): string 
     return !canEdit && options.enabled && options.mode === 'read' ? `latin-prefix-v1:${options.locale}` : 'off';
 }
 
-/**
- * Parses a raw markdown table string and renders it as an editable HTML <table>.
- *
- * The rendered table is kept FITTED to the note's text width (see
- * editor/tableFit.ts): its columns are sized from their measured content
- * rather than by the browser's proportional squeeze, and the whole table
- * shrinks when they cannot all be satisfied.
- */
 export class TableWidget extends WidgetType {
     /**
      * NEVER call this field `editable`. WidgetType.prototype carries an
@@ -493,11 +276,6 @@ export class TableWidget extends WidgetType {
     constructor(
         readonly rawTable: string,
         readonly canEdit: boolean,
-        /** The document selection is exactly this table — the "you are acting
-         *  on this object" state a Backspace beside it produces. Carried per
-         *  widget, not merely as one flag on the editor, because the ring has
-         *  to say WHICH table: a note with two tables would otherwise outline
-         *  both. ImageWidget carries `selected` for the same reason. */
         readonly selected: boolean,
         readonly emphasis: ReadingEmphasisOptions = { enabled: false, mode: 'edit', locale: '' },
     ) {
@@ -523,29 +301,14 @@ export class TableWidget extends WidgetType {
 
         const grid = parseGrid(this.rawTable);
         if (!grid) {
-            // Nothing parseable — show the source. The class restores the
-            // line breaks that .cm-table-widget's `white-space: normal` would
-            // otherwise collapse into one run-on line.
-            //
-            // Unreachable from the live preview, which only decorates spans
-            // parseGrid accepts, and kept as the honest answer for a widget
-            // built from a source that somehow does not parse. Such a widget
-            // must never be given an atomic range: a never-revealed atomic
-            // block with no cell in it is text the reader cannot reach at all.
             container.classList.add('cm-table-raw');
             container.textContent = this.rawTable;
             return container;
         }
 
-        // The sensors the fitter watches — zero-height, never painted. The
-        // width probe must stay a DIRECT first child of the container: its
-        // width IS the available text width, which is the fit's input.
         const { probe, fontProbe, mathProbe } = createFitProbes();
         container.appendChild(probe);
 
-        // The table sits inside its own scroller rather than in the container,
-        // because an overflow container clips in BOTH axes and would cut the
-        // corner chips off.
         const scroll = document.createElement('div');
         scroll.className = 'cm-table-scroll';
         const table = document.createElement('table');
@@ -567,11 +330,6 @@ export class TableWidget extends WidgetType {
             cols,
         };
         attachCellEditing(view, container);
-        // Attached to the container, which is built exactly once per element, so
-        // this needs no idempotence guard of its own — unlike attachCellEditing,
-        // which updateDOM calls again on every shape change. Attached whatever
-        // `canEdit` says, because the controls layer comes and goes with ⌘E
-        // while the container stays; the handler asks the model instead.
         attachEdgeReveal(container);
 
         observeTableFit({
@@ -583,13 +341,6 @@ export class TableWidget extends WidgetType {
     }
 
     /**
-     * Re-dress an existing table instead of building a new one.
-     *
-     * Rebuilding is not merely wasteful here, it is destructive: the caret
-     * usually lives in a text node of one of these cells, and a fresh <td>
-     * takes it with it. So the common case — the write-back this very edit
-     * session just dispatched — touches nothing at all.
-     *
      * NOTHING reachable from here may dispatch. updateDOM is called from
      * findWidget inside DocView.update, where EditorView.update throws
      * (@codemirror/view:7810, measured); that is why the re-fit is scheduled
@@ -597,42 +348,23 @@ export class TableWidget extends WidgetType {
      */
     updateDOM(dom: HTMLElement, view: EditorView): boolean {
         const model = tableModelOf(dom);
-        if (!model) return false;                       // not one of ours — let CodeMirror rebuild
+        if (!model) return false;
         const grid = parseGrid(this.rawTable);
-        if (!grid) return false;                        // let it build the raw fallback instead
+        if (!grid) return false;
 
         const session = activeCellSession();
         const ours = session !== null && session.dom === dom;
 
-        // findWidget's second pass offers ANY same-class tile's DOM to ANY
-        // widget of that class, so a second table on screen could otherwise
-        // adopt the very element the caret is sitting in. Refuse it to any
-        // widget whose text is not the one this edit just wrote, and CodeMirror
-        // moves on to find its own DOM. Note the shape of the guard: it is on
-        // `session.dom === dom`, never on `!==`. Refusing every dom that is not
-        // the session's would refuse a widget its OWN pooled element and send
-        // it through destroy() + toDOM() — which is the tear-out this guard
-        // exists to prevent.
         if (ours && this.rawTable !== session.expected) return false;
 
-        // A class on the container, so it cannot disturb a caret inside a cell
-        // — and it never fires mid-edit anyway: a session parks an EMPTY
-        // document selection at the table's start, so `selected` (which needs
-        // the selection to be exactly the table's span) is false throughout one.
         dom.classList.toggle('cm-table-selected', this.selected);
 
         if (ours && this.canEdit === model.canEdit) {
-            // Our own write-back. The caret is in one of these cells and the
-            // DOM already shows what was typed. Only the fit's memo key
-            // follows — emphatically NOT the fit itself, which would move the
-            // columns under the user's hands mid-word.
             model.source = this.rawTable;
             model.view = view;
             rekeyTableFit(dom, this.fitKey());
             return true;
         }
-        // ⌘E flipped the mode under a live edit: the cells are about to stop
-        // being editable, so the session has to end before they are re-dressed.
         if (ours) endCellEdit();
 
         const styleChanged = emphasisKey(model.emphasis, model.canEdit) !== emphasisKey(this.emphasis, this.canEdit);
@@ -678,24 +410,11 @@ export class TableWidget extends WidgetType {
     }
 
     destroy(dom: HTMLElement): void {
-        // Nothing to flush — every keystroke was already written through to the
-        // document — but a session pointing at DOM that is going away must not
-        // outlive it. Like updateDOM, this runs inside a CodeMirror update, so
-        // nothing reachable from here may dispatch.
         if (activeCellSession()?.dom === dom) endCellEdit();
         releaseTableFit(dom);
     }
 }
 
-/**
- * The overlay layer holding the two corner chips.
- *
- * Each press reads the table's CURRENT shape off the model rather than
- * remembering one, for the same reason every action in tableEdit re-locates the
- * table in the current document: this element outlives the widget that built
- * it, and a row or column count captured at build time goes stale on the very
- * first press.
- */
 function buildControls(view: EditorView, container: HTMLElement): HTMLElement {
     const controls = document.createElement('div');
     controls.className = 'cm-table-controls';
@@ -712,21 +431,6 @@ function buildControls(view: EditorView, container: HTMLElement): HTMLElement {
     return controls;
 }
 
-/**
- * A row's or a column's handle: the grip beside the row, or above the column,
- * that the pointer is over. Pressing it opens that row's or column's menu.
- *
- * It sits OUTSIDE the table's box (left of the rows, above the header), so
- * unlike the corner chips it never covers a cell and can never take a click
- * meant for one. It is flush against that edge with no gap: the pointer going
- * from a cell to its grip must never leave the widget on the way, or the
- * pointerleave that hides the grips would fire first.
- *
- * Which row or column it acts on is written onto it by the reveal pass
- * (`data-index`) and read at the press, never captured here, for the reason
- * every control on this element reads the model: the element outlives the
- * widget instance that built it.
- */
 function gripButton(view: EditorView, container: HTMLElement, axis: 'row' | 'col'): HTMLButtonElement {
     const label = axis === 'row' ? 'Row options' : 'Column options';
     const button = document.createElement('button');
@@ -734,16 +438,11 @@ function gripButton(view: EditorView, container: HTMLElement, axis: 'row' | 'col
     button.type = 'button';
     button.dataset.tooltip = label;
     button.setAttribute('aria-label', label);
-    // Never a tab stop, for the chips' reason: inside a table Tab walks cells.
     button.tabIndex = -1;
     button.addEventListener('mousedown', (event) => {
         event.preventDefault();
         event.stopPropagation();
     });
-    // Which row or column this grip's menu is open for, or null. ONE grip
-    // element serves every row (the reveal pass moves it), so "the same button
-    // again" means "close" only when it is still the same row: a press on it
-    // beside another row is asking for THAT row's menu.
     let openFor: number | null = null;
     button.addEventListener('click', (event) => {
         event.preventDefault();
@@ -759,32 +458,24 @@ function gripButton(view: EditorView, container: HTMLElement, axis: 'row' | 'col
             entries: axis === 'row' ? rowMenuEntries(view, container, index) : columnMenuEntries(view, container, index),
             label,
             opener: null,
-            // A second press on the grip closes its menu (utils/contextMenu.ts).
             anchor: button,
             onClose: () => {
                 openFor = null;
-                // Cells a command rebuilt are already gone; clearing them is harmless.
                 for (const cell of marked) cell.classList.remove('cm-table-target');
                 container.classList.remove('cm-table-grip-open');
             },
         });
-        // Only once it is open, and AFTER the call: a press that toggled the
-        // menu shut must not shade anything, and opening one menu runs the
-        // replaced menu's onClose, which would strip a class added before it.
         if (!opened) return;
         openFor = index;
-        // Shade the row or column the menu is about, for as long as it is open.
         for (const cell of marked) cell.classList.add('cm-table-target');
         container.classList.add('cm-table-grip-open');
     });
     return button;
 }
 
-/** Put the grips against the row and column of `cell`, or hide both. */
 function placeGrips(container: HTMLElement, box: DOMRect, cell: HTMLElement | null): void {
     const rowGrip = container.querySelector<HTMLElement>('.cm-table-grip-row');
     const colGrip = container.querySelector<HTMLElement>('.cm-table-grip-col');
-    // A cell a shape change replaced under a still pointer is not a target.
     const live = rowGrip && colGrip && cell?.isConnected && container.contains(cell) ? cell : null;
     container.classList.toggle('cm-table-near-cell', !!live);
     if (!live || !rowGrip || !colGrip) return;
@@ -798,48 +489,17 @@ function placeGrips(container: HTMLElement, box: DOMRect, cell: HTMLElement | nu
     colGrip.style.top = `${tableTop - box.top}px`;
 }
 
-/**
- * How close to an edge the pointer must come for that edge's chip to appear.
- *
- * Comfortably wider than a chip is tall: one is 1.4em across at 0.85em type and
- * sits 2px in, so it reaches ~35px into the box at the largest editor font the
- * Settings slider offers (28px) and ~21px at the default 16px. A band narrower
- * than the chip would be self-defeating — the pointer could land ON a revealed
- * chip from outside the band that revealed it, blinking it away at the exact
- * moment it was being aimed at.
- */
 const EDGE_BAND_PX = 48;
 
-/**
- * Reveal each chip only while the pointer is at the edge that chip belongs to:
- * the right edge summons "add column", the bottom edge "add row".
- *
- * This is pointer arithmetic rather than a pair of CSS :hover zones, and it has
- * to be. A hoverable zone is a zone that takes clicks, and both bands lie over
- * real cells — the right one over every row's last column, the bottom one over
- * the whole last row — so a CSS answer would swallow the click that puts a
- * caret in them. That is the same reason the layer they sit in is
- * `pointer-events: none` to begin with.
- *
- * The listeners go on the container and close over nothing but it, because this
- * element outlives the widget instance that built it (see updateDOM) and
- * CodeMirror may hand it to another TableWidget entirely.
- */
 function attachEdgeReveal(container: HTMLElement): void {
     let frame = 0;
     let clientX = 0;
     let clientY = 0;
-    /** The cell last under the pointer, which the grips follow. Kept while the
-     *  pointer is on a grip or a chip, which sit over or beside cells. */
     let hovered: HTMLElement | null = null;
-    /** The grips live outside the box, so "inside" has to include them. */
     let overGrip = false;
 
     const measure = () => {
         frame = 0;
-        // Re-read the box every frame rather than caching it when the pointer
-        // arrives: a re-fit, an added row or a window resize all move it under a
-        // pointer that never moved.
         const rect = container.getBoundingClientRect();
         const inBox = clientX >= rect.left && clientX <= rect.right
             && clientY >= rect.top && clientY <= rect.bottom;
@@ -849,10 +509,6 @@ function attachEdgeReveal(container: HTMLElement): void {
     };
 
     container.addEventListener('pointermove', (event) => {
-        // A table with no chips has nothing to reveal, and measuring its box
-        // would be layout work for nothing. `canEdit` on the model is exactly
-        // "does this table carry a controls layer": updateDOM adds and removes
-        // the two together.
         if (!tableModelOf(container)?.canEdit) return;
         const target = event.target as HTMLElement | null;
         overGrip = !!target?.closest('.cm-table-grip');
@@ -860,7 +516,6 @@ function attachEdgeReveal(container: HTMLElement): void {
         if (cell && container.contains(cell)) hovered = cell;
         clientX = event.clientX;
         clientY = event.clientY;
-        // At most one box read per frame: pointermove outruns paint.
         if (!frame) frame = requestAnimationFrame(measure);
     });
 

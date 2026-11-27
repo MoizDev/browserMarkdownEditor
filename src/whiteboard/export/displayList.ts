@@ -4,15 +4,12 @@ import { inkCoverageChunks } from '../render/paintStream'
 import type { PaintFrame, PaintImageItem, PaintInkCoverage, PaintItem, PaintTextItem } from '../render/paintStream'
 import { yieldToHost } from '../../platform/yieldToHost'
 
-/** The image resolver returns a pinned, export-ready PNG/JPEG with inversion baked in.
- * Dimensions are the original image pixels; the caller owns leases until this settles. */
 export type ExportImage = (item: PaintImageItem, signal?: AbortSignal) => Promise<{
   bytes: Uint8Array
   mime: 'image/png' | 'image/jpeg'
   width: number
   height: number
 }>
-/** Outlines/fallback are local to the text item; material alpha is already resolved. */
 export type ExportText = (item: PaintTextItem, scale: number, signal?: AbortSignal) => Promise<readonly PageDisplayItem[]>
 
 function transformPath(commands: readonly PathCommand[], matrix: Affine): PathCommand[] {
@@ -40,7 +37,6 @@ export async function inkOutline(coverage: PaintInkCoverage, scale: number, sign
         await yieldToHost()
       }
     } catch (error) { job.cancel(); throw error }
-    // Even empty chunks must not make a many-chunk capture monopolize the UI.
     if (++count % 128 === 0) await yieldToHost()
   }
   signal?.throwIfAborted()
@@ -100,8 +96,6 @@ export async function paintItemDisplay(item: PaintItem, scale: number, image: Ex
             dash: item.material.stroke.dash?.array, dashPhase: item.material.stroke.dash?.phase } }
     leaf = { kind: 'group', transform: item.localToWorld, items: [path] }
   }
-  // Clips each have an independent absolute transform, not the item's local transform.
-  // Re-expressing their geometry in world space avoids applying an ancestor transform twice.
   if (item.clips.length > 62) throw new RangeError('Export clip nesting exceeds 64 levels')
   for (let i = item.clips.length - 1; i >= 0; i--) {
     const clip = item.clips[i]
@@ -110,7 +104,6 @@ export async function paintItemDisplay(item: PaintItem, scale: number, image: Ex
   return leaf
 }
 
-/** Convert one pinned paint frame, preserving the underlay/content ordering. */
 export async function paintFrameDisplayList(
   frame: PaintFrame, page: number, scale: number, image: ExportImage, signal?: AbortSignal, text?: ExportText,
 ): Promise<PageDisplayList> {

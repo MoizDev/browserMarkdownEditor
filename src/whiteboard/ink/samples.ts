@@ -4,7 +4,6 @@ import { decodePoints, POINT_LIMITS } from '../format/points';
 import { CurveReach } from './reach';
 export type { SampleRef, SampleLease, SamplePressure, SampleBlockView, SampleStoreReader } from '../model/samples';
 
-// D-13, F-INK-006/007/010; architecture/ink.md §2.1. No event/time/device data enters this store.
 export const SAMPLE_CHUNK_CAPACITY = 4096;
 export const PRESSURE_QUANTUM = 1 / 65535;
 export const MAX_PRESSURE = 16;
@@ -13,15 +12,12 @@ export const SAMPLE_POSITION_ERROR_DEVICE_PX = 0.01;
 export type SegmentKind = 'freehand' | 'straight';
 export type PressureChannel = SamplePressure;
 
-// Arrays are immutable by ownership: only the private builder writes, and seal transfers ownership.
-// read() returns offsets into these very arrays, never newly allocated subarray views.
 export type SampleChunk = ModelSampleChunk & Readonly<{ positionErrorWorld: number; byteLength: number; }>;
 export interface SampleSequence {
     readonly count: number;
     x(index: number): number;
     y(index: number): number;
     pressure(index: number): number | undefined;
-    // The kind of the span index -> index + 1, not a device or tool identity.
     segmentKind(index: number): SegmentKind;
 }
 export type SampleBuilderOptions = Readonly<{
@@ -30,13 +26,11 @@ export type SampleBuilderOptions = Readonly<{
     maxDpr?: number;
     precision?: 'bounded' | 'float64';
 }>;
-// Structurally matches the reader's PointInspectionHeader; writer consumers need only its base
-// count/k/pressure/run fields. R-W39's extra geometry metadata never needs sample materialization.
 export interface EncodedSampleHeader {
     readonly count: number;
     readonly k: number;
     readonly hasPressure: boolean;
-    readonly runCount: number; // 0 is an absent source run channel, not a synthetic storage run.
+    readonly runCount: number;
     readonly localBounds: readonly [number, number, number, number];
     readonly curveBounds: readonly [number, number, number, number];
     readonly maxReach: number;
@@ -227,7 +221,6 @@ export class SampleBuilder implements SampleSequence {
         }
         this.active.append(x, y, pressure, incomingKind);
         const index = this.active.count - 1, px = this.active.packedX(index), py = this.active.packedY(index);
-        // The current endpoint is exact, but may become an interior packed sample on the next append.
         this.minX = Math.min(this.minX, x, px); this.minY = Math.min(this.minY, y, py);
         this.maxX = Math.max(this.maxX, x, px); this.maxY = Math.max(this.maxY, y, py);
         if (pressure !== undefined) this.maximumPressure = Math.max(this.maximumPressure ?? 0, pressure, Math.round(pressure * 65535) / 65535);
@@ -240,8 +233,6 @@ export class SampleBuilder implements SampleSequence {
         if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
         const width = w ? nextUp(w) : 0, height = h ? nextUp(h) : 0;
         if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
-        // The curve is built from the STORED coordinates, each within maxErrorWorld of the exact one fed
-        // to the reach: an endpoint moves by e and a control by e + 2e/3, so 2e covers both.
         const curveBounds = this.reach.box(2 * this.maxErrorWorld);
         if (!curveBounds.every(Number.isFinite)) return null;
         return Object.freeze({ localBounds: Object.freeze([this.minX, this.minY, width, height] as const),
@@ -332,8 +323,6 @@ type SampleRecord = {
     nativeBounds: readonly [number, number, number, number] | null; maxPressure: number | null;
     curveBounds: readonly [number, number, number, number] | null; maxReach: number;
 };
-// Handles are unique across stores in this realm; worker bridges re-admit encoded payloads into
-// their owning store rather than treating another realm's numeric handles as portable references.
 let nextSampleRef = 1;
 function sampleRef(): SampleRef {
     if (!Number.isSafeInteger(nextSampleRef)) throw new RangeError('Ink sample handle space exhausted');
@@ -343,10 +332,7 @@ export class SampleStore implements SampleStoreReader {
     private records = new Map<SampleRef, SampleRecord>();
     private bytes = 0;
     private encodedBytes = 0;
-    // Exact owned decoded typed-array bytes, including exceptional Uint32 pressure. JS objects,
-    // active builders and compositor-held old views are additional engine-budget ownership.
     get byteLength(): number { return this.bytes; }
-    // Conservative UTF-16 upper bound, not a claim about V8's actual one-/two-byte string storage.
     get encodedByteLength(): number { return this.encodedBytes; }
     get recordCount(): number { return this.records.size; }
     commit(builder: SampleBuilder): SampleLease {
@@ -360,8 +346,6 @@ export class SampleStore implements SampleStoreReader {
         });
     }
     admitEncoded(pts: string, header: EncodedSampleHeader): SampleLease {
-        // R-W28/29: the parse worker has already walked every channel/varint/bound. Do not decode
-        // or allocate point arrays at admission, has(), count(), retain() or sequence() creation.
         if (typeof pts !== 'string' || !pts.length || pts.length % 4 || pts.length > POINT_LIMITS.encodedChars
             || !Number.isInteger(header.count) || header.count < 1 || header.count > POINT_LIMITS.count
             || !Number.isInteger(header.k) || header.k < 0 || header.k > POINT_LIMITS.exponent
@@ -372,7 +356,6 @@ export class SampleStore implements SampleStoreReader {
             || header.localBounds[0] < -POINT_LIMITS.world || header.localBounds[1] < -POINT_LIMITS.world
             || header.localBounds[0] + header.localBounds[2] > POINT_LIMITS.world
             || header.localBounds[1] + header.localBounds[3] > POINT_LIMITS.world
-            // The curve box must enclose the sample box; it may reach past the coordinate limit by a third of a chord.
             || header.curveBounds.length !== 4 || !header.curveBounds.every(Number.isFinite)
             || header.curveBounds[2] < 0 || header.curveBounds[3] < 0
             || header.curveBounds[0] > header.localBounds[0] || header.curveBounds[1] > header.localBounds[1]
@@ -391,8 +374,6 @@ export class SampleStore implements SampleStoreReader {
             nativeBounds, maxPressure: header.maxPressure, curveBounds, maxReach: header.maxReach
         });
     }
-    /** Share only sealed backing, never the source's mutable lease counters or cache slot.
-     * Both stores account the full backing conservatively; releasing either cannot clear the other. */
     importImmutable(source: SampleStore, ref: SampleRef): SampleLease {
         if (!(source instanceof SampleStore)) throw new TypeError('Sample import requires the owning SampleStore');
         const original = source.record(ref);
@@ -444,8 +425,6 @@ export class SampleStore implements SampleStoreReader {
     readEncoded(ref: SampleRef): Readonly<{ pts: string; header: EncodedSampleHeader; }> | null {
         const record = this.record(ref);
         if (record.encoded === null || record.nativeBounds === null || record.curveBounds === null) return null;
-        // R-W34: native truth belongs to the immutable record, not an ExtBag/by-id copy. Borrowing
-        // this payload needs the same caller-held SampleLease as read(); no samples are decoded.
         return Object.freeze({
             pts: record.encoded, header: Object.freeze({
                 count: record.count, k: record.k, hasPressure: record.hasPressure, runCount: record.runCount,
@@ -464,16 +443,11 @@ export class SampleStore implements SampleStoreReader {
     private decoded(record: SampleRecord): readonly SampleChunk[] {
         if (record.chunks !== null) return record.chunks;
         if (record.encoded === null) throw new Error('Ink has neither canonical samples nor native encoding');
-        // R-W29 admits a full synchronous decode of this ONE stroke on its first actual read.
-        // Checkpointed incremental decoding is a seam only if an integrated frame run requires it.
         const result = decodePoints(record.encoded);
         if (!result.ok) throw new Error(`Native ink cannot be decoded: ${result.error.reason}`);
         const points = result.value;
         if (points.count !== record.count || points.k !== record.k || (points.pressure !== null) !== record.hasPressure
             || (points.runs?.starts.length ?? 0) !== record.runCount) throw new Error('Native ink no longer matches its validated header');
-        // Native coordinates are on the 2^-k grid. Any NONZERO Float32 rounding is >= one quantum;
-        // this stricter-than-quantum budget therefore forces exact storage or a fresh local anchor,
-        // independent of the host's zoom. This is not an inferred product/camera zoom cap.
         const builder = new SampleBuilder({ pressure: record.hasPressure, declaredMaxScale: 2 ** record.k, maxDpr: 3 });
         const runs = points.runs;
         let run = 0;
@@ -500,8 +474,6 @@ export class SampleStore implements SampleStoreReader {
     }
     sequence(ref: SampleRef): SampleSequence {
         const count = this.record(ref).count;
-        // No captured decoded generation: eviction can actually release it, and the next numeric
-        // access re-decodes. Holding a sequence still requires the caller's explicit SampleLease.
         const locate = (i: number) => { const record = this.record(ref); checkedIndex(i, count); return findChunk(this.decoded(record), i); };
         return Object.freeze({
             count,

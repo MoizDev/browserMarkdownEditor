@@ -20,7 +20,6 @@ type Sweep = Extract<RegionQuery, { kind: 'swept' }>;
 type Pair = Readonly<{ path: CertifiedCurve; sweep: CertifiedCurve; exactPath: ExactCurve; exactSweep: ExactCurve }>;
 const PENDING: ClippedSweepResult = Object.freeze({ status: 'pending' });
 
-/** Certified swept capsule versus a stroked path after frame and label clips. */
 export function createClippedSweptPathJob(paths: readonly (readonly PathOp[])[], query: Sweep, options: {
     readonly strokeRadiusLocal: number;
     readonly frames: readonly PointClipContour[];

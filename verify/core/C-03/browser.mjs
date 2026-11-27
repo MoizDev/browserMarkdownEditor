@@ -61,7 +61,7 @@ export async function session(browser, arm, dir) {
         window.__pick = 'A';
         window.showDirectoryPicker = async () => {
             if (!picked.has(window.__pick)) picked.set(window.__pick, await (await navigator.storage.getDirectory()).getDirectoryHandle(window.__pick));
-            return picked.get(window.__pick); // deliberately reuse A's exact handle for A→B→A
+            return picked.get(window.__pick);
         };
         delete window.FileSystemObserver;
         const w = window.__assetWitness = { external: false, writes: [], closes: [], attempts: [], removed: [], failedWrites: [], bodyReads: [],
@@ -88,7 +88,7 @@ export async function session(browser, arm, dir) {
                 writable.write = async (...args) => {
                     if (path === 'A/a.md' && w.failWrite && !w.failureUsed) {
                         w.failureUsed = true;
-                        await writable.abort(); // no disk commit, no leaked writable lease
+                        await writable.abort();
                         w.failedWrites.push({ path, t: performance.now() });
                         throw new Error('D05 injected write failure before native write');
                     }

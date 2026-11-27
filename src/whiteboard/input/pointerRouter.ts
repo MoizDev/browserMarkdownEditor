@@ -5,7 +5,6 @@ import type { FinishReason, InputToken, Modifiers, RealSample, Tool } from './to
 
 export interface PointerRoute<Context> {
   readonly tool: Tool<Context>; readonly context: Context
-  /** The tool returns to Select itself once its work has landed, instead of at pointer-up. */
   readonly completesTool?: boolean
 }
 export interface PointerRouterOptions<Context, Pressed = unknown> {
@@ -17,16 +16,11 @@ export interface PointerRouterOptions<Context, Pressed = unknown> {
   readonly current: () => boolean
   claim(): boolean
   releaseClaim(): void
-  /** What a press is resolved against (the tool chosen), read when it is pressed: a press queued behind a settling contact is
-   * resolved later, with this. */
-  /** What a queued press is resolved with when replayed; undefined resolves it with what holds by then. */
   pressed?(): Pressed | undefined
   sampleChanged?(sample: RealSample): void
   realEvent?(sample: RealSample, event: PointerEvent): void
   penTransitions?(sample: RealSample): boolean
   settled?(signal: AbortSignal): Promise<void>
-  /** An edit made by a key (a nudge, a turn) is still landing and holds the input, or a key is itself still waiting to act:
-   * a press now is kept and replayed when it has landed (see down). */
   landing?(): boolean
   cancelPending?(): void
   resolve(sample: RealSample, modifiers: Modifiers, event: PointerEvent, pressed?: Pressed): PointerRoute<Context> | null
@@ -36,8 +30,6 @@ export interface PointerRouterOptions<Context, Pressed = unknown> {
   error?(error: unknown, id: number): void
 }
 
-/** A press taken while the contact before it had lifted but was still landing, or while a key's edit was, with everything its
- * pointer did since. */
 interface QueuedContact<Pressed> {
   readonly pointerId: number
   readonly pressed: Pressed | undefined
@@ -48,18 +40,13 @@ interface QueuedContact<Pressed> {
   lifted: boolean
 }
 
-// The host resolves gesture recipes, touch/palm qualification and services first.
-// This seam owns pointer-up ordering and routes interruption exactly once.
 export class PointerRouter<Context, Pressed = unknown> {
   private readonly acquisition: PointerAcquisition
   private pen: PenContactTransitions | null = null
   private pointerId: number | null = null
   private disposed = false
-  /** Presses made while a lifted pen contact or a key's edit still lands (see down), oldest first; replayed in order once it has. */
   private readonly queued: QueuedContact<Pressed>[] = []
-  /** Pointers whose queued press was refused when replayed: the rest of that contact is theirs to ignore. */
   private readonly refused = new Set<number>()
-  /** The wait for a key's edit to land, after which the presses queued behind it are replayed. */
   private landed: AbortController | null = null
   constructor(private readonly options: PointerRouterOptions<Context, Pressed>) {
     const sink: PointerSink = {
@@ -67,18 +54,6 @@ export class PointerRouter<Context, Pressed = unknown> {
         if (!options.current()) return false
         this.refused.delete(sample.pointerId)
         options.sampleChanged?.(sample); options.realEvent?.(sample, event)
-        // A pen contact whose eraser end changed keeps the input until the erase it made has landed (penTransitions.ts), so it is
-        // ended in order; that lasts past the lift, and every press meanwhile was refused with no sign: 6 of 6 presses 40 ms after
-        // the lift lost their whole stroke, pen and mouse alike, and from 120 ms on every one landed (light board; the window is the
-        // erase's landing, longer on a dense board). Such a press is taken and kept, then replayed in order the moment that contact
-        // ends, resolved with the tool chosen when it was pressed: drawn, never dropped, landing after what came before it. A second
-        // pointer while a queued one is still down is refused, as it would be beside a live contact; so is a finger, whose admission
-        // and camera gestures are decided live (attach.ts touchAdmission, TouchArbiter) and cannot be replayed later.
-        //
-        // An edit made by a key holds the input the same way while it lands, with no contact to end: a press then was refused with
-        // no sign too, whatever the tool (measured: three arrow-key nudges, E and a sweep over the stroke erased nothing when the
-        // press came within 20 ms of the key, and erased it from 50 ms on; a select-all nudge of thousands of strokes lands for
-        // seconds). It is kept the same way and replayed once the edit has landed.
         const landing = !this.pen && this.pointerId === null && !!options.settled && options.landing?.() === true
         if (this.pen?.lifted || this.queued.length || landing) {
           if (sample.source === 'touch' || this.queued.some(contact => !contact.lifted)) return false
@@ -116,7 +91,6 @@ export class PointerRouter<Context, Pressed = unknown> {
     options.router.attach(options.token)
     this.acquisition = new PointerAcquisition(options.root, options.mappings, sink, options.mac)
   }
-  /** The queued contact this pointer's events belong to: the newest one with its id, while it is still down. */
   private queuedFor(id: number): QueuedContact<Pressed> | null {
     for (let index = this.queued.length - 1; index >= 0; index--) {
       const contact = this.queued[index]
@@ -124,7 +98,6 @@ export class PointerRouter<Context, Pressed = unknown> {
     }
     return null
   }
-  /** Replays queued presses, oldest first, while nothing holds the input; a replayed contact still down goes on live. */
   private replay(): void {
     while (this.queued.length && !this.pen && this.pointerId === null) {
       const contact = this.queued.shift()!
@@ -143,7 +116,6 @@ export class PointerRouter<Context, Pressed = unknown> {
       } catch (error) { this.options.error?.(error, contact.pointerId) }
     }
   }
-  /** Replays the queued presses once the key's edit they wait for has landed (every hold on the board released). */
   private replayWhenLanded(): void {
     if (this.landed || !this.options.settled) return
     const controller = this.landed = new AbortController()
@@ -151,12 +123,10 @@ export class PointerRouter<Context, Pressed = unknown> {
       if (this.landed !== controller) return
       this.landed = null
       if (this.disposed) return
-      // Another key was pressed meanwhile: its edit lands first, as the keys and the press were made.
       if (this.options.landing?.() === true && this.queued.length) { this.replayWhenLanded(); return }
       this.replay()
     })
   }
-  /** Gives the input back after a contact ended, then lets the presses queued behind it in. */
   private released(reason: FinishReason): void {
     try { this.options.releaseClaim() } finally {
       try { this.options.ended(reason) } finally { this.replay() }
@@ -172,9 +142,6 @@ export class PointerRouter<Context, Pressed = unknown> {
       const owner = options.router.activeOwner
       if (sample.source === 'pen' && options.penTransitions?.(sample) && options.settled
         && (owner?.kind === 'ink' || owner?.kind === 'erase')) {
-        // The contact starts in the mode its pen end is in, not the mode of the tool that took it: ⌘ held over Draw is an eraser
-        // with the tip down, and started as 'eraser' its first sample (no eraser bit) read as a change back to ink, which finished
-        // that erase at the press point and began a second, two undo steps for a press that started on a stroke.
         const transition: PenContactTransitions = new PenContactTransitions(sample.pointerId, (sample.buttons & 32) !== 0 ? 'eraser' : 'ink', {
           current: () => options.current() && this.pen === transition && this.pointerId === sample.pointerId,
           owner: () => options.router.activeOwner,
@@ -182,8 +149,6 @@ export class PointerRouter<Context, Pressed = unknown> {
           interrupt: reason => options.router.interrupt(options.token, reason),
           update: (samples, keys) => options.router.update(options.token, sample.pointerId, samples, keys),
           begin: (point, keys, source) => {
-            // A resumed tip starts a fresh segment even if Shift remains held;
-            // resolving continuation here would bridge across the erased gap.
             const next = options.resolve(point, { ...keys, shift: false }, source)
             if (!next || this.pen !== transition || !options.router.begin(options.token, next.tool, point, keys, next.context)) return false
             // Resolving or beginning can end this contact (a tool change flushes it). What began then has no contact left to

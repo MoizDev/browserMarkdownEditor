@@ -6,8 +6,6 @@ import type { LoadRepairNotice } from './loadTypes';
 import type { NodeRecord } from './nodes';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: document-model V-1/§9.2 and ordered native source records;
-// independent cooperative merge sort, no third-party source.
 type Candidate = { readonly category: 'sheet' | 'node'; readonly index: number; readonly ordinal: number };
 export async function repairLoadIdentities(sheets: readonly Sheet[], nodes: readonly NodeRecord[],
     sources: readonly ReadSourceRecord[], newId: () => string, options: { cooperate?: () => Promise<void>; signal?: AbortSignal }): Promise<{
@@ -48,7 +46,6 @@ export async function repairLoadIdentities(sheets: readonly Sheet[], nodes: read
         if (source.id !== record.id || source.type !== source.category) return refusal('Source identity does not match its decoded record');
         candidates.push({ category: source.category, index, ordinal: source.position.ordinal });
     }
-    // A stable bottom-up merge avoids native sort's uninterruptible million-record turn.
     let target = new Array<Candidate>(candidates.length);
     for (let width = 1; width < candidates.length; width *= 2) {
         for (let start = 0; start < candidates.length; start += 2 * width) {

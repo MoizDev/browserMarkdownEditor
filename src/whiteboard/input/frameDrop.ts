@@ -26,8 +26,6 @@ export interface FrameDropPlan {
 }
 interface Candidate { readonly frame: Readonly<FrameNode>; readonly rank: number; readonly depth: number }
 
-/** Frame membership is planned from the staged translation, then committed with
- * that translation in the same transaction. Geometry comes from the pinned scope. */
 export async function prepareFrameDrop(options: FrameDropOptions): Promise<FrameDropPlan | null> {
     const { runtime, signal } = options, session = runtime.session, doc = session.doc, candidate = options.preview.doc;
     const owner = session.owner, revision = doc.rev, selection = runtime.selection.getSnapshot(), font = runtime.render.text.fonts.epoch;
@@ -81,7 +79,6 @@ export async function prepareFrameDrop(options: FrameDropOptions): Promise<Frame
                 await cooperate();
             }
         } finally { cursor.cancel(); }
-        // A frame being exited may no longer intersect the translated root's bounds.
         for (const root of roots) {
             let parent = candidate.nodes.get(root.parent as NodeId);
             for (let depth = 0; parent?.kind === 'frame' && depth < 64; depth++) {
@@ -121,12 +118,9 @@ export async function prepareFrameDrop(options: FrameDropOptions): Promise<Frame
                     && (!best || item.depth > best.depth || (item.depth === best.depth && item.rank > best.rank))) best = item;
                 if (++work % 128 === 0) { await cooperate(); check(); }
             }
-            // Default: preserve the enclosing non-frame scope; among overlapping frames use the deepest, then topmost.
             const parent = best?.frame.id ?? boundary;
             if (parent !== moved.parent) destinations.push({ id: moved.id, parent });
         }
-        // An arrow bound to a moved shape follows it: it joins the container its two ends now share (catalogue a.5), in this same
-        // transaction. Arrows bound to a moved shape's children are left where they are; only the moved roots' attachments count.
         const landed = new Map<NodeId, ParentId>(destinations.map(item => [item.id, item.parent]));
         const parentAfter = (id: NodeId): ParentId | undefined => landed.get(id) ?? candidate.nodes.get(id)?.parent;
         const followers = new Set<NodeId>();

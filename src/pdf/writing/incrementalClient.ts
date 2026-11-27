@@ -3,13 +3,11 @@ import incrementalWorkerUrl from './incrementalWorker.ts?worker&url';
 import type { IncrementalPdfPage, IncrementalPdfSession, IncrementalPdfWriter } from '../../whiteboard/export/incrementalPdf';
 import type { IncrementalEmittedPdf, IncrementalOperation } from './incrementalTypes';
 export type { IncrementalEmittedPdf } from './incrementalTypes';
-// Kept: PDF saves and exports keep working after a newer version replaced this one on the server (platform/workers/script.ts).
 const incrementalWorker = workerScript(incrementalWorkerUrl, { keep: true });
 
 const aborted = () => new DOMException('PDF export cancelled', 'AbortError');
 let nextSession = 0;
 
-/** Each session has one lazy worker and at most one in-flight chunk. */
 export function createIncrementalPdfWriter(options: {
     onFinish?: (emitted: IncrementalEmittedPdf, signal: AbortSignal) => Promise<Uint8Array>;
 } = {}): IncrementalPdfWriter {

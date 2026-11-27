@@ -1,7 +1,6 @@
 import type { Face } from './paint';
 
 export interface ReferenceMetrics {
-    /** All values are measured at the fixed 64px reference size. */
     readonly width: number;
     readonly left: number;
     readonly right: number;
@@ -13,7 +12,6 @@ interface Entry { readonly value: ReferenceMetrics; readonly bytes: number }
 const MAX_CACHE_TEXT = 4096;
 const DEFAULT_CACHE_BYTES = 8 * 1024 * 1024;
 
-/** Per-context bounded cache: font arrival invalidates widths measured in a fallback face. */
 export class ReferenceMeasurer {
     private readonly entries = new Map<string, Entry>();
     private epoch = -1;

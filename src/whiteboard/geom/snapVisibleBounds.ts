@@ -24,8 +24,6 @@ function rectangle(x0: number, y0: number, x1: number, y1: number): readonly Vec
     return [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
 }
 
-/** Exact visible logical AABB for rectangular semantics clipped by convex
- * ancestor frames. Other partial geometry is refused, never approximated. */
 export async function prepareVisibleSnapBounds(doc: BoardDoc, id: NodeId, bounds: Readonly<Rect>, options: {
     readonly runtime: BoardRuntime; readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<Rect | null> {

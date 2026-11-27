@@ -1,8 +1,6 @@
 import type { BoardAssetAccess, FileSystemContextValue } from '../types';
 import { fingerprintSnapshot } from './snapshotFingerprint';
 
-/** App-owned session identity: a rename, vault activation or closed/replaced
- * tab retires this bridge, rather than redirecting an in-flight write. */
 export interface BoardMediaOwner {
     documentId: string;
     session: number;
@@ -21,7 +19,6 @@ export interface BoardMediaDescriptor {
 }
 
 export interface PdfMediaStaging {
-    /** The session owns the immutable Blob and its document/history/job leases. */
     stage: (id: string, blob: Blob, signal: AbortSignal) => Promise<void>;
     read: (id: string, signal: AbortSignal) => Promise<Blob | null>;
 }
@@ -32,9 +29,6 @@ const EXTENSIONS: Readonly<Record<string, string>> = {
     'video/webm': 'webm', 'video/quicktime': 'mov',
 };
 
-/** The host passes this to the media ingestor, retaining the same owner for
- * every asynchronous operation. PDF blobs stay in the session; only its
- * pinned save revision may turn them into attachments. */
 export function createBoardMediaBridge(
     io: Pick<FileSystemContextValue, 'readBoardAsset' | 'putBoardAsset'>,
     owner: BoardMediaOwner,

@@ -19,7 +19,6 @@ import type { WriterOperations } from './protocol';
 
 type Build = WriterOperations['writer.buildNotebook'];
 
-/** Fresh generated pages only: imported PDFs use the preservation-aware route. */
 export async function buildNativeNotebook(runtime: PdfiumRuntime, args: Build['args'], context: WorkerContext): Promise<Build['result']> {
     if (!Number.isSafeInteger(args.revision) || args.revision < 0 || !/^[0-9a-f]{32}$/.test(args.writeId) ||
         !args.notebookSource || !validNotebookSourcePath(args.notebookSource.path) || !Array.isArray(args.pages) || !args.pages.length ||

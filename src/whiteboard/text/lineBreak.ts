@@ -5,7 +5,6 @@ interface Unit { cp: number; start: number; end: number; cls: string; category: 
 const wordSegmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
 const is = (value: string, ...classes: string[]) => classes.includes(value);
 
-/** UAX #14 default opportunities in UTF-16. Dictionary mode tailors SA using ICU words. */
 export function lineBreaks(text: string, dictionary = true): LineBreakOpportunity[] {
     const units: Unit[] = [];
     let offset = 0;

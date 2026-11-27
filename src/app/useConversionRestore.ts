@@ -7,11 +7,6 @@ import type { Notify } from './useAppDialogs';
 import { registerConversionRestore } from '../utils/conversionRestore';
 import { loadChunk } from '../platform/chunkLoad';
 
-/**
- * Restoring a file's pre-conversion copy from Trash, found by its recorded
- * digest. Registers the handler the file tree's context menu calls; it gives
- * nothing back to App.
- */
 export interface UseConversionRestoreDeps {
   announce: (message: string) => void;
   notify: Notify;

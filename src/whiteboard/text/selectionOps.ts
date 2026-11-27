@@ -8,10 +8,6 @@ import type { PlainTextOptions } from './plainText';
 
 export type LogicalMotion = 'grapheme' | 'word' | 'document';
 
-/**
- * View-independent logical movement and deletion. Visual bidi movement still
- * belongs to the layout's caret index; this class never guesses screen direction.
- */
 export class RichSelectionOperations {
     private readonly boundaries = new TextBoundaries();
 
@@ -37,7 +33,6 @@ export class RichSelectionOperations {
         return extend ? { anchor: current.anchor, focus } : { anchor: focus, focus };
     }
 
-    /** Null means the requested deletion is already at the document boundary. */
     delete(text: RichText, selection: RichSelection, direction: BoundaryDirection,
         unit: 'grapheme' | 'word' = 'grapheme'): RichEdit | null {
         const current = this.normalize(text, selection, direction);
@@ -48,8 +43,6 @@ export class RichSelectionOperations {
         }
         if (from === to) return null;
         const insert = insertionFragment(text, from, '', null);
-        // Deleting between clusters can make their remaining code points join;
-        // place the caret on a real stop in the resulting text, not inside it.
         const result = spliceRichText(text, from, to, insert);
         const caret = this.boundaries.snap(result.text, from, direction < 0 ? 1 : -1);
         return { from, to, insert, selection: { anchor: caret, focus: caret } };

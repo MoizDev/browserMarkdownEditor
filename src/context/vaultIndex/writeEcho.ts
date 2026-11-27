@@ -1,7 +1,5 @@
 interface WriteStamp { mtime: number; size: number; expires: number; pending: boolean; timer?: ReturnType<typeof setTimeout> }
 
-/** Observer events carry paths, not stats. A single deferred stat closes the
- * self-write window without hiding a real outside edit made during it. */
 export class WriteEchoFilter {
     private readonly writes = new Map<string, WriteStamp>();
     private closed = false;

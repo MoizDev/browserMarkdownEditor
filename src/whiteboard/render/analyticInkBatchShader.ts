@@ -3,7 +3,6 @@ import { analyticInkShader } from './analyticInk';
 
 const fragment = analyticInkShader('flat in vec4 endpoints; flat in vec4 metrics; flat in vec4 colour;').glsl.fragment;
 
-/** The fragment is the canonical capsule pixel-area integral, not a second AA algorithm. */
 export const ANALYTIC_INK_BATCH_SHADER: ShaderModule = {
     id: 'board-analytic-capsule-batch', revision: 1,
     layout: { uniforms: [{ binding: 0, byteSize: 16 }], textures: [], attributes: [
@@ -33,12 +32,6 @@ void main() {
     },
 };
 
-/** The run route's fragment: the grid4 sample set of the union route, not an exact area. A stroke beside or over another
- * is judged by the same 16 samples on both routes (the grid composite box-averages 4×4 subsamples at (i + ½)/4 of each
- * pixel), so the seam between an analytic capsule and a union stroke carries no sampling mismatch. By reading, the exact
- * area differed from the grid at every edge by up to a sixteenth, and that difference is the seam. Every sample lies within
- * √2·3/8 ≈ 0.53 px of the pixel centre, so a centre more than 0.54 px inside or outside the capsule decides all 16 without
- * sampling; only the edge band pays for the sixteen tests. The colour is the draw's uniform, premultiplied at the draw. */
 const RUN_DECLARATIONS = `layout(std140) uniform GfxUniforms0 { vec4 viewport; vec4 colour; };`;
 const GRID_FRAGMENT = `#version 300 es
 precision highp float;
@@ -69,9 +62,7 @@ void main() {
     gfxColour = colour * coverage;
 }`;
 
-/** One instance of the run route: endpoints and metrics, 32 bytes. Colour is not in it; it is a draw-time uniform. */
 export const ANALYTIC_INK_RUN_STRIDE = 32;
-/** The run route's shader: geometry per instance, the viewport and premultiplied colour per draw (one 32-byte uniform block). */
 export const ANALYTIC_INK_RUN_SHADER: ShaderModule = {
     id: 'board-analytic-capsule-run', revision: 1,
     layout: { uniforms: [{ binding: 0, byteSize: 32 }], textures: [], attributes: [

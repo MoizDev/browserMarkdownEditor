@@ -17,12 +17,8 @@ export interface EdgeScrollOptions {
     invalidate(): void;
 }
 interface Contact { readonly id: number; readonly coarse: boolean; x: number; y: number; modifiers: Modifiers; sample: RealSample | null }
-/** Catalogue I§6: a 8 px zone (12 px for a finger or pen, whose contact is wider), 200 ms of dwell, then a 200 ms cubic ease-in
- * to 25 px per 60 Hz frame (1500 px/s), scaled by 0.612 on any axis of a viewport under 1000 px. */
 const EDGE = 8, EDGE_COARSE = 12, DWELL = 200, RAMP = 200, SPEED = 25 * 60, SMALL_SCREEN_PX = 1000, SMALL_SCREEN_SPEED = 0.612;
 
-/** Edge drift is camera work, not an ink sample or a document operation. A held
- * selection is reprojected only when the panned frame has actually presented. */
 export class EdgeScroll {
     private contact: Contact | null = null;
     private scheduled = false;
@@ -64,7 +60,6 @@ export class EdgeScroll {
     private up = (event: PointerEvent): void => { if (this.contact?.id === event.pointerId) this.stop(); };
     private key = (event: KeyboardEvent): void => { if (this.contact) this.contact.modifiers = this.modifiers(event); };
     private blur = (): void => { this.stop(); };
-    /** Called after acquisition, preserving the original pointer's pressure and identity. */
     sample(sample: RealSample): void {
         if (!this.contact || sample.pointerId !== this.contact.id || sample.source === 'keyboard') return;
         this.contact.sample = sample; this.schedule();

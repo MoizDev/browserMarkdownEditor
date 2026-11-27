@@ -2,10 +2,6 @@ import { keymap, EditorView } from '@codemirror/view';
 import { Prec } from '@codemirror/state';
 import type { Extension } from '@codemirror/state';
 
-/**
- * Wraps the current selection with a delimiter (e.g., `**` for bold, `*` for italic).
- * If no selection, inserts the delimiters and places the cursor between them.
- */
 function wrapSelection(view: EditorView, delimiter: string): boolean {
     const { state } = view;
     const { from, to } = state.selection.main;
@@ -27,15 +23,6 @@ function wrapSelection(view: EditorView, delimiter: string): boolean {
     return true;
 }
 
-/**
- * Markdown formatting bindings:
- *   Cmd/Ctrl+B → bold   (**text**)
- *   Cmd/Ctrl+I → italic (*text*)
- *
- * A direct keydown handler backs the keymap up — the browser's contenteditable
- * layer can otherwise eat Cmd+I via a `beforeinput: formatItalic` before the
- * keymap runs.
- */
 const formatKeymap = keymap.of([
     { key: 'Mod-b', run: (view) => wrapSelection(view, '**') },
     { key: 'Mod-i', run: (view) => wrapSelection(view, '*') },

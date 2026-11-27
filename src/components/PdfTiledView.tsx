@@ -90,18 +90,10 @@ interface Props {
     readonly onOpenTextView: (page?: number) => void;
     readonly onNotice: (message: string) => void;
     readonly onCapabilities: (capabilities: ReaderCapabilities) => void;
-    /** App owns this explicit route switch; it must retain the current document and ink. */
 }
 
-/** The pane is a camera and DOM chrome around one shared-platform page layer.
- * The document/pool and CPU mirror belong to App's session, not this mount. */
-/** The platform's memory notices for this pane: raised once its own grant has kept it below full quality (or refused its CPU floor)
- * for a second, withdrawn when that ends. */
 const MEMORY_NOTICES = { 'memory-pressure': 'PDF rendering quality was reduced to fit memory.', 'cpu-floor-denied': 'PDF rendering is limited by available memory.' } as const;
 const RETRY_REQUESTED = 'Retry requested. Pages may remain unavailable until rendering completes.';
-/** Notices about a state a sharp frame ends, so they clear on the next sharp frame: a sharp frame is full quality. The retry message is
- * one: posted as an error, it stayed over sharp pages for good after a retry (seen at 1440x900, b2). A refused CPU floor is not: it
- * can hold under a sharp frame of tiles already drawn, and cleared by that frame it flashed for one frame; the platform withdraws it. */
 const PASSING_NOTICES = new Set<string>([MEMORY_NOTICES['memory-pressure'], RETRY_REQUESTED]);
 
 export default function PdfTiledView({ reading, session, document: pdf, filePath, isVisible, isFocused,
@@ -111,7 +103,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
     const [lease] = useState(() => ++nextViewLease);
     const [page, setPage] = useState(0);
-    // Until the first layout restores the camera, the zoom the view will open at (not 100%).
     const [zoom, setZoom] = useState(() => readPdfViewPos(filePath)?.zoom ?? 1);
     const readQuality = useCallback(() => getPdfPageQuality(pdf.poolDocument.docKey, page), [pdf, page]);
     const pageQuality = useSyncExternalStore(subscribePdfPageQuality, readQuality, readQuality);
@@ -129,9 +120,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         return () => pdf.emphasis.setVisiblePages([], -1, false);
     }, [pdf, page, isVisible, isFocused]);
     const [thumbs, setThumbs] = useState(readThumbnailsOpen);
-    // Blank pages at their final size and place from the moment the geometry is known until the first frame presents.
-    // Without them the pane sat empty and dark between the source opening and the first picture (measured on a cold open of a small
-    // PDF: 400 -> 505 ms); with them the picture lands in the paper it was waiting in, with no layout change.
     const [paper, setPaper] = useState<readonly { left: number; top: number; width: number; height: number }[] | null>(null);
     const paperShown = useRef(false);
     const [noticeState, setNoticeState] = useState<{ session: PdfTiledDocumentSession; notice: RenderNotice | undefined }>(() =>
@@ -153,8 +141,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         sessionNotices.set(session, next);
         setNoticeState({ session, notice: next });
     }, [session]);
-    // A memory notice describes a state, not an event: a sharp frame is full quality, so it goes then. It stayed over a
-    // sharp page for the rest of the session (seen after a zoom or resize that only briefly pressed memory).
     const clearQualityNotice = useCallback(() => {
         if (!mounted.current || liveSession.current !== session) return;
         const current = sessionNotices.get(session);
@@ -162,7 +148,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         sessionNotices.delete(session);
         setNoticeState({ session, notice: undefined });
     }, [session]);
-    /** Withdraws the notice shown only if it is still `message` (another notice since then stays). */
     const clearRenderNotice = useCallback((message: string) => {
         if (!mounted.current || liveSession.current !== session || sessionNotices.get(session)?.message !== message) return;
         sessionNotices.delete(session);
@@ -178,7 +163,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             await retryDocument.call(pdf.poolDocument);
             if (!mounted.current || liveSession.current !== session || !session.isCurrent()) return;
             setRetryGeneration(value => value + 1);
-            // The retry answers the error it was asked for: that notice gives way to one the next sharp frame clears.
             sessionNotices.delete(session);
             reportRenderNotice(RETRY_REQUESTED);
         } catch {
@@ -231,8 +215,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     active.current = { isVisible, isFocused };
     const velocity = useRef({ x: 0, y: 0 });
     const previousInput = useRef({ x: 0, y: 0, time: 0 });
-    // While a turn's stand-in is up (utils/pdfRotationStandIn.ts) the camera holds still: the picture was laid out for
-    // this camera, and the turned view is remounted on the position written for it.
     const documentId = session.token.documentId;
     const turning = useCallback(() => pdfRotationActive(documentId), [documentId]);
     const frameView = useRef<ViewState | null>(null);
@@ -317,7 +299,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         updateCamera({ ...camera.current, y: target.y });
     }, [filePath, stack, updateCamera]);
 
-    /** Each wanted page's pixels from the session's tile mirrors, as one page-sized picture (sharpest tiles on top). */
     const capturePictures = useCallback((wanted: ReadonlySet<number>, applied: (page: number) => number): Map<number, PdfPagePicture> => {
         const pictures = new Map<number, PdfPagePicture>(), view = mirror.lastView();
         if (!view || !wanted.size) return pictures;
@@ -342,8 +323,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                     }
                 };
                 const sized = () => { const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height; return canvas; };
-                // Transparent where no tile was. Low-resolution stand-in tiles go under the exact ones, and are what a
-                // whole-page backdrop replaces (addPdfRotationBackdrop): only the exact tiles are kept as `top`.
                 const exact = items.filter(item => item.entry.tier === 'exact'), low = items.filter(item => item.entry.tier !== 'exact');
                 low.sort((a, b) => a.pixels.source.width / a.pixels.world.width - b.pixels.source.width / b.pixels.world.width);
                 const top = sized(), image = sized();
@@ -354,8 +333,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         return pictures;
     }, [mirror]);
 
-    /** Draws this pane's turned picture and writes the position the turned view will open on.
-     * Returns the pages it shows, with the device size each is drawn at. */
     const drawStandIn = useCallback((): Array<{ page: number; side: number }> => {
         const root = contentHost?.closest('.pdf-pane'), size = viewport.current;
         const turn = pdfRotationView(documentId, session.token.bytesGeneration, pdf.pages.length);
@@ -364,7 +341,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         const position = pagedPosition(camera.current, size, stack, INSETS) ?? { page: 0, offset: 0, zoom: 1 };
         const fresh = cameraForPagedPosition(position, size, turned, INSETS, LIMITS);
         if (!fresh) return [];
-        // Exactly where the turned view will open: the same page, offset and zoom, clamped as its camera is.
         const constraint = pagedConstraint(turned, LIMITS, INSETS), z = constraint.clampZoom(fresh.z, size);
         const bounds = constraint.bounds({ ...fresh, z }, size);
         const next = { z, x: Math.max(bounds.minX, Math.min(bounds.maxX, fresh.x)), y: Math.max(bounds.minY, Math.min(bounds.maxY, fresh.y)) };
@@ -375,7 +351,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         const [r, g, b] = paneBackground();
         context.fillStyle = `rgb(${Math.round(r * 255)} ${Math.round(g * 255)} ${Math.round(b * 255)})`;
         context.fillRect(0, 0, canvas.width, canvas.height);
-        // The page view inverts in encoded sRGB after composition (platform/render/colour.ts): the same filter.
         if (getPdfInverted()) context.filter = 'invert(1) hue-rotate(180deg)';
         const bottom = next.y + size.height / next.z;
         for (let index = Math.max(0, pageAt(turned, next.y)); index < turned.rects.length && turned.rects[index].y < bottom; index++) {
@@ -385,7 +360,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             context.save();
             context.fillStyle = '#fff'; context.fillRect(x, y, width, height);
             if (picture) {
-                // Clockwise quarter turns from what the picture shows to what the page will show.
                 context.translate(x + width / 2, y + height / 2);
                 context.rotate(picture.quarter * Math.PI / 2);
                 const [w, h] = picture.quarter % 2 ? [height, width] : [width, height];
@@ -400,9 +374,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         return shown;
     }, [contentHost, documentId, filePath, pdf, session, stack]);
 
-    // Only what was on screen was captured; the rest of a turned page that comes into view is rendered whole, once,
-    // from the bytes on screen, and laid under the capture (measured on a portrait page turned to landscape: the
-    // bottom half, off screen before the turn, stayed blank until the written file was drawn sharp).
     const backdrops = useRef(new Map<number, AbortController>());
     useEffect(() => () => { for (const task of backdrops.current.values()) task.abort(); backdrops.current.clear(); }, [session]);
     const fillBackdrops = useCallback((pages: ReadonlyArray<{ page: number; side: number }>) => {
@@ -425,9 +396,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     const drawnTurn = useRef(pdfRotationDrawSerial(documentId));
     const rotate = useCallback((delta: number, index?: number) => {
         if (!onRotate) return;
-        // The buttons are disabled with this reason; a key press says it too rather than doing nothing.
         if (capabilities.encrypted) { onNotice(PDF_ENCRYPTED_READ_ONLY); return; }
-        // A file the writer will refuse outright is not turned on screen: App says why, and nothing moves.
         if (capabilities.signed !== true && capabilities.write !== false && initialized.current && isVisible) {
             const size = viewport.current, top = camera.current.y, bottom = top + size.height / camera.current.z;
             const visible = new Set<number>();
@@ -443,16 +412,12 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         }
         onRotate(delta, index);
     }, [capabilities.encrypted, capabilities.signed, capabilities.write, capturePictures, documentId, drawStandIn, fillBackdrops, filePath, isVisible, onNotice, onRotate, pdf, session, stack]);
-    // A turn remounts this view on the written bytes, and the old view's surface took keyboard focus away with it:
-    // the next `]` then reached nothing (measured: the fifth of five quick presses, after the first write, was lost).
     useEffect(() => {
         if (host && isFocused && pdfRotationActive(documentId) && (!document.activeElement || document.activeElement === document.body)) host.focus({ preventScroll: true });
     }, [host, isFocused, documentId]);
-    // Another pane of the same document turned it, or a page's picture improved: draw this pane's picture again.
     useEffect(() => {
         if (!isVisible) return;
         drawnTurn.current = pdfRotationDrawSerial(documentId);
-        // Back on screen while the file is still being written (its picture went when the pane hid): draw it again.
         const root = contentHost?.closest('.pdf-pane');
         if (initialized.current && root && pdfRotationActive(documentId) && !pdfStandInFrame(documentId, root)) fillBackdrops(drawStandIn());
         return subscribePdfRotationStandIn(() => {
@@ -514,7 +479,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         if (!overlay) return;
         const layer = new PdfLinkOverlay(overlay, navigate);
         links.current = layer;
-        // Both refs are never reassigned: these are the same collections the page loop fills.
         const tasks = linkTasks.current, loaded = loadedLinks.current;
         return () => {
             for (const task of tasks.values()) task.abort();
@@ -725,8 +689,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                         links.current?.setPage(index, result); loadedLinks.current.add(index);
                     }
                 }).catch(error => {
-                    // A notebook redirect can retire the source before passive
-                    // link cleanup. Cancellation is not a modal reader failure.
                     if (controller.signal.aborted || !mounted.current || liveSession.current !== session ||
                         !session.isCurrent() || pdf.poolDocument.closed || !active.current.isVisible ||
                         isCancellation(error)) return;
@@ -768,15 +730,11 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                 const restored = cameraForPagedPosition({ ...pos, zoom: pos.zoom ?? 1 }, next, stack, INSETS, LIMITS);
                 if (restored) {
                     camera.current = clamp(restored); initialized.current = true;
-                    // The page field and the zoom pill read the restored view, not 0 and 100%: persist() is what sets them,
-                    // and it waits for a camera move (and skips turns) — measured, after a turn on page 3 the field said 1,
-                    // and after a turn at 120% the pill said 100%, until the next scroll or zoom.
                     const opened = pagedPosition(camera.current, next, stack, INSETS);
                     const openedPage = opened?.page ?? pos.page;
                     setPage(openedPage); thumbsRef.current?.setCurrentPage(openedPage);
                     if (opened) setZoom(opened.zoom);
                     if (!paperShown.current) {
-                        // The same projection the page layer paints with (pagePresentation), so no page moves when it lands.
                         const view = { camera: camera.current, viewport: next, epoch: 0, moving: false };
                         const bottom = view.camera.y + next.height / view.camera.z, sheets = [];
                         for (let index = Math.max(0, pageAt(stack, view.camera.y)); index < stack.rects.length && stack.rects[index].y < bottom; index++) {
@@ -928,7 +886,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             const pane = platformPane.current, current = camera.current, size = viewport.current;
             if (!pane || !active.current.isVisible || !session.isCurrent() || !Number.isFinite(maxSide) || maxSide <= 0 || !size.width || !size.height) return null;
             const snapshot = { ...current };
-            // C4.5 / p-lead: same visible region and layers, but light and uninverted.
             const bitmap = await pane.captureRegion({ x: current.x, y: current.y, width: size.width / current.z, height: size.height / current.z },
                 Math.min(maxSide, 1568), { layers: ['pdf-page'], theme: 'light', inverted: false, policy: 'exact' });
             const output = await bitmapPng(bitmap);
@@ -972,8 +929,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         : pageStatus.state === 'slow' ? `Still drawing page ${page + 1}…`
             : pageStatus.state === 'failed' || pageStatus.state === 'quarantined' ? pageStatus.reason ?? 'This page could not be drawn.' : undefined;
     const visibleNotice = pageNotice ?? notice?.message;
-    // Retry reloads the document, so it is offered only for a page or render that failed. A memory or mode notice gets Dismiss only:
-    // retrying one reloaded every page and left an error-class message over sharp pages.
     const offerRetry = !!pageNotice || !!notice?.error;
     return <div className={`pdf-viewer pdf-tiled-view${thumbs ? ' has-thumbs' : ''}`}>
         {find.bar}

@@ -35,8 +35,6 @@ async function boundedSummary(node: Node, geometry: AgentGeometry, page: number 
     }
     const lean = node.kind === 'text' || node.kind === 'sticky' ? { ...node, text: EMPTY_RICH_TEXT }
         : node.kind === 'figure' || node.kind === 'connector' ? { ...node, label: EMPTY_RICH_TEXT } : node;
-    // Geometry is identity-checked against the pinned doc: give it the real node, not the text-less copy
-    // (the copy failed every canvas_shapes on a board with text, a sticky or a labelled shape).
     const own = (value: Node) => value === lean ? node : value;
     const summary = summarizeAgentNode(lean, { bounds: value => geometry.bounds(own(value)), page: value => geometry.page(own(value)),
         rotation: value => geometry.rotation(own(value)) }, page), plain = pieces.join('');
@@ -94,7 +92,6 @@ export async function listPinnedShapes(doc: BoardDoc, sheets: readonly Sheet[], 
         ...(changed ? { revisionChanged: true as const } : {}), ...(labelled ? { sections } : {}) };
 }
 
-/** The host supplies the live session's canonical geometry and actual owner guard. */
 export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAuthority): {
     shapes(query: ShapeQuery, options: JobOptions): Promise<ShapePage>;
     apply(ops: CanvasOp[], options: JobOptions & { readonly expectedRevision?: number }): Promise<AgentApplyResult>;
@@ -123,7 +120,6 @@ export function createLiveAgentBackend(host: AgentAdapterHost, authority: JobAut
         },
         apply(ops, options) {
             if (!Array.isArray(ops) || ops.length < 1 || ops.length > 200) return Promise.reject(new RangeError('Expected 1 to 200 canvas operations'));
-            // The caller cannot change a queued transaction after admission begins.
             let captured: CanvasOp[], sheet: ReturnType<AgentAdapterHost['sheet']>, page: number, revision: number;
             try { captured = structuredClone(ops); sheet = host.sheet(); page = host.page(); revision = options.expectedRevision ?? host.session.doc.rev; }
             catch (error) { return Promise.reject(error); }
@@ -150,20 +146,16 @@ export type ClosedAgentProjectionResult =
     | { readonly kind: 'native'; readonly page: ShapePage; readonly report: NativeLoadReply }
     | { readonly kind: 'other'; readonly report: NativeLoadReply };
 
-/** A closed read uses copied source bytes and the same canonical geometry as a live read. */
 export async function readClosedAgentProjection(options: {
-    /** For PDF ink this is the extracted board attachment, never the outer PDF. */
     readonly bytes: Blob;
     readonly kind: BoardKind;
     readonly pdfPages?: readonly (readonly [number, number])[];
     readonly diskRevision: number;
-    /** Actual App source identity, not a token reconstructed from a worker job. */
     readonly token: RenderToken;
     readonly query: ShapeQuery;
     readonly job: JobOptions;
     readonly authority: JobAuthority;
     isCurrent(): boolean;
-    /** App compares the current disk stat and hash with the bytes it supplied. */
     assertBaseline(signal: AbortSignal): Promise<void>;
     project?(doc: BoardDoc, samples: SampleStore, signal: AbortSignal): Promise<{
         readonly geometry: AgentGeometry; prepare?(node: Node): Promise<void>; dispose(): void;
@@ -211,8 +203,6 @@ export type AgentViewSnapshot = Omit<DrawingViewInfo, 'shapes' | 'shapesTotal'>
     | Omit<NotebookViewInfo, 'shapes' | 'shapesTotal'>
     | (Omit<PdfViewInfo, 'shapes' | 'shapesTotal'> & { kind: 'pdf-annotate'; surface: 'annotation' });
 
-/** A mounted board's live view: its camera, visible pages and selection as the view presents them now, read from the
- * runtime's own live document. The geometry is built inside the job, against that document's revision and samples. */
 export async function describeLiveAgentView(options: {
     readonly runtime: BoardRuntime;
     readonly job: JobOptions;
@@ -254,8 +244,6 @@ export async function describeLiveAgentView(options: {
     }, options.job);
 }
 
-/** The live capture of a mounted view: `pin` takes the view's own frame at the current revision, and the job re-checks
- * that revision and the owner after the encode. The capture size is bounded here, once, for every caller. */
 export async function captureLiveAgentProjection(options: {
     readonly runtime: BoardRuntime;
     readonly job: JobOptions;

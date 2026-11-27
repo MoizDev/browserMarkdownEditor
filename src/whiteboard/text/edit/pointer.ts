@@ -5,7 +5,6 @@ export interface TextPointer {
     readonly kind: 'mouse' | 'pen' | 'touch';
     readonly x: number;
     readonly y: number;
-    /** 1 for a click, 2 for the second of a double-click, 3 and on for a triple-click (counted by the board, attach.ts). */
     readonly clicks: number;
     readonly shift: boolean;
     readonly accel: boolean;
@@ -23,7 +22,6 @@ export interface PointerSelectionServices {
     followLink(x: number, y: number): boolean;
 }
 
-// The canvas retains pointer capture while the hidden edit host retains focus.
 export class TextPointerSelection {
     private active: number | null = null;
     private anchor = 0;
@@ -31,8 +29,6 @@ export class TextPointerSelection {
     private startY = 0;
     private hold: ReturnType<typeof setTimeout> | null = null;
     private handle: 'anchor' | 'focus' | null = null;
-    /** The word or paragraph a double- or triple-click selected, while that selection stands: a drag from it, or a Shift-click
-     * after it, extends by whole words or paragraphs and always keeps it, as a text field does. */
     private unit: { readonly granularity: 'word' | 'block'; readonly from: number; readonly to: number; readonly made: EditSelection } | null = null;
     constructor(private readonly services: PointerSelectionServices) {}
 
@@ -74,19 +70,16 @@ export class TextPointerSelection {
             this.services.setSelection(selection);
             return;
         }
-        // Shift extends what is selected, by the unit it was made with while that selection still stands.
         const kept = pointer.shift ? this.standingUnit() : null;
         if (kept) { this.unit = kept; this.extend(hit); return; }
         this.unit = null;
         this.anchor = pointer.shift ? this.services.selection().anchor : hit;
         this.services.setSelection({ anchor: this.anchor, focus: hit });
     }
-    /** The unit, while what is selected is still what the multi-click (or a drag or Shift-click from it) selected last. */
     private standingUnit() {
         const unit = this.unit, now = this.services.selection();
         return unit && now.anchor === unit.made.anchor && now.focus === unit.made.focus ? unit : null;
     }
-    /** From the unit first selected to the whole unit at `hit`, anchored at the first unit's far side. */
     private extend(hit: number): void {
         const unit = this.unit!;
         const there = unit.granularity === 'block' ? this.services.block(hit) : this.services.word(hit);

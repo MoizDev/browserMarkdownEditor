@@ -7,7 +7,6 @@ import type { RecordIntegrity } from './lineTable';
 import { boardEnvelope, matchingIdentity, validBoardIdentity } from '../workers/protocol';
 import type { BoardJobIdentity, BoardWorkerEnvelope } from '../workers/protocol';
 import type { SerializerBuild, SerializerChange, SerializerDelta, SerializerPrime, SerializerProduct, SerializerRecordOverride, SerializerReply } from './serializerProtocol';
-// Kept: a board's saves keep working after a newer version replaced this one on the server (platform/workers/script.ts).
 const serializerWorker = workerScript(serializerWorkerUrl, { keep: true });
 
 interface Root { readonly prime: SerializerPrime; readonly header: string; }
@@ -25,7 +24,6 @@ export interface SerializerCheckpoint extends PinnedBoardBuild {
     baseline(): SerializerPrime | undefined;
 }
 export interface SerializerSession {
-    /** O(changed): records are already encoded from a pinned revision on the calling thread. */
     update(delta: SerializerDelta): void;
     checkpoint(expected: RecordIntegrity, end: ExtBag | null, overrides?: readonly SerializerRecordOverride[]): SerializerCheckpoint;
     dispose(): void;
@@ -53,7 +51,6 @@ function transferable(delta: SerializerDelta): { args: SerializerDelta; transfer
     return { args: { ...delta, changed }, transfer };
 }
 
-/** One board session owns one serializer, independent of pane and export-worker lifetimes. */
 export function createSerializerSession(prime: SerializerPrime, onFailure: (error: unknown) => void,
     owner?: Readonly<Pick<BoardJobIdentity, 'session' | 'epoch'>>): SerializerSession {
     if (!Number.isSafeInteger(prime.revision) || prime.revision < 0) throw new RangeError('Invalid baseline revision');
@@ -105,7 +102,7 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
         if (!cursor) {
             await request<void>('prime', target.root.prime, target.root.prime.revision, priority, signal);
             loadedGeneration = client.generation;
-            loaded = pending.pop(); // the root revision has no delta
+            loaded = pending.pop();
         }
         while (pending.length) {
             const next = pending.pop()!;
@@ -128,8 +125,6 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
                 return product;
             } catch (error) {
                 loaded = undefined;
-                // Exactly one re-prime on integrity mismatch or a worker crash; no retry of IO,
-                // cancellation or a failed baseline, and no bypass of the versioned write.
                 if (retried || signal.aborted || !(error instanceof WorkerHostError)
                     || (error.name !== 'integrity' && error.name !== 'WorkerCrashed')) throw error;
                 retried = true;
@@ -140,7 +135,7 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
         const remaining: SerializerDelta[] = [];
         let cursor: Revision | null = current;
         while (cursor && cursor !== target) {
-            if (!cursor.delta) return; // A different branch/rebase was already acknowledged.
+            if (!cursor.delta) return;
             remaining.push(cursor.delta);
             cursor = cursor.parent;
         }
@@ -152,8 +147,6 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
             next = { root: nextRoot, parent: next, delta, revision: delta.revision, header: delta.header ?? next.header };
         }
         current = next;
-        // Old checkpoint objects retain their own root and chain. The next build re-primes its
-        // pinned branch if needed, so an older source never silently returns newer bytes.
         loaded = undefined;
     }
     return {
@@ -165,8 +158,6 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
             const frozen = copiedDelta(delta);
             const next: Revision = { root: current.root, parent: current, delta: frozen, revision: frozen.revision, header: frozen.header ?? current.header };
             current = next;
-            // Posting is eager, but the immutable chain remains the recovery journal since the
-            // last durable baseline. A crash before the reply never causes an empty re-prime.
             void serial(() => sync(next)).catch(onFailure);
         },
         checkpoint(expected, end, overrides = []) {
@@ -190,8 +181,6 @@ export function createSerializerSession(prime: SerializerPrime, onFailure: (erro
                 written() {
                     if (!built) return Promise.reject(new Error('Cannot acknowledge a board revision before building it'));
                     const product = built;
-                    // A PDF wraps these board bytes; the host calls this only after its complete
-                    // version-checked document write succeeds, not merely after assembling ink.
                     return serial(async () => advanceBaseline(target, product));
                 },
                 product() { return built; },

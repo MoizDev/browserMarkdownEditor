@@ -31,8 +31,6 @@ export class BookPolicy {
     CSS.walk(n.value,(q:{type:string;name?:string;value?:string})=>{if(q.type==='Raw'||q.type==='Function'&&!['rgb','rgba','hsl','hsla','calc','min','max','clamp','linear-gradient','radial-gradient','repeating-linear-gradient','repeating-radial-gradient','translate','translatex','translatey','scale','scalex','scaley','rotate','matrix','cubic-bezier','format','tech'].includes(String(q.name).toLowerCase()))bad=true;if(property==='position'&&q.type==='Identifier'&&['fixed','sticky'].includes(String(q.name)))bad=true});
     if(!CSS.lexer.matchDeclaration(n).matched&&!CSS.lexer.matchAtruleDescriptor('font-face',property,n.value).matched)bad=true;
     if(property==='font'){
-     // Expand a valid static shorthand before namespacing families. Treating each
-     // identifier as a family breaks multiword faces and silently loses book fonts.
      const declaration=document.createElement('span').style;declaration.font=CSS.generate(n.value);
      if(!declaration.font||bad)bad=true;
      else {const expanded=CSS.parse(['font-style','font-variant','font-weight','font-stretch','font-size','line-height','font-family'].map(key=>key+':'+declaration.getPropertyValue(key)+(n.important?'!important':'')).filter(value=>!value.endsWith(':')).join(';'),{context:'declarationList'});

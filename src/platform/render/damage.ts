@@ -1,6 +1,5 @@
 import type { Rect } from '../types';
 
-/** Metadata for selective preparation; presentation still redraws the complete framebuffer. */
 export interface DamageRecord {
     readonly reasonBits: number;
     readonly worldBounds: readonly Readonly<Rect>[];
@@ -34,7 +33,6 @@ function validateBounds(rect: Readonly<Rect>): void {
     }
 }
 
-/** One pending batch per pane; callers explicitly mark camera/size/DPR/theme/context changes full. */
 export class DamageAccumulator {
     private bits = 0;
     private revision = '';
@@ -72,7 +70,6 @@ export class DamageAccumulator {
         this.promote();
     }
 
-    /** Immutable copy, unaffected by subsequent marks or consumption. */
     freeze(): DamageRecord | null {
         if (!this.pending) return null;
         const worldBounds = Object.freeze(this.bounds.map(rect => Object.freeze({ ...rect })));
@@ -80,7 +77,6 @@ export class DamageAccumulator {
             contentRevision: this.revision, cameraEpoch: this.epoch });
     }
 
-    /** Empties the accumulator without a record: consume() for a caller that does not read what it consumed. */
     reset(): void {
         this.pending = false;
         this.bits = 0;

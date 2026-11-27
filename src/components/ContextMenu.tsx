@@ -5,55 +5,22 @@ import TableSizeGrid from './TableSizeGrid';
 import { Check } from './icons';
 import type { ContextMenuRequest, ContextMenuSubmenu } from '../utils/contextMenu';
 
-// Lazy so the icon set stays out of the main bundle — see utils/lucideIcons.ts.
-// A module slot, not React.lazy: a failed fetch is tried again on Try again rather than kept for the page.
 const EntryStylePicker = moduleSlot(() => import('./EntryStylePicker')).View;
 
 interface ContextMenuProps {
-    /** What to draw, where to hang it, and who to give focus back to. One
-     *  request describes one menu; a new one replaces this menu entirely. */
     request: ContextMenuRequest;
-    /** Take the menu down. Also runs the request's own `onClose` (the store
-     *  does that), which is how a tree row clears its own highlight. */
     onClose: () => void;
 }
 
-/** How far the menu keeps from the edge of the window, in px. */
 const MARGIN = 8;
 
-/**
- * How a surface is hidden for the one frame between being rendered and being
- * measured.
- *
- * `opacity: 0` and NOT `visibility: hidden`, which is the obvious choice and
- * is wrong here: a visibility-hidden element cannot take focus at all, and
- * `focus()` on one is a silent no-op. Measured — with `visibility` the menu
- * opened with the keyboard focus still on whatever raised it, so the arrow
- * keys did nothing and Escape only worked because its listener is on `window`.
- * The focus effect runs while this frame is still on screen (React flushes the
- * pending passive effects before the re-render the measurement schedules), so
- * the hidden state has to be one a focusable element survives.
- */
 const HIDDEN_UNTIL_MEASURED: React.CSSProperties = { opacity: 0, pointerEvents: 'none' };
 
-/**
- * Where one axis of the menu goes, given the click, the menu's size along that
- * axis and the window's.
- *
- * FLIP FIRST, THEN CLAMP. The flip is what makes a right-click near the right
- * edge open leftwards, the way every native menu does; the clamp is for the
- * case the flip cannot rescue — a menu taller than the viewport fits on
- * neither side of the click, and without it the bottom rows would be off
- * screen with nothing to scroll. Same rule as the vault menu's width
- * computation (FileExplorer.tsx:22-26): compute the geometry, do not merely
- * cap it in CSS.
- */
 function place(point: number, size: number, limit: number): number {
     const flipped = point + size + MARGIN > limit ? point - size : point;
     return Math.max(MARGIN, Math.min(flipped, limit - size - MARGIN));
 }
 
-/** The menu's bottom edge sits on `point`, unless it would not fit above (then it hangs below, as `place` does). */
 function placeAbove(point: number, size: number, limit: number): number {
     const above = point - size;
     return above >= MARGIN ? above : place(point, size, limit);
@@ -138,36 +105,17 @@ function SubmenuRows({ entries, activate, direction }: {
     </>;
 }
 
-/**
- * The app's one context menu is shared by React and CodeMirror raisers. Its
- * viewport-point anchor needs scroll dismissal and flipping on both axes; the
- * capture-phase Escape also wins over the CodeMirror view behind it.
- */
 export default function ContextMenu({ request, onClose }: ContextMenuProps) {
     const menuRef = useRef<HTMLDivElement | null>(null);
     const panelRef = useRef<HTMLDivElement | null>(null);
     const itemsRef = useRef<(HTMLButtonElement | null)[]>([]);
-    // A click somewhere else is already choosing where focus goes; taking it
-    // back to the opener on the way out would yank it away again.
     const restoreFocusRef = useRef(true);
 
-    /** Null until measured. The menu is drawn invisible for that one frame
-     *  rather than at the raw click point, so it never flashes in the wrong
-     *  place. */
     const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
-    /** The row and viewport rect of the active picker or command submenu. */
     const [flyout, setFlyout] = useState<{ id: string; anchor: DOMRect; focus?: boolean } | null>(null);
     const [panelPos, setPanelPos] = useState<{ left: number; top: number } | null>(null);
 
-    /* One menu REPLACING another does not remount this component — the store
-       swaps the request and React re-renders in place. Everything measured
-       about the old menu has to go with it, or the new one is positioned from
-       the old one's rect, measured in the room the old one's position left it
-       (see the layout effect), and any flyout the old menu had open stays open
-       hanging off a row that is no longer there. Adjusting state during render
-       when a prop changes is React's own pattern for this, and it costs a
-       re-render before the commit rather than a frame on screen. */
     const requestRef = useRef(request);
     useLayoutEffect(() => { requestRef.current = request; }, [request]);
 
@@ -178,12 +126,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         setFlyout(null);
     }
 
-    /* Which rows can hold focus, in the order the arrow keys walk them.
-       Separators are not rows, so an index into `entries` would put gaps in
-       itemsRef and make every arrow-key walk step over holes. */
-    /* A pick-one menu (the explorer's sort order) marks every command with
-       `checked`; then EVERY command row carries the check gutter, blank where
-       unchecked, so the labels stay in one column the way a native menu's do. */
     const hasChecks = useMemo(
         () => request.entries.some(e => e.kind === 'command' && e.checked !== undefined),
         [request.entries]);
@@ -197,28 +139,10 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         return map;
     }, [request.entries]);
 
-    /* Position from the menu's OWN measured size — it depends on the entries,
-       so it cannot be known before the first render. Layout effect, so the
-       move lands in the same frame the browser paints.
-
-       Measured at the TOP-LEFT CORNER, not at the click point, which is why
-       the unmeasured render puts it there. A fixed-position box with `left`
-       set and no width shrinks to fit the room between that edge and the
-       viewport's — so measuring it at a click near the right edge would
-       measure a box squeezed down to its min-width, and the flip would then
-       place a wider menu than the one it measured, back off the screen. At 0,0
-       the whole viewport is available and the measurement is the real one. */
     useLayoutEffect(() => {
         const el = menuRef.current;
         if (!el) return;
-        // Rows from a menu this one REPLACED (a right-click while another menu
-        // is open re-renders this component rather than remounting it) are
-        // still sitting past the end of the array, detached. Arrow-key
-        // navigation would happily focus one.
         itemsRef.current.length = rowIndex.size;
-        // For the same reason: the pointerdown that dismissed the previous
-        // menu cleared this flag, and the menu that replaced it is owed its
-        // own focus round trip.
         restoreFocusRef.current = true;
         const rect = el.getBoundingClientRect();
         setPos({
@@ -227,8 +151,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         });
     }, [request, rowIndex]);
 
-    // Same treatment for a flyout: beside the row it belongs to, flipped to the
-    // row's left when there is no room to its right.
     useLayoutEffect(() => {
         const el = panelRef.current;
         if (!flyout || !el) { setPanelPos(null); return; }
@@ -241,18 +163,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         if (flyout.focus) el.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
     }, [flyout, request.dir]);
 
-    /* Dismissal. Mirrors VaultMenu's, with the two listeners a menu
-       anchored to a VIEWPORT POINT needs and the vault switcher's menu did not:
-       a scroll moves the thing the menu was aimed at out from under it, and
-       this menu is routinely raised inside a scrollable editor.
-
-       Escape is on `window`, in the CAPTURE phase, and both prevented and
-       stopped. The bubble-phase `dismissOnEscape` (utils/escapeDismiss.ts)
-       that VaultMenu and the backlinks popover use yields to whatever handled
-       Escape first — right for a surface beside the editor, wrong here:
-       CodeMirror binds Escape too, and focus is usually still in (or one Tab
-       away from) a pane behind this menu, so the pane would take the press
-       this menu owns — the exact bug ConfirmDialog.tsx was written to fix. */
     useEffect(() => {
         const inside = (node: EventTarget | null): boolean =>
             node instanceof Node
@@ -260,13 +170,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
 
         const onPointerDown = (e: PointerEvent) => {
             if (inside(e.target)) return;
-            // A press on the button that raised this menu is left to that
-            // button's own click, which closes the menu through the store
-            // (openContextMenu toggles on a matching `anchor`). Closing here
-            // as well was the flicker: this pointerdown took the menu down and
-            // the same press's click raised it straight back up. Read through
-            // a ref so this effect still registers once per mount — the
-            // listeners' order against other capture listeners is load-bearing.
             const anchor = requestRef.current.anchor;
             if (anchor && e.target instanceof Node && anchor.contains(e.target)) return;
             restoreFocusRef.current = false;
@@ -278,16 +181,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
             e.stopPropagation();
             onClose();
         };
-        // Capture, because a scroll inside the editor does not bubble to
-        // window. A scroll of the menu's OWN content is not a reason to close
-        // it, hence the containment test. Nor is a text field scrolling its own
-        // text, which moves nothing on the page: xterm repositions its hidden
-        // input textarea on the very right-click that raises the terminal's menu
-        // (measured: after a paste, the menu closed ~4 ms after it opened).
-        // Nor is the scroll of a panel beside what the menu was raised over: only a scroll that moves that (the page, a scroller
-        // holding the opener, or one under the point the menu was raised at) leaves the menu pointing at the wrong place. A
-        // right-click on a board item not yet selected changes the Styles panel's rows, which clamps the panel's scroll, and that
-        // closed the board's menu the moment it opened (measured: every right-click and pen barrel click after Escape).
         const moves = (target: EventTarget | null): boolean => {
             if (!(target instanceof Element)) return true;
             const { opener, x, y } = requestRef.current;
@@ -312,46 +205,18 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         };
     }, [onClose]);
 
-    /* Take the keyboard on the way in and hand it back on the way out.
-       In an effect rather than with `autoFocus`, so StrictMode's simulated
-       remount (setup → cleanup → setup) still ends with a row focused instead
-       of with the cleanup's restore having the last word — the reasoning
-       ConfirmDialog.tsx:77-80 records.
-
-       The FIRST ENABLED row, not row 0: a disabled <button> cannot take focus
-       at all, and this menu deliberately keeps its dead rows on screen. With
-       every row disabled the menu itself takes focus, so the arrow keys and
-       Escape still have somewhere to land. */
     useEffect(() => {
         const first = itemsRef.current.find(el => !!el && !el.disabled);
         (first ?? menuRef.current)?.focus({ preventScroll: true });
-        // Captured per request, so a menu that REPLACED another still hands
-        // focus back to the element its own right-click came from.
         const opener = request.opener;
         return () => {
             if (!restoreFocusRef.current) return;
-            // ...and only if nothing else has taken the keyboard in the
-            // meantime. A row's own `run` may place focus deliberately, and it
-            // runs SYNCHRONOUSLY while this cleanup does not — so an
-            // unconditional restore undoes it. Measured: Insert table… leaves
-            // the caret in the new table's first header cell, and this handed
-            // focus straight back to .cm-content, where the caret had already
-            // mapped past the table — so the next keystroke landed on the line
-            // AFTER the table the user had just asked for.
-            //
-            // Dismissing leaves focus nowhere, which is what makes this test
-            // the right one: a passive cleanup runs after the row is detached,
-            // so Escape and a pick-with-no-focus-of-its-own both arrive here
-            // with the document back on <body>.
             const active = document.activeElement;
             if (active && active !== document.body) return;
             if (opener?.isConnected) opener.focus();
         };
     }, [request]);
 
-    /** Arrow-key navigation skips DISABLED rows — they stay on screen so the
-     *  reader can see what is unavailable and why, but stopping on one would
-     *  be a keyboard trap for a row that cannot do anything. */
     const moveFocus = useCallback((to: 'first' | 'last' | 'next' | 'prev') => {
         const rows = itemsRef.current.filter(
             (el): el is HTMLButtonElement => !!el && !el.disabled);
@@ -374,9 +239,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         row?.focus();
     }, [flyout, rowIndex]);
 
-    /** Select all with the keyboard on a row would take the page behind the menu: nothing in a menu is text to select
-     *  (measured: 276 and 1,713 characters of the app's own text, with a board's zoom menu open — its rows keep it open). A
-     *  field inside the menu keeps its own. */
     const swallowSelectAll = (e: React.KeyboardEvent<HTMLDivElement>): boolean => {
         if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== 'a'
             || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return false;
@@ -401,9 +263,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         }
     };
 
-    /** The flyout's own keys. Everything the flyout handles it stops itself; what
-     *  reaches here is ArrowLeft at the grid's left edge, which means "back to
-     *  the menu". */
     const onPanelKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
         if (swallowSelectAll(e)) return;
         if (e.key === (request.dir === 'rtl' ? 'ArrowRight' : 'ArrowLeft')) {
@@ -430,9 +289,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         void run();
     };
 
-    // An unclaimed desktop-file drop opened a separate browser tab in D11;
-    // the app and dirty note stayed open. This surface consumes its own drops
-    // before the window-level fallback, just like the split divider.
     const cancelDrop = (e: React.DragEvent) => e.preventDefault();
 
     return (
@@ -444,21 +300,13 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                 aria-label={request.label}
                 lang={request.lang}
                 dir={request.dir}
-                // Focusable only as the fallback for a menu whose every row is
-                // disabled; -1 keeps it out of the Tab order.
                 tabIndex={-1}
-                // Invisible and at the corner until measured — see the layout
-                // effect for why the corner and not the click point, and
-                // HIDDEN_UNTIL_MEASURED for why not `visibility`.
                 style={{
                     left: pos ? pos.left : 0,
                     top: pos ? pos.top : 0,
                     ...(pos ? null : HIDDEN_UNTIL_MEASURED),
                 }}
                 onKeyDown={onMenuKeyDown}
-                // A right-click ON the menu is still a right-click, and
-                // without this the browser's own menu opens on top of the
-                // app's — the one thing this whole surface exists to replace.
                 onContextMenu={(e) => e.preventDefault()}
                 onDragOver={cancelDrop}
                 onDrop={cancelDrop}
@@ -469,8 +317,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                     }
 
                     if (entry.kind === 'label') {
-                        // role="none": text the menu carries, not an item of it.
-                        // The blank check column keeps it in the labels' column.
                         return (
                             <div key={entry.id} className="context-menu-label" role="none" data-tooltip={entry.tooltip}>
                                 {hasChecks && <span className="context-menu-item-check" aria-hidden="true" />}
@@ -524,8 +370,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                             role={entry.checked !== undefined ? 'menuitemradio' : 'menuitem'}
                             aria-checked={entry.checked !== undefined ? entry.checked : undefined}
                             disabled={entry.disabled}
-                            // Required when disabled: a dead row that says
-                            // nothing is indistinguishable from a broken one.
                             data-tooltip={entry.reason}
                             onMouseEnter={() => {
                                 if (request.entries.find(item => item.id === flyout?.id)?.kind === 'submenu') setFlyout(null);
@@ -544,12 +388,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                 })}
             </div>
 
-            {/* A picker is a flyout BESIDE the menu, not a modal: it has no
-                backdrop, takes no focus round trip and needs no change to the
-                app's ask()/tell() dialog — which could not host one anyway (its
-                children render inside a <p> and its confirm carries no value).
-                Positioned inline because only this component knows the row it
-                hangs off; the stylesheet gives it its chrome. */}
             {flyout && (() => {
                 const entry = request.entries.find(e => e.id === flyout.id);
                 if (!entry || (entry.kind !== 'grid' && entry.kind !== 'entry-style' && entry.kind !== 'submenu')) return null;
@@ -584,12 +422,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                             <ErrorBoundary label="The icon picker" fallback={(error, retry) => (
                                 <div className="folder-style-picker folder-style-failure"><PartFailureBox error={error} retry={retry} what="the icon picker" /></div>
                             )}>
-                                {/* Lazy, and that is the whole bundle argument:
-                                    this is the only route to the Lucide set, so
-                                    a session that never opens it never fetches
-                                    it. Unlike the size grid, picking here does
-                                    NOT close the menu — colour and icon are two
-                                    choices and are usually both wanted. */}
                                 <EntryStylePicker
                                     fallback={<div className="folder-style-picker folder-style-loading">Loading icons…</div>}
                                     icon={entry.icon}

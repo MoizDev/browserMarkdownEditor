@@ -3,7 +3,6 @@ import type { SampleRef } from '../model/samples';
 import { encodeLegacySample } from './sampleWire';
 import type { LegacyLoadAdapterOptions, LegacyLoadAdmit } from './loadAdapterTypes';
 
-// C5 owns validation/repair; the original ordered arrays reach it before any table deduplication.
 export function createLegacyLoadAdapter(options: LegacyLoadAdapterOptions): LegacyLoadAdmit {
     return async (input, samples, root, report) => {
         const sheets = Array.from(input.sheets), nodes = Array.from(input.nodes ?? []), media = Array.from(input.media ?? []);

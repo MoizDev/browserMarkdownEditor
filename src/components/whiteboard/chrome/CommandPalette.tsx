@@ -7,9 +7,7 @@ import './chrome.css';
 
 export interface CommandPaletteProps {
     readonly groups: readonly PaletteGroup[];
-    /** A read-only board lists only the rows that can run there. */
     readonly readOnly: boolean;
-    /** Keys of the commands run most recently, newest first. */
     readonly recent: readonly string[];
     readonly label: string;
     readonly placeholder: string;
@@ -18,9 +16,7 @@ export interface CommandPaletteProps {
     readonly backLabel: string;
     readonly locale: string;
     readonly direction: 'ltr' | 'rtl';
-    /** Focus goes here when the palette closes, unless the close came from a pointer press elsewhere. */
     readonly returnFocus: HTMLElement | null;
-    /** A command was chosen. The owner closes the palette and runs it; `key` names the row for Recent. */
     readonly onRun: (key: string, command: ContextMenuCommand) => void;
     readonly onClose: () => void;
 }
@@ -28,11 +24,9 @@ export interface CommandPaletteProps {
 interface Level { readonly key: string; readonly label: string; readonly entries: readonly ContextMenuEntry[]; readonly from: string }
 
 interface Row {
-    /** Unique within the list, so the keyboard highlight and the option id name one row. */
     readonly id: string;
     readonly kind: 'heading' | 'separator' | 'command' | 'submenu';
     readonly label: string;
-    /** The row's path of ids, the key Recent stores. */
     readonly key: string;
     readonly crumb?: string;
     readonly shortcut?: string;
@@ -48,7 +42,6 @@ function commandRow(id: string, key: string, entry: ContextMenuCommand, crumb?: 
         disabled: !!entry.disabled, reason: entry.disabled ? entry.reason : undefined, command: entry };
 }
 
-/** The rows of one level, keyed by their path so a row keeps its identity while the palette is open. */
 function levelRows(entries: readonly ContextMenuEntry[], base: string, scope: string): Row[] {
     return entries.flatMap((entry, index): Row[] => {
         if (entry.kind === 'separator') return [{ id: `${scope}|sep${index}`, kind: 'separator', label: '', key: '', disabled: true }];
@@ -59,11 +52,6 @@ function levelRows(entries: readonly ContextMenuEntry[], base: string, scope: st
     });
 }
 
-/**
- * The command palette: one searchable list of the board's commands, with nested submenus. It is a modal dialog: the
- * keyboard stays in its search field (arrows and Tab move, Enter runs, Escape backs out or closes), and focus goes back
- * to the board when it closes. Its state (open, submenu path, query) lives in the owner; this draws and routes keys.
- */
 export function CommandPalette({ groups, readOnly, recent, label, placeholder, emptyLabel, recentLabel, backLabel, locale, direction,
     returnFocus, onRun, onClose }: CommandPaletteProps) {
     const baseId = useId();
@@ -107,19 +95,16 @@ export function CommandPalette({ groups, readOnly, recent, label, placeholder, e
     const hasChecks = rows.some(row => row.checked !== undefined);
     const optionDom = (row: Row) => `${baseId}-${rows.indexOf(row)}`;
 
-    // The highlight follows the keyboard: a row scrolls into view when it becomes active, never by the pointer alone.
     useLayoutEffect(() => {
         listRef.current?.querySelector<HTMLElement>('[data-active="true"]')?.scrollIntoView({ block: 'nearest' });
     }, [active]);
 
-    // The palette opens once and a close is the owner's unmount, so the focus target is read at that moment, not captured per render.
     const returnRef = useRef(returnFocus);
     useLayoutEffect(() => { returnRef.current = returnFocus; }, [returnFocus]);
     useEffect(() => {
         inputRef.current?.focus({ preventScroll: true });
         return () => {
             if (swallowEnter.current) window.removeEventListener('keyup', swallowEnter.current, true);
-            // Pointer dismissal moved focus to what was pressed; the keyboard's own close hands it back to the board.
             const target = returnRef.current;
             if (restoreFocus.current && target?.isConnected) target.focus({ preventScroll: true });
         };
@@ -150,7 +135,6 @@ export function CommandPalette({ groups, readOnly, recent, label, placeholder, e
     };
 
     const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-        // The palette owns every key while it is open: nothing reaches the board or the app's own shortcuts.
         event.stopPropagation();
         if (event.nativeEvent.isComposing) return;
         const input = event.currentTarget, caretAtEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length;

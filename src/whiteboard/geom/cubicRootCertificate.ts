@@ -13,7 +13,6 @@ function coefficients(p: readonly [Dyadic, Dyadic, Dyadic, Dyadic], q: Dyadic): 
         sum(dyadicSubtract(times(p[1], 3n), p[0]), dyadicSubtract(p[3], times(p[2], 3n)))];
 }
 
-/** Exact common-root certificate for the two dyadic cubic coordinate polynomials. */
 export function createCubicRootCertificate(points: readonly [ExactCurvePoint, ExactCurvePoint, ExactCurvePoint, ExactCurvePoint],
     query: ExactCurvePoint, limits: CubicRootLimits = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): CubicRootResult; cancel(): void } {
     const maxBits = limits.maxBits ?? 16384, maxWork = limits.maxWork ?? 1000000;

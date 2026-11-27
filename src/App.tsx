@@ -65,21 +65,13 @@ import { opensInApp } from './utils/documentReading';
 import type { FileTreeNode } from './types';
 import type { NativeCanvasHost } from './types/nativeCanvas';
 
-// The AI agent panel and everything under it (its CSS, the WebSocket bridge,
-// the reply renderer, the aicss components) load on first open — a reader who
-// never opens it downloads none of it.
 // Module slots, not React.lazy: React.lazy keeps a rejected import for the life of the page, so one dropped request
 // (or a redeploy) made the panel unopenable until reload; a slot imports again on its boundary's Try again.
 const AgentPanel = moduleSlot(() => import('./components/AgentPanel')).View;
-// Opened on demand and never on the way to typing: Settings, the Trash bin and
-// the graph are each a panel the reader asks for, so none of them belongs in
-// the chunk that has to land before the editor does. `prefetchPanes` warms the
-// heavy ones at idle; these are small enough to fetch on the click.
 const SettingsPanel = moduleSlot(() => import('./components/SettingsPanel')).View;
 const TrashPanel = moduleSlot(() => import('./components/TrashPanel')).View;
 const GraphView = moduleSlot(() => import('./components/GraphView')).View;
 
-/** A lazy panel's failure, inside the panel's own place (the agent dock, the main view). */
 function panelFailure(what: string) {
   return (error: unknown, retry: () => void) => (
     <div className="part-failure-host">
@@ -88,7 +80,6 @@ function panelFailure(what: string) {
   );
 }
 
-/** A modal panel's failure (Settings, Trash): the same card over the workspace, closable as the panel was. */
 function modalFailure(what: string, close: () => void) {
   return (error: unknown, retry: () => void) => (
     <div className="settings-overlay" onClick={close}>
@@ -179,7 +170,6 @@ export default function App() {
 
   const { currentVaultIdRef, rootHandleRef, fileTreeRef, readerEpochRef } = useLiveVault(rootHandle, currentVaultId, fileTree);
   const { saveStatus, setSaveStatus, showStatus, holdStatus, announce } = useStatusLine();
-  // An old board's editable copy is composed after the opener and the canvas host that call into it (useEditableCopy).
   const editableCopyRef = useRef<NativeCanvasHost['makeEditableCopy'] | null>(null);
   const oldBoardOpenedRef = useRef<((id: string, name: string) => void) | null>(null);
   const {
@@ -275,8 +265,6 @@ export default function App() {
     setLayout, setTabs, setSaveStatus, setMainView, rememberAssetRefs, seedPdfBaseline,
     seedDocumentBuffer, oldBoardOpenedRef
   });
-  // A click (or Enter) on a file in the tree opens it AND gives it the keyboard, as a tab-bar click does: the
-  // keyboard otherwise stays on the tree row, so a drawing's first tool shortcut went nowhere.
   const openFromTree = useCallback(async (node: FileTreeNode) => {
     if (await handleFileClick(node) && opensInApp(node.name)) requestDocumentKeyboard(node.path);
   }, [handleFileClick]);
@@ -348,12 +336,8 @@ export default function App() {
   } = useVaultOpeners({
     pickDirectoryFromFileSystem, openRecentVault, openFolderAsVault, canLeavePdfVault, notify, tell
   });
-  // "Open another vault…" on the loading and problem screens. Neither draws the workspace's notice bar, so a pick
-  // that was refused or failed is said in a dialog: unsaid, the button did nothing at all, on the two screens whose
-  // whole purpose is a way on.
   const openOtherVault = useCallback(() => {
     void pickDirectorySafely().then(result => {
-      // Refused: the app has already said why this vault cannot be left yet.
       if (result === 'ok' || result === 'refused') return;
       void tell(result === 'busy'
         ? { title: 'Still opening a folder', body: 'The app is still reading a folder that was picked a moment ago. Wait for it to finish, or reload the app to stop it.', confirmLabel: 'OK' }
@@ -515,8 +499,6 @@ export default function App() {
     markdownSessions, contentOf, hasUnsaved, changeTabMode
   });
 
-  // The welcome screen can report a refused open too; returning before the
-  // workspace's host used to hide the app notice on exactly that path.
   const dialogHost = dialog && (
     <ConfirmDialog
       questionId={dialog.id ?? 0}
@@ -535,9 +517,6 @@ export default function App() {
   );
 
 
-  // Whether the workspace on screen is this vault's restored session — the
-  // graph keeps its layout per vault only then. Read in render because the
-  // claim is made by the restore effect, and the graph must key on its result.
   // eslint-disable-next-line react-hooks/refs -- the claim lives in refs by design (useSessionPersistence)
   const sessionRestored = sessionRootRef.current === rootHandle && sessionVaultIdRef.current === currentVaultId;
 
@@ -551,8 +530,6 @@ export default function App() {
     </div>
   );
 
-  // Every screen below is drawn inside one boundary that App itself sits above, so a part that fails to draw leaves
-  // App — its tabs, buffers and save machinery — mounted, and the failure screen can still save before reloading.
   const guard = (screen: ReactNode) => (
     <AppRecoveryProvider value={appRecovery}>
       <ErrorBoundary label="The workspace" fallback={(error, retry) => <AppFailure error={error} retry={retry} />}>
@@ -658,7 +635,6 @@ export default function App() {
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">
         {currentVaultId && rootHandle && (
-          // An offer surface: if it cannot draw, the workspace goes on without it (the console says why).
           <ErrorBoundary key={currentVaultId} label="The recovery offers" fallback={() => null}>
             <RecoverySurface vaultId={currentVaultId} activePath={activeTabPath} inspect={inspectRecovery} recover={recoverEntry} saveCopy={saveRecoveryCopy} status={announce} journal={recoveryJournal} />
           </ErrorBoundary>
@@ -735,9 +711,6 @@ export default function App() {
             onRevealHandled={handleRevealHandled}
           />
         )}
-        {/* After the main view and outside its ternary, so the graph view never
-            unmounts it; the shells themselves live in a module store and
-            outlive the dock either way. */}
         <ErrorBoundary label="The terminal" fallback={(error, retry) => terminalOpen && <div className="part-failure-host is-dock"><PartFailureBox error={error} retry={retry} what="the terminal" /></div>}>
           <TerminalDock open={terminalOpen} takeFocus={terminalOpenedByUser} onHide={hideTerminal} />
         </ErrorBoundary>
@@ -794,9 +767,6 @@ export default function App() {
         />
         </ErrorBoundary>
       )}
-      {/* Over the workspace like Settings, and before ConfirmDialog for the
-          same reason the menu is: nearly everything this panel does raises a
-          question, and the dialog has to cover the panel that asked it. */}
       {showTrash && (
         <ErrorBoundary label="The Trash" fallback={modalFailure('the Trash', closeTrash)}>
         <TrashPanel
@@ -811,12 +781,7 @@ export default function App() {
         />
         </ErrorBoundary>
       )}
-      {/* Before the dialog, so ConfirmDialog still covers it: a menu row can
-          raise a question (Move to Trash), and the menu closes first anyway. */}
       {contextMenu && <ContextMenu request={contextMenu} onClose={closeContextMenu} />}
-      {/* Last, so it sits over the settings panel as well as the workspace —
-          and outside the editor, because the questions it asks are the file
-          tree's (which is visible in the graph view too). */}
       {dialogHost}
       <SaveNotices>{updateNotice}</SaveNotices>
     </div>

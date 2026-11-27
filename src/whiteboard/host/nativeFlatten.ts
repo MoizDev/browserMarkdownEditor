@@ -6,14 +6,11 @@ import { prepareNativeExport } from './nativeExport';
 export interface NativeFlattenOptions extends Omit<FlattenOptions, 'capture'> {
     readonly boardName: string;
     readonly theme: 'light' | 'dark';
-    /** App-owned immutable asset acquisition; never a direct filesystem read here. */
     readMedia(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     notice(message: string): void;
     onError(error: unknown): void;
 }
 
-/** The existing single flatten mutation job owns actual capture, media admission,
- * attachment-aware deletion and replacement. Capture never starts another session job. */
 export function flattenNativeSelection(options: NativeFlattenOptions): Promise<NodeId | null> {
     return flattenSelectionToImage({ ...options, async capture(roots, excludedLocked, signal) {
         const job = await prepareNativeExport({ runtime: options.runtime, route: 'copy', boardName: options.boardName,

@@ -33,8 +33,6 @@ function distance(point: ExactPoint, start: Vec2, end: Vec2, length: number, err
     return result;
 }
 
-/** Closed line versus every transformed contour. Exact rational endpoints are
- * retained through all clip intersections; only final distances are rounded. */
 export function* exactConnectorLineCrossings(start: Vec2, end: Vec2, length: number, contours: readonly ExactConnectorContour[],
     error: number, maxPieces: number): Generator<void, readonly ExactConnectorCrossing[]> {
     if (![start.x, start.y, end.x, end.y, length, error].every(Number.isFinite) || length <= 0 || error <= 0

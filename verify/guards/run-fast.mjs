@@ -3,8 +3,6 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fastRoot, fastScratch, prepareFast } from '../lib/fast.mjs';
 
-// Both builds finish before the first guard runs; the guards reuse those frozen preparations
-// (`serveApp({ build: false })`), so no guard rebuilds what another is measuring.
 if (process.argv.includes('--prepare')) {
     await prepareFast();
 } else {

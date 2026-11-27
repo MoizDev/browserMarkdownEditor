@@ -23,8 +23,6 @@ export interface StickyHandleOptions {
 }
 const directions: readonly StickyDirection[] = ['up', 'right', 'down', 'left'];
 const SVG_NS = 'http://www.w3.org/2000/svg';
-/** The four neighbour points in world coordinates, written into `out` (x, y pairs in `directions` order), shifted by a drag's
- * translation. By reading: the old per-direction lookup read the node's pose four times a frame and allocated a point each. */
 function directionPoints(runtime: BoardRuntime, node: Readonly<StickyNode>, out: Float64Array, shiftX: number, shiftY: number): void {
     const pose = worldPose(runtime.session.doc, node.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
     const width = 200 * node.scale, height = (200 + node.growY) * node.scale;
@@ -37,7 +35,6 @@ function directionPoints(runtime: BoardRuntime, node: Readonly<StickyNode>, out:
 }
 interface Button { readonly circle: SVGCircleElement; readonly across: SVGLineElement; readonly down: SVGLineElement; readonly at: Float64Array }
 
-/** Sticky neighbour chrome is a view of the selected session node, not saved content. */
 export function createStickyHandles(options: StickyHandleOptions) {
     const { runtime } = options, session = runtime.session;
     let svg: SVGSVGElement | undefined, pending: AbortController | undefined, disposed = false;
@@ -50,8 +47,6 @@ export function createStickyHandles(options: StickyHandleOptions) {
         return node?.kind === 'sticky' && !isLocked(session.doc, node) ? node : null;
     };
     const clear = () => { svg?.remove(); svg = undefined; buttons = null; presented.clear(); };
-    // The four buttons are built once per svg and moved by their numbers: a frame that moves nothing writes nothing. By reading:
-    // the frame replaced all twelve nodes every time, and during a drag the sticky moves on every move.
     let buttons: readonly Button[] | null = null;
     let coarseShown = pointerIsCoarse();
     const scratch = new Float64Array(directions.length * 2), hitScratch = new Float64Array(directions.length * 2);
@@ -62,7 +57,6 @@ export function createStickyHandles(options: StickyHandleOptions) {
             buttons = null;
         }
         const parent = svg;
-        // The neighbour dots grow for a finger or a pen (catalogue I§4.5); they keep their nodes and only change their radius.
         if (buttons && coarseShown !== pointerIsCoarse()) { coarseShown = pointerIsCoarse(); for (const button of buttons) button.circle.setAttribute('r', String(handleRadius(7))); }
         if (!buttons) buttons = directions.map(() => {
             const circle = document.createElementNS(SVG_NS, 'circle');
@@ -76,7 +70,6 @@ export function createStickyHandles(options: StickyHandleOptions) {
         directionPoints(runtime, node, scratch, moving ? moving.x : 0, moving ? moving.y : 0);
         for (let i = 0; i < buttons.length; i++) {
             const button = buttons[i];
-            // The same mapping as worldToSurface, inline so a frame allocates no point.
             const x = (scratch[2 * i] - camera.x) * camera.z, y = (scratch[2 * i + 1] - camera.y) * camera.z;
             if (button.at[0] === x && button.at[1] === y) continue;
             button.at[0] = x; button.at[1] = y;
@@ -95,7 +88,6 @@ export function createStickyHandles(options: StickyHandleOptions) {
             const node = selected(), camera = presented.at(time);
             if (!node || !camera || ![surface.x, surface.y].every(Number.isFinite)) return null;
             directionPoints(runtime, node, hitScratch, 0, 0);
-            // Default, calibration cut by owner: the touch target is larger than the visible button.
             const radius = coarse ? 18 : 9;
             for (let i = 0; i < directions.length; i++) {
                 const x = (hitScratch[2 * i] - camera.x) * camera.z, y = (hitScratch[2 * i + 1] - camera.y) * camera.z;

@@ -14,8 +14,6 @@ import { SECURITY_LIMITS } from '../security/limits';
 import type { BoardPayload } from './snapshot';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: private clipboard records, native reader/line-table and C5
-// admission contracts; independent synthetic container, no third-party source.
 function take<T>(result: WriteResult<T>): T {
     if (!result.ok) throw new Error(`Clipboard native record refused: ${result.error.reason}`);
     return result.value;

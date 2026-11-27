@@ -11,8 +11,6 @@ import { bindServedBodies } from '../../lib/identity.mjs';
 import { serveApp } from '../../lib/serve.mjs';
 import { createReport } from '../../lib/report.mjs';
 
-// Real-app differential only. The generator is data tooling; no application
-// module, extracted step, fake EditorState or mutable measurement hook is called.
 const args = parseArgs(process.argv.slice(2), ['reference', 'candidate', 'cases', 'themes']);
 if (!args.reference || !args.candidate) throw new Error('Supply --reference/--candidate <prepared benchmark scratch>');
 const themes = (args.themes ?? 'dark,light').split(',');
@@ -116,8 +114,6 @@ async function openGraph(session, server, bundle, theme, name) {
     await page.waitForFunction(() => window.__perf.graph.steps >= 300, undefined, { timeout: 60000 });
     const read = () => page.evaluate(() => ({ positions: window.__perf.graph.positions(), edges: window.__perf.graph.snapshot(), steps: window.__perf.graph.steps }));
     const layout = await read();
-    // Negative observation of rest, not a completion sleep: the full snapshot
-    // must stay identical for this interval after the working-step target.
     await page.waitForTimeout(1000);
     await check(`${name} stable after settle`, true, isDeepStrictEqual(layout, await read()));
     await check(`${name} application errors`, [], errors);

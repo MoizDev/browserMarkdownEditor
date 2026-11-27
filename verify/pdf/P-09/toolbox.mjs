@@ -1,4 +1,3 @@
-// Verification uses only the in-tree V-01a API; record its actual provenance.
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';

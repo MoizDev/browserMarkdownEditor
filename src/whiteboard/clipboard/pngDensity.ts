@@ -1,7 +1,5 @@
 import { SECURITY_LIMITS } from '../security/limits';
 
-// Provenance: clipboard §2.4 private PNG pHYs convention and PNG chunk
-// grammar; independent bounded extraction, no upstream engine source.
 export function pngCrc32(bytes: Uint8Array): number {
     let crc = 0xffffffff;
     for (const value of bytes) {

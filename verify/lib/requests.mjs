@@ -1,6 +1,3 @@
-/** Network traffic observed by the driver, not an in-app fetch monkey patch.
- * @param {import('playwright').Page} page
- */
 export function recordRequests(page) {
     const context = page.context(), records = [], byRequest = new WeakMap(), pending = new Set();
     const request = req => {

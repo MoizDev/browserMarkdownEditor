@@ -16,7 +16,6 @@ export interface StructureCommandsOptions {
     onError(error: unknown): void;
 }
 
-/** Structural commands act on the App-owned session, never a view-local document. */
 export function createStructureCommands(options: StructureCommandsOptions) {
     const board = options.runtime.session, doc = board.doc;
     const guard = () => {
@@ -92,7 +91,6 @@ export function createStructureCommands(options: StructureCommandsOptions) {
                 }
                 const detail = commands.describePageContents(contents);
                 const kept = contents.length - removable.length;
-                // An empty page goes without a question; a page with content names exactly what it will delete (WB-D29).
                 if (detail && !await options.confirm({ title: `Delete page ${expectedPage + 1}?`,
                     body: `It has ${detail} on it, which will be deleted with it.${kept ? ` ${kept} locked or unsupported item${kept === 1 ? ' is' : 's are'} kept.` : ''}`,
                     confirmLabel: 'Delete page', danger: true })) return false;

@@ -22,8 +22,6 @@ function Attached<T extends object, S extends BoardSessionPort>({
         readiness={snapshot.readiness} paint={snapshot.paint} />;
 }
 
-/** A view lease belongs to a mounted pane, not the App-owned session. Passive cleanup runs
- * after ViewerHost's layout cleanup detaches the platform layers and input listeners. */
 export default function DrawingSessionView<T extends object, S extends BoardSessionPort>(props: DrawingSessionViewProps<T, S>) {
     const lease = useBoardViewLease({ adapter: props.adapter, attachView: props.attachView, onError: props.onAttachError,
         parameters: { mode: props.mode, visible: props.isVisible, focused: props.isFocused, theme: props.theme, inverted: props.inverted } });

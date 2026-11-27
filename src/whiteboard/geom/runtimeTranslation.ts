@@ -17,8 +17,6 @@ import { TranslationPlan } from './translation';
 import { constrainedTranslation } from './transforms';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-/** The correction that moves a dragged note into the free slot beside another note it is within `10 / zoom` of (catalogue S§7.5).
- * Only a note on an unrotated frame has slots; the note itself neither offers nor occupies one. */
 function stickyPitCorrection(doc: BoardDoc, root: Node, delta: Vec2, zoom: number): Vec2 | null {
     if (root.kind !== 'sticky' || root.rotation !== 0) return null;
     const parent = worldPose(doc, root.parent as ParentId), origin = worldPose(doc, root.id);
@@ -29,9 +27,6 @@ function stickyPitCorrection(doc: BoardDoc, root: Node, delta: Vec2, zoom: numbe
     return slot ? { x: slot.x - x, y: slot.y - y } : null;
 }
 
-/** Positions commit to 1e-6 board units. Finer than any pointer step at any zoom, and coarser than the binary64 residue a delta
- * leaves: measured, a grid landing at 120 committed as 119.99999999999994 and a free drag as 290.00000000000006. Applied once,
- * to the committed placement; the live preview keeps the exact arithmetic so the gesture's feel does not change. */
 const POSITION_SCALE = 1e6;
 function cleanPlacement(op: NodeSetOp): NodeSetOp {
     if (op.t !== 'set' || (op.key !== 'x' && op.key !== 'y') || typeof op.value !== 'number') return op;
@@ -47,18 +42,15 @@ export interface BoardTranslationOptions {
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
-    /** false is a pure move (keyboard nudges): no object or grid snapping, whatever the preferences say. */
     readonly snap?: boolean;
 }
 export interface BoardTranslationPreview { readonly ops: readonly NodeSetOp[]; readonly doc: BoardDoc; readonly guides: readonly BoardSnapGuide[] }
 export interface BoardTranslationPlan {
-    /** `speed` is the pointer's speed in CSS px per ms; object snapping is off at or above SNAP_MAX_SPEED. */
     preview(point: Vec2, shift: boolean, accel: boolean, signal: AbortSignal, speed?: number): Promise<BoardTranslationPreview>;
     commit(preview: BoardTranslationPreview): void;
     cancel(): void;
 }
 
-/** Translation keeps geometry leases through final actual-geometry page placement and commit. */
 export async function createBoardTranslationPlan(options: BoardTranslationOptions): Promise<BoardTranslationPlan> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
@@ -116,15 +108,12 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                 }
                 if (compensation.length) { candidate = await project([...initial, ...compensation]); assert(); }
                 const scope = await acquireBoardGeometryScope(runtime, roots.map(root => root.id), { doc: candidate, signal: request, current: active, cooperate: options.cooperate });
-                // The plan detaches a connector end whose target is not moving: those ends are committed with the move.
                 const detached = initial.filter(op => op.key === 'start' || op.key === 'end');
                 return { scope, compensation, detached };
             };
             let staged = await stage(delta), final: BoardGeometryScope | undefined, transferred = false;
             try {
                 assert();
-                // Object snapping follows the calibrated default (off unless the modifier or Always Snap enables it) and the
-                // velocity gate. The grid follows the modifier alone: held Cmd/Ctrl turns it off, nothing else does.
                 const objects = options.alwaysSnap() !== accel && !(speed >= SNAP_MAX_SPEED), grid = !accel;
                 if (options.snap !== false && (objects || grid)) {
                     const zoom = options.zoom(), preference = options.alwaysSnap();
@@ -133,8 +122,6 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                     for (const root of roots) { const b = staged.scope.logicalBounds(root.id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
                         x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); }
                     const useX = !shift || delta.x !== 0, useY = !shift || delta.y !== 0;
-                    // A note dragged into a free slot beside another note takes the pit, as a click does; the pit replaces the object
-                    // and grid snap for this move (catalogue S§7.5). Its correction is measured from the current delta.
                     const pit = objects && roots.length === 1 ? stickyPitCorrection(doc, roots[0]!, delta, zoom) : null;
                     const result = pit ? { delta: pit, guides: [] as readonly BoardSnapGuide[] } : await snapBoardBounds({ runtime,
                         bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, selected: roots.map(node => node.id), zoom, allowX: useX,

@@ -19,8 +19,6 @@ import { inspectPdfVisualModel } from './pdfVisualPreflight';
 
 import { validate, type PdfRecoveryRecipe } from './pdfRecoveryRecipe';
 export { createPdfRecoveryRecipe, pdfRecoveryMedia, type PdfRecoveryRecipe } from './pdfRecoveryRecipe';
-/** Rebuild against the owned native copy, then let the contained PDF writer
- * verify and assemble the pristine source, ink, attachments and write mark. */
 export async function materializePdfRecoveryRecipe(payload: unknown, signal: AbortSignal,
     mediaFiles?: ReadonlyMap<string, string>): Promise<Blob> {
     signal.throwIfAborted();

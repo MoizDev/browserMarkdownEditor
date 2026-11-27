@@ -5,18 +5,14 @@ import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import { CLICK_SLOP_CSS, type CancelReason, type FinishReason, type GestureOwner, type Modifiers, type RealSample } from './tool';
 
-/** A dragged label snaps to the path centre within this many CSS px at the current zoom (source-only candidate, unconfirmed). */
 export const LABEL_CENTRE_SNAP_PX = 10;
-/** An arc's bend snaps to straight within 16 px of the chord; an elbow's midpoint to the middle of its range within 10 px (catalogue B§). */
 const HANDLE_CENTRE_SNAP_PX = 16, HANDLE_MID_SNAP_PX = 10;
 
 export interface ConnectorControlGestureOptions {
     readonly runtime: BoardRuntime;
     readonly zoom?: () => number;
     readonly id: NodeId;
-    /** A press on a label that does not drag edits its text (catalogue §7 a.7, S§11.3). */
     readonly editText?: (id: NodeId) => void | Promise<void>;
-    /** A bend or elbow handle that sits on the label: a press that does not drag edits the label, and a drag still bends. */
     readonly clickEdits?: boolean;
     readonly control: ConnectorControl;
     readonly current: () => boolean;
@@ -32,7 +28,6 @@ export interface ConnectorControlGestureOptions {
     readonly cooperate?: () => Promise<void>;
 }
 
-/** Control previews are derived from the original revision; only the last request can commit. */
 export function connectorControlGesture(first: RealSample, _modifiers: Modifiers, options: ConnectorControlGestureOptions): GestureOwner {
     const release = options.hold(), pointerIds = new Set([first.pointerId]);
     let sample = first, sequence = 0, ended = false, cleaned = false, moved = false;
@@ -84,7 +79,6 @@ export function connectorControlGesture(first: RealSample, _modifiers: Modifiers
             if (!options.current()) { cancel(); return; }
             for (const next of samples) if (pointerIds.has(next.pointerId)) {
                 sample = next;
-                // A drag is a move past the click slop: measured in CSS px, so the slop holds at any zoom.
                 if (Math.hypot(next.x - first.x, next.y - first.y) * (options.zoom?.() ?? 1) >= CLICK_SLOP_CSS) moved = true;
             }
             void render(false);

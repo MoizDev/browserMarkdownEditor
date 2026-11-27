@@ -9,7 +9,6 @@ import { centredCamera, contentBounds, fitTarget } from '../commands/contentBoun
 import type { BoardRuntime } from './runtime';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-/** One controller per view lease; input calls changed() after mutating this same camera. */
 export function createBoardViewCamera(options: {
     runtime: BoardRuntime;
     currentPath(): string | undefined;
@@ -33,9 +32,6 @@ export function createBoardViewCamera(options: {
     const knownSheet = (id: string) => [...doc.sheets.values()].find(value => value.id === id)
         ?? [...doc.sheets.values()].find(value => value.id === options.mapLegacyPage?.(id));
     const remembered0 = drawing && knownSheet(drawing.pageId);
-    // A drawing opened here for the first time has no remembered position; the view its file carries (a converted old board's
-    // camera, as it was left in the old app) is honoured exactly. Neither, the content is framed once its bounds are known
-    // (fitFirstView): a fixed top-left at 100% cut a converted board's strokes off at the top, or showed nothing at all.
     const saved = doc.kind === 'whiteboard' && !remembered0 ? runtime.encoder.savedView?.() : undefined;
     const savedSheet = saved && Number.isFinite(saved.x) && Number.isFinite(saved.y) && Number.isFinite(saved.zoom) && saved.zoom > 0
         ? knownSheet(saved.sheet) : undefined;
@@ -50,16 +46,11 @@ export function createBoardViewCamera(options: {
         : saved && savedSheet ? { x: saved.x, y: saved.y, z: Math.min(limits.max, Math.max(limits.min, saved.zoom)) } : { x: 0, y: 0, z: 1 };
     const camera = new CameraController(initialCamera, options.initialViewport,
         stack ? pagedConstraint(stack, limits, insets) : freeConstraint(limits));
-    // A saved view is framed only if it shows none of the sheet's content: honoured, it must never open on an empty view.
     let fitFirstView: 'always' | 'if-empty' | null = doc.kind !== 'whiteboard' || remembered0 ? null : savedSheet ? 'if-empty' : 'always';
     const fitting = new AbortController();
-    // The default top-left needs the same re-apply: without it every drawing with no remembered
-    // position opened shifted by half a pane (a legacy board's content sat in the bottom-right).
     let pendingDrawing = doc.kind === 'whiteboard' ? initialCamera : undefined;
     let timer: ReturnType<typeof setTimeout> | undefined, dirty = false, disposed = false;
     const restore = () => {
-        // The first 0→measured resize preserves the old viewport's centre.
-        // Reapply the stored top-left afterwards, or reopening shifts by half a pane.
         if (pendingDrawing && camera.viewport.width > 0 && camera.viewport.height > 0) {
             camera.setCamera(pendingDrawing); pendingDrawing = undefined;
             if (fitFirstView) { const mode = fitFirstView; fitFirstView = null; void frameContent(mode); }
@@ -70,15 +61,9 @@ export function createBoardViewCamera(options: {
         camera.setCamera(next);
         pending = undefined;
     };
-    /** Frames the current sheet's content, as Zoom to fit does but never past 100% (a small drawing is shown at its size, not
-     * blown up). Only a camera choice: nothing in the document moves and nothing is written. Skipped if the person has moved the
-     * view meanwhile, or the board changed under the measurement; a sheet with no content stays at the top-left. */
     async function frameContent(mode: 'always' | 'if-empty'): Promise<void> {
         const from = { ...camera.camera }, sheetId = runtime.selection.getSnapshot().sheet;
         const moved = () => camera.camera.x !== from.x || camera.camera.y !== from.y || camera.camera.z !== from.z;
-        // A converted board's scene is still settling as it opens, and the measurement it cancels ("Scene geometry changed") is
-        // not the person's doing: measured once, the far-off saved view of a converted board stayed empty. Measured again, a few
-        // times, while nobody has moved the view and the document is the one it opened with.
         for (let attempt = 0; attempt < 6; attempt++) {
             const revision = doc.rev;
             const fence = () => {
@@ -147,7 +132,6 @@ export function createBoardViewCamera(options: {
             if (!next || next === stack) return;
             let position = pending ?? (stack ? pagedPosition(camera.camera, camera.viewport, stack, insets) ?? undefined : undefined);
             const fit = fitWidthZ(camera.viewport, next, insets);
-            // Paper changes preserve absolute zoom; a dormant initial restore keeps its saved relative zoom.
             if (!pending && position && fit) position = { ...position, zoom: camera.camera.z / fit };
             stack = next;
             camera.setConstraint(pagedConstraint(next, limits, insets));
@@ -163,7 +147,6 @@ export function createBoardViewCamera(options: {
     if (typeof window !== 'undefined') window.addEventListener('pagehide', onPageHide);
     return {
         camera,
-        /** Rebinding transfers view callbacks; the camera and document subscriptions stay owned here. */
         bind(next: Pick<typeof options, 'currentPath' | 'invalidate' | 'onError'>) {
             if (disposed || ports) throw new Error('Camera owner is already bound or disposed');
             ports = next;

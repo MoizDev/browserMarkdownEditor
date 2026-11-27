@@ -1,7 +1,6 @@
 import type { Camera } from '../types';
 import type { FrameToken } from './types';
 
-/** Passive benchmark observations only. Pixel coverage must come from executed-paint witnesses. */
 export interface RenderPerfFrame {
     readonly frameId: number;
     readonly token: FrameToken;
@@ -41,7 +40,6 @@ export interface RenderPerfSnapshot {
     readonly coverageDrops: readonly CoverageDropRecord[];
     readonly coverageDropCount: number;
     readonly coverageDropOverflow: number;
-    /** Number of older frames discarded; a consumer must not mistake overflow for complete data. */
     readonly overflow: number;
 }
 
@@ -56,7 +54,6 @@ let dropOldest = 0;
 let coverageDropCount = 0;
 let coverageDropOverflow = 0;
 
-/** Record only after the caller has observed a frame; no drawing, readback or verdict is done here. */
 export function recordRenderFrame(frame: RenderPerfFrame): void {
     if (!__BME_BENCH__) return;
     frames ??= [];
@@ -67,7 +64,6 @@ export function recordRenderFrame(frame: RenderPerfFrame): void {
     exposeRenderPerf();
 }
 
-/** Missing witnesses and overwritten coverage records remain explicit, not zero-valued frames. */
 export function recordCoverageDrop(tag: CoverageFrameTag, reason?: string): void {
     if (!__BME_BENCH__) return;
     coverageDrops ??= [];

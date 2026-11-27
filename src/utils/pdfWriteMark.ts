@@ -1,5 +1,3 @@
-// The mark travels with the PDF: a second browser needs no local ledger.
-// The same pure-byte digest works in opaque inspection/writer workers and the host.
 import { artifactHash as hashBytes } from './pdfWriteArtifacts';
 
 const encoder = new TextEncoder();
@@ -10,7 +8,6 @@ const idHeader = encoder.encode(' writeId=');
 const DIGEST_LENGTH = 64;
 export const PDF_WRITE_MARK_PLACEHOLDER = 'VaultWriteMark/1 sha256=' + '0'.repeat(DIGEST_LENGTH);
 
-/** A write id is generated once per frozen board revision and covered by the digest. */
 export function pdfWriteMarkV2Placeholder(writeId: string): string {
     if (!/^[0-9a-f]{32}$/.test(writeId)) throw new Error('Invalid PDF write id');
     return 'VaultWriteMark/2 sha256=' + '0'.repeat(DIGEST_LENGTH) + ' writeId=' + writeId;
@@ -28,8 +25,6 @@ function matches(bytes: Uint8Array, offset: number, expected: Uint8Array): boole
 }
 
 function lastMark(bytes: Uint8Array): number {
-    // Do not decode an entire textbook into a second enormous string. Earlier
-    // literal marker text is ordinary content, covered by the LAST mark's hash.
     for (let i = bytes.length - namespace.length; i >= 0; i--) {
         if (bytes[i] === namespace[0] && matches(bytes, i, namespace)) return i;
     }
@@ -51,8 +46,6 @@ export async function checkPdfWriteMark(bytes: Uint8Array): Promise<PdfWriteMark
         const idStart = end + idHeader.length, idEnd = idStart + 32;
         if (!matches(bytes, end, idHeader) || idEnd > bytes.length) return { kind: 'foreign', reason: 'malformed' };
         writeId = String.fromCharCode(...bytes.subarray(idStart, idEnd));
-        // PDFium's public attachment API writes the mark as a literal string
-        // in /Params, so ')' is also a valid terminator after the write id.
         if (!/^[0-9a-f]{32}$/.test(writeId) || (idEnd < bytes.length && ![0, 9, 10, 12, 13, 32, 41].includes(bytes[idEnd]))) return { kind: 'foreign', reason: 'malformed' };
     }
     const zeroed = bytes.slice();
@@ -62,7 +55,6 @@ export async function checkPdfWriteMark(bytes: Uint8Array): Promise<PdfWriteMark
         : { kind: 'foreign', reason: 'mismatch' };
 }
 
-/** A board can only claim an outer PDF bearing its exact v2 write identity. */
 export async function checkPdfWriteMarkForBoard(bytes: Uint8Array, writeId: string): Promise<PdfWriteMarkCheck> {
     if (!/^[0-9a-f]{32}$/.test(writeId)) return { kind: 'foreign', reason: 'malformed' };
     const check = await checkPdfWriteMark(bytes);
@@ -70,7 +62,6 @@ export async function checkPdfWriteMarkForBoard(bytes: Uint8Array, writeId: stri
     return check.writeId === writeId ? check : { kind: 'foreign', reason: 'mismatch' };
 }
 
-/** Worker-owned serialized bytes, with the newest raw stream still zeroed. */
 export async function sealPdfWriteMark(bytes: Uint8Array): Promise<Uint8Array> {
     const mark = lastMark(bytes);
     const prefix = matches(bytes, mark, header) ? header : matches(bytes, mark, headerV2) ? headerV2 : null;
@@ -80,8 +71,6 @@ export async function sealPdfWriteMark(bytes: Uint8Array): Promise<Uint8Array> {
         throw new Error('The PDF write mark placeholder was not the last mark in the output. Nothing was saved.');
     }
     bytes.set(encoder.encode(await hashBytes(bytes)), start);
-    // An output which cannot verify is a writer fault, never a successful file
-    // that would ask its own author about a foreign edit on the next open.
     if (lastMark(bytes) !== mark || (await checkPdfWriteMark(bytes)).kind !== 'verified') {
         throw new Error('The PDF write mark could not be verified. Nothing was saved.');
     }

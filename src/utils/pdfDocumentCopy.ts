@@ -3,8 +3,6 @@ import type { PdfTextReader } from './pdfReadingText';
 
 const MAX_COPY_BYTES = 16 * 1024 * 1024;
 
-/** Canonical pages, not the currently mounted overlays: Original and the tiled
- *  viewer must copy the same document even when most pages have no DOM. */
 export async function copyPdfDocumentText(reader: Pick<PdfTextReader, 'getPageCount' | 'findEngine'>,
     signal: AbortSignal, normalize: (text: string) => string, notice: (message: string) => void): Promise<void> {
     try {
@@ -16,11 +14,7 @@ export async function copyPdfDocumentText(reader: Pick<PdfTextReader, 'getPageCo
         for (let index = 0; index < total; index++) {
             const page = await reader.findEngine.pageText(index, signal);
             signal.throwIfAborted();
-            // LF boundaries cannot compose glyphs across pages. Normalize per
-            // page so the byte cap is enforced before allocating the joined text.
             const text = normalize(page.text);
-            // Original's observed cross-page copy has one LF at the boundary;
-            // the page stream may already supply that LF as its final EOL.
             const separator = index && !previousEndsInLF ? '\n' : '';
             bytes += encoder.encode(text).byteLength + separator.length;
             if (bytes > MAX_COPY_BYTES) {

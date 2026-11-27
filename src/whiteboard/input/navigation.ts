@@ -15,13 +15,9 @@ export interface TouchActions {
 }
 
 interface TouchContact { point: ContactPoint; eligible: boolean }
-/** Two fingers start undecided. Each threshold is measured from the pair's start, so a finger that only drifts stays a pan
- * until the midpoint moves 16 px, and a pinch is a zoom only after the spacing changes 24 px. Once panning, the spacing must
- * change 64 px before the gesture becomes a zoom: a two-finger pan does not zoom by accident. Measured in CSS px (catalogue I§4.2). */
 const PINCH_ZOOM_START_PX = 24, PINCH_PAN_START_PX = 16, PINCH_ZOOM_FROM_PAN_PX = 64, PINCH_MIN_SPACING_PX = 8;
 interface Pinch { ids: [number, number]; distance: number; zoom: number; anchor: Point; mid: Point; start: Point; mode: 'undecided' | 'panning' | 'zooming' }
 
-// Contact identity survives suppression: a palm held through pen-up is never promoted.
 export class TouchArbiter {
   private readonly touches = new Map<number, TouchContact>()
   private readonly pens = new Set<number>()
@@ -48,9 +44,6 @@ export class TouchArbiter {
   }
   penUp(id: number): void { this.pens.delete(id) }
 
-  // Returns true only when the touch may start authoring; camera contacts are managed here.
-  // Admission is by contact lifetime and pen state alone (F-INPUT-007): a contact that began during pen contact
-  // was already marked ineligible in penDown, and a fresh contact after pen-up is not second-guessed by its size or timing.
   touchDown(point: ContactPoint): boolean {
     if (this.touches.has(point.id)) return false
     const eligible = !this.pens.size
@@ -136,15 +129,10 @@ export interface WheelAdapterOptions {
   readonly toSurface: (x: number, y: number) => Point
   readonly owns: (event: WheelEvent) => boolean
   readonly changed: () => void
-  /** Preferences: a mouse wheel's zoom turn reverses. Panning never reverses. */
   readonly invertZoom?: () => boolean
-  /** Input device preference: true when the mouse is chosen, so a plain wheel turn zooms; Auto and Trackpad pan. */
   readonly mouseWheel?: () => boolean
 }
 
-/** A wheel turn zooms by at most 10% (catalogue I§3.2): raw deltas clamp to ±10 and each unit is 1/100 of the zoom. A notch
- * from a mouse is 100 px, so an unclamped turn zoomed ×1.65 per notch. Ctrl/Cmd swaps the device's behaviour, so a trackpad
- * pinch (which arrives as Ctrl+wheel) zooms while the trackpad pans. */
 const WHEEL_ZOOM_STEP_CLAMP = 10, WHEEL_ZOOM_STEP_DIVISOR = 100
 
 export function installWheel(root: HTMLElement, options: WheelAdapterOptions): () => void {

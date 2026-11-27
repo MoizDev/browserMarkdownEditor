@@ -3,19 +3,15 @@ import type { SheetId } from '../model/ids';
 import type { SelectionSnapshot } from '../selection';
 import { createStructureCommands, type StructureCommandsOptions } from './structureCommands';
 
-/** The name every new sheet gets, whether created from the menu or by the keyboard's forward step. */
 export const NEW_SHEET_NAME = 'Untitled sheet';
 
 export interface StructureControlsOptions extends Omit<StructureCommandsOptions, 'geometry'> {
     readonly newSheetName: () => string;
-    /** The attached view may be less privileged than its shared document session. */
     readonly canWrite?: () => boolean;
-    /** Current zero-based physical page and the view's real navigation operation. */
     readonly readPage: () => number;
     readonly jump: (page: number) => void;
 }
 
-/** A thin view of the live document; all mutations stay in the session command backend. */
 export function createStructureControls(options: StructureControlsOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     const commands = createStructureCommands({ ...options, geometry: runtime.render.changeGeometry,
@@ -94,7 +90,6 @@ export function createStructureControls(options: StructureControlsOptions) {
             if (changed && options.current()) clampPage();
             return changed;
         },
-        /** The viewer follows its page through a move: the page that was current stays current. */
         reorderPage(from: number, to: number) {
             editable();
             const page = options.readPage();

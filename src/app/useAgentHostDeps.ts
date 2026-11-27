@@ -22,7 +22,6 @@ import { tracksAssets } from './tracksAssets';
 import type { IndexGraphRef, ReconcileJob, SetLayout, SetTabs } from './types';
 import type { Ask, Notify } from './useAppDialogs';
 
-/** The App-scope values `useAgentHostDeps` reads, named as App names them. */
 export interface UseAgentHostDepsDeps {
   rootHandle: FileSystemContextValue['rootHandle'];
   rootHandleRef: React.RefObject<FileSystemDirectoryHandle | null>;
@@ -84,15 +83,6 @@ export function useAgentHostDeps(deps: UseAgentHostDepsDeps) {
     writeFileVersioned, statFile, createFile, createFolder, nameTaken, getVaultActivation,
   } = deps;
 
-  // ── The AI agent's hands ────────────────────────────────────────────────
-  // Everything the agent panel and its tool executor can do to the vault goes
-  // through these two hosts (utils/agentHost.ts), built ONCE — in the panel's
-  // lazy chunk, so the main bundle does not carry them (measured: +26 kB when
-  // App built them) — so the panel's WebSocket and in-flight runs never
-  // restart on an App re-render. They read
-  // this ref, refreshed after every commit, so each call sees the current vault,
-  // tabs and layout — and goes through the very handlers the reader's own
-  // gestures use.
   const addTabQuietly = useCallback(async (node: FileTreeNode, mode: EditorMode): Promise<boolean> => {
     if (node.kind !== 'file') return false;
     if (tabsRef.current.some(t => t.file.path === node.path)) return true;
@@ -104,12 +94,9 @@ export function useAgentHostDeps(deps: UseAgentHostDepsDeps) {
       if (rootHandleRef.current !== rootAtOpen) return false;
       const content = read?.text ?? '';
       if (!isNativeDrawingFile(node.name)) rememberAssetRefs(node, content);
-      // The disk baseline, as handleFileClick takes it.
       const id = newTabId();
       if (read) setBaseline(id, read.version); else if (isPdfFile(node.name) || isNativeDrawingFile(node.name)) seedPdfBaseline(id, node.handle);
       seedDocumentBuffer(id, node.path, content, representationFor(node.name).bufferKind === 'text');
-      // Session-only tools acquire immediately after this resolves; commit the tab
-      // and its source classification before handing them the live App owner.
       flushSync(() => setTabs(prev => prev.some(t => t.file.path === node.path)
         ? prev
         : [...prev, { id, file: node, mode: isEpubFile(node.name) ? 'read' : mode, dirty: false, representation: representationFor(node.name) }]));
@@ -151,7 +138,6 @@ export function useAgentHostDeps(deps: UseAgentHostDepsDeps) {
       contentOf,
       snapshotOf: documentBuffers.retainSnapshotOf,
       afterWrite: (file, before, after, version) => {
-        // The tail of flushTab, for a file written with no tab to flush.
         notifySearchChanges();
         recordFileWritten(file.path);
         requeueAssetsAffected(file.path);
@@ -176,15 +162,12 @@ export function useAgentHostDeps(deps: UseAgentHostDepsDeps) {
       addTabQuietly,
       setTabMode: changeTabMode,
       showBeside: path => {
-        // A canvas only exists while the editor is on screen; the graph view
-        // unmounts every pane.
         setMainView('editor');
         setLayout(l => openInSidePane(l, path));
       },
       openFile: path => {
         const node = collectFiles(fileTreeRef.current).find(f => f.path === path);
         if (!node) return;
-        // Not the person's open: an old board the agent opens asks them nothing (its pane offers the copy).
         void handleFileClick(node, { offerCopy: false });
         setMainView('editor');
       },
@@ -192,7 +175,6 @@ export function useAgentHostDeps(deps: UseAgentHostDepsDeps) {
       notify,
     };
   });
-  // The hosts themselves are built in the panel's lazy chunk from this getter.
   const getAgentHostDeps = useCallback(() => agentDepsRef.current!, []);
   const agentVault = useMemo(
     () => (rootHandle ? { key: currentVaultId ?? rootHandle.name, name: rootHandle.name } : null),

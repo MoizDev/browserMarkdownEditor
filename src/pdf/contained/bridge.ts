@@ -20,8 +20,6 @@ export interface PdfEnginePort extends ContainedPort {
 }
 const broken = () => new PdfEngineError('EngineBroken', 'The contained PDF engine is unavailable');
 
-/** The broker has no PDF bytes or render replies. Each returned port is a direct
- * worker channel; only worker creation/liveness crosses the tiny frame. */
 export class PdfEngineFrame {
     private readonly epoch = ++nextEpoch;
     private readonly nonce = [...crypto.getRandomValues(new Uint8Array(32))].map(byte => byte.toString(16).padStart(2, '0')).join('');
@@ -45,7 +43,6 @@ export class PdfEngineFrame {
             const connection = this.connections.get(`${value.id}:${value.generation}`);
             if (!connection) { this.fail(); return; }
             connection.closed = true;
-            // A MessagePort close is not observable; deliver the broker's validated lifecycle failure.
             connection.port?.dispatchEvent(new MessageEvent('messageerror'));
         });
     }

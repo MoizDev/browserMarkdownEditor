@@ -5,18 +5,14 @@ import type { NativeEditingCapabilities } from './nativeEditingCapabilities';
 import type { createNativeCameraOperations } from './nativeCameraOperations';
 import type { NativeViewLease } from './nativeViewLease';
 
-/** Actions delegate to the current input, camera and App-minted source capabilities. */
 export function createNativeBoardActions(options: {
     readonly lease: NativeViewLease;
     readonly capabilities: NativeEditingCapabilities;
     readonly camera: ReturnType<typeof createNativeCameraOperations>;
     readonly shortcutsAvailable: () => boolean;
     readonly openShortcuts: () => void;
-    /** Opens the command palette when the chrome has attached it (false until then). */
     readonly openCommandPalette: () => boolean;
-    /** Starts one print of the pinned board; false when the board is not current or already printing. */
     readonly print: () => boolean;
-    /** Starts one whole-sheet PDF export; false when the board is not current or already busy. */
     readonly exportPdf: () => boolean;
 }): Omit<Record<MainAction, NativeCommandOperation>, 'unlockAll'> {
     const { lease, capabilities, camera } = options;

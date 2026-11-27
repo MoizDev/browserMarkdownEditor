@@ -1,7 +1,5 @@
 import type { Node } from '../model/nodes';
 
-// Provenance: local geometry providers and shared text-layout contracts. Nested
-// model values are immutable by ownership; no document-sized hashing or scanning.
 export function localGeometrySignature(node: Readonly<Node>, fontEpoch: number, zoom: number): readonly unknown[] {
     let parts: unknown[];
     switch (node.kind) {
@@ -21,7 +19,6 @@ export function localGeometrySignature(node: Readonly<Node>, fontEpoch: number, 
             parts = [node.kind, node.text, node.scale, node.growY, node.fit, node.font, node.size, node.align, node.valign, fontEpoch];
             break;
         case 'connector':
-            // Attachment target geometry and placement are separate service dependencies.
             parts = [node.kind, node.route, node.start, node.end, node.bend, node.elbowMid, node.headStart, node.headEnd,
                 node.width, node.dash, node.label, node.font, node.size, node.labelScale, node.labelAt,
                 ...(node.label ? [fontEpoch] : [])];
@@ -39,7 +36,6 @@ export function localGeometrySignature(node: Readonly<Node>, fontEpoch: number, 
             parts = [node.kind, node.w, node.h, node.media];
             break;
         case 'linkcard':
-            // The poster is text: its address, stored preview and the layout's size and font epoch all change what is drawn.
             parts = [node.kind, node.w, node.h, node.url, node.preview, fontEpoch, zoom];
             break;
         case 'embed':

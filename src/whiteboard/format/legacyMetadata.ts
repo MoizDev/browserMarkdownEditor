@@ -14,8 +14,6 @@ function closed(span: JsonSpan, keys: readonly string[]): ReadonlyMap<string, Js
 }
 function text(span: JsonSpan | undefined): string | null { return span?.kind === 'string' ? span.string(FORMAT_LIMITS.recordBytes) : null; }
 
-// import.md §3 / current-format.md: document/user metadata has an explicit
-// nonvisual native data schema. A legacy type name alone grants no such meaning.
 export function isKnownLegacyMetadata(record: RecordData): boolean {
     try {
         if (record.type !== 'legacy-document' && record.type !== 'legacy-user') return false;
@@ -33,13 +31,10 @@ export function isKnownLegacyMetadata(record: RecordData): boolean {
     } catch { return false; }
 }
 
-/** Called only by the converter after admission of the legacy envelope schema. */
 export function carryLegacyMetadata(record: Readonly<{ type: string; id: string; raw: RawJson }>): RawJson {
     if (record.type !== 'legacy-document' && record.type !== 'legacy-user') return record.raw;
     const source = parseJson(record.raw);
     if (!closed(source, ['type', 'id', 'record'])) return record.raw;
-    // Keep the original record payload lexical bytes: append the new wrapper
-    // fields rather than parsing/stringifying its arbitrary metadata contents.
     const candidate = source.raw().slice(0, -1) + ',"schema":1,"role":"metadata"}';
     return isKnownLegacyMetadata({ ...record, raw: candidate }) ? parseJson(candidate).raw() : record.raw;
 }

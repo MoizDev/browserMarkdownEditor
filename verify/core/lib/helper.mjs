@@ -1,8 +1,5 @@
 import { HELPER_APP_ID, HELPER_HOST, HELPER_PORTS, MIN_HELPER_VERSION, PROTOCOL_VERSION } from '../../../shared/vaultAgentProtocol.ts';
 
-/** Real transport stand-in, not an executor import. Every frame in both directions is recorded.
- * `cancel: 'after-tool'` keeps a stopping run open for its honest tool reply; 'immediate' models a
- * helper that has already stopped waiting (vault switch/uninstall). V-02 will adopt this module. */
 export async function installHelperStandIn(context, { cancel = 'after-tool', record = () => {} } = {}) {
     const frames = [];
     const runs = [];
@@ -83,8 +80,6 @@ export async function installHelperStandIn(context, { cancel = 'after-tool', rec
                 const timer = setTimeout(() => { waiters.delete(call.callId); reject(new Error(`HarnessFault: ${call.callId} did not reply in ${timeoutMs} ms`)); }, timeoutMs);
                 waiters.set(call.callId, { resolve, reject, timer });
             });
-            // Some lifecycle arms deliberately close a run without a reply. They inspect calls and
-            // run.done instead; dispose clears the wait without leaking a Node timeout/rejection.
             void result.catch(() => {});
             send({ type: 'tool.call', runId: call.runId, callId: call.callId, name, args });
             return { call, result };

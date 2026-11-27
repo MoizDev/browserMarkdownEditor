@@ -8,8 +8,6 @@ export interface ExportTile {
   readonly height: number
 }
 
-// The renderer supplies straight-alpha RGBA for exactly this output rectangle, in output
-// pixel coordinates. It owns and releases any intermediate canvas, bitmap and image leases.
 export type RenderExportTile = (tile: ExportTile, signal?: AbortSignal) => Promise<Uint8Array>
 
 export interface TiledPngOptions {
@@ -22,7 +20,6 @@ export interface TiledPngOptions {
 const TILE_SIDE = 1024
 const BAND_BYTES = 8 * 1024 * 1024
 
-/** Assemble horizontal strips, so even the largest accepted image never needs a full canvas. */
 export async function* exportRows(
   width: number,
   height: number,

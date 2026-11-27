@@ -1,6 +1,5 @@
 export type PdfOpenFailure = 'invalid' | 'password' | 'unsupported-security' | 'resource-limit' | 'worker-crash' | 'cancelled' | 'file-error';
 
-/** Translate backend names, not arbitrary document text, into safe feature states. */
 export function pdfOpenFailure(error: unknown): { kind: PdfOpenFailure; message: string } {
     const name = error instanceof Error ? error.name : '';
     if (name === 'AbortError' || name === 'AbortException') return { kind: 'cancelled', message: 'Opening the PDF was cancelled.' };
@@ -16,8 +15,6 @@ export type ClassicPdfFailureCode = 'image-decode-failed' | 'asset-load-failed' 
 export interface ClassicPdfDiagnostic {
     code: ClassicPdfFailureCode;
     pageIndex?: number;
-    /** A failed dependency can have a complete JS fallback. Record the fault,
-     * but never tell the reader a fully painted page is incomplete. */
     incomplete: boolean;
 }
 export interface ClassicPdfHealth {
@@ -31,8 +28,6 @@ export interface ClassicPdfHealth {
     readonly closed: boolean;
     readonly stalled: boolean;
 }
-// A progress notice, never a decode deadline: large scans keep running. The
-// clock is reset by native document messages, not by a guessed image size.
 export const CLASSIC_PDF_PROGRESS_NOTICE_MS = 10_000;
 const EMPTY: readonly ClassicPdfDiagnostic[] = Object.freeze([]);
 const cancelled = () => new DOMException('PDF operation cancelled', 'AbortError');
@@ -47,8 +42,6 @@ export class ClassicPdfError extends Error {
     }
 }
 
-/** A document's sticky render verdict, not a whiteness heuristic. A genuinely
- * blank page is complete unless a typed renderer failure says otherwise. */
 export function createClassicPdfHealth(): ClassicPdfHealth {
     let snapshot = EMPTY;
     let closed = false, stalled = false, operations = 0;

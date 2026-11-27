@@ -18,14 +18,12 @@ function mediaName(entry: MediaEntry): string {
     return `board-media/${entry.id.slice(7)}.${mediaExtension(entry.mime as MediaMime)}`;
 }
 
-/** Reserve the complete immutable name set before stamping or aliasing unknown attachments. */
 export function pdfInkReservedNames(media: Iterable<MediaEntry>): string[] {
     const names = new Set(['original.pdf', 'board.json', 'tldraw-snapshot.json', '.vault-write-mark']);
     for (const entry of media) names.add(mediaName(entry));
     return [...names];
 }
 
-/** Snapshot media must be pinned by the caller until the assembler finishes. */
 export async function pdfBoardAttachments(
     board: Uint8Array, media: Iterable<MediaEntry>, read: (id: MediaId) => Blob | undefined, signal: AbortSignal,
 ): Promise<BoardPdfAttachment[]> {

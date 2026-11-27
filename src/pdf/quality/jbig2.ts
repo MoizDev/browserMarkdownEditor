@@ -7,8 +7,6 @@ const mix = (value: number) => {
     return (value ^ (value >>> 16)) >>> 0;
 };
 
-/** One exact document/page/variant/scale observation; never reuse after the
- * source generation, algorithm, visible pixels or render variant changes. */
 export class Jbig2ImageSampler {
     readonly algorithm = ALGORITHM;
     private readonly covered = new Uint8Array(GRID * GRID);

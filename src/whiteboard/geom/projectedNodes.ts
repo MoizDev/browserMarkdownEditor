@@ -19,7 +19,6 @@ function attachment(value: unknown): unknown {
         || !['none', 'center', 'edge-point', 'edge'].includes(a.snap as string)) throw new TypeError('Invalid projected attachment');
     return Object.freeze({ target: a.target, anchor: pair(a.anchor), exact: a.exact, precise: a.precise, snap: a.snap });
 }
-/** Clone just the bounded geometry value, never a node or document graph. */
 export async function copyProjectedValue(op: NodeSetOp, tick: () => Promise<void>, due: () => boolean): Promise<unknown> {
     const { key, value } = op;
     if (NUMBER_KEYS.has(key)) {

@@ -9,7 +9,6 @@ const stale = () => new DOMException('PDF ink source changed', 'AbortError');
 const matches = (identity: NativeCanvasIdentity, token: RenderToken) => identity.documentId === token.documentId
     && identity.session === token.session && identity.vaultActivation === token.vaultEpoch && identity.bytesGeneration === token.bytesGeneration;
 
-/** Binds the real receipt issuer to one owned PDF source and canonical board runtime. */
 export function createPdfEmbeddedMediaStorage(options: {
     readonly runtime: BoardRuntime;
     readonly host: NativeCanvasHost;

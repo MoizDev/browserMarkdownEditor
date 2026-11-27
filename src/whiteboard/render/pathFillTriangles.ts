@@ -3,36 +3,25 @@ import { PATH_COVERAGE_STENCIL_MAX_EDGES } from '../../platform/render/pathCover
 import { flattenCubic } from '../geom/flatten';
 import type { Vec2 } from '../geom/path';
 
-/** Work bound for one path tile; beyond it the whole path takes the reference route. */
 export const PATH_FILL_MAX_EDGES = 65_536;
 export { PATH_COVERAGE_STENCIL_MAX_EDGES as PATH_FILL_STENCIL_MAX_EDGES };
 
 export interface PathFillOptions {
-    /** Maximum deviation of flattened curves, in the same units as the commands (device px / scale). */
     readonly tolerance: number;
-    /** Subtracted from every coordinate in double precision before any value is stored. */
     readonly origin: readonly [x: number, y: number];
     readonly maxEdges?: number;
 }
 
-/** Origin-relative triangles, six values per triangle (x0,y0,x1,y1,x2,y2).
- * `positive` triangles have counter-clockwise orientation and add +1 to the winding of the points
- * they cover; `negative` triangles subtract 1. Their signed sum equals the winding number everywhere
- * except on boundaries, so the stencil can count it directly for nonzero and parity-test it for even-odd. */
 export interface PathFillTriangles {
     readonly positive: Float64Array;
     readonly negative: Float64Array;
-    /** Flattened edges that contribute to the winding (degenerate closing pairs are dropped). */
     readonly edges: number;
-    /** Origin-relative bounds of every flattened vertex. */
     readonly bounds: Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
 }
 
 export function flattenContours(commands: readonly PathCommand[], tolerance: number, maxEdges: number): Vec2[][] | null {
     if (!(tolerance > 0) || !Number.isFinite(tolerance)) throw new RangeError('Invalid path flattening tolerance');
     const contours: Vec2[][] = [];
-    // The open contour, if any. After a closepath there is none, and the next segment opens a contour at the subpath's start,
-    // as canvas does: the closed triangle is not joined to what follows it (a stroke twin, pathStrokeTriangles, does the same).
     let current: Vec2[] | null = null, subpathStart: Vec2 | null = null;
     let edges = 0;
     const open = (): Vec2[] => {
@@ -72,12 +61,10 @@ export function flattenContours(commands: readonly PathCommand[], tolerance: num
                     p2: { x: command[3], y: command[4] },
                     p3: { x: command[5], y: command[6] },
                 }, tolerance);
-                // The first flattened point is the curve start, already the current point.
                 push(pieces.slice(1));
                 break;
             }
             case 'Z':
-                // Closes the open contour; the subpath's start is kept for the segments that follow.
                 current = null;
                 break;
         }
@@ -86,9 +73,6 @@ export function flattenContours(commands: readonly PathCommand[], tolerance: num
     return contours;
 }
 
-/** Signed fan triangulation: every polygon edge (a, b) contributes triangle (pivot, a, b) with the
- * sign of its orientation. Pivots are a contour vertex, so triangles stay near the path and share
- * the same origin-relative coordinates the paint tile already uses. */
 export function pathFillTriangles(commands: readonly PathCommand[], options: PathFillOptions): PathFillTriangles | null {
     const maxEdges = options.maxEdges ?? PATH_FILL_MAX_EDGES;
     if (!Number.isSafeInteger(maxEdges) || maxEdges <= 0) throw new RangeError('Invalid path edge bound');
@@ -104,7 +88,6 @@ export function pathFillTriangles(commands: readonly PathCommand[], options: Pat
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
 
     for (const raw of contours) {
-        // Drop consecutive duplicates and an explicit closing duplicate of the first vertex.
         const points: Vec2[] = [];
         for (const point of raw) {
             const previous = points[points.length - 1];
@@ -117,8 +100,6 @@ export function pathFillTriangles(commands: readonly PathCommand[], options: Pat
             y0 = Math.min(y0, y); y1 = Math.max(y1, y);
         }
         if (points.length < 3) continue;
-        // Pivot = first vertex. Edges touching the pivot give zero-area triangles, so only the edges
-        // (points[i], points[i+1]) for i = 1 .. n-2 emit triangles.
         const px = points[0].x - ox, py = points[0].y - oy;
         edges += points.length;
         for (let i = 1; i + 1 < points.length; i++) {

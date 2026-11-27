@@ -6,9 +6,6 @@ import type { ExactCurve } from './exactCurve';
 import type { Vec2 } from './path';
 import type { ExactConnectorContour } from './connectorExactClip';
 
-/** A complete circle disjoint from every boundary cannot produce an arc
- * crossing. Any numerical or budget uncertainty leaves the normal path in
- * charge; this is an early-out certificate, never an approximate miss. */
 export function* connectorCircleBoundaryDisjoint(centre: Vec2, radius: number, contours: readonly ExactConnectorContour[],
     error: number, maxPieces: number): Generator<void, boolean> {
     if (![centre.x, centre.y, radius, error].every(Number.isFinite) || radius <= 0 || error <= 0

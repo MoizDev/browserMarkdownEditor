@@ -32,8 +32,6 @@ function reservedNames(names: readonly string[]): Set<string> {
 }
 function equalSets(a: Set<string>, b: Set<string>): boolean { return a.size === b.size && [...a].every(value => b.has(value)); }
 
-/** Only the writer worker creates this object. Closing it tears down every
- * native stage; no pointers or mutable graph escape as an operation result. */
 export class PdfiumWriter {
     private readonly sessions = new Map<string, Session>();
     private readonly stages = new WriterStageStore<NativeStage>();
@@ -108,9 +106,6 @@ export class PdfiumWriter {
         const cooperate = async () => { await context.slice(); if (!current()) throw new PdfEngineError('AbortError', 'PDF writer source was released'); };
         try {
             await cooperate();
-            // No attachments at all is a print (pinPdfInkAssembly.printable): the PDF and its ink
-            // with no board embedded. Requiring board+fence made every annotated-PDF Export → PDF
-            // and Print fail ("Editable board and compatibility fence are required").
             const printOnly = args.attachments.length === 0;
             if (!printOnly) await validateBoardAttachments(args.attachments, native.source.formatId, args.writeId, cooperate);
             const app = args.attachments.filter(entry => entry.role !== 'unknown');

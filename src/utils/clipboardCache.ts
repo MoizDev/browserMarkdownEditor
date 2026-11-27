@@ -7,7 +7,6 @@ export interface ClipboardCacheEntry {
 }
 
 export interface ClipboardCache {
-  /** Borrow synchronously; the payload's owner must retain before returning to the event loop. */
   peek(): object | undefined;
   match(encoded: string, plain: string): object | undefined;
   replace(entry: ClipboardCacheEntry): void;
@@ -15,7 +14,6 @@ export interface ClipboardCache {
   setActive(active: boolean): void;
 }
 
-/** One window's last successful native copy, independent of any document or pane. */
 export function createClipboardCache(onError: (error: unknown) => void): ClipboardCache {
   let written: ClipboardCacheEntry | undefined, active = true;
   const release = (entry: ClipboardCacheEntry | undefined) => {

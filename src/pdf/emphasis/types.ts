@@ -1,6 +1,5 @@
 import type { EMPHASIS_ALGORITHM, EMPHASIS_PROBE_PROFILE, EMPHASIS_REVISION, EMPHASIS_STROKE_EM } from './profile';
 
-/** Refinements of the existing worker operations, not a second transport. */
 export interface EmphasisSpec {
     algorithm: typeof EMPHASIS_ALGORITHM;
     revision: typeof EMPHASIS_REVISION;
@@ -34,8 +33,6 @@ export interface PageProbeResult {
 }
 export type ProbeErrorName = 'AbortError' | 'PasswordRequired' | 'UnsupportedSecurity' | 'InvalidPdf' | 'FileError' |
     'PageError' | 'NotFoundError' | 'NotSupported' | 'RangeError' | 'ResourceLimit' | 'EngineBroken' | 'WorkerDied';
-/** A failed operation is never a completed, negative capability verdict. Names
- * match the existing engine error vocabulary; transport envelopes remain C5. */
 export interface ProbeOperationalFailure { name: ProbeErrorName; message: string; retryable: boolean }
 export interface ProbeFailure extends ProbeOperationalFailure {
     name: 'RangeError' | 'ResourceLimit';

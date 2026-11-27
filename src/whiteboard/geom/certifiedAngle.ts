@@ -6,7 +6,6 @@ function absoluteUpper(value: Interval): number { return Math.max(Math.abs(value
 function finite(value: Interval): boolean { return Number.isFinite(value.lo) && Number.isFinite(value.hi) && value.lo <= value.hi; }
 function hull(a: Interval, b: Interval): Interval { return { lo: Math.min(a.lo, b.lo), hi: Math.max(a.hi, b.hi) }; }
 
-// Alternating series on [0, 1/2], with an explicit next-term remainder.
 function atanSmall(value: Interval): Interval {
     if (!finite(value) || value.lo < 0 || value.hi > 0.500000000000001) throw new RangeError('Atan argument outside certified range');
     const square = multiply(value, value); let power = value, result = interval(0);
@@ -19,7 +18,6 @@ function atanSmall(value: Interval): Interval {
     return add(result, { lo: -remainder, hi: remainder });
 }
 let cachedPi: Interval | undefined;
-/** A closed enclosure of mathematical π computed from Machin's identity. */
 export function certifiedPi(): Interval {
     if (!cachedPi) {
         const a = atanSmall(divide(interval(1), interval(5))), b = atanSmall(divide(interval(1), interval(239)));
@@ -44,8 +42,6 @@ function atanPositive(value: number): Interval {
     return subtract(times(certifiedPi(), 0.5), atanUnit(reciprocal));
 }
 
-/** An atan2 enclosure in [0, 2π]. The box must fit one open quadrant, or be
- * an exact axis point; callers subdivide boxes that straddle an axis. */
 export function certifiedAngleBox(x: Interval, y: Interval): Interval | null {
     if (!finite(x) || !finite(y)) return null;
     const pi = certifiedPi(), half = times(pi, 0.5), twice = times(pi, 2);
@@ -70,7 +66,6 @@ export function certifiedAngleBox(x: Interval, y: Interval): Interval | null {
     return subtract(twice, angle);
 }
 
-/** Certified sin/cos for an angle interval with a stable quadrant reduction. */
 export function certifiedSinCos(angle: Interval): { readonly sin: Interval; readonly cos: Interval } | null {
     if (!finite(angle)) return null;
     const pi = certifiedPi(), half = times(pi, 0.5), midpoint = angle.lo / 2 + angle.hi / 2;

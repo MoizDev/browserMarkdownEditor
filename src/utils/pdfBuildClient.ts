@@ -1,8 +1,3 @@
-// Main-thread handle on the PDF-building worker.
-//
-// One worker for the whole app, started on first use and kept warm — spinning up
-// a worker per save would re-pay module init (pdf-lib is ~400kB) every time.
-
 import type { NotebookPaper } from './paper';
 import type { NotebookSource } from './pdfFormat';
 import type { PageOverlay } from './pdfOverlay';
@@ -12,8 +7,6 @@ import { PdfBuildRefused, pdfSnapshotRefusal, type PdfBuildRefusal } from './pdf
 import { startFailure, workerScript } from '../platform/workers/script';
 import pdfBuildWorkerUrl from './pdfBuild.worker.ts?worker&url';
 
-// Kept (platform/workers/script.ts): an annotated PDF's saves keep working after a newer version replaced this one on
-// the server, whenever its worker is first needed.
 const pdfBuildWorker = workerScript(pdfBuildWorkerUrl, { keep: true });
 let worker: Worker | null = null;
 let starting: Promise<Worker> | null = null;
@@ -134,7 +127,6 @@ function getWorker(): Promise<Worker> {
     return starting;
 }
 
-/** Post to the worker once it has started; a start that failed fails every request waiting on it, with its reason. */
 function post(request: PdfBuildRequest, transfer: Transferable[] = []): void {
     getWorker().then(started => started.postMessage(request, transfer))
         .catch((error: unknown) => failWorker(error instanceof Error ? error : new Error(String(error))));
@@ -183,11 +175,7 @@ function listen(started: Worker): Worker {
         }
     };
     started.onerror = (e) => {
-        // A worker-level failure kills every in-flight build; fail them all
-        // rather than leave saves hanging forever.
         if (answered) { failWorker(new Error(`PDF worker failed: ${e.message}`)); return; }
-        // Before its first answer: its script may not have loaded (gone, unreachable, or a kept copy that would not run,
-        // which is then dropped so the next start fetches it again: platform/workers/script.ts). Said in plain words.
         started.onerror = null;
         void startFailure(started, e).then(cause => { if (worker === started) failWorker(cause ?? new Error(`PDF worker failed: ${e.message}`)); });
     };
@@ -195,7 +183,6 @@ function listen(started: Worker): Worker {
     return started;
 }
 
-/** Read-only union inventory in the same warm worker as the assembler. */
 export function inspectPdfRoleAsync(bytes: Uint8Array, generation: string): Promise<PdfRole> {
     const id = nextId++;
     return new Promise((resolve, reject) => {
@@ -207,13 +194,6 @@ export function inspectPdfRoleAsync(bytes: Uint8Array, generation: string): Prom
     });
 }
 
-/**
- * Build an annotated PDF off the main thread.
- *
- * `original` and `overlays` are structured-cloned (copied), NOT transferred:
- * the caller's copy of `original` lives in the render cache and is reused by
- * every subsequent save, and transferring would detach it.
- */
 export function buildAnnotatedPdfAsync(
     original: Uint8Array,
     snapshot: string,
@@ -224,13 +204,6 @@ export function buildAnnotatedPdfAsync(
     return dispatch(id => ({ kind: 'annotate', id, original, outer: pdfOuterForSource(original), snapshot, overlays }));
 }
 
-/**
- * Write a notebook out as a PDF, off the main thread.
- *
- * Shares the annotated-PDF worker rather than starting a second one: both jobs
- * are pdf-lib, so a separate worker would re-pay ~400kB of module init to do the
- * same work.
- */
 export function buildNotebookPdfAsync(
     paper: NotebookPaper,
     overlays: Array<PageOverlay | undefined>,

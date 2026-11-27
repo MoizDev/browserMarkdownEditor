@@ -2,7 +2,6 @@ import type { BoardOp } from '../change/ops';
 import type { BoardSession } from '../session/BoardSession';
 import type { BoardViewFlags } from './preferences';
 
-/** Apply the normal non-history view ops; PDF view-only persistence belongs to the host record. */
 export function applyBoardViewFlags(
     session: BoardSession,
     next: BoardViewFlags,

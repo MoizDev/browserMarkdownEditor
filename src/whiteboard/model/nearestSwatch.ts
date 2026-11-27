@@ -1,8 +1,6 @@
 import { SWATCHES, type Swatch } from './styles';
 import { DEFAULT_BOARD_PALETTES } from '../render/palette';
 
-// Provenance: clipboard §4.6, CIE 1976 L*a*b* and CIEDE2000 colour-distance
-// definitions; independently implemented, no upstream engine source.
 type Lab = readonly [number, number, number];
 function lab(rgb: readonly [number, number, number]): Lab {
     const linear = (v: number) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
@@ -43,7 +41,6 @@ const PALETTE = SWATCHES.map(swatch => {
     const colour = DEFAULT_BOARD_PALETTES.light.stroke[swatch];
     return { swatch, value: lab([colour[0], colour[1], colour[2]]) };
 });
-/** Encoded sRGB channels in [0,1]. Black competes normally; exact ties go to lower L*. */
 export function nearestLightSwatch(rgb: readonly [number, number, number]): Swatch {
     if (!rgb || rgb.length !== 3 || !rgb.every(value => Number.isFinite(value) && value >= 0 && value <= 1)) throw new RangeError('Invalid encoded sRGB colour');
     const target = lab(rgb);

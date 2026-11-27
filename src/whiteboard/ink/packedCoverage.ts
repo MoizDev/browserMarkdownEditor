@@ -1,32 +1,18 @@
 import type { InkCoverage } from './outline';
 
-// One ink chunk's published coverage is ONE ArrayBuffer: a header of its scalars, then its segment, disc and centreline rows
-// (float64) and its run starts (uint32). The same bytes are the geometry worker's reply and the main thread's storage, so a
-// chunk crosses the worker boundary as one region of one transfer and lives on as one buffer.
-//
-// Why (measured, a 10,060-stroke drawing at rest on WebGL2, heap snapshot): every stroke's coverage was 57 ArrayBuffers (the
-// curve's cubics and flags, two radii per span, and per span an arc map with its own cubic and pieces arrays, beside the rows),
-// 574,680 buffers in all: 218 MB of backing store plus 97 MB of ArrayBuffer and typed-array objects on the JS heap, and the
-// malloc'd backing-store records beside them. Nothing on the main thread reads the curve, the radii or the arc maps (a chunk
-// is drawn, picked, clipped and bounded from its rows alone), so they stay in the job that built them.
-
-/** Header doubles: counts, three local boxes, the certified errors and arc lengths, and the closed flag. */
 const HEADER = 24;
 const HEADER_BYTES = HEADER * 8;
 
 type Box = Readonly<{ x: number; y: number; w: number; h: number }>;
-/** What a chunk's coverage is built from: the rows (run starts as any list of row indices) and its scalars. */
 export interface InkCoverageParts extends Omit<InkCoverage, 'segmentRunStarts'> {
     readonly segmentRunStarts: ArrayLike<number>;
 }
 
-/** Bytes the packed form of `coverage` takes: header, float64 rows, then the run starts padded to a whole double. */
 export function packedInkCoverageBytes(coverage: Pick<InkCoverageParts, 'segments' | 'discs' | 'centreline' | 'segmentRunStarts'>): number {
     const doubles = coverage.segments.length + coverage.discs.length + coverage.centreline.length;
     return HEADER_BYTES + doubles * 8 + Math.ceil(coverage.segmentRunStarts.length / 2) * 8;
 }
 
-/** Writes `coverage` packed at `offset` (a multiple of 8) of `buffer`; returns the bytes written. */
 export function writePackedInkCoverage(coverage: InkCoverageParts, buffer: ArrayBuffer, offset: number): number {
     const bytes = packedInkCoverageBytes(coverage);
     if (offset % 8 || offset < 0 || offset + bytes > buffer.byteLength) throw new RangeError('Packed ink coverage does not fit its buffer');
@@ -48,7 +34,6 @@ export function writePackedInkCoverage(coverage: InkCoverageParts, buffer: Array
     return bytes;
 }
 
-/** The coverage packed at `offset` of `buffer`: views on those bytes, nothing copied. `bytes` is its packed length. */
 export function readPackedInkCoverage(buffer: ArrayBuffer, offset: number): { readonly coverage: InkCoverage; readonly bytes: number } {
     if (offset % 8 || offset < 0 || offset + HEADER_BYTES > buffer.byteLength) throw new RangeError('Packed ink coverage is out of bounds');
     const header = new Float64Array(buffer, offset, HEADER);
@@ -70,14 +55,12 @@ export function readPackedInkCoverage(buffer: ArrayBuffer, offset: number): { re
     return { coverage, bytes };
 }
 
-/** `coverage` as a buffer of its own: what a chunk is kept as, whatever built it (a job's result, a coarser level, a reply). */
 export function packInkCoverage(coverage: InkCoverageParts): InkCoverage {
     const buffer = new ArrayBuffer(packedInkCoverageBytes(coverage));
     writePackedInkCoverage(coverage, buffer, 0);
     return readPackedInkCoverage(buffer, 0).coverage;
 }
 
-/** The bytes a chunk's coverage holds: its rows and run starts (the packed buffer's header is a few doubles beside them). */
 export function inkCoverageBytes(coverage: Pick<InkCoverage, 'segments' | 'discs' | 'centreline' | 'segmentRunStarts'>): number {
     return HEADER_BYTES + coverage.segments.byteLength + coverage.discs.byteLength + coverage.centreline.byteLength + coverage.segmentRunStarts.byteLength;
 }

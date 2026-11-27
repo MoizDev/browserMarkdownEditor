@@ -3,14 +3,12 @@ import { RENDER_CONSTANTS } from './constants';
 import type { GfxLimits } from './gfx/api';
 import type { GpuGrant, SurfaceResizeResult } from './surfaceBroker.types';
 
-/** A normalized physical box, not an independently rounded CSS extent (design §3.2:329–333). */
 export interface PhysicalBox {
     readonly width: number;
     readonly height: number;
     readonly fallbackSizing: boolean;
 }
 
-/** Plain values copied by the adapter from its observation; no ResizeObserver lives here (§3.2:331). */
 export interface DevicePixelFragment { inlineSize: number; blockSize: number }
 
 function validDimension(value: number): boolean { return Number.isSafeInteger(value) && value >= 0; }
@@ -19,7 +17,6 @@ function validateDpr(dpr: number): void {
     if (!Number.isFinite(dpr) || dpr <= 0) throw new RangeError('Nominal DPR must be finite and positive');
 }
 
-/** Reject fragmented panes; vertical writing exchanges the physical axes (design §3.2:331). */
 export function devicePixelBox(fragments: readonly DevicePixelFragment[], writingMode: 'horizontal' | 'vertical' = 'horizontal'): PhysicalBox {
     if (fragments.length !== 1 || (writingMode !== 'horizontal' && writingMode !== 'vertical')) {
         throw new RangeError('A surface must have exactly one content-box fragment and a valid axis');
@@ -31,7 +28,6 @@ export function devicePixelBox(fragments: readonly DevicePixelFragment[], writin
     return Object.freeze({ width, height, fallbackSizing: false });
 }
 
-/** Only the unsupported-device-box path rounds CSS * nominal DPR (design §3.2:333). */
 export function cssFallbackBox(cssWidth: number, cssHeight: number, nominalDpr: number): PhysicalBox {
     validateDpr(nominalDpr);
     if (!Number.isFinite(cssWidth) || !Number.isFinite(cssHeight) || cssWidth < 0 || cssHeight < 0) {
@@ -43,7 +39,6 @@ export function cssFallbackBox(cssWidth: number, cssHeight: number, nominalDpr: 
     return Object.freeze({ width, height, fallbackSizing: true });
 }
 
-/** A zero box/grant never produces a Viewport with dpr=0 or a perpetual 1x1 allocation (§8:731). */
 export interface DormantSurfaceMetrics {
     readonly kind: 'dormant';
     readonly box: PhysicalBox;
@@ -51,7 +46,6 @@ export interface DormantSurfaceMetrics {
     readonly reason: 'zero-size' | 'no-drawable-area';
 }
 
-/** One uniform q; semantic CSS zoom stays unchanged even when raster quality falls (§3.2:337–341). */
 export interface ReadySurfaceMetrics {
     readonly kind: 'ready';
     readonly box: PhysicalBox;
@@ -65,17 +59,10 @@ export interface ReadySurfaceMetrics {
     readonly viewport: Readonly<Viewport>;
 }
 
-/** Dormancy has no zero-DPR viewport to accidentally publish (design §8:731). */
 export type SurfaceMetrics = DormantSurfaceMetrics | ReadySurfaceMetrics;
 
-/** The lowest quality a visible surface is ever planned at. Insufficient memory lowers resolution down to this and never
- * blanks the pane: the governor reserves each visible pane's surface at this scale before it splits the rest (by reading:
- * the arithmetic is a 2560×1600 device pane at q 1/4 = 640×400 backing = 256,000 px × 12 B ≈ 3 MB per pane). */
 export const MIN_SURFACE_QUALITY = 0.25;
 
-/** Pure planning only; limits belong to the current device generation, grant to the current frame.
- * No source page, canvas or render target is allocated before q has been bounded (design §3.2:335–345).
- */
 export function computeSurfaceMetrics(box: PhysicalBox, nominalDpr: number, limits: Readonly<GfxLimits>, pixelGrant: number): SurfaceMetrics {
     validateDpr(nominalDpr);
     if (!validDimension(box.width) || !validDimension(box.height) || !Number.isSafeInteger(pixelGrant) || pixelGrant < 0) {
@@ -90,8 +77,6 @@ export function computeSurfaceMetrics(box: PhysicalBox, nominalDpr: number, limi
     const grant = Math.floor(pixelGrant);
     const device = Math.min(1, maxWidth / box.width, maxHeight / box.height,
         Math.sqrt(RENDER_CONSTANTS.maxSurfacePixels / box.width / box.height));
-    // A grant short of the minimum quality still presents at that quality: the pane lowers resolution, it does not blank.
-    // The device limits still bind (a limit below the minimum is the device's answer, not memory's).
     const q = Math.min(device, Math.max(MIN_SURFACE_QUALITY, Math.sqrt(grant / box.width / box.height)));
     const backingWidth = Math.floor(box.width * q);
     const backingHeight = Math.floor(box.height * q);
@@ -110,19 +95,14 @@ export function computeSurfaceMetrics(box: PhysicalBox, nominalDpr: number, limi
     });
 }
 
-/** The sole resize callback/result type is owned by surfaceBroker.types.ts (vr-lead sizing ruling).
- * The same structural target also permits the 2D compositor's canvas-size callback, without a GPU.
- */
 export type SurfaceCommitTarget = Pick<GpuGrant, 'generation' | 'limits' | 'resizeSurface'>;
 
-/** Size commits are frame-, geometry- and device-tagged; none is a document content revision (§8:730–737). */
 export interface SurfaceCommitTags {
     readonly frameId: number;
     readonly geometryGeneration: number;
     readonly deviceGeneration: number;
 }
 
-/** Publish only a complete, generation-matching allocation (design §3.2:335,345; §8:734–737). */
 export type SurfaceCommit =
     | { readonly kind: 'ready'; readonly tags: SurfaceCommitTags; readonly metrics: ReadySurfaceMetrics; readonly actual: SurfaceResizeResult }
     | { readonly kind: 'dormant'; readonly tags: SurfaceCommitTags; readonly metrics: DormantSurfaceMetrics }
@@ -130,10 +110,6 @@ export type SurfaceCommit =
         readonly reason: 'stale-limits' | 'resize-failed' | 'stale-generation' | 'incomplete' | 'refused' | 'buffer-mismatch';
         readonly actual: SurfaceResizeResult | null };
 
-/** The scheduler calls this on geometry/show invalidation, never from an observation callback.
- * Failure never publishes a new viewport; the compositor keeps its last complete 2D/mirror picture
- * while the governor reduces quality. Retaining those pixels is the compositor's job (§3.2:345).
- */
 export class SurfaceMetricsCommitter {
     private lastFrameId = -1;
     private lastGeometryGeneration = -1;
@@ -141,9 +117,6 @@ export class SurfaceMetricsCommitter {
 
     get current(): Exclude<SurfaceCommit, { kind: 'failed' }> | null { return this.accepted; }
 
-    /** Null means deferred/already attempted this frame, never a successful resize of the new plan.
-     * A kept-context show still calls resizeSurface; the broker cannot restore an old grant's size.
-     */
     commit(frameId: number, geometryGeneration: number, metrics: SurfaceMetrics, target: SurfaceCommitTarget): SurfaceCommit | null {
         if (![frameId, geometryGeneration, target.generation].every(value => Number.isSafeInteger(value) && value >= 0)) {
             throw new RangeError('Surface generations/frame ids must be nonnegative safe integers');
@@ -154,9 +127,6 @@ export class SurfaceMetricsCommitter {
         this.lastGeometryGeneration = geometryGeneration;
         const tags = Object.freeze({ frameId, geometryGeneration, deviceGeneration: target.generation });
         if (metrics.kind === 'dormant') {
-            // Keep measured CSS geometry truthful: zero-size uses the broker's actual-zero path;
-            // no-drawable-area needs pressure/admission handling, never a fabricated zero measurement.
-            // This is a geometry record, not a claim that GPU resources have already been released.
             this.accepted = Object.freeze({ kind: 'dormant', tags, metrics });
             return this.accepted;
         }

@@ -1,51 +1,33 @@
-// Vault-wide search (VSCode-style): matches file names and file contents
-// across the whole vault. The pure matching logic lives here so the sidebar
-// SearchPanel stays a thin view; contents are served from an in-memory cache
-// validated by (lastModified, size) so repeat searches never re-read
-// unchanged files.
-
 import type { FileTreeFileNode, TextRange } from '../types';
 
-/** Files the app treats as non-text: opened externally instead of as an
- *  editable tab (see App.handleFileClick) and never content-indexed. Their
- *  names still match in search. */
 const NON_TEXT_RE = /\.(pdf|jpe?g|png|gif|webp|bmp|ico|avif|heic|mp[34]|m4[av]|wav|ogg|flac|mov|mkv|webm|zip|gz|tgz|bz2|7z|rar|tar|exe|dmg|iso|docx?|xlsx?|pptx?|odt|epub|woff2?|ttf|otf|eot)$/i;
 export function isTextFile(name: string): boolean {
     return !NON_TEXT_RE.test(name);
 }
 
-/** Result caps, VSCode-style: bound per-keystroke work and DOM size. */
 const MAX_MATCHES_PER_FILE = 100;
 const MAX_TOTAL_MATCHES = 500;
 const MAX_RESULT_FILES = 200;
 
-/** Snippet context kept around a content match (chars before / after). */
 const CONTEXT_BEFORE = 24;
 const CONTEXT_AFTER = 160;
 
-/** One content match, with a single-line display snippet split around the
- *  matched text (`before` already carries a leading ellipsis when clipped). */
 export interface ContentMatch extends TextRange {
     before: string;
     text: string;
     after: string;
 }
 
-/** All of one file's hits: a name hit, content hits, or both. */
 export interface FileSearchResult {
     file: FileTreeFileNode;
-    /** Range of the first query occurrence in file.name, for highlighting. */
     nameMatch: TextRange | null;
     matches: ContentMatch[];
-    /** True when this file had more matches than MAX_MATCHES_PER_FILE. */
     clipped: boolean;
 }
 
 export interface VaultSearchResults {
     files: FileSearchResult[];
-    /** Total content matches across all files (name-only hits add 0). */
     matchCount: number;
-    /** True when any cap was hit, i.e. more matches may exist than shown. */
     clipped: boolean;
 }
 
@@ -62,7 +44,6 @@ function queryRegex(query: string): RegExp {
     return new RegExp(escapeRegExp(query), 'gi');
 }
 
-/** Build the one-line display snippet around a match. */
 function makeMatch(text: string, from: number, to: number): ContentMatch {
     const lineStart = text.lastIndexOf('\n', from - 1) + 1;
     let lineEnd = text.indexOf('\n', to);
@@ -77,13 +58,6 @@ function makeMatch(text: string, from: number, to: number): ContentMatch {
     return { from, to, before, text: text.slice(from, to), after };
 }
 
-/**
- * Search every vault file's name and (available) content for a literal,
- * case-insensitive query. Purely synchronous — contents come from `getText`
- * (the pre-loaded index, overlaid with open-tab buffers by the caller).
- * Files whose NAME matches are listed first; within each group files keep
- * vault tree order and matches keep document order.
- */
 export function searchVault(
     files: FileTreeFileNode[],
     query: string,
@@ -99,8 +73,6 @@ export function searchVault(
 
     for (const file of files) {
         if (nameMatched.length + contentOnly.length >= MAX_RESULT_FILES) {
-            // Enough result rows — a broader query would render thousands of
-            // DOM nodes per keystroke for no benefit.
             clipped = true;
             break;
         }
@@ -115,7 +87,6 @@ export function searchVault(
         let fileClipped = false;
         let text: string | undefined;
         if (matchCount >= MAX_TOTAL_MATCHES) {
-            // Out of match budget — remaining files may have unseen matches.
             clipped = true;
         } else {
             text = getText(file.path);

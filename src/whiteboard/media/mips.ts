@@ -32,7 +32,6 @@ export function mediaTileKey(tile: MediaTile): string {
     return `media:${tile.id.slice(7)}:${tile.frame}:${tile.level}:${tile.column}:${tile.row}`;
 }
 
-/** A tile key has six segments; the static frame-zero form `media:<hash>:0` (three) stays with paintImages. */
 export function isMediaTileKey(key: string): boolean {
     return key.startsWith('media:') && key.split(':').length === 6;
 }
@@ -45,7 +44,6 @@ export function parseMediaTileKey(key: string): MediaTile {
     return tile;
 }
 
-// Largest mip whose texel is no larger than one device pixel at rest.
 export function mediaMipLevel(devicePixelsPerSourcePixel: number, width: number, height: number, near = false): number {
     if (!Number.isFinite(devicePixelsPerSourcePixel) || devicePixelsPerSourcePixel <= 0
         || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) throw new RangeError('Invalid media scale');

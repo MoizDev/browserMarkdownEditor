@@ -11,11 +11,9 @@ type Operation = { state(): State; run(): Promise<void> };
 const enabled: State = Object.freeze({ enabled: true });
 const disabled = (reason: string): State => ({ enabled: false, reason });
 
-/** UI operations delegate geometry, transaction and receipt ownership to the arrangement backend. */
 export function createArrangementCommandOperations(options: {
     readonly runtime: BoardRuntime;
     readonly current: () => boolean;
-    /** This view's own editable state; a mutating arrangement re-checks it at run time, not only when shown. */
     readonly canWrite: () => boolean;
 }) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
@@ -61,7 +59,6 @@ export function createArrangementCommandOperations(options: {
     });
     const align = (mode: Align) => operation(2, ids => commands.align(ids, mode));
     const distribute = (axis: Axis) => operation(3, ids => commands.distribute(ids, axis));
-    // Stack needs three items: with two it is only a move, which Align already does.
     const stack = (axis: Axis) => operation(3, ids => commands.stack(ids, axis));
     return {
         alignLeft: align('left'), alignHorizontal: align('center'), alignRight: align('right'),

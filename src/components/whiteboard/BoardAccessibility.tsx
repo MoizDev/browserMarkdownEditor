@@ -1,8 +1,6 @@
 import { useEffect, useId, useState, type HTMLAttributes, type ReactNode, type Ref } from 'react';
 import './boardAccessibility.css';
 
-/** The engine supplies the spatial window and reading order from one revision;
- * the host must not walk the document to build this DOM. */
 export interface BoardAccessibilityItem {
     id: string;
     label: string;
@@ -11,7 +9,6 @@ export interface BoardAccessibilityItem {
 export interface BoardAccessibilitySnapshot {
     sheetName: string;
     total: number;
-    /** Ordered union of the nearby window, at most 500 selected, and focus. */
     items: readonly BoardAccessibilityItem[];
     selectedCount: number;
     focusedId: string | null;

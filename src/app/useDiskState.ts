@@ -8,7 +8,6 @@ import type { DiskVersion } from '../utils/diskVersion';
 import { describeReadError, isNotFound } from './readErrors';
 import type { PdfRebuildEntry, SetDiskState, SetTabs } from './types';
 
-/** What the disk-state hook reads from App. */
 export interface UseDiskStateDeps {
   readBytesVersioned: FileSystemContextValue['readBytesVersioned'];
   keepCopyInGarbage: FileSystemContextValue['keepCopyInGarbage'];
@@ -28,12 +27,6 @@ export function useDiskState(deps: UseDiskStateDeps) {
     currentVaultIdRef, readerEpochRef, invalidReaderTokens, reconcileQueueRef, trashInFlightRef,
   } = deps;
 
-  /**
-   * Each document's standoff with its file, by document id, SYNCHRONOUSLY —
-   * the mirror of OpenTab.disk, which reaches tabsRef only a commit later. The
-   * save funnel must stop writing the moment a conflict or a deletion is
-   * raised, and the resolutions must be able to lift it and save in one step.
-   */
   const pdfRebuildRef = useRef(new Map<string, PdfRebuildEntry>());
   const pdfIoRef = useRef({ readBytesVersioned, keepCopyInGarbage });
   useLayoutEffect(() => { pdfIoRef.current = { readBytesVersioned, keepCopyInGarbage }; });
@@ -93,9 +86,6 @@ export function useDiskState(deps: UseDiskStateDeps) {
       approved: entry.approved, copyName: entry.copyName });
   }, [currentPdfOwner, setDiskState, setPdfRebuildNotice, rootHandleRef]);
 
-  // The outer bytes, not the embedded original, are what another program edited.
-  // Check both sides of the awaited close; a successful copy never grants a
-  // source belonging to a tab, vault or generation that changed while copying.
   const keepPdfBaseline = useCallback(async (entry: PdfRebuildEntry, trashOwned = false): Promise<boolean> => {
     const { identity, root, handle } = entry, id = identity.documentId;
     const current = () => pdfRebuildRef.current.get(id) === entry && rootHandleRef.current === root &&

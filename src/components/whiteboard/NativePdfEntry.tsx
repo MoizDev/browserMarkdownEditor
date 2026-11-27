@@ -13,7 +13,6 @@ import NativePdfViewer from './NativePdfViewer';
 
 const VIEW_REASON = 'PDF annotation tools are unavailable in this view.';
 export interface NativePdfEntryProps extends NativeCanvasEntryProps {
-    /** Only an explicit legacy-conversion route may set this. */
     readonly legacyConversion?: boolean;
     readonly onLegacyConversionRefused?: (message: string) => void;
     readonly emphasisEnabled: boolean;
@@ -22,7 +21,6 @@ export interface NativePdfEntryProps extends NativeCanvasEntryProps {
     readonly onOpenNotebookSource: (path: string) => void | Promise<void>;
 }
 
-/** Acquires the real document-owned PDF ink session; this host exposes viewing only. */
 export default function NativePdfEntry(props: NativePdfEntryProps) {
     const latest = useRef(props);
     useLayoutEffect(() => { latest.current = props; }, [props]);
@@ -32,31 +30,21 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
         [documentId, session, vaultActivation, bytesGeneration, kind, path, name]);
     const [error, setError] = useState<string | null>(null);
     const onError = useCallback((cause: unknown) => {
-        // A refusal is already in the person's words (pdf/session/inkReadOnlyText.ts). Anything else is an exception whose
-        // text was written for a developer ("Board session ended", "Invalid outer PDF lease"): it goes to the console, and
-        // the person is told what happened and what to do.
         const refusal = isInkRefusal(cause);
         if (!refusal) console.error('PDF annotations failed:', cause);
         const message = refusal ? (cause as Error).message : 'The annotations could not be opened on this PDF. Switch to Original and back to Annotate to try again; the file has not been changed.';
-        // Once the session owns a PDF source, rebind/view errors belong to
-        // that mounted view; dropping it would also drop its camera and cover.
         if (getPdfInkSourceState(documentId)) { latest.current.onNotice(message); return; }
         if (latest.current.legacyConversion && latest.current.onLegacyConversionRefused) {
             latest.current.onLegacyConversionRefused(message); return;
         }
         setError(message);
     }, [documentId]);
-    // This view wrapper stays inline on purpose. Its prepare feeds a render-time useMemo, and React Compiler
-    // reports "Cannot access refs during render" when that prepare calls any imported preparer. App's cold
-    // path (preparePdfInkAttempt) calls the SAME canonical preparePdfInkSession from an async job instead.
     const prepare = useCallback(async (signal: AbortSignal) => {
         if (identity.documentId !== documentId || identity.kind !== 'pdfInk') throw new Error('PDF identity does not match this entry');
         const create = props.legacyConversion ? prepareLegacyPdfInkSession : preparePdfInkSession;
         const result = await create({ host: nativeCanvasHost, identity, signal, deadlineMs, zMax,
             prepareOwned: prepareOwnedPdfInk, createHost: createPdfInkHost, validateLoadedHost: validateLoadedPdfInkHost,
             readLegacyDigest: readPdfInkLegacyDigest, pinHost: pinPdfInkHostForSave, rebind: rebindPdfInkSource,
-            // The acquisition adapter owns the temporary viewing seal. Source,
-            // emergency and C5/D10 restrictions remain independent of that seal.
             currentReadOnly: () => null, onReadOnly: reason => latest.current.onNotice(reason), onError,
             onHistoryLimit: () => setError('The board history limit was reached.') });
         if (result.kind === 'read-only') {
@@ -82,7 +70,6 @@ export default function NativePdfEntry(props: NativePdfEntryProps) {
     }), [nativeCanvasHost, identity, attachCanvasSession, onNativeCanvasReady, prepare, onError, emergencyPolicy]);
     const acquired = useNativeBoardAcquisition(acquisition);
     const source = acquired ? getPdfInkSourceState(documentId) : undefined;
-    // An old annotated PDF's tldraw ink is read through the same one-at-a-time queue as tldraw-format boards (legacyLoadQueue.ts).
     const visible = props.isVisible;
     useEffect(() => visible ? showLegacyLoadTarget(documentId) : undefined, [documentId, visible]);
     const phase = useSyncExternalStore(subscribeLegacyLoadPhase, () => legacyLoadPhase(documentId), () => null);

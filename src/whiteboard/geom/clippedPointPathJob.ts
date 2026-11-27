@@ -43,7 +43,6 @@ export function expandCertifiedClipBox(box: CertifiedClipBox, radius: number): C
     return [subtract(interval(box[0]), interval(radius)).lo, subtract(interval(box[1]), interval(radius)).lo,
         add(interval(box[2]), interval(radius)).hi, add(interval(box[3]), interval(radius)).hi];
 }
-/** inside means the complete interval box is inside; outside means one exact separating plane. */
 export function classifyCertifiedClipBox(box: CertifiedClipBox, region: CertifiedClipRegion): 'inside' | 'outside' | 'overlap' {
     if (!box.every(Number.isFinite)) throw new RangeError('Point clipping box overflows');
     const corners = [{ x: box[0], y: box[1] }, { x: box[2], y: box[1] }, { x: box[2], y: box[3] }, { x: box[0], y: box[3] }].map(exactPoint);
@@ -60,7 +59,6 @@ export function classifyCertifiedClipBox(box: CertifiedClipBox, region: Certifie
     return inside ? 'inside' : 'overlap';
 }
 export function certifiedIntervalPointBox(point: BoundsPoint): CertifiedClipBox { return [point.x.lo, point.y.lo, point.x.hi, point.y.hi]; }
-/** Frames intersect; exclusion contours use the renderer's even-odd parity. */
 export function classifyClippedVisibility(box: CertifiedClipBox, frames: readonly CertifiedClipRegion[],
     exclusions: readonly CertifiedClipRegion[]): 'inside' | 'outside' | 'overlap' {
     let frameOverlap = false, exclusionOverlap = false, parity = 0;
@@ -84,8 +82,6 @@ export function clipBoxStrictlyInside(box: CertifiedClipBox, region: CertifiedCl
     return region.every(plane => corners.every(corner => exactSide(plane.line, corner) * plane.sign > 0));
 }
 
-/** Certifies a point hit against actual stroked curves after convex frame clips
- * and convex label exclusions. Unresolved boundary cases remain uncertain. */
 export function createClippedPointPathJob(paths: readonly (readonly PathOp[])[], query: PointQuery, options: {
     readonly strokeRadiusLocal: number;
     readonly marginCss: number;

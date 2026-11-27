@@ -13,7 +13,6 @@ function touch(): void {
     idle = setTimeout(() => { cache.clear(); size = 0; idle = undefined; }, IDLE_MS);
 }
 export async function artifactHash(bytes: Uint8Array): Promise<string> {
-    // Native writing runs in an opaque worker, where WebCrypto is unavailable.
     const hash = new Sha256();
     for (let at = 0; at < bytes.length; at += 1024 * 1024) {
         hash.update(bytes.subarray(at, at + 1024 * 1024));

@@ -3,37 +3,20 @@ import type { DiskAction, PdfRebuildNotice } from '../types';
 
 interface DiskBarProps {
     readOnly?: boolean;
-    /** The document's file name, as the bar names it. */
     name: string;
     state: 'conflict' | 'deleted' | 'foreign' | 'kept';
-    /** The tab held edits not yet written when the file changed (the bar says so only then). */
     unsaved?: boolean;
-    /** Keep mine found no version of the tab's own to write back (OpenTab.diskMineLost): only Reload is offered. */
     mineLost?: boolean;
     pdfRebuild?: PdfRebuildNotice;
     path: string;
-    /** App's resolution for this document (stable). Resolves once it is done,
-     *  whichever way it went; App reports failures itself. */
     onAction: (path: string, action: DiskAction) => Promise<void>;
 }
 
-/** `notes (conflict).md` — what the copy is called, for the tooltips. The real
- *  name may come out as `(conflict 2)` when that one is taken; App says which. */
 function conflictName(name: string): string {
     const dot = name.lastIndexOf('.');
     return dot > 0 ? `${name.slice(0, dot)} (conflict)${name.slice(dot)}` : `${name} (conflict)`;
 }
 
-/**
- * The strip over a document whose file parted ways with it on disk — changed
- * while the tab held unsaved edits, or deleted. A bar rather than a dialog: the
- * reader may want to read on, copy something out, or look at the other version
- * first, and nothing autosaves the tab while it is up (App.flushTab).
- *
- * Neither version is ever dropped: whichever the reader does not pick is kept
- * beside the file as a `(conflict)` copy (AGENTS.md: nothing the user made is
- * destroyed outright).
- */
 function DiskBar({ name, state, path, onAction, readOnly, pdfRebuild, unsaved, mineLost }: DiskBarProps) {
     const [busy, setBusy] = useState(false);
     const run = async (action: DiskAction) => {
@@ -57,8 +40,6 @@ function DiskBar({ name, state, path, onAction, readOnly, pdfRebuild, unsaved, m
                         ? <>A copy of <strong>{name}</strong> was kept in Trash as “{pdfRebuild.copyName}”.</>
                         : <>Before the first save, a copy of this file is kept in Trash.</>
                     : state === 'conflict'
-                    // A conflict is also raised with nothing unsaved (a save or a page turn of this app's that met the other
-                    // program's write); "while you had unsaved edits" then sent people looking for edits that never existed.
                     ? <><strong>{name}</strong> changed on disk{readOnly ? '.'
                         : mineLost ? '. This app no longer holds the version it showed, so only the one on disk can be shown.'
                         : unsaved ? ' while you had unsaved edits.'

@@ -11,19 +11,14 @@ export interface RecordedNativeAgentView {
     readonly region: Readonly<Rect>;
     readonly view: AgentViewSnapshot;
 }
-/** A board's own camera, as the view presents it right now. */
 export interface NativeAgentViewInput {
     readonly camera: Readonly<Camera>;
     readonly viewport: Readonly<Viewport>;
     readonly insets: Readonly<ViewportInsets>;
-    /** The view's own dark-mode page inversion (a PDF ink board's pages). */
     readonly inverted?: boolean;
 }
-// Metadata only: hiding/unmounting a view must not destroy the logical region
-// the agent was shown. Neither a CameraController nor mutable content lives here.
 const recorded = new WeakMap<BoardRuntime, RecordedNativeAgentView>();
 
-/** What a camera shows of this board, without recording it. Null when the camera cannot describe a view (unmeasured). */
 export function snapshotNativeAgentView(runtime: BoardRuntime, input: NativeAgentViewInput): RecordedNativeAgentView | null {
     const { camera, viewport } = input, doc = runtime.session.doc;
     if (doc.kind !== 'whiteboard' && doc.kind !== 'notebook' && doc.kind !== 'pdf-ink') return null;

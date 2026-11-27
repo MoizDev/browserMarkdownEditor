@@ -1,20 +1,3 @@
-// The PTY backends and the choice between them.
-//
-//   inProcessBackend   Bun's own PTY (`Bun.spawn(argv, { terminal })`: openpty on
-//                      POSIX, ConPTY on Windows). A single binary, no native addon.
-//   ptyHostBackend     (ptyHostBackend.ts) macOS installed helpers only: the shell is
-//                      a child of the frozen `vaultagent-pty` LaunchAgent, so the
-//                      privacy grants (Documents, Desktop, Full Disk Access) belong
-//                      to a binary that never changes across VaultAgent updates.
-//
-// Measured against Bun 1.4.2 (macOS):
-//   • the child is a session + group leader with a controlling tty: Ctrl-C, Ctrl-Z,
-//     `fg` and resize behave as in a terminal app;
-//   • TERM comes from `env` (`terminal.name` only configures the PTY itself);
-//   • `terminal.closed` stays false after the shell exits, so we close it ourselves;
-//   • zsh ignores SIGTERM; `terminal.close()` hangs the session up (SIGHUP), which it obeys;
-//   • `proc.exited` can settle before the last `data` callbacks have been delivered.
-
 import { join } from 'node:path';
 import type { HelperPlatform, TerminalBackend, TerminalExit } from '../../../shared/vaultAgentProtocol.ts';
 import type { InstallLayout } from '../install/layout.ts';
@@ -22,9 +5,7 @@ import { logError } from '../log.ts';
 import { probePtyHost, ptyHostBackend } from './ptyHostBackend.ts';
 import type { PtyBackend, PtyCallbacks, PtyProcess, PtySpawnOptions } from './types.ts';
 
-/** How long a hung-up shell gets before its process group is SIGKILLed. */
 const KILL_GRACE_MS = 2000;
-/** After the shell exits, the PTY's last bytes may still be in flight. */
 const DRAIN_QUIET_MS = 150;
 
 function groupAlive(pid: number): boolean {
@@ -32,7 +13,6 @@ function groupAlive(pid: number): boolean {
         process.kill(-pid, 0);
         return true;
     } catch (e) {
-        // EPERM = a group we may not signal exists; only ESRCH means gone.
         return (e as NodeJS.ErrnoException).code === 'EPERM';
     }
 }
@@ -71,9 +51,6 @@ export function inProcessBackend(): PtyBackend {
             };
 
             void proc.exited.then(async code => {
-                // Deliver the PTY's remaining output before reporting the end: either it
-                // reports EOF, or (a background job still holds the slave open, so EOF never
-                // comes) it has been quiet for a moment.
                 await Promise.race([eof, Bun.sleep(DRAIN_QUIET_MS)]);
                 exited = true;
                 closeTerminal();
@@ -125,8 +102,6 @@ export function inProcessBackend(): PtyBackend {
                         hangUp();
                         return;
                     }
-                    // ConPTY: closing the pseudo console first can hang before Windows 11 24H2
-                    // while a child still runs, so kill the tree, then close.
                     try {
                         const tk = Bun.spawn(['taskkill', '/PID', String(proc.pid), '/T', '/F'], { stdout: 'ignore', stderr: 'ignore', stdin: 'ignore', windowsHide: true });
                         void tk.exited.then(closeTerminal, closeTerminal);
@@ -155,13 +130,6 @@ export interface BackendDeps {
 
 const REAL_DEPS: BackendDeps = { inProcess: inProcessBackend, host: ptyHostBackend, probe: probePtyHost };
 
-/**
- * The PTY every new terminal gets. The PTY host on macOS installed helpers — chosen
- * per spawn, not once at start: its LaunchAgent may still be starting when the
- * helper is, and it may be restarted later — and Bun's in-process PTY everywhere
- * else, and whenever the host does not answer (logged once per outage: macOS
- * privacy grants then belong to the helper, so they do not persist across updates).
- */
 export function chooseBackend(platform: HelperPlatform, layout: InstallLayout, installed: boolean, deps: BackendDeps = REAL_DEPS): PtyBackend {
     const inProcess = deps.inProcess();
     if (platform !== 'macos' || !installed) return inProcess;

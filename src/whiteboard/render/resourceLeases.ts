@@ -13,7 +13,6 @@ type Lease = { release(): void };
 type Signature = { readonly kind: Node['kind']; readonly ext: ExtBag | null; readonly rich: RichText | null; readonly raw: RawJson | null };
 type NodeEntry = Signature & { readonly ids: Ids };
 
-// Weak keys let retired scenes disappear even when the small FIFO has not wrapped.
 class WeakFifo<T extends object, V> {
     private readonly values = new WeakMap<T, V>();
     private readonly order: WeakRef<T>[] = [];
@@ -76,8 +75,6 @@ function extraIds(node: Readonly<Node>): Ids {
     const result = Object.freeze([...ids]); nodeCache.set(node, { ...current, ids: result }); return result;
 }
 
-/** Prewarm original immutable carriers before the synchronous scene-store retain path.
- * Without prewarming, the first uncached preserved value is scanned synchronously. */
 export async function prewarmPaintNodeResources(nodes: Iterable<Readonly<Node>>, cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<void> {
     let work = 0, started = performance.now();
     const tick = async () => {
@@ -127,7 +124,6 @@ function releaseAll(leases: readonly Lease[]): void {
     if (failed) throw first;
 }
 
-/** A pin may survive session teardown, so its media uses the store's surviving holder. */
 export function retainPaintNodeResources(node: Readonly<Node>, samples: SampleStoreReader, media: MediaStore): { release(): void } {
     const ids = new Set<MediaId>(extraIds(node));
     if ((node.kind === 'picture' || node.kind === 'clip') && node.media) ids.add(node.media);

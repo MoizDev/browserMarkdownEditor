@@ -13,7 +13,6 @@ export interface StyleShortcutOptions {
     readonly inputToken: InputToken;
     hit(point: Readonly<{ x: number; y: number }>, signal: AbortSignal): Promise<NodeId | null>;
     current(): boolean;
-    /** The view's editable gate; style and grid/focus writes are refused while it is false. */
     canMutateView(): boolean;
     registerPending(cancel: () => void): () => void;
     error(error: unknown): void;
@@ -21,8 +20,6 @@ export interface StyleShortcutOptions {
     cooperate?(): Promise<void>;
 }
 
-/** Hidden keyboard styles use the same document operations as chrome. They
- * collect recursive group descendants cooperatively before the one apply. */
 export function createStyleShortcuts(options: StyleShortcutOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     const cooperate = options.cooperate ?? yieldToHost;
@@ -109,7 +106,6 @@ export function createStyleShortcuts(options: StyleShortcutOptions) {
         return true;
     };
     const run = (id: string): boolean => {
-        // grid and focus are document state too: a view that refuses edits consumes them instead of letting the global route promote them.
         const owned = id.startsWith('style.') || id === 'preferences.grid' || id === 'preferences.focus';
         if (owned && current() && (!options.canMutateView() || session.isReadOnly)) return true;
         switch (id) {

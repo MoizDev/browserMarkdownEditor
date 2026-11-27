@@ -4,19 +4,13 @@ import type { BoardTranslate } from './localize';
 import type { PaletteGroup } from './commandPaletteModel';
 import type { ToolChoices } from './toolChoices';
 
-/**
- * The style setters the palette calls: the board's own style controls (host/styleControls.ts, which owns the value lists).
- * Values are plain strings here, so this chrome module stays out of the engine's dark import zone.
- */
 export interface PaletteStyleCommands {
     readonly options: {
         readonly colours: readonly string[]; readonly opacities: readonly number[]; readonly fills: readonly string[];
         readonly dashes: readonly string[]; readonly sizes: readonly string[]; readonly fonts: readonly string[]; readonly aligns: readonly string[];
     };
     currentColor(): string | null;
-    /** The opacity the selection shares, null when nothing is selected or the items differ. */
     currentOpacity(): number | null;
-    /** Opacity is a property of selected shapes only (the style panel offers its row only with a selection), so the palette's row needs one too. */
     hasSelection(): boolean;
     setColor(color: string): void;
     setOpacity(opacity: number): void;
@@ -25,7 +19,6 @@ export interface PaletteStyleCommands {
     setSize(size: string): void;
     setFont(font: string): void;
     setAlignment(align: string, textAlign: string): void;
-    /** The defaults the next shape gets: the values the style rows mark as chosen. */
     nextStyle(): { readonly fill: string; readonly dash: string; readonly size: string; readonly font: string; readonly align: string };
 }
 
@@ -48,13 +41,9 @@ export interface PaletteSheetSource {
 export interface PaletteSources {
     readonly translate: BoardTranslate;
     readonly sectionLabel: (id: 'edit' | 'view' | 'export' | 'preferences') => string;
-    /** mainMenuEntries' rows: four sections (submenus with those ids), then the top-level Insert and Help rows and Language. */
     readonly main: readonly ContextMenuEntry[];
-    /** preferenceEntries' rows. */
     readonly preferences: readonly SubmenuRow[];
-    /** The selection-scoped rows the context menu shows (empty when nothing is selected); the palette keeps only the ones no other group lists. */
     readonly selection: readonly ContextMenuEntry[];
-    /** The Arrange and Reorder submenus, listed even with nothing selected: their rows say why they cannot run. */
     readonly arrange: readonly ContextMenuEntry[];
     readonly arrangeLabel: string;
     readonly styles: PaletteStyleCommands | null;
@@ -62,14 +51,12 @@ export interface PaletteSources {
     readonly tools: PaletteToolSource | null;
 }
 
-/** The catalogued label key of each style value, keyed by the value. A value without one is shown as it is. */
 const FILL_LABELS: Readonly<Record<string, string>> = { none: 'styles.none', semi: 'styles.semi', solid: 'styles.solid', pattern: 'styles.pattern',
     fill: 'styles.fillSolid', 'lined-fill': 'styles.linedFill' };
 const DASH_LABELS: Readonly<Record<string, string>> = { draw: 'styles.draw', solid: 'styles.solid', dashed: 'styles.dashed', dotted: 'styles.dotted', none: 'styles.none' };
 const SIZE_LABELS: Readonly<Record<string, string>> = { s: 'styles.small', m: 'styles.medium', l: 'styles.large', xl: 'styles.extraLarge' };
 const FONT_LABELS: Readonly<Record<string, string>> = { draw: 'styles.draw', sans: 'styles.sans', serif: 'styles.serif', mono: 'styles.mono' };
 const ALIGN_LABELS: Readonly<Record<string, string>> = { start: 'styles.start', middle: 'styles.middle', end: 'styles.end' };
-/** The sheet menu's limit (SheetMenu.tsx). */
 const SHEET_LIMIT = 40;
 
 type SubmenuRow = ContextMenuSubmenu['entries'][number];
@@ -83,7 +70,6 @@ function commandsOf(entries: readonly ContextMenuEntry[], ids: readonly string[]
     return entries.filter(entry => entry.kind === 'command' && ids.includes(entry.id));
 }
 
-/** Removes one row wherever it sits in the tree. */
 function withoutRow(entries: readonly SubmenuRow[], id: string): SubmenuRow[] {
     return entries.flatMap((entry): SubmenuRow[] => {
         if (entry.kind === 'command') return entry.id === id ? [] : [entry];
@@ -92,7 +78,6 @@ function withoutRow(entries: readonly SubmenuRow[], id: string): SubmenuRow[] {
     });
 }
 
-/** A submenu of values where exactly one is chosen: every row carries a boolean `checked`, so the menu draws its check column. */
 function pickOne(id: string, label: string, rows: readonly { readonly id: string; readonly label: string; readonly checked: boolean; readonly run: () => void }[]): ContextMenuSubmenu {
     return { kind: 'submenu', id, label, entries: rows.map(row => ({ kind: 'command', id: row.id, label: row.label, checked: row.checked, run: row.run })) };
 }
@@ -125,10 +110,6 @@ function styleSubmenus(styles: PaletteStyleCommands, t: BoardTranslate): Context
     return [colour, ...(opacity ? [opacity] : []), fill, dash, size, font, alignment];
 }
 
-/**
- * The selection's own rows, without the ones another group lists: Arrange and Reorder have their own group, and the Edit
- * submenu's commands are in the main Edit section, except Edit link and Toggle auto size, which only the selection has.
- */
 function selectionOnly(selection: readonly ContextMenuEntry[]): ContextMenuEntry[] {
     return selection.flatMap((entry): ContextMenuEntry[] => {
         if (entry.kind !== 'submenu') return [entry];
@@ -151,10 +132,6 @@ function sheetRows(sheets: PaletteSheetSource, t: BoardTranslate): ContextMenuEn
     return [goTo, create, duplicate];
 }
 
-/**
- * The palette's groups, in the order a person reads them. Each row is the same entry a menu shows, so one command has one
- * label, chord and rule wherever it appears. Groups with no rows are left out by the caller.
- */
 export function paletteGroups(sources: PaletteSources): PaletteGroup[] {
     const { translate: t, main, preferences, selection } = sources;
     const tools = sources.tools;
@@ -169,7 +146,6 @@ export function paletteGroups(sources: PaletteSources): PaletteGroup[] {
     const language = main.filter((entry): entry is ContextMenuSubmenu => entry.kind === 'submenu' && entry.id === 'language');
     const groups: PaletteGroup[] = [
         { id: 'selection', label: t('palette.selection'), entries: selectionOnly(selection) },
-        // The Arrange rows sit directly in the group that is already named Arrange: a submenu of the same name would repeat it.
         { id: 'arrange', label: sources.arrangeLabel, entries: sources.arrange.flatMap(entry => entry.kind === 'submenu' && entry.id === 'arrange' ? entry.entries : [entry]) },
         { id: 'styles', label: t('palette.styles'), entries: sources.styles ? styleSubmenus(sources.styles, t) : [] },
         { id: 'edit', label: sources.sectionLabel('edit'), entries: section(main, 'edit') },

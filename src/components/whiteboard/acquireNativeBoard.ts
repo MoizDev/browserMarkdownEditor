@@ -3,7 +3,6 @@ import { createBoardSessionAdapter, type BoardSessionPort, type HostedBoardAdapt
 import type { AcquiredNativeBoard, NativeBoardAcquisitionOptions, PreparedNativeBoard } from './nativeBoardAcquisitionTypes';
 
 interface Flight { controller: AbortController; waiters: number; settled: boolean; result: Promise<AcquiredNativeBoard<BoardSessionPort>> }
-// This is only an in-flight lock. The CanvasSessionBridge owns the resulting board.
 const flights = new Map<string, Flight>();
 
 async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisitionOptions<S>, signal: AbortSignal): Promise<AcquiredNativeBoard<S>> {
@@ -47,8 +46,6 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
             const importNotice = prepared!.importNotice ? { text: prepared!.importNotice,
                 isDismissed: () => noticeDismissed, dismiss() { noticeDismissed = true; } } : undefined;
             const owned = prepared!.take(owner, isLiveOwner, () => reason ??
-                // The board shows this as its notice: under a DiskBar it read "Canvas source is not currently authorized
-                // for editing.", which named nothing the person could do.
                 (sourceAuthorized() ? null : options.sourceBlockReason?.() ?? 'Canvas source is not currently authorized for editing.'));
             taken = true;
             try {
@@ -61,7 +58,6 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
                 const hosted = createBoardSessionAdapter(owner, owned.board, isLiveOwner, () => owned.dispose());
                 const oldBoard = prepared!.oldBoard;
                 return { ...hosted, ...(importNotice ? { importNotice } : {}), ...(oldBoard ? { oldBoard } : {}), activateEditing() {
-                    // A versioned PDF save advances bytes, not the retained board/undo owner.
                     if (!isLiveOwner(owner) || !currentOwner() || getSessionIdentity(documentId)?.serial !== owner.session) throw new DOMException('Board session ended', 'AbortError');
                     if (sealed) throw new Error(sealed);
                     if (activated) {

@@ -16,9 +16,7 @@ function profile(docKey: string): Profile {
     return entry;
 }
 
-/** The owner releases the profile when the final lease on this document closes. */
 export function getPdfFontEpoch(docKey: string): number { return profiles.get(docKey)?.fonts.size ?? 0; }
-/** Availability identity is stable across workers and document byte generations. */
 export function getPdfFontProfileKey(docKey: string): string {
     const entry = profiles.get(docKey);
     if (!entry || !entry.fonts.size) return EMPTY_FINGERPRINT;

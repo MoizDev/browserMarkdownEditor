@@ -15,12 +15,9 @@ import { inspectMedia } from './inspect';
 import { resolveMediaStorage } from './storage';
 import type { MediaStorageReceipt, StoreMedia } from './storage.types';
 
-// Provenance: media §10a, actual export capture and atomic delete/create
-// contracts; independent transaction, no upstream engine source.
 export interface FlattenCapture {
     readonly blob: Blob;
     readonly bounds: Readonly<{ x: number; y: number; width: number; height: number }>;
-    /** Topmost actually captured root, not a guessed z-order. */
     readonly topmost: NodeId;
     release(): void;
 }
@@ -29,7 +26,6 @@ export interface FlattenOptions {
     readonly memory: MemoryAllocator;
     readonly signal?: AbortSignal;
     current(): boolean;
-    /** Capture must use the canonical ordered paint stream, excluding these locked subtrees. */
     capture(roots: readonly NodeId[], excludedLocked: readonly NodeId[], signal: AbortSignal): Promise<FlattenCapture>;
     readonly storeMedia: StoreMedia;
 }

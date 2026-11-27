@@ -10,7 +10,6 @@ export interface ClosedBoard {
     readonly samples: SampleStore;
     readonly readOnly: boolean;
     readonly issues: NativeReadResult['issues'];
-    /** Releases all read leases after the projection/capture is finished. */
     dispose(): void;
 }
 export type ClosedBoardRead =
@@ -21,12 +20,9 @@ export interface ClosedBoardOptions {
     readonly byteLength?: number;
     readonly pdfPages?: readonly (readonly [number, number])[];
     readonly signal?: AbortSignal;
-    /** C5 repairs/validates the ordered draft before constructing its indexed doc. */
     admit(draft: ReadDraft, samples: SampleStore): BoardDoc | Promise<BoardDoc>;
 }
 
-// F-AGENT-001/WB-D11: the host selects this only when there is no live session.
-// The same projection used by the live session consumes the returned doc/store.
 export async function readClosedBoard(source: ByteSource, options: ClosedBoardOptions): Promise<ClosedBoardRead> {
     const samples = new SampleStore(), leases: SampleLease[] = [];
     let disposed = false;
@@ -65,10 +61,8 @@ export async function readClosedBoard(source: ByteSource, options: ClosedBoardOp
 
 export interface ClosedShapeOptions extends ClosedBoardOptions {
     readonly query?: ShapeQuery;
-    /** App-owned monotonic generation of the exact disk baseline, not doc.rev. */
     readonly diskRevision: number;
     isCurrent(): boolean;
-    /** Same authoritative, offscreen-capable projection used by live sessions. */
     project(doc: BoardDoc, samples: SampleStore): Promise<{ readonly geometry: AgentGeometry; dispose(): void }>;
 }
 

@@ -1,26 +1,15 @@
-// The agent's tools: names, JSON schemas and the descriptions the model reads.
-//
-// Served by the helper as the MCP server's `tools/list`, and used by the editor
-// (utils/vaultAgentTools.ts) to validate every call against the SAME schemas.
-// Split from vaultAgentProtocol.ts for bundle size: App imports that module for
-// a few constants, and whatever lives there ships in the main chunk; this table
-// only ever loads with the agent panel. Pure data, no imports beyond types.
-
 import type { ToolName } from './vaultAgentProtocol';
 
 export interface ToolDef {
     name: ToolName;
     description: string;
-    /** JSON Schema (draft 2020-12 subset) served as MCP `inputSchema`. */
     inputSchema: Record<string, unknown>;
-    /** Changes the vault — the panel shows a change card for these. */
     mutates: boolean;
 }
 
 const PATH = { type: 'string', description: 'Vault-relative path with "/" separators, e.g. "Notes/Ideas.md". "" or "." is the vault root.' };
 const PAGE = { type: 'integer', minimum: 1, description: '1-based page number (notebooks and PDFs).' };
 
-// Canvas op vocabulary — the TS types below mirror this schema exactly.
 const COLOR = { type: 'string', enum: ['black', 'grey', 'light-violet', 'violet', 'blue', 'light-blue', 'yellow', 'orange', 'green', 'light-green', 'light-red', 'red', 'white'] };
 const SIZE = { type: 'string', enum: ['s', 'm', 'l', 'xl'] };
 const FILL = { type: 'string', enum: ['none', 'semi', 'solid', 'pattern'] };

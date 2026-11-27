@@ -17,9 +17,6 @@ export type NonconvexContainmentResult = Readonly<{ status: 'pending' | 'hit' | 
 const PENDING: NonconvexContainmentResult = Object.freeze({ status: 'pending' });
 const IDENTITY = [1, 0, 0, 1, 0, 0] as const;
 
-/** A connected stroke or fill component is contained in a simple lasso when
- * one boundary point is inside and its whole boundary misses the lasso edge.
- * Contacts and unsupported transforms stay uncertain, never guessed. */
 export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor, query: Extract<RegionQuery, { kind: 'polygon' }>, options: {
     readonly frames?: readonly PointClipContour[]; readonly maxCommands?: number; readonly maxEdges?: number; readonly maxWork?: number; readonly maxNodes?: number; readonly maxDepth?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): NonconvexContainmentResult; cancel(): void } {
@@ -128,8 +125,6 @@ export function createNonconvexContainmentJob(descriptor: VectorNarrowDescriptor
             const fills = part.options.interiorPaths ?? [];
             for (const ops of fills) {
                 const result = yield* path(ops, 0, true);
-                // A canceled contour outside the lasso does not prove that any
-                // rendered fill is outside; only the positive result is usable.
                 if (result !== 'inside') return { status: 'uncertain', reason: 'Filled contour meets or leaves a nonconvex lasso' };
                 yield;
             }

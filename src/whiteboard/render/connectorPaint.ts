@@ -9,8 +9,6 @@ import { pathMaterial } from './material';
 import type { PaintClip, PaintItem, PaintNode } from './paintStream';
 import { textPaintMaterial } from './textGeometry';
 
-// Provenance: connector world geometry, head and shared paint material contracts;
-// independent paint conversion, no third-party source.
 const IDENTITY: Affine = Object.freeze([1, 0, 0, 1, 0, 0]);
 function matrix(value: Affine): void {
     if (value.length !== 6 || !value.every(Number.isFinite)) throw new RangeError('Invalid connector paint transform');

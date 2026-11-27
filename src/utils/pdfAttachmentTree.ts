@@ -1,4 +1,3 @@
-// Worker-only typed PDF object traversal and legal EmbeddedFiles name-tree writer.
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFObjectCopier, PDFRawStream, PDFString, decodePDFRawStream, FileEmbedder } from 'pdf-lib';
 import type { PDFObject } from 'pdf-lib';
 import { artifactHash, immutableArtifact } from './pdfWriteArtifacts';
@@ -126,7 +125,6 @@ function payload(entry: AttachmentEntry): Uint8Array {
 }
 
 interface Named { name: PdfKey; raw: PDFObject; hash: string }
-/** Copy the outer/pristine union, then replace only the known editable pair. */
 export async function rebuildAttachmentTree(doc: PDFDocument, outer: PDFDocument | undefined, original: Uint8Array, snapshot: Uint8Array): Promise<{ named: Array<{ name: string; hash: string }>; associated: string[]; aliases: string[] }> {
     const named: Named[] = [], af: PDFObject[] = [], associated: string[] = [], aliases: string[] = [];
     const used = new Set<string>();
@@ -135,7 +133,6 @@ export async function rebuildAttachmentTree(doc: PDFDocument, outer: PDFDocument
     const addSource = async (source: PDFDocument, isOuter: boolean) => {
         const copier = source === doc ? undefined : PDFObjectCopier.for(source.context, doc.context);
         for (const entry of inventoryAttachments(source)) {
-            // Only the unique pair validated by inspectPdfRole is app-owned.
             const authorityNames = entry.keys.length ? entry.keys.map(k => k.decodeText()) : [...entry.names];
             if (isOuter && authorityNames.some(name => name === 'original.pdf' || name === 'tldraw-snapshot.json')) continue;
             const hash = await digest(payload(entry));
@@ -254,7 +251,6 @@ function validateWrittenTree(doc: PDFDocument): void {
     visit(root, 0, true);
 }
 
-/** A successful serialization is not enough: reparse and re-hash before the write funnel sees bytes. */
 export async function verifyAttachmentTree(bytes: Uint8Array, expected: { named: Array<{ name: string; hash: string }>; associated: string[] }): Promise<void> {
     const doc = await PDFDocument.load(bytes, { parseSpeed: Infinity, updateMetadata: false });
     validateWrittenTree(doc);

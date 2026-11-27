@@ -11,11 +11,9 @@ export type PdfPageBitmapOptions = PdfRequestOptions & TileVariant & {
     profileKey: string;
     annotations?: boolean;
     forms?: boolean;
-    /** Refuse an oversized capture; never silently reduce the requested scale. */
     maxPixels?: number;
 };
 export interface PdfOpenOptions {
-    /** App-owned full session token; only its first three fields enter docKey. */
     token: RenderToken;
     source: 'outer' | 'original';
     /** Immutable: memory-backed, or a nameless slice of the disk snapshot whose memory-backed copy the caller hands to
@@ -28,26 +26,19 @@ export interface PdfOpenOptions {
 export type PdfDocumentOp = Exclude<PdfEngineOp, 'engine.init' | 'doc.open' | 'doc.close' | 'doc.adoptSource' | 'font.provide' | 'worker.stats'>;
 export type WithoutDocKey<T> = T extends unknown ? Omit<T, 'docKey'> : never;
 
-/** A retained, source-explicit document lease. Closing it cannot cancel another
- * pane's lease or change PDF bytes. Session/token checks guard every publication. */
 export interface PdfPoolDocument {
     readonly docKey: PdfDocKey;
     readonly token: RenderToken;
     readonly source: 'outer' | 'original';
     readonly info: Readonly<DocInfo>;
     readonly closed: boolean;
-    /** Host-validated exact geometry already acquired; never triggers native work. */
     peekGeometry(page: number): Readonly<PageGeometry> | undefined;
-    /** Exact transforms are acquired on demand; document extents alone are layout estimates. */
     resolveGeometry(page: number, options: PdfRequestOptions): Promise<Readonly<PageGeometry>>;
     request<K extends PdfDocumentOp>(op: K, args: WithoutDocKey<PdfArgs<K>>, options: PdfRequestOptions): Promise<PdfResult<K>>;
     text(page: number, detail: PdfTextDetail, options: PdfRequestOptions): Promise<PageTextReply>;
     tile(args: WithoutDocKey<PageTileArgs>, options: PdfRequestOptions): Promise<PageTileResult>;
-    /** Release raw reply credit after every consumer has finished bitmap conversion. Idempotent. */
     releaseTile(result: PageTileResult): void;
-    /** Independent of viewport demand; composes exact-scale tiles, caller owns bitmap. */
     renderPage(page: number, scale: number, options: PdfPageBitmapOptions): Promise<ImageBitmap>;
-    /** Plain/emphasis follows explicit options, but dispatch is always priority 3. */
     thumbnail(page: number, maxSidePx: number, options: Omit<PdfPageBitmapOptions, 'priority' | 'maxPixels'>): Promise<ImageBitmap>;
     links(page: number, options: PdfRequestOptions): Promise<RawPdfLink[]>;
     outline(options: PdfRequestOptions): Promise<RawOutlineNode[]>;
@@ -55,32 +46,24 @@ export interface PdfPoolDocument {
     probe(args: Omit<PageProbeArgs, 'docKey'>, options: PdfRequestOptions): Promise<PageProbeResult>;
     attachment(index: number, maxBytes: number, options: PdfRequestOptions): Promise<ArrayBuffer>;
     releasePage(page: number): void;
-    /** Highest-priority live waiter wins, including already queued/running extraction. */
     reprioritise(request: Promise<unknown>, priority: Priority): void;
     setVisible(visible: boolean): void;
-    /** Moves every worker reading this document from its disk snapshot onto `blob`, a memory-backed copy of the same
-     * bytes; later opens and restarts read the copy. Idempotent per document. */
     adoptSource(blob: Blob): Promise<void>;
-    /** Explicitly clear failures for this lease's document without replacing its source. */
     retry(): Promise<void>;
     close(): Promise<void>;
 }
 
-/** Dedicated engine instance; the writer owns its single operation map. */
 export interface PdfWriterSession {
     request<K extends keyof WriterOperations>(op: K, args: WriterOperations[K]['args'], options: PdfRequestOptions): Promise<WriterOperations[K]['result']>;
     reprioritise(request: Promise<unknown>, priority: Priority): void;
     close(): Promise<void>;
 }
 export interface PdfPool {
-    /** Identity of the trusted, opened render engine and its display geometry schema. */
     readonly geometryEngine: Readonly<WriterOperations['writer.stageAnnotated']['result']['geometryEngine']>;
     open(options: PdfOpenOptions): Promise<PdfPoolDocument>;
     writer(options?: { signal?: AbortSignal }): Promise<PdfWriterSession>;
     stats(): Promise<readonly PdfWorkerStats[]>;
-    /** Boots one render worker ahead of the first open (idle warm-up of a vault that holds PDFs); no-op when one lives. */
     warm(): void;
-    /** Explicit user recovery, never an automatic switch to the classic parser. */
     retry(docKey: PdfDocKey): Promise<void>;
     dispose(): void;
 }

@@ -1,7 +1,3 @@
-// The strip under the header that says a newer VaultAgent is out, that an
-// update failed, or that one just landed. The ⋯ menu's Update row does the
-// same job without the nudge, so dismissing the strip loses nothing.
-
 import { useEffect, useState } from 'react';
 import { HELPER_NAME } from '../../../shared/vaultAgentProtocol';
 import { agentBridge } from '../../utils/agentBridge';
@@ -11,10 +7,7 @@ import type { CpuArch, OsKind } from '../../utils/platform';
 import { X } from '../icons';
 import { writeStoredValue } from '../../utils/storage';
 
-/** The version whose "is available" strip the user closed. Per version, so the
- *  next release asks again. */
 const DISMISSED_KEY = 'vaultAgentUpdateDismissed';
-/** Long enough to read "Updated to …" after the panel reconnects. */
 const UPDATED_NOTICE_MS = 8000;
 
 function readDismissed(): string | null {
@@ -78,7 +71,6 @@ export function UpdateBar({ helper, update, os, arch, onUpdate }: UpdateBarProps
                 </p>
                 <div className="agent-update-actions">
                     <button type="button" className="agent-btn small" onClick={onUpdate}>Try again</button>
-                    {/* A new tab, like DownloadButton: never navigate away the app holding the vault. */}
                     {asset && (
                         <a className="agent-link" href={asset.url} target="_blank" rel="noopener noreferrer">
                             Download installer

@@ -9,10 +9,6 @@ export interface PreservedDelta {
 }
 const EMPTY: PreservedDelta = { counts: new Map(), touched: new Set() };
 
-// R-W25/R-W37/R-W40: compare retained carriers, not temporary serialized lines.
-// Common geometry edits have no raw changes and allocate neither map nor scan.
-// Equal raw strings can occur in several carriers: their multiplicities matter,
-// but each id contributes at most once per occurrence of a RawJson value.
 export class RawChanges {
     private values: Map<RawJson, number> | undefined;
     constructor(private readonly owningMedia?: MediaId) {}
@@ -30,8 +26,6 @@ export class RawChanges {
     }
     pdf(before: RawJson, after: RawJson): void {
         if (before === after) return;
-        // Source fingerprints are PDF-owned bookkeeping, not media. Use the
-        // same structural partition as native admission, including unknown tails.
         for (const raw of pdfHostMediaRawValues(before)) if (raw !== null) this.add(raw, -1);
         for (const raw of pdfHostMediaRawValues(after)) if (raw !== null) this.add(raw, 1);
     }
@@ -50,8 +44,6 @@ export class RawChanges {
     }
     rich(before: readonly Block[], after: readonly Block[]): void {
         if (before === after) return;
-        // Joining paragraphs moves primary tails into range carriers. The same
-        // visitor handles both for splice/set, preserving independent equal tails.
         visitRichTextRaw({ blocks: before }, raw => this.add(raw, -1));
         visitRichTextRaw({ blocks: after }, raw => this.add(raw, 1));
     }
@@ -61,8 +53,6 @@ export class RawChanges {
         const touched = new Set<MediaId>();
         let multiplier = 0;
         const visit = (id: MediaId) => {
-            // A media entry's own ext leaves with it (R-W40). Other carriers,
-            // including a node that happens to share that string id, still count.
             if (id === this.owningMedia) return;
             touched.add(id);
             const next = (counts.get(id) ?? 0) + multiplier;
@@ -73,7 +63,7 @@ export class RawChanges {
             multiplier = change;
             scanRawMedia(raw, visit);
         }
-        this.values = undefined; // Don't retain removed raw strings behind the delta.
+        this.values = undefined;
         return touched.size ? { counts, touched } : EMPTY;
     }
 }

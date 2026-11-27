@@ -6,18 +6,13 @@ export interface PdfFindProgress {
 }
 export interface PdfFindPageText { text: string; tokenBreaks: readonly number[] | Uint32Array; quality: 'available' | 'partial' | 'none' }
 export interface PdfFindSource {
-    /** Identifies immutable bytes and extraction schema, never a path. */
     readonly cacheKey?: string;
     pageCount(signal: AbortSignal): Promise<number>;
     page(index0: number, signal: AbortSignal): Promise<PdfFindPageText>;
 }
 export interface PdfFindEngine {
     search(query: string, startPage: number, signal: AbortSignal): AsyncIterable<PdfFindProgress>;
-    /** Each projected UTF-16 unit maps to its canonical start; the final entry
-     * is the canonical length. Expansions (ﬁ → fi) share their source start. */
     project(page: PdfFindPageText): { key: string; map: Uint32Array };
-    /** Canonical text is budgeted alongside keys so result snippets/refinements
-     * do not cycle the reader's small geometry cache. */
     pageText(index0: number, signal: AbortSignal): Promise<PdfFindPageText>;
     /** Synchronous clipboard path; callers must not mutate returned token breaks. */
     peekPageText(index0: number): PdfFindPageText | undefined;
@@ -63,8 +58,6 @@ function queryUnits(query: string): string {
 }
 
 export type ProjectionChunk = { key: string; offsets: number[] };
-/** One producer serves synchronous reveal maps and sliced background indexing.
- * A page can contain a million units; projection must yield as well as matching. */
 export function* projectionChunks(page: PdfFindPageText, chunkUnits = 4096): Generator<ProjectionChunk> {
     const chunkSize = Math.max(1, Math.min(4096, Math.floor(chunkUnits) || 4096));
     let key = '', offsets: number[] = [], breaks = 0, space = false, visited = 0;
@@ -84,8 +77,6 @@ export function* projectionChunks(page: PdfFindPageText, chunkUnits = 4096): Gen
                 while (end < page.text.length && isSpace(page.text[end])) {
                     if (page.text[end] === '\n' || page.text[end] === '\r') lineEnd = true;
                     end++;
-                    // A long whitespace tail (or dropped-mark page below) can
-                    // emit no key units. Bound source work, not just output.
                     if (++visited >= chunkSize) { yield { key, offsets }; key = ''; offsets = []; visited = 0; }
                 }
             }
@@ -112,9 +103,6 @@ type IndexedPage = { bytes: Uint8Array; canonical: string; tokenBreaks: Uint32Ar
     quality: PdfFindPageText['quality']; failed: boolean; cost: number };
 type DocumentCache = { pages: Map<number, IndexedPage>; bytes: number; owners: Set<symbol>; visible: Set<symbol>; hiddenSince?: number };
 const keyedDocuments = new Map<string, DocumentCache>();
-// In insertion order: evict a whole document, not an arbitrary set of its pages.
-// The pane's visibility owner calls clearIndex after 60 s hidden; disposal of
-// the document session releases it immediately, including on a vault switch.
 const documents = new Map<DocumentCache, true>();
 let appBytes = 0;
 function clearCache(cache: DocumentCache) { appBytes -= cache.bytes; cache.bytes = 0; cache.pages.clear(); }
@@ -145,8 +133,6 @@ function canonicalAt(page: IndexedPage, position: number): number {
 }
 function canonicalEnd(page: IndexedPage, end: number): number {
     const start = canonicalAt(page, end - 1);
-    // A partial match of a compatibility expansion still selects the whole
-    // original glyph, never a zero-width slice or half a surrogate pair.
     while (end < page.length && canonicalAt(page, end) === start) end++;
     return canonicalAt(page, end);
 }
@@ -178,8 +164,6 @@ function advance(state: Uint32Array, machine: Automaton, char: string, seed: num
     return live !== 0;
 }
 export interface PdfMatchOptions { overlap?: boolean; maxUnits?: 256 | 512 }
-/** Find retains its non-overlapping/256-unit contract; anchor restoration needs
- * overlapping candidates and the stored quote's 512-unit bound. */
 export async function* matchPage(key: string, units: string, signal: AbortSignal,
     options: PdfMatchOptions = {}): AsyncGenerator<{ from: number; to: number }> {
     if (signal.aborted) throw abort();
@@ -294,8 +278,6 @@ export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes
                         else if (page.quality === 'partial') partialPages.push(index);
                         for await (const match of matchPage(decoder.decode(page.bytes), units, signal)) {
                             const from = canonicalAt(page, match.from), to = canonicalEnd(page, match.to);
-                            // Compatibility expansions can produce two projected hits
-                            // on one glyph. Canonical ranges still never overlap.
                             const previous = hits.at(-1);
                             if (!previous || previous.page !== index || previous.to <= from) hits.push({ page: index, from, to });
                             if (hits.length >= HIT_LIMIT) { capped = true; break; }
@@ -303,8 +285,6 @@ export function createPdfFindEngine(source: PdfFindSource, budget = { indexBytes
                     }
                     pagesDone++;
                     if (capped) break;
-                    // Cached short pages have no worker await to yield input.
-                    // The slice budget spans page boundaries, not just a page.
                     if (performance.now() >= deadline) { await yieldTask(); deadline = performance.now() + 4; }
                     if (performance.now() - lastPublish >= 16 && pagesDone < pagesTotal) { yield progress(false); lastPublish = performance.now(); }
                 }

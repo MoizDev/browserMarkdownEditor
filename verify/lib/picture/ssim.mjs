@@ -1,7 +1,3 @@
-// Wang et al.'s local SSIM equation, 11x11 Gaussian (sigma 1.5), K1=.01,
-// K2=.03, L=255: https://live.ece.utexas.edu/publications/2004/zwang_vssim_spim_2004.pdf
-// This is the method, not an imported implementation. The acceptance floor is
-// planning/40-platform/verification.md:237; vr-lead fixed this window/alignment.
 const RADIUS = 5;
 const weights = Array.from({ length: 11 }, (_, i) => Math.exp(-((i - RADIUS) ** 2) / (2 * 1.5 ** 2)));
 const weightSum = weights.reduce((sum, value) => sum + value, 0);
@@ -21,8 +17,6 @@ function luminance(image, background) {
 }
 
 function gaussian(values, width, height, temporary, output) {
-    // Only complete windows participate, as in the valid convolution in Wang's method.
-    // Pixel/channel and ink checks still cover every edge pixel; SSIM drops no other checks.
     for (let y = 0; y < height; y++) {
         for (let x = RADIUS; x < width - RADIUS; x++) {
             let sum = 0;
@@ -63,8 +57,6 @@ export function bestShiftSsim(expected, actual, background) {
         varianceA[i] = Math.max(0, varianceA[i] - meanA[i] ** 2);
         varianceB[i] = Math.max(0, varianceB[i] - meanB[i] ** 2);
     }
-    // Prefer zero when scores tie. One global shift is selected, never a different SSIM
-    // alignment for each window/pixel (which could conceal a distorted or missing stroke).
     const shifts = [[0, 0], ...[-1, 0, 1].flatMap(y => [-1, 0, 1].filter(x => x || y).map(x => [x, y]))];
     let best = null;
     const scores = [];

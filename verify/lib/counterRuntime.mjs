@@ -1,9 +1,3 @@
-/** Shared, closure-free instrumentation evaluated in a window or paused worker.
- * No permissions are granted here. Missing APIs are capabilities, not exceptions:
- * opaque realms must remain opaque (verification.md §3, contracts C5.4–5.5).
- * @param {{vaultName?: string|null, realm?: 'window'|'worker', bindingName?: string,
- *   postMessages?: boolean, blobReads?: boolean, targetUrl?: string}} options
- */
 export function installCounterRuntime({ vaultName = null, realm = 'window', bindingName = '', postMessages = false, blobReads = false, targetUrl = '' } = {}) {
     const scope = globalThis;
     // Measured CfT157: a pre-start worker location.href getter crashes its
@@ -118,9 +112,6 @@ export function installCounterRuntime({ vaultName = null, realm = 'window', bind
         if (handle?.kind === 'directory' && typeof handle.getDirectoryHandle === 'function') instrumentDirectory(Object.getPrototypeOf(handle));
         else if (handle?.kind === 'file' && typeof handle.getFile === 'function') instrumentFile(Object.getPrototypeOf(handle));
     }
-    // Worker globals may not expose the FSA constructors before startup, even
-    // though returned handles work. Hook each native prototype before returning
-    // its first instance, not after the user's first getFile() has already run.
     if (scope.FileSystemDirectoryHandle?.prototype) instrumentDirectory(scope.FileSystemDirectoryHandle.prototype);
     if (scope.FileSystemFileHandle?.prototype) instrumentFile(scope.FileSystemFileHandle.prototype);
     if (blobReads && typeof scope.Blob?.prototype.arrayBuffer === 'function') {
@@ -151,8 +142,6 @@ export function installCounterRuntime({ vaultName = null, realm = 'window', bind
         });
     }
     if (realm === 'worker') {
-        // The index exception (C5.5) receives cloned handles instead of opening
-        // OPFS. Capture their native prototypes before the app's message handler.
         const ports = new WeakSet();
         const received = event => {
             try {

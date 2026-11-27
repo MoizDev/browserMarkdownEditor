@@ -28,7 +28,6 @@ type TicketState = { inner: TileTicket; lease: ByteLease; owner: MemoryAllocator
 type Entry = { input: DenseRasterInput; metadata: ByteLease; metadataOwner: MemoryAllocator; interval: string;
     address: TileAddress; borrows: number; retired: boolean; freed: boolean };
 
-/** Session-owned bitmap leases survive individual views; no rendering or scheduling is owned here. */
 export class SessionDenseRasters {
     private allocator: MemoryAllocator | null = null;
     private readonly pending = new Map<DenseRasterTicket, TicketState>();
@@ -42,8 +41,6 @@ export class SessionDenseRasters {
     private currentRevision: number | null = null;
 
     get revision(): number | null { return this.currentRevision; }
-    /** Advances to a newer source revision. Only tiles meeting the changed regions since the cached
-     * revision go stale; unknown changes (or no change source) invalidate every interval. */
     advanceRevision(revision: number, changes?: (from: number) => RegionChanges): boolean {
         if (this.ended || !Number.isSafeInteger(revision) || revision < 0) return false;
         if (this.currentRevision !== null && revision < this.currentRevision) return false;
@@ -127,7 +124,6 @@ export class SessionDenseRasters {
         for (const current of this.intervals.values()) if (revision < current) throw new RangeError('Invalid dense raster revision');
         for (const interval of this.intervals.keys()) this.invalidateOrder(interval, revision);
     }
-    /** Retires least-recently borrowed entries; borrowed pixels are never reclaimed here. */
     evict(bytes: number): number {
         if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Invalid dense raster eviction budget');
         let removed = 0;
@@ -139,8 +135,6 @@ export class SessionDenseRasters {
         }
         return removed;
     }
-    /** Retires least-recently used entries that `keep` rejects, until `bytes` are freed. Borrowed entries are never
-     * retired here; a kept entry is one the current view can draw, so it stays for the next draw. */
     evictUnused(keep: (interval: string, address: TileAddress) => boolean, bytes: number): number {
         if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Invalid dense raster eviction budget');
         let removed = 0;
@@ -152,11 +146,6 @@ export class SessionDenseRasters {
         }
         return removed;
     }
-    /** Retires every entry charged to `owner` (its bitmap or its metadata), borrowed or not, and returns their bytes. A borrowed
-     * entry is no longer served and is freed when its last borrow ends. A pane that hides gives back what it charged here: the
-     * entries outlive the pane, but their leases are its cache's, and a hidden pane's cache is charged with nothing (measured: 3-7
-     * of these per hidden dense board, 32.1 of the 33.6 MB CPU pool over seven hidden tabs, and every board shown after them
-     * waited for memory for good). */
     releaseCharged(owner: MemoryAllocator): number {
         let removed = 0;
         for (const entry of [...this.lru.keys()]) {

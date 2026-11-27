@@ -1,4 +1,3 @@
-// One real-app sanity run of the reference reader; no mutant/reviewer proof work.
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';

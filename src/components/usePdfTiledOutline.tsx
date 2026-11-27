@@ -29,7 +29,6 @@ function flatten(tree: readonly RawOutlineNode[], collapsed: ReadonlySet<string>
     return rows;
 }
 
-/** Outline is fetched only while the panel is visible; the document owns the source lease. */
 export function usePdfTiledOutline(options: Options): { button: ReactNode; panel: ReactNode } {
     const live = useRef(options);
     useLayoutEffect(() => { live.current = options; });

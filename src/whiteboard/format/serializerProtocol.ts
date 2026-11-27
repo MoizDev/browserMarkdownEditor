@@ -12,19 +12,15 @@ export interface SerializerPrime {
     readonly revision: number;
     readonly baseline: Blob;
     readonly header: string;
-    /** Parsed-reader positions at open; after a write, use the worker's opaque index Blob. */
     readonly lines?: readonly BaselineLine[];
     readonly index?: Blob;
-    /** Canonical load repairs/defaults at the baseline revision; never document edits. */
     readonly overrides?: readonly SerializerChange[];
 }
 export interface SerializerChange {
     readonly identity: RecordIdentity;
     readonly revision: number;
-    /** UTF-8 line without comma/newline, transferred to the worker. */
     readonly bytes: Uint8Array;
 }
-/** A snapshot-only replacement retains the existing record's revision and digest. */
 export interface SerializerRecordOverride {
     readonly identity: RecordIdentity;
     readonly bytes: Uint8Array;
@@ -39,7 +35,6 @@ export interface SerializerDelta {
 export interface SerializerBuild {
     readonly revision: number;
     readonly expected: RecordIntegrity;
-    /** Unknown footer field lexemes, as entries because worker envelopes forbid Map. */
     readonly endFields: readonly (readonly [string, string])[];
     readonly overrides?: readonly SerializerRecordOverride[];
 }
@@ -47,7 +42,6 @@ export interface SerializerProduct {
     readonly revision: number;
     readonly blob: Blob;
     readonly sha256: string;
-    /** Worker-produced line offsets/revisions, bound to blob; used only for recovery. */
     readonly index: Blob;
     readonly integrity: RecordIntegrity;
 }

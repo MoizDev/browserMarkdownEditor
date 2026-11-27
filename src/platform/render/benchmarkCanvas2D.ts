@@ -24,7 +24,6 @@ interface Witness {
     minRatio: number;
 }
 
-/** Detached benchmark-only evidence; failure never changes the colour drawing path. */
 export class BenchmarkCanvas2D {
     private readonly shadows = new Map<CanvasRenderingContext2D, Witness>();
     private readonly pending = new Map<string, { tag: PerfTag; ratio: number }[]>();

@@ -6,16 +6,10 @@ import { validateRichFragmentCooperative } from './richTransaction';
 import type { Block, BlockCarrier, RichFragment, Run } from './richText';
 
 export interface RichFragmentAdmissionOptions extends FragmentSnapshotOptions {
-    /** Total input UTF-16 units across opaque occurrences, not distinct string values. */
     readonly maxOpaqueUnits?: number;
 }
 interface ParsedRaw { readonly kind: string; readonly raw: RawJson }
 
-/**
- * Admit an untrusted, data-only fragment without trusting a TypeScript RawJson
- * assertion. Each unknown value is lexically validated and reader-branded;
- * separate tail/mark occurrences remain separate even when their bytes match.
- */
 export async function admitRichFragmentCooperative(input: RichFragment, options: RichFragmentAdmissionOptions): Promise<RichFragment> {
     const budget = options.sliceMilliseconds ?? 3, max = options.maxOpaqueUnits ?? SECURITY_LIMITS.recordBytes;
     if (!Number.isFinite(budget) || budget <= 0 || !Number.isSafeInteger(max) || max < 0 || max > SECURITY_LIMITS.recordBytes)

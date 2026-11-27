@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { getBoardPreferences, subscribeBoardPreferences, updateBoardPreferences } from '../../utils/boardPreferences';
 import { BoardLanguageState, loadBoardLanguage } from '../../whiteboard/chrome/language';
 
-/** Every pane follows the same persisted browser preference; each owns only its loaded table. */
 export function useNativeBoardLanguage(onError: (error: unknown) => void): BoardLanguageState | null {
     const [state, setState] = useState<BoardLanguageState | null>(null);
     useEffect(() => {

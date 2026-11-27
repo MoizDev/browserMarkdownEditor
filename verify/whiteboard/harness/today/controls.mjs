@@ -1,4 +1,3 @@
-// Reference-only controls: every state change below is real UI/input, never an editor setter.
 import { randomUUID } from 'node:crypto';
 import { frames } from '../runtime.mjs';
 
@@ -11,8 +10,6 @@ const requireValue = (field, actual, expected, stage) => {
 export const PERSISTED_FIELDS = ['id', 'kind', 'subkind', 'figure', 'title', 'parent', 'order', 'localPosition.x', 'localPosition.y', 'rotation', 'swatch', 'width', 'fill', 'dash', 'opacity', 'font', 'textSize', 'alignment', 'verticalAlignment', 'plainText', 'richMarks', 'richText', 'locked', 'crop', 'flipX', 'flipY', 'altText', 'inverted', 'url', 'autoWidth', 'metadata'];
 const leaf = (object, path) => path.split('.').reduce((value, key) => value?.[key], object);
 const valuesOf = (nodes, path) => nodes.map(node => leaf(node, path));
-// A changed count/id must not masquerade as a changed scalar field. Only a
-// change in the set of actual leaf values qualifies the A/B control for it.
 const valueSet = values => [...new Set(values.map(value => canonical(value)))].sort();
 
 export function fieldControls(h) {
@@ -91,9 +88,6 @@ export function fieldControls(h) {
       const historyDrawn = await session(path);
       requireValue('session.canUndo', historyDrawn.canUndo, true, 'after new stroke');
       requireValue('session.canUndo', await root().getByTestId('quick-actions.undo').isEnabled(), true, 'public Undo enabled');
-      // Measured: the first Undo restored selection and left one stroke.
-      // Exhaust the bounded public history, rather than calling selection Undo
-      // a failed document write or claiming a single click removed the ink.
       const undoSteps = [], redoSteps = [];
       for (let i = 0; i < 20 && await root().getByTestId('quick-actions.undo').isEnabled(); i++) {
         requireValue('session.canUndo', (await session(path)).canUndo, true, 'public Undo remains enabled');
@@ -117,8 +111,6 @@ export function fieldControls(h) {
       requireValue('session.canUndo', redone.canUndo, true, 'Redo enables Undo');
       requireValue('session.canRedo', redone.canRedo, false, 'Redo consumes redo entries');
       add(['session.canUndo', 'session.canRedo', 'nodes.length'], kind, 'action', { before: { canUndo: historyBefore.canUndo, canRedo: historyBefore.canRedo }, drawn: { canUndo: historyDrawn.canUndo, canRedo: historyDrawn.canRedo }, undone: { canUndo: undone.canUndo, canRedo: undone.canRedo }, redone: { canUndo: redone.canUndo, canRedo: redone.canRedo }, undoSteps, redoSteps });
-      // These controls show raw observation responsiveness; exact paged camera
-      // coordinates still have no cross-engine read-out (the mapping says so).
       const painted = root().locator(`[data-shape-id=${JSON.stringify(id)}]`).first();
       const beforeCamera = await session(path);
       const beforePaint = await painted.boundingBox();

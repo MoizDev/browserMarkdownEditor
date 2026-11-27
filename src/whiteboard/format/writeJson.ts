@@ -29,8 +29,6 @@ export function tupleValue(items: readonly unknown[], tail?: RawJson): unknown {
 export function objectValue(fields: readonly Field[], ext?: ExtBag | null): unknown { return new ObjectValue(fields, ext); }
 
 export function compactRaw(source: RawJson, depthOffset = 0): string {
-    // R-W16: only insignificant whitespace outside string tokens may change. Branding belongs
-    // exclusively to the bounded reader; this is NOT a parser or a general RawJson constructor.
     if (!source.length) refuseWrite('invalid', 'Raw JSON value is empty');
     if (source.length > FORMAT_LIMITS.recordBytes) refuseWrite('limit', 'Raw value exceeds the record limit');
     let quoted = false, escaped = false, depth = 0, start = 0;

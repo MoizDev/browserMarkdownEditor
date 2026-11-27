@@ -22,7 +22,6 @@ function span(curve: Cubic, t0: number, t1: number, depth: number, inherited: nu
     if (!Number.isFinite(upper)) throw new RangeError('Curve length overflows');
     return { curve, t0, t1, lower, upper, depth, roundoff };
 }
-// Greatest-uncertainty refinement; a binary heap keeps long paths out of quadratic scans.
 export function cubicLengthTable(curve: Cubic, error: number, maxSpan = Infinity): readonly LengthSpan[] {
     if (!(error > 0) || !Number.isFinite(error) || !(maxSpan > 0)) throw new RangeError('Invalid length budget');
     const heap: WorkSpan[] = [];
@@ -54,7 +53,6 @@ export function cubicLengthTable(curve: Cubic, error: number, maxSpan = Infinity
     push(initial);
     let uncertainty = nextUp(initial.upper - initial.lower);
     for (;;) {
-        // Every leaf's span and gap are bounded once the maximum heap priority is <= 1.
         if (uncertainty <= error && priority(heap[0]) <= 1) break;
         const old = pop(), t = (old.t0 + old.t1) / 2;
         if (old.depth >= 32 || t === old.t0 || t === old.t1 || heap.length >= 262143) throw new RangeError('Length refinement cannot certify this budget');
@@ -96,8 +94,6 @@ export function invertCubicLength(curve: Cubic, target: number, error: number): 
         const middle = prefix(mid);
         if (middle.upper < target) { low = mid; continue; }
         if (middle.lower > target) { high = mid; continue; }
-        // A target at exactly the midpoint remains enclosed, so use both quarter
-        // probes instead of falsely deciding which side owns an uncertain value.
         const a = (low + mid) / 2, b = (mid + high) / 2;
         const before = prefix(a), after = prefix(b);
         let progressed = false;

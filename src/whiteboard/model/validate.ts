@@ -75,7 +75,7 @@ const VALUES = {
     tool: ['pen', 'highlighter'], pressure: ['real', 'none'], route: ['arc', 'elbow'], spline: ['line', 'cubic'],
 } as const;
 const BAD_RAW_ENTRY = Symbol('invalid raw entry');
-export const MAX_COORDINATE = 10_000_000; // R-W21: same world bound for every coordinate.
+export const MAX_COORDINATE = 10_000_000;
 
 function refuse(code: ValidationCode, opIndex: number, nodeId: string | null, reason: string): ValidationResult {
     return { ok: false, code, opIndex, nodeId, reason };
@@ -110,8 +110,6 @@ function rawEntry(value: unknown, key: unknown): void {
 function extension(value: unknown): boolean {
     if (value === null) return true;
     if (!object(value) || !closed(value, KEYS.extension) || !(value.fields instanceof Map) || !(value.raw instanceof Map)) return false;
-    // RawJson is a reader-owned source value: inspect its carrier, never parse it.
-    // Map.forEach with a module callback allocates no iterator or entry pairs.
     try {
         value.fields.forEach(rawEntry);
         value.raw.forEach(rawEntry);
@@ -121,14 +119,13 @@ function extension(value: unknown): boolean {
 function controls(value: string): boolean {
     for (let i = 0; i < value.length; i++) {
         const c = value.charCodeAt(i);
-        if (c < 32 || (c >= 127 && c <= 159)) return true; // Unicode C0, DEL and C1 controls.
+        if (c < 32 || (c >= 127 && c <= 159)) return true;
     }
     return false;
 }
 function url(value: unknown, embed = false): boolean {
     if (!string(value, 2048) || controls(value)) return false;
     try {
-        // R-W18/R-W21: one bounded URL-parser allocation is explicitly allowed.
         const parsed = new URL(value);
         return !parsed.username && !parsed.password && (embed ? parsed.protocol === 'https:'
             : parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:');
@@ -150,7 +147,7 @@ function rawArray(value: unknown): boolean {
     let last = value.length - 1;
     while (first <= last && (value.charCodeAt(first) === 32 || value.charCodeAt(first) === 9 || value.charCodeAt(first) === 10 || value.charCodeAt(first) === 13)) first++;
     while (last >= first && (value.charCodeAt(last) === 32 || value.charCodeAt(last) === 9 || value.charCodeAt(last) === 10 || value.charCodeAt(last) === 13)) last--;
-    return value[first] === '[' && value[last] === ']'; // Reader already validated the opaque JSON value.
+    return value[first] === '[' && value[last] === ']';
 }
 export function validBlockCarrier(value: unknown, length: number): value is BlockCarrier {
     if (!object(value) || !closed(value, KEYS.carrier) || !known(value.kind, BLOCK_KINDS)
@@ -159,8 +156,6 @@ export function validBlockCarrier(value: unknown, length: number): value is Bloc
         || value.start !== undefined && !number(value.start) || !rawArray(value.tail)) return false;
     return true;
 }
-// V-11, text.md §§4.1/4.3. u/s are supported marks (§4.1); the shortened §4.3
-// inventory must not silently turn underline/strike into unsupported data.
 function richText(value: unknown): value is RichText {
     if (!object(value) || !closed(value, KEYS.rich) || !Array.isArray(value.blocks)
         || value.blocks.length === 0 || value.blocks.length > MAX_TEXT_BLOCKS) return false;
@@ -186,7 +181,7 @@ function richText(value: unknown): value is RichText {
                 if (flag !== undefined && flag !== true) return false;
             }
             if (marks.link !== undefined && !url(marks.link)) return false;
-            if (marks.x !== undefined && typeof marks.x !== 'string') return false; // Reader-owned RawJson, never parsed.
+            if (marks.x !== undefined && typeof marks.x !== 'string') return false;
             length += run.text.length;
             if (length > MAX_TEXT_LENGTH) return false;
         }
@@ -199,8 +194,6 @@ function richText(value: unknown): value is RichText {
             }
         }
     }
-    // Adjacent equal-mark runs are merged by the rich splice/model (text §4.3),
-    // not refused before that normalization can run.
     return true;
 }
 
@@ -239,8 +232,6 @@ function widthModel(value: unknown): boolean {
         && number(value.rMin, 0) && number(value.rMax, value.rMin);
 }
 function parentCheck(doc: BoardDoc, parent: unknown, nodeId: string, index: number): ValidationResult {
-    // V-2/M-5: reject cycles before mutation (the model's subtree updater assumes a
-    // tree). Descendant depth and the cross-op page rules are checked at commit.
     if (!id(parent)) return refuse('V-2', index, nodeId, 'Parent is not a valid id');
     let current: ParentId = parent;
     for (let depth = 1; depth <= 64; depth++) {
@@ -260,7 +251,7 @@ function field(context: ValidationContext, nodeKind: NodeKind, nodeId: string, k
     switch (key) {
         case 'parent': return parentCheck(doc, value, nodeId, index);
         case 'order': valid = typeof value === 'string' && isValidKey(value); code = 'V-3'; break;
-        case 'page': valid = integer(value, -1); code = 'V-7'; break; // Root/nested pairing is final-state V-7.
+        case 'page': valid = integer(value, -1); code = 'V-7'; break;
         case 'x': case 'y': valid = coordinate(value); break;
         case 'rotation': valid = number(value, 0) && value < Math.PI * 2; break;
         case 'opacity': valid = number(value, 0, 1); break;
@@ -292,12 +283,10 @@ function field(context: ValidationContext, nodeKind: NodeKind, nodeId: string, k
         case 'headStart': case 'headEnd': valid = known(value, ARROWHEADS); code = 'V-5'; break;
         case 'widthModel': valid = widthModel(value); break;
         case 'samples':
-            // V-10: sealed-store acquisition validates finite samples once. A restyle
-            // never re-reads every point just to prove the same immutable handle.
             valid = integer(value, 0) && context.samples.has(value) && integer(context.samples.count(value), 1);
             code = 'V-10'; break;
         case 'text': case 'label': valid = (key === 'label' && value === null) || validRichText(value); code = 'V-11'; break;
-        case 'start': case 'end': valid = end(value); code = 'V-8'; break; // Targets checked after cross-sheet normalization.
+        case 'start': case 'end': valid = end(value); code = 'V-8'; break;
         case 'startAttach': case 'endAttach': valid = value == null || end({ x: 0, y: 0, attach: value }); code = 'V-8'; break;
         case 'crop': valid = crop(value); code = 'V-12'; break;
         case 'media': valid = mediaReference(doc, value); code = 'V-9'; break;
@@ -334,8 +323,6 @@ function create(context: ValidationContext, value: unknown, index: number): Vali
         const result = field(context, value.kind, value.id, specific[i], value[specific[i]], index);
         if (!result.ok) return result;
     }
-    // V-6: groups may be temporarily empty/one-child while a batch constructs or
-    // dissolves them. CH §2.3 normalizes first; validateCommit checks the result.
     return OK;
 }
 function nextStyles(value: unknown): boolean {
@@ -347,10 +334,6 @@ function nextStyles(value: unknown): boolean {
 }
 function paper(value: unknown): boolean {
     if (!object(value) || !closed(value, KEYS.paper) || typeof value.size !== 'string' || !Object.hasOwn(PAPER_SIZES, value.size)) return false;
-    // V-5 checks the normalizer's own size data, not a second list. Its legacy
-    // `in` lookup also accepts prototype names, which are not paper sizes.
-    // R-W21 exception: this rare op uses the one authoritative normalizer and its
-    // result allocation, never a second copy of paper defaults/clamps.
     const normalized = normalizePaper(value as Partial<NotebookPaper>);
     return value.size === normalized.size && value.orientation === normalized.orientation && value.ruling === normalized.ruling
         && value.spacing === normalized.spacing && value.margin === normalized.margin && value.pageCount === normalized.pageCount;
@@ -365,10 +348,6 @@ function mediaEntryCore(value: unknown): value is Record<string, unknown> {
 function mediaEntry(value: unknown): boolean { return mediaEntryCore(value) && extension(value.ext); }
 function sheetName(value: unknown): boolean { return string(value, 200) && NON_WHITESPACE.test(value); }
 
-// H-3: context.doc is the staged live read-side, after earlier ops, before this op.
-// CH-1 captures inverses and rolls back on refusal. One context is reused per session;
-// no overlay or per-op request object is constructed here. Ordinary locks are a
-// tool/adapter policy (R-W21), never confused with opaque-content protection.
 export function validateOp(context: ValidationContext, op: unknown, opIndex: number): ValidationResult {
     let nodeId: string | null = null;
     try {
@@ -491,14 +470,10 @@ function finalNode(context: ValidationContext, node: Node, index: number): Valid
     const doc = context.doc;
     const parent = parentCheck(doc, node.parent, node.id, index);
     if (!parent.ok) return parent;
-    // V-7 deliberately waits until paired parent/page writes and normalization finish.
     if (doc.kind === 'whiteboard' || !isSheetParent(doc, node.parent)) {
         if (node.page !== -1) return refuse('V-7', index, node.id, 'Whiteboard/nested nodes must have page -1');
     } else if (!integer(node.page, 0)) return refuse('V-7', index, node.id, 'Paged root node requires a non-negative page index');
-    // V-6's preserved-opaque exception follows document-model §9.3/RV-22.
     if (node.kind === 'group' && childrenOf(doc, node.id).length < 2 && !hasOpaqueDescendant(doc, node.id)) return refuse('V-6', index, node.id, 'Normalization must dissolve a group with fewer than two children');
-    // V-10 waits for paired samples/pressure writes, just as V-7 waits for
-    // parent/page. A staged mismatch is allowed; an unencodable stroke is not.
     if (node.kind === 'stroke') {
         if (!context.samples.has(node.samples) || context.samples.count(node.samples) < 1) return refuse('V-10', index, node.id, 'Stroke requires sealed nonempty samples');
         const mode = context.samples.pressureMode(node.samples);
@@ -536,8 +511,6 @@ function* boundPathsAcyclic(doc: BoardDoc): Generator<void, boolean> {
     }
     return true;
 }
-// Load admission validates the root separately from runtime ops. Native major 1
-// is the editable format; raw lexemes remain reader-owned and are never parsed here.
 function* rootExtension(value: unknown): Generator<void, boolean> {
     if (value === null) return true;
     if (!object(value) || !closed(value, KEYS.extension) || !(value.fields instanceof Map) || !(value.raw instanceof Map)) return false;
@@ -559,11 +532,11 @@ function* loadedRootSteps(doc: BoardDoc): Generator<void, ValidationResult> {
         } else {
             if (!closed(host, ['kind', 'pdf', 'pages', 'ext']) || typeof host.pdf !== 'string'
                 || !(yield* rootExtension(host.ext)) || !Array.isArray(host.pages) || !host.pages.length
-                || host.pages.length > 65_536) return bad('Invalid PDF host'); // FORMAT_LIMITS.pdfPages
+                || host.pages.length > 65_536) return bad('Invalid PDF host');
             for (const page of host.pages) {
                 yield;
                 if (!Array.isArray(page) || page.length !== 2 || !number(page[0], Number.MIN_VALUE, 14_400)
-                    || !number(page[1], Number.MIN_VALUE, 14_400)) return bad('Invalid PDF page dimensions'); // FORMAT_LIMITS.pdfPageSize
+                    || !number(page[1], Number.MIN_VALUE, 14_400)) return bad('Invalid PDF page dimensions');
             }
         }
         if (!(doc.sheets instanceof Map) || !(doc.nodes instanceof Map) || doc.sheets.size < 1
@@ -641,8 +614,6 @@ export async function validateLoadedRootIncremental(doc: BoardDoc, cooperate?: (
     }
 }
 
-/** Admission checks a repaired, indexed record without pretending it is a new
- * create op (which would reject its already-present id and opaque records). */
 export function validateLoadedNode(context: ValidationContext, node: Node, index: number): ValidationResult {
     try {
         if (!object(node) || !id(node.id)) return refuse('V-1', index, null, 'Loaded node requires a valid id');
@@ -694,10 +665,6 @@ function finalSubtree(context: ValidationContext, id: NodeId, index: number, dep
     return OK;
 }
 
-// R-W18 two-phase contract: call AFTER CH-1 normalization, BEFORE history/scene/save
-// consumers or notices. touched includes follow-on ops and affected parent groups.
-// The forward ops identify moved roots so a mere group restyle never scans its
-// subtree. A moved subtree already costs O(subtree) in the model's index upkeep.
 export function validateCommit(context: ValidationContext, touched: TouchedSet, forward: readonly Op[], opIndex: number): ValidationResult {
     try {
         if (forward.some(op => op.t === 'create' && op.node.kind === 'polyline' && (op.node.startAttach || op.node.endAttach)
@@ -714,8 +681,6 @@ export function validateCommit(context: ValidationContext, touched: TouchedSet, 
                 const result = finalNode(context, node, opIndex);
                 if (!result.ok) return result;
             }
-            // A deleted/moved target can have an untouched connector outside its
-            // subtree. Its reverse-index bucket must be normalized too (V-8).
             const incoming = incomingAttachments(context, id, opIndex);
             if (!incoming.ok) return incoming;
         }

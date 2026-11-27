@@ -1,13 +1,3 @@
-// One panel connection (one WebSocket) and the run it may have in flight.
-//
-// Invariants (the protocol's promises to the panel):
-//   • every request gets exactly one `response` with its reqId;
-//   • a run streams `run.event`s only after its `run.start` response, and ends
-//     with exactly one `run.done` or `run.error`;
-//   • one run per connection at a time (`busy` otherwise);
-//   • a run's MCP token lives exactly as long as the run; closing the socket
-//     cancels the run.
-
 import { randomUUID } from 'node:crypto';
 import {
     AGENT_IDS, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE, MAX_TOOL_RESULT_BYTES, MAX_TOOL_TEXT_CHARS, PROTOCOL_VERSION,
@@ -31,17 +21,11 @@ export interface HelperContext {
     sessionsRoot: string;
     platform: HelperPlatform;
     adapters: Record<AgentId, AgentAdapter>;
-    /** `http://127.0.0.1:<port>/mcp/` — the run token is appended. */
     mcpBaseUrl(): string;
-    /** Undefined when running from source / --no-register: nothing to uninstall. */
     uninstall?: () => void;
-    /** Undefined when running from source / --no-register: there is no installed copy to replace. */
     updater?: Updater;
-    /** One per helper process: shells outlive any one connection. */
     terminals: TerminalManager;
-    /** macOS installed helpers: where `vaultagent-pty` lives, for `helper.revealPtyHost`. */
     ptyHostBinary?: string;
-    /** Test seams; the real machine by default. */
     fontHints?: () => Promise<TerminalFontCandidate[]>;
     privacy?: () => Promise<{ backend: TerminalBackend; fullDiskAccess: boolean | null }>;
 }
@@ -57,14 +41,12 @@ interface ActiveRun {
     conn: Connection;
 }
 
-/** token → run, across all connections. The MCP endpoint's only way in. */
 const runsByToken = new Map<string, ActiveRun>();
 
 export function runForToken(token: string): ActiveRun | undefined {
     return runsByToken.get(token);
 }
 
-/** Runs in flight on every connection (self-update refuses while any is). */
 export function activeRunCount(): number {
     return runsByToken.size;
 }
@@ -78,7 +60,6 @@ function errorResult(text: string): ToolResult {
     return { content: [{ type: 'text', text }], isError: true };
 }
 
-/** Validates and bounds what the panel returns for a tool call. */
 export function sanitizeToolResult(raw: unknown): ToolResult {
     if (!raw || typeof raw !== 'object' || !Array.isArray((raw as ToolResult).content)) return errorResult('The editor returned a malformed tool result.');
     const r = raw as ToolResult;
@@ -86,7 +67,6 @@ export function sanitizeToolResult(raw: unknown): ToolResult {
     const content: ToolResult['content'] = [];
     for (const c of r.content) {
         if (c?.type === 'text' && typeof c.text === 'string') {
-            // Over this, Claude Code spills the result to a file its (absent) Read tool would need.
             const text = c.text.length > MAX_TOOL_TEXT_CHARS
                 ? `${c.text.slice(0, MAX_TOOL_TEXT_CHARS)}\n…[truncated ${c.text.length - MAX_TOOL_TEXT_CHARS} chars; ask for a smaller range]`
                 : c.text;
@@ -121,14 +101,10 @@ function isAgent(a: unknown): a is AgentId {
 export class Connection {
     private active: ActiveRun | null = null;
     private closed = false;
-    /** This connection as the terminal manager knows it (compared by identity). */
     private readonly terminalOwner: TerminalOwner = { send: m => this.send(m) };
 
-    /** `sendRaw` answers as Bun's `ws.send` does: 0 means the frame was DROPPED (the
-     *  socket is past its backpressure limit), -1 queued, more than 0 sent. */
     constructor(private readonly ctx: HelperContext, private readonly sendRaw: (text: string) => number | void) {}
 
-    /** False only when the frame was dropped; the terminal manager resyncs on that. */
     private send(msg: HelperMessage): boolean {
         if (this.closed) return true;
         try {
@@ -159,7 +135,6 @@ export class Connection {
             this.onToolResult(msg.runId, msg.callId, msg.result);
             return;
         }
-        // Fire-and-forget, like tool.result: a keystroke or an ack has no answer to wait for.
         if (msg.type === 'terminal.input') {
             this.ctx.terminals.input(this.terminalOwner, msg.termId, msg.data);
             return;
@@ -178,7 +153,6 @@ export class Connection {
             else if (e instanceof TerminalLimit) this.fail(reqId, 'limit', e.message);
             else if (e instanceof TerminalNotFound) this.fail(reqId, 'not-found', e.message);
             else if (e instanceof UpdateRefused) this.fail(reqId, e.code, e.message);
-            // Already logged by the updater, and its message is written for the panel.
             else if (e instanceof UpdateFailed) this.fail(reqId, 'internal', e.message);
             else {
                 logError(`request ${msg.type} failed`, e);
@@ -241,14 +215,11 @@ export class Connection {
                     this.fail(reqId, 'unsupported', 'This VaultAgent is not installed (it is running from source).');
                     return;
                 }
-                // Another window's update would put a binary back after the removal
-                // (its swap renames over the deleted path) and then restart it.
                 if (this.ctx.updater?.busy) {
                     this.fail(reqId, 'busy', 'VaultAgent is updating. Try again when it has finished.');
                     return;
                 }
                 this.reply(reqId, { ok: true });
-                // Respond first; the socket has to carry the answer before we go.
                 setTimeout(uninstall, 300);
                 return;
             }
@@ -270,15 +241,11 @@ export class Connection {
                 const result = await updater.update(progress => this.send({ type: 'update.progress', ...progress }));
                 this.reply(reqId, result);
                 this.send({ type: 'update.progress', phase: 'restarting' });
-                // Respond first; the socket has to carry the answer before we go.
                 setTimeout(() => updater.restart(), 300);
                 return;
             }
             case 'terminal.open':
-                // The restart that follows an update ends every shell: do not start one into it.
                 if (this.ctx.updater?.busy) throw new RunRefused('busy', 'VaultAgent is updating. Try again in a moment.');
-                // Where the editor is: a vault-relative folder resolved against
-                // the vault's real location, which only the helper can work out.
                 this.reply(reqId, await this.ctx.terminals.open(
                     this.terminalOwner, p.termId, p.cols, p.rows,
                     terminalCwdFor(p.vaultId, p.dir) ?? undefined,
@@ -394,7 +361,6 @@ export class Connection {
         else this.send({ type: 'run.error', runId: run.runId, reason: outcome.reason, message: outcome.message });
     }
 
-    /** Called by the MCP endpoint: forward to the panel, wait for its `tool.result`. */
     static callTool(run: ActiveRun, name: ToolName, args: Record<string, unknown>): Promise<ToolResult> {
         if (run.finished) return Promise.resolve(errorResult('The run has ended.'));
         const callId = randomUUID();
@@ -420,11 +386,9 @@ export class Connection {
 
     onClose(): void {
         this.closed = true;
-        // Shells outlive their socket: they wait, detached, for the page to come back.
         this.ctx.terminals.detachAll(this.terminalOwner);
         const run = this.active;
         if (!run) return;
-        // The panel is gone: nobody can see the reply or answer tool calls.
         run.handle?.cancel();
         for (const [, t] of run.pendingTools) {
             clearTimeout(t.timer);

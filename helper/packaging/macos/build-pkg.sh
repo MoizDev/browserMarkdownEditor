@@ -1,11 +1,4 @@
 #!/bin/bash
-# Build the unsigned VaultAgent.pkg from two compiled helpers.
-#
-#   helper/packaging/macos/build-pkg.sh <darwin-arm64 binary> <darwin-x64 binary> <version> <out.pkg>
-#
-# lipo → one universal binary, ad-hoc signed (Apple silicon refuses to run
-# unsigned code); pkgbuild stages it in /Library/Application Support/VaultAgent/stage,
-# and scripts/postinstall installs it per user. Needs Xcode command-line tools.
 
 set -euo pipefail
 
@@ -33,7 +26,6 @@ STAGE="$PAYLOAD/Library/Application Support/VaultAgent/stage"
 mkdir -p "$STAGE"
 lipo -create -output "$STAGE/vaultagent" "$ARM64" "$X64"
 chmod 755 "$STAGE/vaultagent"
-# lipo keeps each slice's signature, but re-sign the fat file as one: cheap and certain.
 codesign --force --sign - "$STAGE/vaultagent"
 lipo "$STAGE/vaultagent" -verify_arch arm64 x86_64
 

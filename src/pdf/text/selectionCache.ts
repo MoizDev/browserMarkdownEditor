@@ -16,8 +16,6 @@ function cost(reply: PdfSelectionReply): number {
         sel.figures.reduce((n, figure) => n + 64 + figure.alt.length * 2, 0);
 }
 
-/** Session-local selection geometry. The pool deduplicates and reprioritises
- * concurrent waiters; this cache never retains a result from an old docKey. */
 export class PdfSelectionGeometryCache {
     private readonly key: string;
     private readonly pages = new Map<number, { value: PdfSelectionReply; bytes: number }>();
@@ -68,8 +66,6 @@ export class PdfSelectionGeometryCache {
         const geometry = await exactPdfTextGeometry(this.document, page, priority, signal);
         await validatePdfTextReply(reply, geometry, 'select', signal);
         if (signal.aborted || this.document.closed || this.document.docKey !== this.key || getPdfFontEpoch(this.key) !== epoch) throw abort();
-        // Selection has its own 8 MiB budget; the optional rich model belongs
-        // only to the separate Text reader's 4 MiB cache.
         const value: PdfSelectionReply = { docKey: reply.docKey, page: reply.page, schema: reply.schema,
             text: reply.text, tokenBreaks: reply.tokenBreaks, quality: reply.quality, reasons: reply.reasons, sel: reply.sel };
         const bytes = cost(value);

@@ -32,7 +32,6 @@ export interface PdfTextReader {
     setWindow(index0: number): void;
     setVisible(visible: boolean): void;
     dispose(): void;
-    /** Bounded counters for diagnostics; does not retain page data. */
     diagnostics(): { retainedPages: number; retainedBytes: number; queued: number; active: boolean; extractions: number };
 }
 export interface PdfTextTypography {
@@ -45,7 +44,6 @@ export const PDF_TEXT_LIMITS = { pageBytes: 1024 * 1024, pageItems: 50_000, reta
 
 export function pdfTextAnchor(page: Pick<PdfPageText, 'text' | 'physicalPageIndex'>, offsetUTF16 = 0, alignHint = 0): PdfTextAnchor {
     let offset = Math.max(0, Math.min(page.text.length, Math.floor(offsetUTF16)));
-    // DOM offsets are UTF-16; do not leave the caret inside a surrogate pair.
     if (offset && /[\uDC00-\uDFFF]/u.test(page.text[offset] ?? '') && /[\uD800-\uDBFF]/u.test(page.text[offset - 1])) offset--;
     return { physicalPageIndex: page.physicalPageIndex, offsetUTF16: offset, affinity: 'after',
         quote: page.text.slice(offset, offset + 48), before: page.text.slice(Math.max(0, offset - 48), offset),

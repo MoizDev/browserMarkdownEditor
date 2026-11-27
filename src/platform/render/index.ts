@@ -1,4 +1,3 @@
-// Consumer-facing rendering types. This barrel has no runtime backend, broker or scheduler imports.
 export type { Camera, Rect, Viewport, ViewState } from '../types';
 export type { AttachPlatformPane, PlatformLayerDefinition, PlatformPane, PlatformPaneOptions, PlatformPresentation } from './attachPlatformPane.types';
 export type { CompositorCaptureOptions, CompositorLayer, CompositorLayerGroup, LayerCoverage, LayerHost, TexturedQuadOptions } from './compositor.types';

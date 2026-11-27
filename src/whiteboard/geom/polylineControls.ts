@@ -32,7 +32,6 @@ function samePoints(a: readonly Vec2[], b: readonly Vec2[]): boolean {
     return a.length === b.length && a.every((point, index) => point.x === b[index].x && point.y === b[index].y);
 }
 
-/** Edit real polyline handles while retaining or explicitly detaching endpoint bindings. */
 export async function preparePolylineControl(options: PolylineControlOptions): Promise<PolylineControlPreview> {
     const { runtime, action } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
@@ -74,7 +73,7 @@ export async function preparePolylineControl(options: PolylineControlOptions): P
                         if (![p.x, p.y, box.x, box.y, box.width, box.height].every(Number.isFinite) || box.width < 0 || box.height < 0)
                             throw new RangeError('Polyline target anchor geometry is invalid');
                         const coordinate = (value: number, origin: number, size: number) => {
-                            if (!size) return 0.5; // default, calibration cut by owner
+                            if (!size) return 0.5;
                             const raw = (value - origin) / size;
                             if (!Number.isFinite(raw)) throw new RangeError('Polyline attachment anchor overflows');
                             return Math.max(0, Math.min(1, raw));

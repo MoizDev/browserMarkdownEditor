@@ -4,8 +4,6 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
-// The browser gate invocation is identical for clean and mutant builds. A
-// nonzero exit alone proves nothing: only the named reason is a mutant kill.
 const [unguardedConfig, missingConfig] = process.argv.slice(2);
 assert(unguardedConfig && missingConfig, 'Usage: node mutants.mjs UNGUARDED_CONFIG MISSING_CONFIG');
 for (const [configPath, reason] of [[unguardedConfig, 'P-anchor'], [missingConfig, 'hand-count']]) {

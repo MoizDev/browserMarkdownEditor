@@ -1,7 +1,5 @@
 import type { CaretIndex, CaretPosition, CaretStop } from '../paint';
 
-// Navigation consumes TX-3's visual caret index; it never measures or lays out
-// a second copy of text in the edit layer.
 export function moveCaret(index: CaretIndex, position: CaretPosition, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end', goalX?: number): CaretStop {
     if (index.navigate) return index.navigate(position, direction, goalX);
     const current = index.caret(position);

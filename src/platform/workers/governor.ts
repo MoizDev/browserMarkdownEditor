@@ -79,10 +79,6 @@ class Governor implements CpuPermits {
         const foreground = entries.some(entry => entry.priority === 0);
         const overdue = (entry: Entry) => entry.priority === 3 && entry.phase !== 'running'
             && time - entry.waiting >= starvationMs;
-        // A waiting background job gets a turn ahead of 1/2 after two seconds, otherwise
-        // a steady stream of visible work could keep it queued forever. It never displaces 0.
-        // An aged job keeps its turn until it finishes or priority 0 displaces it; otherwise
-        // the next queue change could immediately undo the fairness admission.
         const rank = (entry: Entry) => entry.priority === 3 && (entry.aged || overdue(entry)) ? 0.5 : entry.priority;
         entries.sort((a, b) => rank(a) - rank(b)
             || Number(b.phase === 'running') - Number(a.phase === 'running')
@@ -93,7 +89,6 @@ class Governor implements CpuPermits {
         for (const entry of entries) {
             if (entry.priority !== 0) {
                 if (selected.size >= this.cap) break;
-                // Priority 2 leaves a core free, but priority 3 may use that slot when eligible.
                 if (entry.priority === 2 && selected.size >= this.cap - 1) continue;
                 if (entry.priority === 3 && foreground && !entry.aged && !overdue(entry)) continue;
             }
@@ -110,15 +105,11 @@ class Governor implements CpuPermits {
         }
         this.scheduling = true;
         try {
-            // Even a 0 arriving inside another admission callback starts synchronously.
-            // Lower-priority workers yield after their pause reaches a slice boundary.
             if (foreground) this.run(foreground, now());
             while (this.changed) {
                 this.changed = false;
                 const time = now();
                 const selected = this.choose(time);
-                // Pause before starting replacements; no worker-to-main permission round trip
-                // is needed at each slice, and equal-priority running work never churns.
                 const victims = [...this.entries].filter(entry => entry.phase === 'running' && !selected.has(entry))
                     .sort((a, b) => b.priority - a.priority || b.started - a.started);
                 for (const entry of victims) {
@@ -133,8 +124,6 @@ class Governor implements CpuPermits {
                 for (const entry of selected) {
                     if (entry.phase === 'released' || entry.phase === 'running') continue;
                     this.run(entry, time);
-                    // Client callbacks may cancel, dispose, or enqueue another request. Never
-                    // continue an old admission plan after one of those changes.
                     if (this.changed) break;
                 }
             }
@@ -157,8 +146,6 @@ class Governor implements CpuPermits {
     private record(entry: Entry, transition: string): void {
         if (!benchmarkPerf) return;
         const counts = this.perfCounts();
-        // The permit seam has no client-generation or original-call timestamp. Preserve its
-        // admission timestamp and mark that generation unavailable rather than inventing one.
         const sample = { worker: entry.admission.name, generation: 0, requestId: entry.admission.id,
             priority: entry.priority, phase: 'permit' as const, time: now(), requestTime: entry.perfAsked!,
             postTime: null, inFlight: this.entries.size, permitsHeld: counts.held, permitsQueued: counts.queued, transition };
@@ -175,13 +162,10 @@ class Governor implements CpuPermits {
             const at = entry.waiting + starvationMs;
             if (at > time) next = Math.min(next, at);
         }
-        // Eligibility changes once at the oldest waiter's deadline, not on a polling interval.
-        // Already-aged jobs blocked by priority 0 wait for a real queue change, not a busy loop.
         if (next !== Infinity) this.timer = setTimeout(() => this.schedule(), next - time);
     }
 }
 
-// All clients in this main-thread realm share one cap, including clients loaded lazily later.
 const governor = new Governor();
 export const cpuGovernor: CpuPermits = governor;
 export function workerPermitCounts(): { held: number; queued: number } {

@@ -6,7 +6,6 @@ import type { Vec2 } from './path';
 export interface ExactPoint { readonly x: Dyadic; readonly y: Dyadic; readonly w: Dyadic }
 export interface ExactLine { readonly a: Dyadic; readonly b: Dyadic; readonly c: Dyadic }
 
-// Match dyadicRatioInterval's geometry admission limit before shifting or multiplying.
 const MAX_BITS = 16384, MAX_EXPONENT = 32768;
 function bits(n: bigint): number { return n === 0n ? 0 : (n < 0n ? -n : n).toString(2).length; }
 function valid(v: Dyadic): void {

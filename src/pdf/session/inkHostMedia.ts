@@ -41,7 +41,6 @@ function positive(span: JsonSpan, max = Infinity): number {
     return value;
 }
 
-/** Only a completely recognized host can exclude PDF bookkeeping from media discovery. */
 export function* pdfHostMediaRawValues(raw: RawJson): Iterable<RawJson | null> {
     let unknown: UnknownField[];
     try {

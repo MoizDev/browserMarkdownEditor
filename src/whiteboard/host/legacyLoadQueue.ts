@@ -1,25 +1,3 @@
-// Admission for reading old-format (tldraw JSON) boards, notebooks and annotated PDFs into a board: one legacy load at a time,
-// first come first served, except that a document a pane is showing goes ahead of ones nobody is looking at.
-//
-// A legacy load's working memory is the parse worker's JS heap (the JSON text, its object graph, the board it builds), not
-// raster cache, so it is not charged to the render platform's CPU raster pool. It used to be: 16 MiB + 12 × the file size
-// against a pool whose target is 32 MiB with no other canvas visible, so every old board over 1.33 MiB was refused outright,
-// waited 60 s and failed with "Close another board" while nothing else held memory (measured: a 1.6 MB board, 60.4 s), and
-// two or three ordinary boards restored together starved each other the same way. Serializing bounds that heap to one load's
-// peak instead, and nothing about a legacy load trims another pane or steps display quality down.
-// Every load waiting here ends, because the one running always gives the slot back: its worker steps are bounded by the
-// worker's progress watchdog, its file reads by a deadline (legacyAcquisition.ts), and an abort releases the slot at once
-// instead of waiting for the abandoned load to notice. Without the last two, one picture file that never arrived (a cloud
-// placeholder) held the only slot for the page: that board said "Opening drawing…" and every other old board, notebook and
-// annotated PDF "waiting for another document to finish opening…", for good, with no error and so no Try again.
-
-/** The largest legacy board the importer reads (the worker's LEGACY_SCAN_MAX_BYTES), refused at once rather than queued.
- * With the raster-pool reservation gone this is the load's only size gate, so its cost was measured (peak resident memory
- * of the page's process over its idle level, one board opened alone, production build, the import in a worker of its own):
- * 23 MB with 6 inline photos +276 MB in 3.4 s; 102 MB with 28 photos +819 MB in 13 s; 200 MB with 55 photos +1,265 MB in
- * 25 s (±300 MB run to run). What bounds a picture board is the import's own design — the file's whole text, its parsed records
- * and the photos on their way to the browser exist at once — so the largest admitted file still costs ~5–6 × itself, opens
- * without the tab failing, and one load at a time keeps it to one such peak. */
 export const LEGACY_LOAD_MAX_BYTES = 256 * 1024 * 1024;
 
 export type LegacyLoadPhase = 'waiting' | 'loading';
@@ -27,7 +5,6 @@ export type LegacyLoadPhase = 'waiting' | 'loading';
 interface Waiter { readonly key: string; readonly order: number; readonly urgent: boolean; start(): void }
 
 const waiting = new Set<Waiter>();
-/** Each admission's phase by document; two panes, or a paste, can each hold one for the same document. */
 const phases = new Map<string, Map<object, LegacyLoadPhase>>();
 const listeners = new Set<() => void>();
 const shown = new Map<string, number>();
@@ -53,7 +30,6 @@ function pump(): void {
     }
 }
 
-/** A pane showing `key` (a document id) marks it, so its legacy load is admitted before hidden ones. Returns the unmark. */
 export function showLegacyLoadTarget(key: string): () => void {
     shown.set(key, (shown.get(key) ?? 0) + 1);
     let live = true;
@@ -65,7 +41,6 @@ export function showLegacyLoadTarget(key: string): () => void {
     };
 }
 
-/** Where `key`'s legacy load is, for what its pane says, or null when none waits or runs. */
 export function legacyLoadPhase(key: string): LegacyLoadPhase | null {
     const entries = phases.get(key);
     if (!entries) return null;
@@ -78,9 +53,6 @@ export function subscribeLegacyLoadPhase(listener: () => void): () => void {
     return () => { listeners.delete(listener); };
 }
 
-/** Waits for this legacy load's turn and returns its release. Refuses at once a size the importer can never read.
- * `urgent` is a load the person is waiting on that no pane marks as shown (a paste into the board in front of them):
- * keyed by its own job, it ranked behind every old board still loading in a hidden pane and ran out its deadline. */
 export async function admitLegacyLoad(options: { key: string; bytes?: number; signal: AbortSignal; urgent?: boolean }): Promise<() => void> {
     const { key, signal } = options;
     signal.throwIfAborted();
@@ -109,8 +81,6 @@ export async function admitLegacyLoad(options: { key: string; bytes?: number; si
         setPhase(key, token, null);
         pump();
     };
-    // The abandoned load's worker job is cancelled by the same signal and stops at its next slice, so the overlap with
-    // the next load is one slice of one job, not two whole peaks.
     signal.addEventListener('abort', release, { once: true });
     return release;
 }

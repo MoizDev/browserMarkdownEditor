@@ -167,8 +167,6 @@ try {
     ledger.assert('the real classic drawing contains its authored stroke', 1, await page.locator('.tl-shape[data-shape-type="draw"]').count());
     const box = await page.locator('.tl-shape[data-shape-type="draw"]').boundingBox();
     if (!box) throw new Error('Visible stroke has no screen bounds');
-    // Include paper around even a horizontal stroke: a tight all-black box is real ink,
-    // not a blank surface, but has no internal variance by which to witness its paint.
     const x = Math.max(0, box.x - 4), y = Math.max(0, box.y - 4);
     const clip = { x, y, width: Math.min(1440 - x, box.width + 8), height: Math.min(1000 - y, box.height + 8) };
     const inkBytes = await page.screenshot({ path: resolve(out, 'drawing-ink.png'), clip, ...report.captureOptions });

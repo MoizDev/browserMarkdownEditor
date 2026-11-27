@@ -23,9 +23,7 @@ export interface InkMaterial {
     readonly blend: Blend;
 }
 export interface TextMaterial {
-    /** Flattened line/fragments in visual order; one resolved colour per fragment. */
     readonly glyphs: readonly Rgba[];
-    /** Parallel to TextPaint backgrounds/decorations; roles resolved separately from glyphs. */
     readonly backgrounds: readonly Rgba[];
     readonly decorations: readonly Rgba[];
     readonly blend: Blend;

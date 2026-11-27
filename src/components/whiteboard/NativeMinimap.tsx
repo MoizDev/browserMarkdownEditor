@@ -2,7 +2,6 @@ import { useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent,
 import type { Camera, Rect, Viewport } from '../../platform/types';
 import './nativeMinimap.css';
 
-/** A world-space box (a board's own units). Structural, so the map takes any box the host measures. */
 export interface NativeMinimapBox {
     readonly x: number;
     readonly y: number;
@@ -10,7 +9,6 @@ export interface NativeMinimapBox {
     readonly height: number;
 }
 
-/** A null picture and bounds is an empty sheet: the map then frames only the visible window. */
 export interface NativeMinimapThumbnail {
     readonly key: string;
     readonly blob: Blob | null;
@@ -24,29 +22,20 @@ export interface NativeMinimapProps {
     readonly viewport: Viewport;
     readonly isVisible: boolean;
     readonly currentOwner: () => boolean;
-    /** Selected shapes' exact world boxes, painted in the map's highlight colour. */
     readonly highlights: readonly NativeMinimapBox[];
-    /** `glide` eases the view there (a press outside the window, a double-click); `jump` moves it at once (a drag, keys). */
     readonly onNavigate: (worldCentre: { x: number; y: number }, mode: 'glide' | 'jump') => void;
     readonly onFocus: () => void;
 }
 
-/** A press that moves less than this is a click, and its jitter must not cut the glide short (measured: a 4px move
- * cancelled the easing at once; under √4 px the glide finished). */
 const CLICK_SLOP_PX = 2;
 
 
-/** The map's fixed box, in CSS pixels, excluding its 1px border. */
 const BOX_WIDTH = 200, BOX_HEIGHT = 140;
 
-/** Presents an engine-produced scene capture; it never creates a preview of its own. */
 export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVisible, currentOwner, highlights, onNavigate, onFocus }: NativeMinimapProps) {
     const element = useRef<HTMLDivElement | null>(null);
     const frameElement = useRef<HTMLDivElement | null>(null);
     const drag = useRef<number | null>(null);
-    /** The press in progress. `map` freezes the pixel-to-world mapping at the press: the frame re-fits to the window as it
-     * moves, so mapping through the live frame moved the content under the pointer (measured: 12px of pointer travel
-     * panned the window 88 world units, then 129). */
     const press = useRef<{ x: number; y: number; grab: { x: number; y: number } | null; moved: boolean;
         map: { left: number; top: number; width: number; height: number; frame: typeof frame } } | null>(null);
     const blob = useRef(thumbnail?.blob);
@@ -81,9 +70,6 @@ export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVi
         || currentCamera.z <= 0 || !Number.isFinite(viewport.width) || !Number.isFinite(viewport.height)
         || viewport.width <= 0 || viewport.height <= 0) return null;
 
-    // The map shows the whole board AND the visible window, so the viewport rectangle is always
-    // inside it: a board smaller than the window shows small, with the window drawn around it.
-    // An empty board has no content, so its own extent is the window.
     const viewWidth = viewport.width / currentCamera.z, viewHeight = viewport.height / currentCamera.z;
     const view = { x: currentCamera.x, y: currentCamera.y, width: viewWidth, height: viewHeight };
     const bounds = content ?? view;
@@ -92,7 +78,6 @@ export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVi
     const right = Math.max(bounds.x + bounds.width, view.x + viewWidth), bottom = Math.max(bounds.y + bounds.height, view.y + viewHeight);
     const margin = Math.max(right - left, bottom - top) * 0.05;
     const frame = { x: left - margin, y: top - margin, width: right - left + 2 * margin, height: bottom - top + 2 * margin };
-    // The frame is fitted into the fixed box, keeping its aspect and centring the spare space.
     const fit = Math.min(BOX_WIDTH / frame.width, BOX_HEIGHT / frame.height);
     const frameWidth = frame.width * fit, frameHeight = frame.height * fit;
     const percent = (value: number, total: number) => `${value / total * 100}%`;
@@ -127,7 +112,6 @@ export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVi
         const map = mapNow();
         if (!map) return;
         const point = worldIn(map, event.clientX, event.clientY);
-        // Pressing the window keeps the point it grabbed under the pointer; pressing outside glides the window there.
         const grab = insideWindow(point) ? { x: point.x - view.x, y: point.y - view.y } : null;
         press.current = { x: event.clientX, y: event.clientY, grab, moved: false, map };
         if (!grab) onNavigate(point, 'glide');
@@ -156,7 +140,6 @@ export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVi
         if (point && currentOwner()) onNavigate(point, 'glide');
     };
     const contextMenu = (event: MouseEvent<HTMLDivElement>) => {
-        // The map has no menu of its own; the press it started is over, as pointer-up or cancel would end it.
         event.preventDefault();
         release();
     };

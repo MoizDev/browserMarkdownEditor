@@ -1,15 +1,3 @@
-// What the user sent: their words (plain text — never markdown-rendered, it is
-// what they typed) and the pictures they attached.
-//
-// It is also where a conversation FORKS. Hovering a message shows a pencil;
-// editing and sending makes another version of that message, leaving the thread
-// under the old one where it was (utils/chatTree.ts). A message with more than
-// one version carries `‹ 2/3 ›`, which swaps everything below it.
-//
-// "Context sent" — the block the editor put in front of the message — is a
-// DEVELOPMENT diagnostic: `item.context` is null in a production build, so the
-// fold below never appears there (chatStore.ts says why).
-
 import { useEffect, useRef, useState } from 'react';
 import type { ChatItem } from './chatStore';
 import { CodeBlock } from './aicss/CodeBlock';
@@ -19,12 +7,9 @@ type UserItem = Extract<ChatItem, { kind: 'user' }>;
 
 export interface UserMessageProps {
     item: UserItem;
-    /** Which version of this message is shown, and how many there are. */
     version?: { index: number; count: number };
-    /** False while a reply is running: editing then would start a second run. */
     canEdit?: boolean;
     onEdit?: (text: string) => void;
-    /** Show the version `index` of this message instead. */
     onVersion?: (index: number) => void;
 }
 
@@ -35,8 +20,6 @@ export function UserMessage({ item, version, canEdit = false, onEdit, onVersion 
     const missingThumbs = item.imageCount - item.thumbs.length;
     const editing = draft !== null;
 
-    // Open on the whole message selected: the common edit is a rewrite, and the
-    // caret at the end is one keystroke away (⌘A is not the gesture here).
     useEffect(() => {
         const field = box.current;
         if (!editing || !field) return;
@@ -66,8 +49,6 @@ export function UserMessage({ item, version, canEdit = false, onEdit, onVersion 
                         e.target.style.height = `${e.target.scrollHeight}px`;
                     }}
                     onKeyDown={(e) => {
-                        // Enter sends, as it does in the composer; Shift+Enter is
-                        // a new line and Escape abandons the edit.
                         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); }
                         if (e.key === 'Escape') { e.preventDefault(); setDraft(null); }
                     }}

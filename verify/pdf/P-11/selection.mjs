@@ -6,8 +6,6 @@ import { loadIdentityToolbox } from '../lib/identityToolbox.mjs';
 import { pinnedChrome } from '../../lib/paths.mjs';
 const { buildIdentity, bindServedBodies, toolboxIdentity } = await loadIdentityToolbox();
 
-// Browser-only gate: no app-module imports, no product hooks, no synthetic
-// selection events. The only selection writes clear the previous gesture.
 const { chromium } = await import('playwright');
 const [url, fixtureDir, outDir, mode = 'verify', gate = 'all'] = process.argv.slice(2);
 const mutant = process.env.BUILD_MUTANT ?? 'none';
@@ -52,8 +50,6 @@ try {
     const errors = [];
     const binding = await bindServedBodies(context, { identity, origin: url, mode: 'raw-route', buildMode: 'production' });
     page.on('pageerror', e => errors.push(e.message));
-    // Keep generated fixture text and vault identity local: never contact fonts,
-    // telemetry or any other off-origin service while the vault is mounted.
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(url).origin ? route.fallback() : route.abort());
     await page.addInitScript(({ theme }) => {
       localStorage.setItem('theme', theme);
@@ -99,7 +95,6 @@ try {
     };
     const pageBox = await viewer.locator('.pdf-viewer-page').first().boundingBox();
     const scale = pageBox.width / oracle.page.width;
-    // Assert the page geometry independently before using the strip or points.
     await binding.check();
     if (Math.abs(pageBox.height - oracle.page.height * scale) > 1 || pageBox.x < 0 || pageBox.y < 0) throw new Error(`Page rectangle identity ${JSON.stringify(pageBox)}`);
     caseResult.pageBox = pageBox;
@@ -189,8 +184,6 @@ try {
       const expected = Array.from({ length: 40 }, () => oracle.normalizedPageText).join(' ');
       const treeText = await page.locator('.tree-item').allTextContents();
       await check('R3b', selection.valid && normal(selection.text) === expected && clipboard !== sentinel && normal(clipboard) === expected && !clipboard.includes('SelectionVault') && !treeText.some(text => text.trim() && clipboard.includes(text.trim())), { selection: { ...selection, text: undefined, textLength: selection.text.length, normalizedLength: normal(selection.text).length }, replacedSentinel: clipboard !== sentinel, clipboardLength: clipboard.length, normalizedLength: normal(clipboard).length, expectedLength: expected.length, prefix: clipboard.slice(0, 100), vault: shownVault });
-      // Select-all must stand down in an input: retain the page-number editing
-      // gesture rather than replacing it with a document selection.
       const input = page.locator('.pdf-viewer:visible .pdf-viewer-page-input');
       await input.waitFor();
       const value = await input.inputValue();
@@ -202,8 +195,6 @@ try {
       await check('input', await input.evaluate(el => el.selectionStart === 0 && el.selectionEnd === el.value.length), { value });
     }
     if (gate === 'all' || gate === 'R3a') {
-      // P-11 preserves the classic reader's documented native-menu exception.
-      // D-PDF-contextmenu belongs to the tiled reader's P5, not this fix.
       const text = page.locator('.pdf-viewer:visible .textLayer span').first();
       await text.click({ button: 'right' });
       await check('menuUnchanged', await page.evaluate(() => window.menuPrevented === false), { defaultPrevented: await page.evaluate(() => window.menuPrevented) });

@@ -1,5 +1,4 @@
 import { uint32 } from './cli.mjs';
-// Mulberry32 uses only specified 32-bit integer operations, including for seed zero.
 export function seededRandom(seed) {
     let state = uint32(seed);
     return () => {

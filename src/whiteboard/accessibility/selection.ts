@@ -25,8 +25,6 @@ export interface AccessibilityWindowSource {
     label(node: AccessibilityNode): string;
 }
 
-// The scene supplies its bounded viewport window; selection contributes at most
-// 500 extra entries, not a synchronous document walk on every focus change.
 export function selectionAccessibility(selection: SelectionState, window: AccessibilityWindowSource): ViewerAccessibilitySource {
     return {
         getSnapshot(): ViewerAccessibilitySnapshot {

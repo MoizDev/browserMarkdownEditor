@@ -1,8 +1,6 @@
 import type { EmbedHostingLease } from '../../platform/render/embedPresentation.types';
 import { dismissOnEscape } from '../../utils/escapeDismiss';
 
-/** The accepted facts, not a guess about transparent pixels, opt a consented embed into
- * this app-owned surface. Its iframe never leaves the original hosting container. */
 export function attachEmbedInteraction(hosting: EmbedHostingLease, close: () => void): () => void {
     const viewport = hosting.chrome.parentElement;
     if (!viewport) throw new Error('The embed interaction viewport is unavailable');
@@ -12,7 +10,6 @@ export function attachEmbedInteraction(hosting: EmbedHostingLease, close: () => 
     label.textContent = 'Embed interaction — board poster retained';
     button.type = 'button'; button.textContent = 'Unload'; button.setAttribute('aria-label', 'Unload embed');
     header.append(label, button); hosting.chrome.append(header);
-    // Slot admission already covers the constant-size hosting chrome; no geometry-sized DOM allocation.
     Object.assign(header.style, { position: 'absolute', display: 'none', height: '32px', boxSizing: 'border-box',
         alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '4px 8px',
         color: 'var(--text-normal)', background: 'var(--background-secondary)', border: '1px solid var(--background-modifier-border)',
@@ -27,10 +24,6 @@ export function attachEmbedInteraction(hosting: EmbedHostingLease, close: () => 
         const node = hosting.getSnapshot().node;
         const eligible = !!node && !node.laterPaint.some(paint => paint.opacity === 'unknown')
             && node.laterPaint.some(paint => paint.opacity === 'translucent');
-        // ResizeObserver supplies the actual pane box, including while the slot is visibility:hidden.
-        // Observing chrome itself would deadlock: inline mode hides chrome with display:none.
-        // The board's own chrome floats over the pane's top (menu/actions, ~128px) and bottom
-        // (tools, ~72px); the surface lives in the clear band between them, never under a toolbar.
         const top = 136, bottom = 80;
         const usable = eligible && width > 32 && height > top + 32 + bottom + 48;
         if (!usable) {
@@ -47,7 +40,6 @@ export function attachEmbedInteraction(hosting: EmbedHostingLease, close: () => 
         header.style.width = `${rect.width}px`;
         stopEscape ??= dismissOnEscape(unload);
         const next = `${rect.x}:${rect.y}:${rect.width}:${rect.height}`;
-        // setInteractionRect hides the slot and notifies its subscribers synchronously.
         if (key !== next) { key = next; hosting.setInteractionRect(rect); }
     };
     const observer = new ResizeObserver(entries => {

@@ -4,8 +4,6 @@ import { boardWorker } from '../workers/client';
 import { closeWorkerResult, validBoardIdentity, type BoardJobIdentity } from '../workers/protocol';
 import type { ClipboardJsonKind } from '../workers/clipboardJsonKind';
 
-// Provenance: clipboard wire classification and governed parse worker contracts;
-// independent host composition, no upstream engine source.
 export async function classifyClipboardJson(options: {
     readonly bytes: Blob;
     readonly identity: BoardJobIdentity;
@@ -20,7 +18,6 @@ export async function classifyClipboardJson(options: {
     const identity = Object.freeze({ ...options.identity });
     const check = () => { options.signal?.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard JSON request became stale', 'AbortError'); };
     check();
-    // Encoded input, UTF-16 text, escaped row copies and parser metadata coexist.
     const lease = options.memory.reserve(8 * 1024 * 1024 + bytes.size * 12);
     if (!lease) throw new Error('Insufficient memory to classify clipboard JSON');
     let value: unknown;

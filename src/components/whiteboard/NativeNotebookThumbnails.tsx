@@ -9,11 +9,9 @@ interface NativeNotebookThumbnailsBaseProps {
     readonly isVisible: boolean;
     current(): boolean;
     currentRevision(): number;
-    /** The preview of page `index`, no longer than `maxSide` pixels on its longer side. */
     capturePage(index: number, maxSide: number, signal: AbortSignal): Promise<Blob>;
     jump(page: number): void;
     onError(error: unknown): void;
-    /** Moves page `from` so it ends at index `to`. Absent when the view cannot write. */
     reorder?(from: number, to: number): void;
 }
 export type NativeNotebookThumbnailsProps = NativeNotebookThumbnailsBaseProps & (
@@ -24,7 +22,6 @@ export type NativeNotebookThumbnailsProps = NativeNotebookThumbnailsBaseProps & 
 const WINDOW = 6;
 type Image = { readonly page: number; readonly revision: number; readonly url: string };
 
-/** Captures only the displayed page window, one pinned source at a time. */
 export default function NativeNotebookThumbnails(props: NativeNotebookThumbnailsProps) {
     const { pages, revision, page, isVisible, current, currentRevision, capturePage, jump, onError, reorder } = props;
     const [ownOpen, setOwnOpen] = useState(false), [offset, setOffset] = useState(0);
@@ -60,7 +57,6 @@ export default function NativeNotebookThumbnails(props: NativeNotebookThumbnails
             setOpen(!open);
         }}>Thumbnails</button>}
         {open && <div className="native-notebook-thumbnails" role="region" aria-label="Notebook page thumbnails"
-            // From the bar's left edge: at its right edge the style panel (colours, pen width) covered it.
             style={{ position: 'absolute', top: '100%', left: 0, maxHeight: 'min(70vh, 600px)', overflowY: 'auto',
                 display: 'grid', gap: 6, padding: 8, background: 'var(--background-secondary)',
                 border: '1px solid var(--background-modifier-border)', borderRadius: 6 }}>

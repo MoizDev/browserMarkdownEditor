@@ -24,8 +24,6 @@ function copyTile(rendered: RenderPixels, bounds: RenderTileBounds): CopiedTile 
     return { pixels: output.buffer, w, h, originX: rect.x - 1, originY: rect.y - 1 };
 }
 
-/** One dispatcher-owned native job, with cancellation and heartbeats between
- * slices. The fresh output owns its bytes before native storage is released. */
 export async function runPdfRenderJob(job: RenderJob, bounds: RenderTileBounds, hooks: RenderSliceHooks): Promise<CopiedTile> {
     const channel = new MessageChannel();
     let wake: (() => void) | undefined;

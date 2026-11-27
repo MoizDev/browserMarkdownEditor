@@ -22,8 +22,6 @@ function transaction(id: NodeId, key: 'text' | 'label', from: number, to: number
     return { origin: 'tool', label: 'Format typed text', ops: [{ t: 'splice', id, key, from, to, insert, ...(replaceBlocks ? { replaceBlocks: true as const } : {}) }] };
 }
 
-// Each rule is returned as one splice so the history service can join it to the
-// current typing burst and retain its inverse for immediate Backspace.
 export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, caret: number, trigger: 'typing' | 'enter' = 'typing'): InputRuleResult | null {
     const found = blockAt(text, caret);
     if (!found || !textBoundaries.isBoundary(text, caret)) return null;
@@ -72,8 +70,6 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
     return null;
 }
 
-// TipTap-typography defaults, as tldraw ships them: a sequence becomes its character as its last character is typed.
-// Fractions need a non-letter, non-digit before them so "11/2" stays as typed.
 const TYPOGRAPHY: readonly { readonly pattern: string; readonly insert: string; readonly wordStart?: true }[] = [
     { pattern: '--', insert: '—' }, { pattern: '...', insert: '…' },
     { pattern: '<-', insert: '←' }, { pattern: '->', insert: '→' },
@@ -92,8 +88,6 @@ function markAt(block: Block, index: number): Marks | undefined {
     return undefined;
 }
 
-/** The typed character becomes typography when the text before it completes a pattern. Quotes take the open or close form by
- * what precedes them. Monospace text and an unclosed backtick type literally (literalTyping), so they are never rewritten. */
 export function typographyRule(id: NodeId, key: 'text' | 'label', text: RichText, caret: number): InputRuleResult | null {
     const found = blockAt(text, caret);
     if (!found || !textBoundaries.isBoundary(text, caret)) return null;

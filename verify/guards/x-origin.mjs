@@ -19,8 +19,6 @@ await fastGuard('X-ORIGIN', async ({ session, report }) => {
         await session({ label: `origin-${path.replaceAll('.', '-')}`, files: documents }, async ({ page, app, check, traffic, meta }) => {
             await openDocument(page, path);
             await page.evaluate(() => document.fonts.ready);
-            // Let idle document-kind prefetch finish too; a late CDN dependency
-            // is still a new outward request, even when opening already worked.
             await page.waitForTimeout(5000);
             const foreign = (await traffic.read()).filter(row => /^https?:/.test(row.url) && row.origin !== new URL(app.url).origin);
             meta.foreignRequests = foreign;

@@ -1,25 +1,17 @@
 import type { LaserContext, LaserPoint } from './basicTools'
 
-// Ephemeral chrome only: nothing here reaches the document, history or persistence. The shared scheduler owns the clock
-// and the animation frames; `frame` is pure in its time argument.
 export const LASER_IDLE_MS = 1200
 export const LASER_FADE_MS = 500
-/** A held stroke keeps only its newest points, so a long hold draws a bounded trail (the bound the trail had before sessions). */
 const MAX_POINTS = 512
 
 interface Session {
   readonly strokes: LaserPoint[][]
-  /** A stroke of this session is being drawn: the session never stops while the pointer is down. */
   open: boolean
-  /** The last pointer activity: a point's time while drawing, the release time after it. */
   activeAt: number
 }
 
 export interface LaserStroke { readonly points: readonly LaserPoint[] }
 
-/** Strokes made within the idle timeout of each other share one session, and a session fades as one: once it has been idle
- * for `LASER_IDLE_MS`, every stroke loses its oldest points together on an ease-in curve over `LASER_FADE_MS`. Nothing
- * is faded per point, so a stroke cannot outlive the strokes it was drawn with. */
 export class LaserTrail implements LaserContext {
   private sessions: Session[] = []
   private drawing: LaserPoint[] | null = null
@@ -51,14 +43,12 @@ export class LaserTrail implements LaserContext {
 
   cancel(): void { this.clear() }
 
-  /** Drops every session at once; true when there was a trail to drop. */
   clear(): boolean {
     const had = this.sessions.length > 0
     this.sessions = []; this.drawing = null
     return had
   }
 
-  /** The strokes still visible at `time`, faded sessions already trimmed. A finished session is dropped here. */
   frame(time: number): readonly LaserStroke[] {
     const out: LaserStroke[] = []
     this.sessions = this.sessions.filter(session => {

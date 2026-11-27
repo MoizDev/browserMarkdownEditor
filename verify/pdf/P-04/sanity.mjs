@@ -1,4 +1,3 @@
-// Charter §0: one real-app quick look, not a calibrated bench/reviewer proof.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';

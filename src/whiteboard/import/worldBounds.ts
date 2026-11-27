@@ -7,9 +7,7 @@ import type { TextLayoutEngine, TextLayoutRequest } from '../text/paint';
 import type { LegacyWorldBounds } from './pages';
 
 export interface LegacyGeometry {
-    // World-space bounds from the same geometry providers that render this node.
     worldBounds(node: Readonly<Node>, transform: Affine): Box | undefined;
-    /** Certified world-space approximation budget of the supplied bounds. */
     worldBoundsError?(node: Readonly<Node>, transform: Affine): number;
 }
 export interface LegacyTextLayout {
@@ -33,7 +31,6 @@ function union(a: Box | undefined, b: Box): Box {
     return a ? [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])] : b;
 }
 
-// IMP-3: prepare once for the whole draft; no scan of every shape for each root.
 export async function legacyWorldBounds(nodes: readonly Node[], sheets: ReadonlySet<SheetId>,
     text: LegacyTextLayout, geometry: LegacyGeometry): Promise<(node: Node) => LegacyWorldBounds> {
     const children = new Map<ParentId, Node[]>();

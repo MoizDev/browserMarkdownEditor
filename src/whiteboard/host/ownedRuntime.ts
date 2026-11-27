@@ -10,18 +10,15 @@ export interface OwnedBoardRuntimeOptions {
 export interface OwnedBoardRuntime {
     runtime: BoardRuntime;
     board: ComposedBoardSession;
-    /** Revokes at once; resolves only after the runtime, its session and the pinned builds have retired. */
     dispose(): Promise<void>;
 }
 
-/** The runtime owns the scene and its one session; pinned builds live beside them. */
 export function createOwnedBoardRuntime(options: OwnedBoardRuntimeOptions): OwnedBoardRuntime {
     const pinning = createBoardBuildPinning(options.builds);
     try {
         const runtime = createBoardRuntime({ ...options.runtime, pinBuild: pinning.pinBuild });
         let retiring: Promise<void> | undefined;
         return { runtime, board: runtime.session, dispose() {
-            // Revoke now; pinned builds are cancelled only after the runtime and its session have actually retired.
             retiring ??= (async () => {
                 try { await runtime.dispose(); } finally { pinning.dispose(); }
             })();

@@ -13,7 +13,6 @@ export interface GraphFrame {
 }
 let nextClient = 0;
 
-/** Main-thread positions are the last displayed snapshot, never the simulation. */
 export class GraphLayoutClient extends GraphLayout {
     private client: WorkerClient;
     private links: GraphLink[] = [];
@@ -114,8 +113,6 @@ export class GraphLayoutClient extends GraphLayout {
             }
             return result;
         } catch {
-            // The host respawns from the latest displayed coordinates. A detached
-            // transfer buffer from the dead worker cannot be reused.
             this.buffer = new Float64Array(0);
             this.reheat = Math.max(this.reheat, reheat);
             return null;

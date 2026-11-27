@@ -1,8 +1,3 @@
-// The PtyBackend that talks to the frozen `vaultagent-pty` host (macOS, installed
-// helpers), one unix-socket connection per shell. Why a separate process at all:
-// helper/ptyhost/ptyhost.c. The wire format is documented there; this is its
-// client — binary frames `[u8 type][u32 BE length][payload]`, no JSON.
-
 import { constants } from 'node:os';
 import type { Socket } from 'bun';
 import type { TerminalExit } from '../../../shared/vaultAgentProtocol.ts';
@@ -11,10 +6,7 @@ import type { PtyBackend, PtyCallbacks, PtyProcess, PtySpawnOptions } from './ty
 const C_SPAWN = 1, C_INPUT = 2, C_RESIZE = 3, C_KILL = 4;
 const H_SPAWNED = 1, H_OUTPUT = 2, H_EXIT = 3, H_ERROR = 4;
 
-/** The host's own bound on a frame; a bigger one is a protocol error there. */
 const MAX_FRAME = 4 * 1024 * 1024;
-/** A host that does not close after a kill frame within this is cut off. Its
- *  own grace is 2 s (SIGHUP, then SIGKILL on the group). */
 const KILL_DEADLINE_MS = 4000;
 
 const SIGNAL_NAMES = new Map<number, string>(Object.entries(constants.signals).map(([name, n]) => [n, name]));
@@ -65,7 +57,7 @@ function connectSession(socketPath: string, options: PtySpawnOptions, cb: PtyCal
     return new Promise<PtyProcess>((resolve, reject) => {
         let sock: Socket | null = null;
         let rx: Uint8Array = new Uint8Array(0);
-        let tx: Uint8Array | null = null;   // what the socket would not take yet
+        let tx: Uint8Array | null = null;
         let pid = 0;
         let spawned = false;
         let exited = false;
@@ -83,7 +75,6 @@ function connectSession(socketPath: string, options: PtySpawnOptions, cb: PtyCal
             sock?.terminate();
         };
 
-        /** Write `data`, keeping what the socket refuses for `drain`. */
         const send = (data: Uint8Array) => {
             if (!sock || exited) return;
             if (tx) {
@@ -121,10 +112,6 @@ function connectSession(socketPath: string, options: PtySpawnOptions, cb: PtyCal
                         killed = true;
                         send(frame(C_KILL, new Uint8Array(0)));
                         sock?.end();
-                        // Our own end() closes the socket, so `close` reports the end at once
-                        // (measured: 0–1 ms) — not when the shell is gone. The host does the
-                        // hang-up, 2 s grace and SIGKILL of the group on its own, socket or not.
-                        // This timer is only the backstop for an end() that never completes.
                         killTimer = setTimeout(() => sock?.terminate(), KILL_DEADLINE_MS);
                     },
                 });
@@ -182,7 +169,6 @@ function connectSession(socketPath: string, options: PtySpawnOptions, cb: PtyCal
                 },
                 close() {
                     if (!spawned) reject(new Error('the PTY host closed the connection'));
-                    // No exit frame: a kill (ours) or a host that died. Either way the shell is gone.
                     finish({ code: null, signal: killed ? 'SIGHUP' : null });
                 },
                 error(_s, e) {
@@ -196,12 +182,6 @@ function connectSession(socketPath: string, options: PtySpawnOptions, cb: PtyCal
     });
 }
 
-/**
- * Whether a PTY host answers on `socketPath`: connect, send a kill frame (which a
- * host with no session answers by simply ending the connection) and wait for the
- * close. A connect alone would also succeed against a hung accept loop (the
- * kernel queues it); a stale socket file refuses it.
- */
 export async function probePtyHost(socketPath: string, timeoutMs = 1500): Promise<boolean> {
     return await new Promise<boolean>(resolve => {
         let sock: Socket | null = null;

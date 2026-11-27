@@ -12,8 +12,6 @@ const SOURCE_BYTES_LIMIT = 128 * 1024 * 1024;
 type TextEntry = { mtime: number; size: number; text?: string };
 type Source = { stat: IndexStat; revision: number; signal?: AbortSignal };
 
-/** Search's optional text residency is separate from graph facts. Only the
- * committed full tree owns membership; a query's scope never prunes it. */
 export class SearchResidency {
     private entries = new Map<string, TextEntry>();
     private sources = new Map<string, Source>();
@@ -68,8 +66,6 @@ export class SearchResidency {
     }
     dispose() { this.disposed = true; this.entries.clear(); this.sources.clear(); this.requested.clear(); }
     snapshot(): ReadonlyMap<string, TextEntry> { return this.entries; }
-    // Stat completion order must not decide the global source-byte budget:
-    // reserve synchronously in the provider's canonical tree order.
     private admit() {
         const accepted = new Set<string>();
         let bytes = 0;
@@ -113,7 +109,6 @@ export class SearchResidency {
                     }
                 } catch (error) {
                     if (error instanceof DOMException && error.name === 'NotAllowedError') throw error;
-                    /* Transient IO failures are not cached. */
                 }
             });
             context.signal.throwIfAborted();
@@ -141,7 +136,6 @@ export class SearchResidency {
                     }
                 } catch (error) {
                     if (error instanceof DOMException && error.name === 'NotAllowedError') throw error;
-                    /* Retry on a later request. */
                 }
                 await context.slice();
             }

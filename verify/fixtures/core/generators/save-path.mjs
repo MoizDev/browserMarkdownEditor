@@ -5,8 +5,6 @@ import { mixedNote } from './notes.mjs';
 
 const { out, seed } = parseArgs(process.argv.slice(2));
 const lines = mixedNote(seed).split('\n');
-// Replace, do not insert: the pre-edit workload stays exactly 10,000 lines, and
-// the single embed is visible at the top instead of requiring an untimed scroll.
 lines[3] = '![[save-only.png]]';
 const before = lines.join('\n');
 const after = lines.filter((_, index) => index !== 3).join('\n');

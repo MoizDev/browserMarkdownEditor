@@ -26,11 +26,6 @@ import type { UsePdfActionsDeps } from './usePdfActions';
 import { loadChunk } from '../platform/chunkLoad';
 import { isFileReadTimeout, withinFileDeadline } from '../utils/fileReadDeadline';
 
-/**
- * The PDF gestures that only ever run on a PDF the reader is looking at:
- * an unsigned copy, a print, turning pages. Loaded on the gesture
- * (usePdfActions), never at startup: the PDF/canvas split is bundle-size discipline.
- */
 export interface PdfGestureDeps extends UsePdfActionsDeps {
   unsignedCopyInFlight: React.MutableRefObject<boolean>
 }
@@ -111,8 +106,6 @@ export async function preparePdfPrint(deps: Pick<PdfGestureDeps,
       now.file.handle === handle && now.representation.generation === generation && !diskStateRef.current.get(id);
   };
   if (!current()) throw new Error('Return to this PDF and resolve any disk conflict before printing.');
-  // Native Annotate and classic canvases hold strokes the App cannot see until
-  // they report them; push those into the save funnel before reading any bytes.
   try { await getView(path)?.flushPending?.(); }
   catch { throw new Error('The PDF annotations could not be saved. Keep the file open and retry before printing.'); }
   await drain(id);
@@ -123,8 +116,6 @@ export async function preparePdfPrint(deps: Pick<PdfGestureDeps,
   const needsSave = tabsRef.current.find(t => t.id === id)?.dirty || documentBuffers.isDirty(id) || documentSessions.hasPendingEdits(id);
   if (needsSave) {
     const outcome = await flushTab(path, true);
-    // 'skipped' with clean bytes is a finished save: the combined dirty flag also counts
-    // background session work, which refused every print after an annotation save.
     if (outcome !== 'written' && (outcome !== 'skipped' || documentBuffers.isDirty(id))) throw new Error('The annotations could not be saved. Resolve the PDF notice before printing.');
   }
   if (!current() || documentBuffers.revisionForDocument(id)?.revision !== revision || getView(path)?.hasPendingEdits?.()
@@ -157,8 +148,6 @@ export async function preparePdfPrint(deps: Pick<PdfGestureDeps,
 
 const LEFT_AS_IT_IS = 'The file has been left as it is.';
 
-/** Why a PDF's pages could not be turned, in the person's words: what the writer found, what that means for the
- * file, and what they can do. The raw reasons ("PDF ink is read-only: signed.") were shown as they were. */
 function rotationRefusal(cause: RotationRefusal | undefined): string {
   switch (cause) {
     case 'signed': return `This PDF is signed, and turning its pages would break the signature. ${LEFT_AS_IT_IS} To rotate it, create an unsigned copy and rotate that.`;
@@ -170,8 +159,6 @@ function rotationRefusal(cause: RotationRefusal | undefined): string {
     case 'other-engine':
       return `This PDF's annotations were saved by another build of this app's PDF engine, so this version cannot move them with the pages. ${LEFT_AS_IT_IS}`;
     case 'foreign-change':
-      // What a turn would really do: seal the file as this app's own, so the next annotation save rebuilds the pages
-      // from the embedded original and the other program's change is gone. A newer version's mark reads the same here.
       return `This PDF was changed by another program after its annotations were saved here, or saved by a newer version of this app. Turning its pages now would let the next annotation save discard that change. ${LEFT_AS_IT_IS}`;
     case 'missing-attachment':
       return `The annotations saved inside this PDF are incomplete or damaged, and turning its pages could lose them. ${LEFT_AS_IT_IS}`;
@@ -184,11 +171,9 @@ function rotationRefusal(cause: RotationRefusal | undefined): string {
   }
 }
 
-/** The same for a failure that surfaced as an error. */
 function rotationFailure(err: unknown): string {
   const name = err instanceof Error ? err.name : '', message = err instanceof Error ? err.message : String(err);
   if (name === 'AbortError') return 'The PDF changed while its pages were being turned, so nothing was saved. Try again.';
-  // A file that never answered (a cloud placeholder, a sleeping share) is "nothing changed, try again", never content.
   if (isFileReadTimeout(err)) return `${message} Its pages were not turned and nothing was changed; try again once it is available.`;
   if (name === 'UnsupportedSecurity' || /encrypt/i.test(message)) return rotationRefusal('encrypted');
   if (/signed/i.test(message)) return rotationRefusal('signed');
@@ -204,36 +189,9 @@ type RotateDeps = Pick<PdfGestureDeps,
   'writeFileVersionedRef' | 'diskStateRef' | 'setDiskState' | 'pdfSeedForRef'
 >;
 
-/** Turns pressed but not yet taken by a write, per document: quarter turns for every page, and per page. */
 interface PendingTurns { all: number; pages: Map<number, number>; presses: number; run: Promise<void>; savedConversion?: boolean }
 const pendingTurns = new Map<string, PendingTurns>();
 
-/**
- * Turn a PDF's pages a quarter at a time, and write it.
- *
- * A REAL EDIT, not a view filter. The angle goes into each page's `/Rotate`, so a sideways scan is fixed everywhere
- * at once: this reader, the annotate canvas, the thumbnails, the saved file and whatever else the person opens it
- * with. Every consumer here already honours `/Rotate` (PDFium applies it to the page's display transform), so there
- * is no second coordinate system for a view-only rotation to keep in step with — the whole reason it is written.
- *
- * THE PANE HAS ALREADY TURNED (utils/pdfRotationStandIn.ts): this writes the file behind that picture and reports
- * each press's outcome back to it, which keeps the picture until the turned file is drawn sharp, or rolls it back.
- *
- * PRESSES COALESCE. Each press adds its turn to the document's pending turns; one write, queued on the same per-tab
- * chain `flushTab` uses, takes everything pressed until it starts. Four quick presses are one or two writes ending at
- * the right angle — never four racing ones, and never a lost press: a press during a write waits for the next.
- *
- * It writes an incremental update (pdf/writing/rotationUpdate.ts) through `writeFileVersioned` against the tab's
- * disk baseline; a file changed or gone on disk raises the DiskBar and writes nothing. The pane adopts the new bytes
- * IN PLACE, as it does after any other save of this document: a new byte generation, never a `diskRev` remount.
- *
- * A PDF ANNOTATED HERE TURNS WITH ITS MARKS (pdf/writing/inkRotation.ts): the same appended section also turns the
- * embedded original every save rebuilds from and moves the board's marks into the turned pages, so a mark stays on the
- * spot of the page it was drawn on. Ink not yet written is saved FIRST (saveInkBeforeTurn), never refused and never
- * dropped: the turn is computed from the file, so a stroke still in the board would be rebuilt over the turned file
- * at its old place. The writer decides (with the signed/encrypted/unknown-policy refusals) at the moment of the
- * gesture, so opening a PDF costs nothing.
- */
 export function rotatePdf(deps: RotateDeps, path: string, delta: number, pageIndex?: number): Promise<void> {
   const { tabsRef } = deps;
   const tab = tabsRef.current.find(t => t.file.path === path);
@@ -241,7 +199,6 @@ export function rotatePdf(deps: RotateDeps, path: string, delta: number, pageInd
   const { id } = tab, quarter = ((delta / 90) % 4 + 4) % 4;
   const queued = pendingTurns.get(id);
   if (queued) {
-    // Not started yet: it will take this press with the others.
     if (pageIndex === undefined) queued.all += quarter; else queued.pages.set(pageIndex, (queued.pages.get(pageIndex) ?? 0) + quarter);
     queued.presses++;
     return queued.run;
@@ -251,15 +208,10 @@ export function rotatePdf(deps: RotateDeps, path: string, delta: number, pageInd
   entry.run = (async () => {
     let outcome: PdfRotationOutcome = { kind: 'failed' };
     try {
-      // A stroke that lands while the turn waits is saved again first; three rounds is far more than a person draws in
-      // the moment between saving and turning.
       for (let round = 0; round < 3; round++) {
         if (!await saveInkBeforeTurn(deps, path, id)) return;
         const step = await queueTurn(deps, path, id, entry);
         if (step === 'save-conversion') {
-          // Converted Classic annotations reach the file at their first save, which the conversion leaves to the first change
-          // (pdf-and-drawings, Legacy conversion). A turn pressed before one writes it if it can; a board with nothing to save
-          // yet is told so, rather than "convert first" just after converting (measured: the forced save is 'skipped').
           entry.savedConversion = true;
           if (await deps.flushTab(path, true) === 'written') continue;
           deps.notifyRef.current(`These annotations were converted but are not saved into the PDF until your next change in Annotate. Make one, then turn the pages: they turn with their annotations. ${LEFT_AS_IT_IS}`);
@@ -277,8 +229,6 @@ export function rotatePdf(deps: RotateDeps, path: string, delta: number, pageInd
   return entry.run;
 }
 
-/** Push ink the board still holds into the save funnel and write it, as a print does (preparePdfPrint). False, with the
- * person told why, when it could not be saved: a turn computed from the file would then rebuild that ink at its old place. */
 async function saveInkBeforeTurn(deps: RotateDeps, path: string, id: string): Promise<boolean> {
   const { tabsRef, documentBuffers, documentSessions, flushChainsRef, flushTab, notifyRef } = deps;
   try { await getView(path)?.flushPending?.(); }
@@ -288,17 +238,14 @@ async function saveInkBeforeTurn(deps: RotateDeps, path: string, id: string): Pr
   const pending = () => !!tabsRef.current.find(t => t.id === id)?.dirty || documentBuffers.isDirty(id) || documentSessions.hasPendingEdits(id);
   if (!pending()) return true;
   const outcome = await flushTab(path, true);
-  // 'skipped' with clean bytes is a finished save (preparePdfPrint): the combined dirty flag also counts background session work.
   if (outcome === 'written' || outcome === 'skipped' && !documentBuffers.isDirty(id)) return true;
   notifyRef.current('The annotations could not be saved, so the pages were not turned. Resolve the PDF notice and try again.');
   return false;
 }
 
-/** One write of the pending turns, on the per-tab chain `flushTab` uses; 'pending-ink' when ink arrived while it waited. */
 function queueTurn(deps: RotateDeps, path: string, id: string, entry: PendingTurns): Promise<PdfRotationOutcome | 'pending-ink' | 'save-conversion'> {
   const chains = deps.flushChainsRef.current;
   const chained = (chains.get(id) ?? Promise.resolve()).then(() => {
-    // From here on, presses queue for the next write.
     if (pendingTurns.get(id) === entry) pendingTurns.delete(id);
     return writeTurns(deps, path, id, entry);
   });
@@ -328,9 +275,6 @@ async function writeTurns(deps: RotateDeps, path: string, id: string, turns: Pen
     notifyRef.current('This PDF is not ready to rotate. Try again in a moment.'); return failed;
   }
   if (diskStateRef.current.get(id)) { notifyRef.current('This PDF has changed on disk. Deal with that first, then rotate it.'); return failed; }
-  // Unsaved bytes, a save in flight or strokes the view still holds: as preparePdfPrint, not the tab's combined dirty
-  // flag, which also counts a retained Annotate session's background journalling (and would send every turn back to be
-  // saved for nothing). saveInkBeforeTurn wrote them; any that arrived since send the turn back to save them too (rotatePdf).
   const pendingInk = () => documentBuffers.isDirty(id) || flushingRef.current.has(id) || !!getView(path)?.hasPendingEdits?.() ||
     documentBuffers.revisionForDocument(id)?.revision !== revision;
   if (pendingInk()) return 'pending-ink';
@@ -348,8 +292,6 @@ async function writeTurns(deps: RotateDeps, path: string, id: string, turns: Pen
     if (!expected) throw new Error('The PDF disk baseline is unavailable.');
     snapshot = await readFileSnapshot(handle, controller.signal);
     check();
-    // The same rule writeFileVersioned applies: an unchanged stat is the baseline; only a changed one is hashed
-    // (measured: hashing first cost ~100ms of a 5MB scan's turn, before any work).
     if (!sameStat(snapshot.stat, expected) && (await snapshot.fingerprint(controller.signal)).hash !== expected.hash) {
       check(); setDiskState(id, 'conflict'); return failed;
     }
@@ -360,9 +302,6 @@ async function writeTurns(deps: RotateDeps, path: string, id: string, turns: Pen
     const result = await rotatePdfIncrementally({ source: taken.blob.slice(0, taken.blob.size, 'application/pdf'),
       turns: { all: turns.all % 4, pages: [...turns.pages].map(([page, amount]) => [page, amount % 4] as [number, number]) }, signal: controller.signal })
       .catch(async (err: unknown) => {
-        // A snapshot stops reading once its file changes on disk, failing with Chromium's NotReadableError about
-        // "permission problems" here or in the writer (measured: an outside write during a turn showed exactly that).
-        // A fresh stat tells the person what really happened; nothing was written either way.
         const now = await withinFileDeadline((handle as FileSystemFileHandle).getFile(), path).catch(() => undefined);
         if (now && !sameStat({ lastModified: now.lastModified, size: now.size }, taken.stat)) {
           throw new DOMException('The PDF rotation source changed', 'AbortError');
@@ -371,7 +310,6 @@ async function writeTurns(deps: RotateDeps, path: string, id: string, turns: Pen
       });
     check();
     if (result.kind === 'refused') {
-      // Classic annotations this session has already converted (its native owner is hosted) are only unsaved, not refused.
       if (result.cause === 'legacy-annotations' && !turns.savedConversion && hasHostedNativeOwner(documentSessions.get(id), id)) return 'save-conversion';
       notifyRef.current(rotationRefusal(result.cause)); return failed;
     }
@@ -388,8 +326,6 @@ async function writeTurns(deps: RotateDeps, path: string, id: string, turns: Pen
     const existing = documentSessions.get(id);
     const replaceNative = existing?.kind === 'pdf' && hasHostedNativeOwner(existing, id);
     const route = replaceNative ? readPdfSessionRoute(existing) : undefined;
-    // The new bytes are adopted in place, as after any other save of this document (useSaveFunnel): a new byte
-    // generation rebinds the pane's source under the turned picture; a `diskRev` remount would rebuild the whole pane.
     bumpBytesGeneration(id);
     if (replaceNative) {
       // A retained Annotate owner holds the old page geometry; it starts again on the turned pages.

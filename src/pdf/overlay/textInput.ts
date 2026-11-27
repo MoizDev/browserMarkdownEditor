@@ -1,6 +1,5 @@
 export type PdfSelectionGranularity = 'char' | 'word' | 'line';
 
-/** The viewer owns the camera, page lookup, selection model and context menu. */
 export interface PdfTextInputHost<Point> {
     hit(clientX: number, clientY: number, priority: 0 | 2, signal: AbortSignal): Promise<Point | null>;
     isLink(target: EventTarget | null): boolean;
@@ -10,18 +9,12 @@ export interface PdfTextInputHost<Point> {
     begin(point: Point, granularity: PdfSelectionGranularity, extend: boolean): void;
     extend(point: Point): void;
     clear(): void;
-    /** For keyboard invocation, the host anchors at the selection end or current page. */
     contextMenu(clientX: number, clientY: number, keyboard: boolean): void;
-    /** CSS pixels per second; zero on either axis stops that axis. */
     autoScroll(x: number, y: number): void;
-    /** Camera arbitration for touch panning/pinch; cancel when a long press
-     * becomes selection. This is the host's existing camera, not a second. */
     touchPointer?(phase: 'down' | 'move' | 'up' | 'cancel', event: PointerEvent): void;
 }
 export interface PdfTextInputBinding {
-    /** The camera can move while the pointer is still at an edge. */
     refreshPointer(): void;
-    /** Hiding cancels gesture work synchronously, but not the selection model. */
     setVisible(visible: boolean): void;
     dispose(): void;
 }
@@ -36,7 +29,6 @@ function edgeSpeed(position: number, start: number, end: number): number {
     return delta ? Math.sign(delta) * Math.max(60, Math.min(2400, Math.abs(delta) * 12)) : 0;
 }
 
-/** Bind once to the tiled PDF surface; text and geometry stay in its owner. */
 export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInputHost<Point>): PdfTextInputBinding {
     let drag: Drag<Point> | null = null, lastClick = 0, lastX = 0, lastY = 0, clicks = 0;
     let visible = true;
@@ -103,10 +95,7 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
                 void begin(active);
             }, 500);
         } else {
-            // Preventing the default (native selection) also cancels the focus move, so a click on a page left the
-            // keyboard in the file tree and Cmd+F after it went nowhere.
             event.preventDefault(); element.setPointerCapture(active.id);
-            // The bound element is the content wrapper; the keyboard target is its focusable surface.
             if (!element.contains(document.activeElement)) (element.querySelector<HTMLElement>('[tabindex="0"]') ?? element).focus({ preventScroll: true });
         }
     };
@@ -152,8 +141,6 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
                 if (active.shift && host.hasSelection()) host.extend(point); else host.clear();
             }).finally(() => stop(active));
         } else {
-            // Keep the last hit alive until it resolves; a newer gesture can
-            // still cancel this one rather than publishing into another page.
             const sequence = ++active.sequence;
             void begin(active).then(async point => {
                 if (!point || drag !== active || active.abort.signal.aborted) return;

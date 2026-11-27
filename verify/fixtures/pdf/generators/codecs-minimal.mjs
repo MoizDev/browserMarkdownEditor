@@ -1,7 +1,3 @@
-// Authored PDF/CCITT data; no third-party document or font bytes.
-// Proposed CC0-1.0; licence remains NOASSERTION pending the owner's choice.
-// This GEN-09 slice is deliberately NOT a replacement for the risky JPX/JBIG2
-// witnesses: reproducing their precise constructions needs a pinned encoder.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -50,8 +46,6 @@ async function emit(file, data, expected) {
     fixtures.push(entry);
     console.log(JSON.stringify({ file, sha256: entry.sha256, bytes: entry.bytes }));
 }
-// T.6 horizontal mode 001, T.4 terminating white run 8 = 10011,
-// black run 8 = 000101. Each independently encoded row is half black.
 for (const endOfBlock of [false, true]) {
     const encoded = bitBytes('00110011000101'.repeat(16) + (endOfBlock ? '000000000001000000000001' : ''));
     await emit(`ccitt-g4-eob-${endOfBlock}.pdf`, imagePdf('CCITTFaxDecode', `/DecodeParms << /K -1 /Columns 16 /Rows 16 /BlackIs1 true /EndOfBlock ${endOfBlock} >>`, encoded, `GEN-09-ccitt-g4-eob-${endOfBlock}`), {

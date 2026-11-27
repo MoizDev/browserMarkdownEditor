@@ -9,7 +9,6 @@ import { getBoardRuntime } from './runtime';
 
 const slot = Symbol('native notebook exporter');
 
-/** The session owns the exporter; pane hiding, graph view and remount never remove it. */
 export function registerNativeNotebookExporter(options: {
     board: ComposedBoardSession;
     host: NativeCanvasHost;

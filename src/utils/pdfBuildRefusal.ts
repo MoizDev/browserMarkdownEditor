@@ -1,5 +1,3 @@
-// Deliberate capacity refusals cross the worker boundary as data, not a failed
-// IO exception. App keeps the revision dirty and reports the reason as skipped.
 import { PDF_EDITABLE_JSON_LIMIT } from './pdfRole';
 
 export type PdfBuildRefusal = { reason: 'editable-json-limit'; limit: number } |
@@ -18,8 +16,6 @@ export class PdfBuildRefused extends Error {
     }
 }
 
-/** Count UTF-8 without allocating an oversized encoded attachment. Lone UTF-16
- *  surrogates become the same three-byte replacement as TextEncoder uses. */
 export function pdfSnapshotRefusal(snapshot: string): PdfBuildRefusal | undefined {
     const refused: PdfBuildRefusal = { reason: 'editable-json-limit', limit: PDF_EDITABLE_JSON_LIMIT };
     if (snapshot.length > PDF_EDITABLE_JSON_LIMIT) return refused;

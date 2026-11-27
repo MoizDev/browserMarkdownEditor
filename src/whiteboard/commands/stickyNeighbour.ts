@@ -18,14 +18,12 @@ export interface StickyNeighbourOptions {
     readonly id: NodeId;
     readonly direction: StickyDirection;
     readonly zoom: number;
-    /** Keyboard navigation reuses an eligible nearby note; pointer handles create. */
     readonly reuse: boolean;
     readonly current: () => boolean;
     readonly edit: (id: NodeId) => void | Promise<void>;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
 }
-/** Adds a real blank note, or focuses an existing directional neighbour, in the active session. */
 export async function addStickyNeighbour(options: StickyNeighbourOptions): Promise<NodeId> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
@@ -52,7 +50,6 @@ export async function addStickyNeighbour(options: StickyNeighbourOptions): Promi
     if (!candidateNode || candidateNode.kind !== 'sticky') throw new Error('Sticky candidate is unavailable');
     const target = stickyWorldCentre(candidate, candidateNode);
     if (options.reuse) {
-        // Default, calibration cut by owner: ten CSS pixels is the neighbour reuse radius.
         const radius = 10 / options.zoom;
         const found = await findStickyNeighbour({ runtime, doc, source, target, sheet: selection.sheet, focus: selection.focus, radius, signal, cooperate,
             current: () => { try { check(); return true; } catch { return false; } } });

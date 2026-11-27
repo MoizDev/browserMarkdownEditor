@@ -1,11 +1,9 @@
 import { writeStoredValue } from './storage';
 
 export type CanvasEngineKind = 'drawing' | 'notebook' | 'pdfInk';
-// Old stored engine preferences never select a removed implementation.
 export type CanvasEngine = 'board';
 export type PdfViewer = 'tiled';
 export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['board'];
-// Missing production engine assets fail closed in this host, never into an old parser.
 export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = ['tiled'];
 export const PLATFORM_LAYER_AVAILABLE = true;
 export const CANVAS_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook', 'pdfInk'];
@@ -24,7 +22,6 @@ export function setDeveloperSetting(key: string, value: string | boolean): boole
     return written;
 }
 
-/** Source admission decides editability; a missing PDF engine never selects a legacy engine. */
 export function routeEngines(_nativeKind?: CanvasEngineKind) {
     const enabled = developerEnabled();
     const canvas = Object.fromEntries(CANVAS_KINDS.map(kind => [kind, {

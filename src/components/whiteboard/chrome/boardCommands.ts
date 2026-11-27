@@ -1,6 +1,5 @@
 import type { ContextMenuCommand, ContextMenuEntry, ContextMenuSeparator, ContextMenuSubmenu } from '../../../utils/contextMenu';
 
-/** A row a submenu holds: the grid and label kinds only appear at a menu's top level. */
 export type MenuRow = ContextMenuSubmenu['entries'][number];
 
 export type BoardCommand =
@@ -32,7 +31,6 @@ export function commandRow(source: BoardCommandSource, id: BoardCommand): Contex
     };
 }
 
-/** The Actions grid, four to a row, in this order; its last slot is Group, or Ungroup for a group. */
 export const actionCommands: readonly BoardCommand[] = [
     'alignLeft', 'alignHorizontal', 'alignRight', 'stretchHorizontal',
     'alignTop', 'alignVertical', 'alignBottom', 'stretchVertical',
@@ -41,7 +39,6 @@ export const actionCommands: readonly BoardCommand[] = [
     'rotateCounterclockwise', 'rotateClockwise', 'editLink', 'group',
 ];
 
-/** Move to page names are cut to this many characters, then "…" (the catalogue's rule, so a long sheet name cannot widen the menu). */
 export const MOVE_TARGET_LABEL_LIMIT = 30;
 export function moveTargetLabel(name: string): string {
     return name.length > MOVE_TARGET_LABEL_LIMIT ? `${name.slice(0, MOVE_TARGET_LABEL_LIMIT)}…` : name;
@@ -57,18 +54,15 @@ export interface BoardContextMenuSource extends BoardCommandSource {
     readonly transparent: boolean;
     readonly transparentLabel: string;
     readonly transparentDisabledReason?: string;
-    /** The selection holds text, so Toggle auto size is offered (it is enabled only for fixed-width text). */
     readonly textSelected: boolean;
     readonly noPagesReason: string;
     toggleTransparent(): void;
     readonly pages: readonly { id: string; label: string; enabled: boolean; reason?: string }[];
-    /** "New page" under Move to page: a sheet made for the selection in one history step. */
     readonly newPage?: { readonly label: string; readonly enabled: boolean; readonly reason?: string; run(): void };
     readonly extraEntries?: readonly MenuRow[];
     moveToPage(id: string): void;
 }
 
-/** The Arrange submenu's rows, in menu order. Shared by the context menu and the command palette, which lists it even with nothing selected. */
 export const arrangeCommands: readonly BoardCommand[] = [
     'alignLeft', 'alignHorizontal', 'alignRight', 'alignTop', 'alignVertical', 'alignBottom',
     'stretchHorizontal', 'stretchVertical', 'distributeHorizontal', 'distributeVertical',
@@ -76,7 +70,6 @@ export const arrangeCommands: readonly BoardCommand[] = [
 ];
 export const reorderCommands: readonly BoardCommand[] = ['sendBack', 'sendBackward', 'bringForward', 'bringFront'];
 
-/** The Arrange and Reorder submenus, each row disabled with its reason when the selection cannot take it. */
 export function arrangeSubmenus(source: BoardCommandSource, sectionLabel: (section: ContextSection) => string): ContextMenuSubmenu[] {
     const submenu = (id: 'arrange' | 'reorder', ids: readonly BoardCommand[]): ContextMenuSubmenu => ({
         kind: 'submenu', id, label: sectionLabel(id), entries: ids.map(item => commandRow(source, item)) });
@@ -90,7 +83,6 @@ export function contextEntries(source: BoardContextMenuSource): ContextMenuEntry
         kind: 'submenu', id, label: source.sectionLabel(id), entries,
         disabled: noTargets, reason: noTargets ? source.noPagesReason : undefined,
     });
-    // Rows are grouped the way the catalogue's menus are; a separator sits between groups, never at either end.
     const groups = (...groupsOfRows: (readonly MenuRow[])[]): MenuRow[] => groupsOfRows
         .filter(group => group.length > 0)
         .flatMap((group, index) => index === 0 ? group : [separator(`group-${index}`), ...group]);
@@ -119,7 +111,6 @@ export function contextEntries(source: BoardContextMenuSource): ContextMenuEntry
         menu('edit', groups(rows([
             ...(source.canUngroup ? ['ungroup' as const] : source.selectedCount > 1 ? ['group' as const] : []),
             'flatten', ...(source.selectedCount === 1 ? ['editLink' as const] : ['frameSelection' as const]),
-            // Frame and conversion rows appear only for a selection they can act on, so other selections keep their menu unchanged.
             ...(source.state('removeFrame').enabled ? ['removeFrame' as const] : []),
             ...(source.state('fitFrame').enabled ? ['fitFrame' as const] : []),
             ...(source.state('convertToEmbed').enabled ? ['convertToEmbed' as const] : []),

@@ -6,7 +6,6 @@ import { getBoardRuntime } from '../../whiteboard/host/runtime';
 type ViewOptions = Parameters<typeof createNativeViewLease>[0];
 type PdfSource = ReturnType<NativePdfViewerSource['getSnapshot']>['source'];
 
-/** A PDF editing view borrows the actual source/backdrop; the document owner retains both. */
 export async function createNativePdfEditingLease(options: {
     readonly board: ViewOptions['board'];
     readonly host: ViewOptions['host'];

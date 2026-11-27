@@ -12,10 +12,6 @@ interface CaptureJob {
     running: boolean;
 }
 
-/** One App-owned queue shared by all pane capturers (§4.6). Aborting an active job
- * rejects its caller promptly, but keeps its slot until resource cleanup finishes.
- * A tile provider that is still unwinding cannot let a third capture exceed the cap.
- */
 export class CaptureQueue {
     private readonly queued: CaptureJob[] = [];
     private readonly activePanes = new Set<string>();

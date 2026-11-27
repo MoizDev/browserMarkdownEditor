@@ -1,11 +1,7 @@
 import type { IncrementalPdfWriter } from '../export/incrementalPdf';
 import { pdfEngineAvailableInBuild } from '../../utils/pdfEngineAvailability';
 
-/** The emitter never receives a source PDF. Only the isolated native notebook writer
- * adds the source pointer/write mark and independently verifies the finished bytes. */
 export function createNativeNotebookIncrementalWriter(revision: number, sourcePath: string): IncrementalPdfWriter {
-    // Absence at build time is an explicit generated-only writer route. An eligible
-    // native engine failing integrity or a build never switches engines on failure.
     const native = pdfEngineAvailableInBuild();
     return {
         kind: 'incremental-pdf',

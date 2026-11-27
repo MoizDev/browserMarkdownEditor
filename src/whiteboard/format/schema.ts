@@ -7,7 +7,6 @@ export { NATIVE_FORMAT_ID } from './identity';
 export { MEDIA_MIMES } from '../model/media';
 export type { MediaMime } from '../model/media';
 
-// FMT-1; native-format §§3,5,6,10. These are file types, not the live model.
 export const NATIVE_VERSION = [1, 0] as const;
 export const FORMAT_LIMITS = Object.freeze({
     fileBytes: SECURITY_LIMITS.fileBytes,
@@ -17,14 +16,12 @@ export const FORMAT_LIMITS = Object.freeze({
     points: SECURITY_LIMITS.pointsPerStroke,
     textChars: SECURITY_LIMITS.textCharacters,
     richTextDepth: SECURITY_LIMITS.richDepth,
-    richTextBlocks: 100_000, // R-W30: checked lexically, before materializing any block/run arrays.
-    jsonDepth: SECURITY_LIMITS.jsonDepth, // security §3.2 also bounds inert future values
+    richTextBlocks: 100_000,
+    jsonDepth: SECURITY_LIMITS.jsonDepth,
     idChars: SECURITY_LIMITS.idCharacters,
-    sheets: SECURITY_LIMITS.sheets, // 40 is the creation UI's cap, not a file rejection rule
+    sheets: SECURITY_LIMITS.sheets,
     parentDepth: SECURITY_LIMITS.parentDepth,
     world: SECURITY_LIMITS.world,
-    // R-W11: notebook page setting is finite here; model/normalizePaper clamps to 1..500.
-    // R-W11: authored PDF page facts are not clamped (PDF stream/C2.3; 06-text 10k-page fixtures).
     pdfPages: 65_536,
     pdfPageSize: 14_400,
 });
@@ -43,7 +40,7 @@ export interface NativeHeader extends FutureFields {
     readonly version: readonly [number, number];
     readonly kind: BoardFileKind;
     readonly fence?: string;
-    readonly document?: JsonValue; // ignored by our reader when format is board
+    readonly document?: JsonValue;
 }
 export interface NativeEnvelope extends NativeHeader { readonly records: readonly NativeRecord[]; }
 export interface PenRecord extends FutureFields {
@@ -67,7 +64,7 @@ export interface PaperRecord extends FutureFields {
 }
 export interface HostRecord extends FutureFields {
     readonly type: 'host'; readonly pdf: JsonObject;
-    readonly pages: readonly (readonly [number, number])[]; // display sizes after rotation, PDF points (R-W5)
+    readonly pages: readonly (readonly [number, number])[];
 }
 export interface MediaRecord extends FutureFields {
     readonly type: 'media'; readonly id: MediaId; readonly mime: MediaMime;
@@ -161,7 +158,6 @@ export interface EndRecord extends FutureFields { readonly type: 'end'; readonly
 export type KnownRecord = PenRecord | ViewRecord | PaperRecord | HostRecord | MediaRecord | SheetRecord | KnownNodeRecord | EndRecord;
 export type NativeRecord = KnownRecord | JsonObject;
 
-// R-W6/text §4.2: positional defaults are explicit; future trailing elements stay untouched.
 export type StoredRun = readonly [string, JsonObject?, ...JsonValue[]];
 export type StoredBlock = readonly [string, number, string, readonly StoredRun[], (number | null)?, ...JsonValue[]];
 export type StoredBlockCarrier = readonly [number, number, number, string, number, string, number | null, readonly JsonValue[]];
@@ -170,8 +166,6 @@ export interface StoredRichText extends FutureFields {
     readonly carriers?: readonly StoredBlockCarrier[];
 }
 
-// R-W17/19/20: the reader brands raw lexemes into the model's ExtBag/PreservedBlock.
-// There is no by-id source registry or dotted-path sidecar beside the document.
 export type ValidatedRecord =
     | { readonly category: 'pen'; readonly record: PenRecord; }
     | { readonly category: 'view'; readonly record: ViewRecord; }
@@ -187,7 +181,7 @@ export interface ValidationRefusal {
     readonly code: 'type' | 'value' | 'range' | 'limit' | 'format';
     readonly field: string;
     readonly reason: string;
-    readonly action: 'read-only' | 'repair'; // only model-defined, content-preserving repairs may use the latter
+    readonly action: 'read-only' | 'repair';
 }
 export type ValidationResult<T> = { readonly ok: true; readonly value: T; }
     | { readonly ok: false; readonly error: ValidationRefusal; };
@@ -196,7 +190,7 @@ export interface RecordContext {
     readonly lineBytes?: number;
     readonly recordsBefore?: number;
     readonly sheetsBefore?: number;
-    readonly isRoot?: boolean; // parent is a sheet; supplied after the reader resolves the parent table
+    readonly isRoot?: boolean;
 }
 
 const COMMON_KEYS = ['type', 'id', 'kind', 'parent', 'order', 'page', 'x', 'y', 'rot', 'locked', 'opacity', 'b'] as const;
@@ -212,7 +206,6 @@ export const NODE_PROPERTY_ORDER = {
     clip: ['w', 'h', 'media', 'time', 'playing', 'autoplay', 'alt'],
     linkcard: ['w', 'h', 'url', 'preview'], embed: ['w', 'h', 'url'], opaque: ['raw'],
 } as const;
-// R-W13: the file's field list minus the model's one default table determines required fields.
 const REQUIRED_NODE_PROPERTIES = new Map(
     Object.entries(NODE_PROPERTY_ORDER).map(([kind, fields]) => [kind,
         fields.filter(field => !Object.prototype.hasOwnProperty.call(NODE_DEFAULTS[kind as keyof typeof NODE_DEFAULTS], field)),
@@ -341,7 +334,6 @@ function control(text: string, ceiling: number): boolean {
 }
 
 function json(value: unknown, depthLimit: number = FORMAT_LIMITS.jsonDepth) {
-    // Iterative, depth-bounded traversal. Unknown keys stay inert, including __proto__/constructor.
     type Frame = { value: unknown; depth: number; keys?: string[]; index: number; };
     const stack: Frame[] = [{ value, depth: 0, index: -1 }];
     while (stack.length) {
@@ -369,7 +361,7 @@ function richText(value: unknown, field: string): number {
     const rt = object(value, field);
     const blocks = array(rt.b, `${field}.b`);
     if (blocks.length < 1 || blocks.length > FORMAT_LIMITS.richTextBlocks) refuse('limit', field, 'Rich text has an invalid block count');
-    let total = blocks.length - 1; // the plain-text projection has a newline between blocks
+    let total = blocks.length - 1;
     const lengths: number[] = [];
     for (const entry of blocks) {
         const initial = total, block = array(entry, field);
@@ -556,7 +548,6 @@ export function validateHeader(value: unknown): ValidationResult<{
         integer(version[0], 'version.major', 1, Number.MAX_SAFE_INTEGER); integer(version[1], 'version.minor', 0, Number.MAX_SAFE_INTEGER);
         if (o.kind !== 'whiteboard' && o.kind !== 'notebook' && o.kind !== 'pdf-ink') refuse('value', 'kind', 'Unknown board kind');
         optional(o, 'fence', string);
-        // records are walked separately; a header parsed from an envelope must not trigger a second full traversal.
         for (const key of Object.keys(o)) if (key !== 'records') json(o[key]);
         return {
             header: o as unknown as NativeHeader, access: version[0] === NATIVE_VERSION[0] ? 'editable' : 'read-only',
@@ -564,15 +555,12 @@ export function validateHeader(value: unknown): ValidationResult<{
         };
     });
 }
-// Untrusted callers must first use W-D3's lexical preflight, BEFORE JSON.parse. This checks parsed
-// data without expanding points/media; context carries the preflight's byte/count observations.
 export function validateRecord(value: unknown, context: RecordContext = {}): ValidationResult<ValidatedRecord> {
     return result(() => {
         if (context.lineBytes !== undefined) integer(context.lineBytes, 'lineBytes', 0, FORMAT_LIMITS.recordBytes);
         if (context.recordsBefore !== undefined) integer(context.recordsBefore, 'recordsBefore', 0, FORMAT_LIMITS.records - 1);
         const o = object(value, 'record');
         const type = string(o.type, 'type', 128);
-        // Cheap allocation limits precede even the bounded JSON walk. Point decoding is deliberately lazy.
         if (type === 'node' && typeof o.pts === 'string' && o.pts.length > FORMAT_LIMITS.pointsChars) refuse('limit', 'pts', 'Point string exceeds 48 MiB');
         if (type === 'host' && Array.isArray(o.pages) && o.pages.length > FORMAT_LIMITS.pdfPages) refuse('limit', 'pages', 'PDF page count exceeds 65,536');
         let validated: ValidatedRecord;

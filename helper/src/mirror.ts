@@ -1,18 +1,3 @@
-// `vault.sync`: copy the vault's instruction and skill files into the vault's
-// working folder, so each CLI picks them up natively, as it would inside the
-// vault itself.
-//
-// This is the only place the helper writes files a browser message chose the
-// names of, so it takes nothing on trust:
-//   • a fixed whitelist — CLAUDE.md, AGENTS.md, .claude/skills/**, .agents/skills/**.
-//     Never a CLI config (opencode.json, .opencode/, .claude/settings*.json,
-//     .mcp.json, .codex/): any of those would hand a vault the power to add
-//     tools, hooks or MCP servers to the agent — code outside the vault;
-//   • text only, per-file and total size caps from the protocol;
-//   • every resolved path must stay under that vault's folder, and no existing
-//     component on the way may be a symlink (one could point anywhere);
-//   • it only ever deletes files it wrote itself (listed in .bme/mirror.json).
-
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { MAX_MIRROR_FILE_BYTES, MAX_MIRROR_TOTAL_BYTES, type MirrorFile } from '../../shared/vaultAgentProtocol.ts';
@@ -24,7 +9,6 @@ const MAX_FILES = 2000;
  *  them out of the places a CLI reads them from; refusing them anywhere costs nothing. */
 const FORBIDDEN_SEGMENTS = new Set(['opencode.json', 'opencode.jsonc', '.opencode', '.mcp.json', '.codex']);
 
-/** Validates a vault-relative mirror path; returns its `/`-separated segments. */
 export function checkMirrorPath(path: unknown): string[] {
     if (typeof path !== 'string' || !path || path.length > 512) throw new BadRequest('mirror path must be a non-empty string');
     if (path.includes('\0') || path.includes('\\') || path.startsWith('/') || /^[A-Za-z]:/.test(path)) throw new BadRequest(`mirror path not allowed: ${path}`);
@@ -39,7 +23,6 @@ export function checkMirrorPath(path: unknown): string[] {
     return segs;
 }
 
-/** Refuses when any existing component between `root` and `target` is not a plain directory/file. */
 function assertNoSymlinks(root: string, segs: string[]): void {
     let cur = root;
     for (let i = 0; i < segs.length; i++) {
@@ -48,7 +31,7 @@ function assertNoSymlinks(root: string, segs: string[]): void {
         try {
             st = lstatSync(cur);
         } catch {
-            return; // nothing further exists yet; mkdir/write create real entries
+            return;
         }
         if (st.isSymbolicLink()) throw new BadRequest(`mirror path crosses a symlink: ${segs.slice(0, i + 1).join('/')}`);
         if (i < segs.length - 1 && !st.isDirectory()) throw new BadRequest(`mirror path crosses a file: ${segs.slice(0, i + 1).join('/')}`);
@@ -70,7 +53,6 @@ function writeAtomic(path: string, text: string): void {
     renameSync(tmp, path);
 }
 
-/** Remove now-empty folders above a deleted file, never climbing out of the skill roots. */
 function pruneEmptyDirs(root: string, segs: string[]): void {
     for (let i = segs.length - 1; i >= 3; i--) {
         const dir = join(root, ...segs.slice(0, i));
@@ -138,7 +120,7 @@ export function syncMirror(sessionsRoot: string, vaultId: unknown, files: unknow
             segs = checkMirrorPath(old);
             assertNoSymlinks(root, segs);
         } catch {
-            continue; // a manifest entry we would not have written: leave it alone
+            continue;
         }
         const target = resolve(root, ...segs);
         if (!isInside(root, target) || !existsSync(target)) continue;

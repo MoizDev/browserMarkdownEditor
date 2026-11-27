@@ -1,6 +1,5 @@
 import type { SessionEntry } from '../utils/documentSessions';
 
-/** The slot a document session keeps its recovery adapter binding in. */
 export const RECOVERY_SESSION_BINDING = Symbol('recovery-session-binding');
 
 export function hasHostedNativeOwner(entry: SessionEntry | undefined, documentId: string): boolean {

@@ -1,13 +1,5 @@
 import React from 'react';
 
-/**
- * Shared props for every inline SVG icon. `size` sets both width & height
- * (default 16); all other SVG attributes (className, style, aria-*, event
- * handlers, …) are spread onto the underlying <svg>. The spread comes after
- * each icon's own `strokeWidth`, so passing one overrides it — the sidebar
- * draws its icons at 1.75, the stroke Obsidian's 18px icons carry (measured
- * off its screenshots: 2.62 device px at 2x on a 1.5 px/unit scale).
- */
 interface IconProps extends React.SVGProps<SVGSVGElement> {
     size?: number;
 }
@@ -28,7 +20,6 @@ export function ChevronLeft({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's pencil: editing a message you already sent (the agent panel). */
 export function Pencil({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -46,7 +37,6 @@ export function ChevronDown({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's circle-alert: a document that could not be read. */
 export function AlertCircle({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -69,8 +59,6 @@ export function FileText({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** A ring-bound notebook: the spiral down the spine is what tells it apart from
- *  FileText at 14px, which is the size the file tree draws it at. */
 export function Notebook({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -144,9 +132,6 @@ export function Trash2({ size = 16, className = "", ...props }: IconProps) {
     );
 }
 
-/** A drawing pin, seen from the side — "keep this one where I can reach it".
- *  `filled` is the pinned state: the same shape, inked in, so a row says which
- *  it is at a glance rather than only on hover. */
 export function Pin({ size = 16, filled = false, ...props }: IconProps & { filled?: boolean }) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -156,7 +141,6 @@ export function Pin({ size = 16, filled = false, ...props }: IconProps & { fille
     );
 }
 
-/** An arrow curling back to where it started — "put this back where it was". */
 export function RotateCcw({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -166,7 +150,6 @@ export function RotateCcw({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** The same arrow, curling the other way — "turn this a quarter clockwise". */
 export function RotateCw({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -249,9 +232,6 @@ export function X({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's plus: a new note in this pane. Not FilePlus — that one is a page
- *  with a plus on it and reads as "add a file to this folder", which is the
- *  file tree's gesture, not the tab strip's. */
 export function Plus({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -261,7 +241,6 @@ export function Plus({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's arrow-left: back through this pane's own history. */
 export function ArrowLeft({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -271,7 +250,6 @@ export function ArrowLeft({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's arrow-right: forward through this pane's own history. */
 export function ArrowRight({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -281,7 +259,6 @@ export function ArrowRight({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's ellipsis: the pane header's "more options" menu. */
 export function MoreHorizontal({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -298,7 +275,6 @@ export function MoreHorizontal({ size = 16, ...props }: IconProps) {
  * version Obsidian ships — so the sidebar reads as the same glyph family.
  * Re-copy rather than hand-edit if Lucide is bumped. */
 
-/** Lucide's square-pen: New note. */
 export function SquarePen({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -308,7 +284,6 @@ export function SquarePen({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's arrow-up-narrow-wide: Change sort order. */
 export function ArrowUpNarrowWide({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -321,7 +296,6 @@ export function ArrowUpNarrowWide({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's gallery-vertical: Auto-reveal current file. */
 export function GalleryVertical({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -332,7 +306,6 @@ export function GalleryVertical({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's chevrons-up-down: Expand all, and the vault switcher. */
 export function ChevronsUpDown({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -342,7 +315,6 @@ export function ChevronsUpDown({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's chevrons-down-up: Collapse all. */
 export function ChevronsDownUp({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -352,7 +324,6 @@ export function ChevronsDownUp({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's folder-closed: the Files tab. */
 export function FolderClosed({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -362,7 +333,6 @@ export function FolderClosed({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's circle-help: Help. */
 export function CircleHelp({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -373,7 +343,6 @@ export function CircleHelp({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's moon: the theme toggle while light — "switch to dark". */
 export function Moon({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -382,7 +351,6 @@ export function Moon({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's sun: the theme toggle while dark — "switch to light". */
 export function Sun({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -399,16 +367,6 @@ export function Sun({ size = 16, ...props }: IconProps) {
     );
 }
 
-/**
- * Obsidian's own sidebar toggle — not in Lucide: a rounded frame with a FILLED
- * bar down its left side. Geometry is a least-squares fit to a 2x screenshot
- * of Obsidian's file-explorer header: supersampled coverage of rounded-rect
- * stroke + fill against the glyph's 47x44 px neighbourhood, residual 1.17 as
- * rounded here (a first guess by eye, x2 y4 w20 h16 with a 3.5-wide bar,
- * scored 471). Scale came from the Lucide search glyph beside
- * it — circle stroke centres 24 px apart for r=8, so 1.5 px/unit, an 18px icon
- * — and the fit held the stroke at exactly 1.75, hence that default here.
- */
 export function SidebarLeft({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -418,8 +376,6 @@ export function SidebarLeft({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's sparkles: the AI agent panel's toggle. */
-/** Lucide's graduation-cap: the agent panel's learning mode. */
 export function GraduationCap({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -441,7 +397,6 @@ export function Sparkles({ size = 16, ...props }: IconProps) {
     );
 }
 
-/** Lucide's square-terminal: the sidebar's terminal button, and the dock's mark. */
 export function SquareTerminal({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -454,9 +409,6 @@ export function SquareTerminal({ size = 16, ...props }: IconProps) {
 
 export const BookOpen = ({ size = 16, ...props }: IconProps) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M12 5v15M12 5C9 3 5 3 2 4v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Z"/></svg>;
 
-/** Word emphasis: three lines of text whose first stretch is heavy, the way the
- *  mode paints each word. Replaces a bold "W" + "e" text glyph that read as a
- *  word cut off ("We") in the pane header. */
 export function WordEmphasis({ size = 16, ...props }: IconProps) {
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>

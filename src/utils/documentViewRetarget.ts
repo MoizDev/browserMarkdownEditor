@@ -8,7 +8,6 @@ export function subscribeDocumentViewRetarget(listener: (from: string, to: strin
     return () => { listeners.delete(listener); };
 }
 
-/** Flush pending pane state before moving its exact vault-scoped record. */
 export function retargetDocumentViewRecords(from: string, to: string): void {
     if (from === to) return;
     for (const listener of [...listeners]) {

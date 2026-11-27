@@ -1,5 +1,3 @@
-// Record build bytes only after checking its entire tracked product source tree
-// against a real Git commit (or the one exact, named missing-wasm source patch).
 import { execFileSync } from 'node:child_process';
 import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';

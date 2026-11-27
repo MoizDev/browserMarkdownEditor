@@ -11,7 +11,6 @@ export interface TextRange { start: TextPoint; end: TextPoint }
 export function compareTextPoints(a: TextPoint, b: TextPoint): number {
     return a.page - b.page || a.offset - b.offset;
 }
-/** Half-open in physical-page and canonical UTF-16 order, in either drag direction. */
 export function selectionRange(selection: PdfSelection): TextRange {
     return compareTextPoints(selection.anchor, selection.focus) <= 0
         ? { start: selection.anchor, end: selection.focus }
@@ -28,7 +27,6 @@ export function pointForCharacter(page: number, charU16: Uint32Array, index: num
     const units = cp === undefined ? 0 : cp > 0xffff ? 2 : 1;
     return { page, offset: side === 'after' ? Math.min(text.length, start + units) : start, affinity: side };
 }
-/** A Unicode word/non-word segment containing the offset in one canonical line. */
 export function wordRange(text: string, lineFrom: number, lineTo: number, offset: number, locale?: string): { from: number; to: number } {
     const from = Math.max(0, Math.min(text.length, Math.trunc(lineFrom)));
     const to = Math.max(from, Math.min(text.length, Math.trunc(lineTo)));

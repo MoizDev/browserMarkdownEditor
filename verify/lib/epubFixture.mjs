@@ -1,9 +1,5 @@
 import { crc32 } from 'node:zlib';
 
-/** Original, deterministic EPUB3 fixture: one visible XHTML chapter, no remote assets.
- * Kept beside the run rather than borrowing a user's book to exercise its opaque frame.
- * @returns {Buffer}
- */
 export function opaqueFrameEpub() {
     const entries = [
         ['mimetype', 'application/epub+zip'],

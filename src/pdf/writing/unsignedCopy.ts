@@ -60,8 +60,6 @@ async function load(source: Blob, ctx: WorkerContext): Promise<{ doc: PDFDocumen
     return { doc, bytes };
 }
 
-// Stream dictionaries are traversed, but compressed stream bytes (including the
-// eventual signed-source attachment) are never interpreted as outer objects.
 function walkOuter(doc: PDFDocument, visit: (value: PDFObject, parent?: PDFObject) => void): void {
     const seen = new Set<PDFObject>(), todo = doc.context.enumerateIndirectObjects().map(([, value]) => ({ value, parent: undefined as PDFObject | undefined }));
     while (todo.length) {
@@ -76,7 +74,6 @@ function walkOuter(doc: PDFDocument, visit: (value: PDFObject, parent?: PDFObjec
     }
 }
 
-/** The admitted form is deliberately narrow: no non-signature content is flattened. */
 function flattenSignatures(doc: PDFDocument, sourceSize: number): void {
     if (doc.catalog.has(key('StructTreeRoot')) || doc.catalog.has(key('MarkInfo')) || doc.catalog.has(key('Perms'))) refuse('tagged or certified PDF');
     const acro = doc.catalog.lookup(key('AcroForm'));

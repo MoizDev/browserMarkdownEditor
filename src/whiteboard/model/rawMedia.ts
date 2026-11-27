@@ -35,10 +35,6 @@ function visitRun(head: string, length: number, ring: Uint8Array | undefined, po
     return seen;
 }
 
-// R-W25/R-W37: escaped string/key discovery covers filenames, URLs and suffixed
-// ids. Long hex runs also contribute their first/last 64 characters (cafe<hash>
-// is still a dependency). A 64-byte ring avoids materializing long strings or
-// allocating a sliding substring per character; false positives keep data safe.
 function* scanRawMediaSteps(raw: RawJson, visit: (id: MediaId) => void): Generator<void, void> {
     let nextYield = 4096;
     let seen: Set<MediaId> | undefined;
@@ -139,8 +135,6 @@ export function visitRichTextRaw(text: RichText | null, visit: (raw: RawJson) =>
     for (const raw of richTextRawValues(text)) if (raw !== null) visit(raw);
 }
 
-// The reader can use this before sample admission: these are precisely the node
-// fields that retain unknown content, not a temporary original-line/source slice.
 export type NodeRawCarrier = Pick<OpaqueNode, 'kind' | 'ext' | 'raw'>
     | Pick<TextNode | StickyNode, 'kind' | 'ext' | 'text'>
     | Pick<FigureNode | ConnectorNode, 'kind' | 'ext' | 'label'>

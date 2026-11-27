@@ -38,9 +38,6 @@ for (const shape of shapes) {
         await seed(page, name, files);
         const before = await counts(page);
         await pick(page, name);
-        // Five seconds reproduces the three known small-vault stalls; this is
-        // an observation window, not a timing performance target. The large
-        // fixture gets a larger functional deadline, never a relaxed manifest.
         item.opened = await opened(page, name, shape.startsWith('10000-') ? 60000 : 5000);
         item.counts = await counts(page);
         item.listings = item.counts.started - before.started;

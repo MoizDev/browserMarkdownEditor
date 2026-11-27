@@ -6,6 +6,5 @@ export interface KeyboardNavigationPriority {
   scroll(key: PagedScrollKey): boolean
   nudge(direction: string, coarse: boolean): boolean
   pan(direction: string, coarse: boolean): boolean
-  /** Space held with an arrow: pages the camera by one viewport in that direction (K§10.5). */
   page?(direction: string): boolean
 }

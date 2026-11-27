@@ -32,8 +32,6 @@ try {
     result.actualDpr = actual.actualDpr;
     result.buildManifestSha256 = expected.build.manifestSha256;
     result.stage = 'picture-comparison';
-    // A deliberately changed DPR is NOT rejected in preparation: the same A comparison
-    // below must reject its actual browser-produced pixels and write their difference.
     for (const name of ['note', 'pdf', 'drawing']) {
         const a = expected.frames.find(frame => frame.name === name);
         const b = actual.frames.find(frame => frame.name === name);

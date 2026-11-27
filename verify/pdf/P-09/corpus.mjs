@@ -1,4 +1,3 @@
-// Sequential real-app runs: one browser at a time.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';

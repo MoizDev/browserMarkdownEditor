@@ -5,7 +5,6 @@ import { nestedInkLod } from './inkLodNested';
 import { nestedInkLodGroups, type DerivedLod } from './inkLodGroups';
 import type { InkCoverageRequest } from './geometryProtocol';
 
-/** A chunk's coverage at the coarsest certified level of detail its device scale allows, or its fine coverage. */
 export async function computeInkLod(request: InkCoverageRequest, chunkCount: number, context: WorkerContext,
     memory: (bytes: number) => void): Promise<{ readonly coverage: InkCoverage; readonly level: 'fine' | 'coarse' }> {
     if (!request || !Number.isSafeInteger(chunkCount) || chunkCount < 1) throw new TypeError('Invalid ink LOD descriptor');

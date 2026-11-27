@@ -5,7 +5,6 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    /* The minimap sizes itself to the narrowest panes by this container (nativeMinimap.css). */
     container-type: inline-size;
 }
 
@@ -16,10 +15,6 @@
 
 .board-viewer-surface { overflow: hidden; }
 .board-viewer-surface canvas { display: block; }
-/* The eraser's reach, as a ring round the pointer: 8 CSS px, the radius input/basicTools.ts eraserRadiusCss asks with for a
-   mouse or a pen. A dark line over a light one, so it shows on paper, on ink and in dark view alike. The attribute is set
-   on the board's input surface (input/attach.ts); an inline cursor there (the wait before the first frame, the zoom hold)
-   still outranks it. */
 [data-board-cursor="eraser"] {
     cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'%3E%3Ccircle cx='11' cy='11' r='8' fill='none' stroke='%23fff' stroke-opacity='.9' stroke-width='3'/%3E%3Ccircle cx='11' cy='11' r='8' fill='none' stroke='%23222' stroke-width='1.25'/%3E%3C/svg%3E") 11 11, crosshair;
 }
@@ -34,16 +29,11 @@
     border-radius: 6px;
     background: var(--background-secondary);
     color: var(--text-normal);
-    /* A notice tells, it does not take input: a click on its text reached no board, so focus fell to the body and the
-       tool keys died (measured on canvas2d, where the GPU notice covers the bottom edge). Its Dismiss button still works. */
     pointer-events: none;
 }
 
 .board-viewer-notice button { pointer-events: auto; }
 
-/* A notice the person can put away: text and its Dismiss in one row, the button kept to its own width. Where the row
-   has less than 12em for the text (a pane of three side by side in a narrow window), Dismiss goes under it instead:
-   beside it the text was set a word a line and "picture" ran under the button (measured in a 170px pane). */
 .board-viewer-notice-dismissible {
     display: flex;
     flex-wrap: wrap;
@@ -55,8 +45,6 @@
 .board-viewer-notice-dismissible > span { flex: 1 1 12em; min-width: 0; overflow-wrap: anywhere; }
 .board-viewer-notice-dismissible > button { flex: none; }
 
-/* Every notice the board raised, in one box, newest last, each row with its own Dismiss and a hairline between rows.
-   Kept to half the board's height, scrolling inside, so a long run of them never covers the tool strip above. */
 .board-viewer-notices {
     display: flex;
     flex-direction: column;
@@ -70,7 +58,6 @@
     border-top: 1px solid var(--background-modifier-border);
 }
 
-/* Renderer status: display only, so it never takes pointer events from the board or its input. */
 .board-paint-status { position: absolute; z-index: 2; pointer-events: none; }
 .board-paint-status-loading {
     inset: 0;
@@ -81,7 +68,6 @@
     color: var(--text-muted);
 }
 .board-paint-status-pending {
-    /* The app's status pill (index.css .status-bar): raised surface, hairline border, muted 12px text. */
     right: 12px;
     bottom: 10px;
     padding: 4px 10px;
@@ -101,44 +87,26 @@
     background: var(--background-primary-alt);
     color: var(--text-error, var(--text-normal));
     font-size: 12px;
-    /* At most three lines (3 x 18px, 18px of padding, 2px of border) and an ellipsis: the notice stands above this box at
-       a height that has to be known (below). Scrolled instead, half of a fourth line showed in the bottom padding. */
     line-height: 18px;
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 3;
     overflow: hidden;
 }
-/* Bottom-right is the chrome's zoom and minimap corner, and above it one column, bottom up: the app's status pill
-   (index.css .status-bar.is-lifted: 62px up over the bottom row, 212px over an open minimap, 28px tall), this board's paint
-   status ("Updating…", or a picture that failed), then the notice. Each starts 8px above the one below, and each keeps its
-   place whether or not the ones below are showing, so nothing moves for a passing pill. The paint status stands at 110px,
-   8px over both the pill (top 90px) and the tool lock (chrome.css .board-chrome-tool-lock, 66px to 102px up, at the bar's
-   left end, under which a failure's full-width box would run); the notice at 110 + 28 + 8 = 146px. At the pill's own height
-   "Updating…" lay exactly under the app's status pill, hidden by it (measured: both at 712 to 740px, right edge 1384px, a
-   note beside the board keeping the pill up); the notice moved up from 98px to stay over it. The minimap rules come later and win. */
 .board-viewer-host:has(.board-chrome-overlay) .board-paint-status-pending { right: 16px; bottom: 110px; }
 .board-viewer-host:has(.board-chrome-overlay) .board-paint-status-failed { bottom: 110px; }
 .board-viewer-host:has(.board-chrome-overlay) .board-viewer-notice { bottom: 146px; }
 .board-viewer-host:has(.native-minimap) .board-paint-status-pending,
 .board-viewer-host:has(.native-minimap) .board-paint-status-failed { bottom: 248px; }
 .board-viewer-host:has(.native-minimap) .board-viewer-notice { bottom: 284px; }
-/* A failure's box is taller than "Updating…" and wraps in a narrow pane, so the notice clears its three lines instead of the
-   pill's one (110 + 74 + 8). At the pill's height the notice covered the first line of a two-line failure (measured: 436px
-   pane, failure 694 to 744px, notice 634 to 708px). */
 .board-viewer-host:has(.board-chrome-overlay):has(.board-paint-status-failed) .board-viewer-notice { bottom: 192px; }
 .board-viewer-host:has(.native-minimap):has(.board-paint-status-failed) .board-viewer-notice { bottom: 330px; }
 
-/* The space the chrome's bottom edge takes, which the docked style panel stops above (chrome.css .board-chrome-pen): the
-   column above, through the paint status (146px, 284px over a minimap), and through a notice when one shows (its 50px and
-   8px over its place). The more specific combinations come last. */
 .board-viewer-host:has(.board-chrome-overlay) { --board-chrome-reserve: 146px; }
 .board-viewer-host:has(.board-viewer-notice) { --board-chrome-reserve: 204px; }
 .board-viewer-host:has(.native-minimap) { --board-chrome-reserve: 284px; }
 .board-viewer-host:has(.native-minimap):has(.board-viewer-notice) { --board-chrome-reserve: 342px; }
 
-/* Stacked bottom row (ViewerHost's CHROME_STACK_BELOW_PX): the zoom row tops out at 112px, so the pill stands at 120px
-   and an open minimap's at 270px; the same column stands above it. */
 .board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-paint-status-pending,
 .board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-paint-status-failed { bottom: 156px; }
 .board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-viewer-notice { bottom: 192px; }
@@ -152,8 +120,6 @@
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) { --board-chrome-reserve: 342px; }
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap):has(.board-viewer-notice) { --board-chrome-reserve: 400px; }
 
-/* The helper buttons (Exit pen mode, Back to content) stack in one column under the top bar, top left, as tldraw does.
-   Their hidden state must win over the button's own display, or a hidden button still takes its row. */
 .board-helper-stack {
     position: absolute;
     left: 8px;
@@ -202,8 +168,6 @@
     order: 1;
 }
 
-/* The picture's own crop (NativePictureCrop): drawn over the board where the picture is, its whole original faded and the kept
-   window bright. The frame turns with the picture; the bar above it does not, so it is a sibling placed in the surface's pixels. */
 .crop-live {
     position: absolute;
     width: 0;
@@ -288,13 +252,10 @@
 .crop-handle-sw { left: 0; top: 100%; cursor: nesw-resize; }
 .crop-handle-w { left: 0; top: 50%; cursor: ew-resize; }
 
-/* NativePictureCrop: the board's overlay (its selection frame and turn handle) is not drawn beside the crop's own handles. */
 .board-viewer-host[data-cropping] .board-viewer-overlay {
     visibility: hidden;
 }
 
-/* The crop bar and the picture toolbar float above the picture's top edge, centred on it, in the same chrome as the other bars.
-   Where they sit is decided by floatingBar.ts, clear of the pane's edges and of the chrome. */
 .crop-bar,
 .picture-toolbar {
     position: absolute;
@@ -314,9 +275,6 @@
 
 .crop-bar {
     padding: 4px 6px;
-    /* Its aspect menu is a native control: in the dark theme its list opened light over the dark bar. It takes the theme the
-       bar is drawn in: the app's (absent = dark), or a drawing's own board theme (CanvasPane `data-board-theme`), which can
-       differ from it and is what --board-bar-bg follows. */
     color-scheme: dark;
 }
 
@@ -347,8 +305,6 @@
     border-radius: 6px;
 }
 
-/* Drawn like the app's own sliders (index.css .settings-slider): the native track stayed white on the dark bar whatever its
-   color-scheme, and a filled part shows how far in it is zoomed. */
 .crop-zoom .crop-range {
     -webkit-appearance: none;
     appearance: none;

@@ -15,18 +15,13 @@ export interface EmptyNativeOptions {
     readonly ui?: Readonly<UiBlock>;
     readonly view?: Readonly<ViewFlags>;
     readonly sheetName?: string;
-    /** A PDF ink board never invents a pristine source or physical-page geometry. */
     readonly pdfHost?: Extract<HostBlock, { kind: 'pdf-ink' }>;
-    /** The first sheet's id, for a board that must come out the same each time it is made (a plain PDF's ink). */
     readonly sheetId?: SheetId;
 }
 function value<T>(result: WriteResult<T>): T {
     if (!result.ok) throw new Error(`Cannot create an empty native board: ${result.error.reason}`);
     return result.value;
 }
-/** New-document route only. Callers must verify the original bytes are empty;
- * parse/validation failures must NEVER be replaced by these defaults. The same
- * format encoders and line assembler as normal saves produce the fence/footer. */
 export function createEmptyNativeBytes(kind: BoardKind, options: EmptyNativeOptions = {}): Blob {
     const host: HostBlock = kind === 'whiteboard' ? { kind }
         : kind === 'notebook' ? { kind, paper: { ...options.paper ?? DEFAULT_PAPER }, ext: null }

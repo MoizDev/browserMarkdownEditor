@@ -16,14 +16,11 @@ interface RootSnapshot { readonly node: Readonly<Node>; readonly pose: WorldPose
 interface Fingerprint { readonly id: NodeId; readonly values: readonly (readonly [string, unknown])[] }
 export interface TranslationPreview { readonly ops: readonly Op[]; readonly delta: Vec2 }
 
-// This plan is immutable with respect to the document: each preview is rebuilt
-// from pointer-down records, and a changed root or ancestor invalidates it.
 export class TranslationPlan {
     private readonly roots: readonly RootSnapshot[];
     private readonly fingerprints: readonly Fingerprint[];
     private readonly host: BoardDoc['host'];
     private cancelled = false;
-    // Every node this plan moves: the selection and everything inside it. A bound end whose target is outside this set is detached.
     private readonly moving: ReadonlySet<NodeId>;
     constructor(private readonly doc: BoardDoc, ids: readonly NodeId[], private readonly geometry: ChangeGeometry) {
         const selected = new Set(ids), fingerprints = new Map<NodeId, Fingerprint>(), roots: RootSnapshot[] = [];

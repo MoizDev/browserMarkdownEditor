@@ -1,4 +1,3 @@
-// Charter §00: one visible real-app check, with pictures but no evidence files.
 import { readFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';

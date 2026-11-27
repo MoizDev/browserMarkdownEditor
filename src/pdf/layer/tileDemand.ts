@@ -7,10 +7,8 @@ import type {
 } from '../../platform/render';
 import { pdfVariantRevision } from '../fonts/profiles';
 
-/** A request is geometry and identity only. The pool owns transport and cancellation. */
 export interface PdfTileRequest {
     readonly key: TileKey;
-    /** `tileKeyString(key)`, built once when the tile is planned: the cache, the plan's set and the mirror all index by it. */
     readonly text: string;
     readonly page: number;
     readonly tile: RasterTile;
@@ -24,10 +22,8 @@ export interface PdfDemandInput {
     readonly token: RenderToken;
     readonly source: 'outer' | 'original';
     readonly variant: 'plain' | 'emphasis';
-    /** A page may remain plain while its emphasis proof is pending or unavailable. */
     readonly pageVariant?: (page: number) => 'plain' | 'emphasis';
     readonly fontEpoch?: number;
-    /** Stable full page-geometry identity, including rotations and UserUnit (contracts C1.3). */
     readonly geometryDigest: string;
     readonly stack: Readonly<PageStack>;
     readonly viewport: Readonly<Rect>;
@@ -39,7 +35,6 @@ export interface PdfDemandInput {
     readonly motionScaleOverride?: TileScale;
     readonly velocity: Readonly<{ x: number; y: number }>;
     readonly direction: Readonly<{ x: number; y: number }>;
-    /** True only when current, drawable pixels cover this entire page-local region. */
     covered(page: number, worldRegion: Readonly<Rect>): boolean;
 }
 
@@ -55,11 +50,6 @@ function intersection(a: Readonly<Rect>, b: Readonly<Rect>): Rect | null {
     return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null;
 }
 
-/**
- * Only enumerate the viewport and its bounded travel horizon, never a whole
- * giant-page grid. Tile keys deliberately omit camera epoch: useful late tiles
- * survive a pan, but never a source/session/byte-generation change.
- */
 export function planPdfTileDemand(input: PdfDemandInput): PdfDemandSet {
     const { stack, viewport } = input;
     if (!stack.rects.length || viewport.width <= 0 || viewport.height <= 0) return { requests: [] };
@@ -105,7 +95,6 @@ export function planPdfTileDemand(input: PdfDemandInput): PdfDemandSet {
         const area = intersection(stack.rects[index], prefetch);
         if (area) add(index, area, scale, motionScale ? 'motion' : 'exact');
     }
-    // Nearby whole-page previews are capped independently of exact visible work.
     for (const { index } of pages.slice(0, 12)) {
         const rect = stack.rects[index];
         const low = lowCoveragePlan(rect.width, rect.height, input.fitWidthZoom, input.nominalDpr);

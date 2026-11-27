@@ -9,8 +9,6 @@ export type CubicBoundaryResult = Readonly<{ status: 'pending' | 'hit' | 'miss' 
 export interface CubicBoundaryLimits { readonly maxCommands?: number; readonly maxNodes?: number; readonly maxWork?: number }
 const PENDING: CubicBoundaryResult = Object.freeze({ status: 'pending' });
 
-/** Exact line predicates and rational-polynomial cubic root certificates.
- * Every operation is resumable; arithmetic and work limits remain explicit. */
 export function createCubicBoundaryJob(paths: readonly (readonly PathOp[])[], query: Vec2, localToSurface: Affine,
     limits: CubicBoundaryLimits = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): CubicBoundaryResult; cancel(): void } {
     const maxCommands = limits.maxCommands ?? 8192, maxNodes = limits.maxNodes ?? 131072, maxWork = limits.maxWork ?? 1000000;

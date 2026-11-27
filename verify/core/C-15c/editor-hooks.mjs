@@ -55,7 +55,6 @@ async function runArm(browser, arm, identity, reportDir) {
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    // No font/CDN/helper traffic leaves this local run.
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(url).origin
         ? route.continue() : route.abort());
     await page.addInitScript(() => {
@@ -80,7 +79,6 @@ async function runArm(browser, arm, identity, reportDir) {
             const close = stream.close.bind(stream);
             stream.close = async (...closeArgs) => {
                 const result = await close(...closeArgs);
-                // Count only a successful native close, after its atomic swap.
                 if (path) writes.completed[path] = (writes.completed[path] || 0) + 1;
                 return result;
             };
@@ -112,8 +110,6 @@ async function runArm(browser, arm, identity, reportDir) {
         for (const [name, original] of [['Plain', plain], ['Mixed', mixed]]) {
             await page.locator('.tree-item').filter({ hasText: new RegExp(`^${name}$`) }).click();
             const content = page.locator('.cm-content:visible');
-            // A row click reads asynchronously. An old note's still-mounted
-            // contenteditable=false is not evidence that this note opened.
             await content.locator('.cm-line').filter({ hasText: original.split('\n')[0] }).waitFor();
             await page.waitForFunction(() => document.querySelector('.cm-content')?.getAttribute('contenteditable') === 'false');
             if (benchmark) {
@@ -122,8 +118,6 @@ async function runArm(browser, arm, identity, reportDir) {
             }
             await page.keyboard.press('Meta+e');
             await page.waitForFunction(() => document.querySelector('.cm-content')?.getAttribute('contenteditable') === 'true');
-            // Click prose, not the content box's centre (which is the picture
-            // in Mixed). Its own selection handlers legitimately take focus.
             await content.locator('.cm-line').filter({ hasText: /^Last line\.$/ }).click();
             await page.keyboard.press('Meta+ArrowRight');
             assert.equal(await content.evaluate(el => document.activeElement === el), true, 'the editable note must hold the keyboard');
@@ -179,8 +173,6 @@ async function runArm(browser, arm, identity, reportDir) {
                     expectedCloses: closeTarget.count, completedCloses: 0, closePolls: 0,
                     readAttempts: 0, notReadableRetries: 0, passed: false, harnessFault: null, actual: null };
                 const deadline = performance.now() + 10000;
-                // Mirror readWitness's completed-close precondition: do not
-                // inspect a directory entry while close() is swapping it.
                 while ((probe.completed[closeTarget.path] || 0) < closeTarget.count) {
                     witness.closePolls++;
                     if (performance.now() >= deadline || probe.errors.length) {
@@ -200,9 +192,8 @@ async function runArm(browser, arm, identity, reportDir) {
                         const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('counter-vault');
                         witness.actual = await (await (await dir.getFileHandle(name + '.md')).getFile()).text();
                         witness.passed = witness.actual === expected;
-                        return witness; // A byte mismatch is not polled away.
+                        return witness;
                     } catch (error) {
-                        // Never retry NotFoundError, or any error from the app.
                         if (error.name !== 'NotReadableError') throw error;
                         if (witness.notReadableRetries === 3) {
                             witness.harnessFault = 'not-readable-retry-budget';
@@ -224,8 +215,6 @@ async function runArm(browser, arm, identity, reportDir) {
                 assert.deepEqual(await page.locator('.cm-image-widget img').evaluate(img => [img.naturalWidth, img.naturalHeight]), [120, 40]);
             }
             await page.evaluate(() => document.fonts.ready);
-            // Object URLs are intentionally per context/origin. Their bytes and
-            // loaded dimensions are checked separately; their random IDs are not DOM parity.
             result.fixtures[name].dom = await content.evaluate(el => el.innerHTML.replace(/blob:[^"\s]+/g, 'blob:object-url'));
             await page.screenshot({ path: join(reportDir, `${kind}-${name}.png`), animations: 'disabled', caret: 'hide' });
         }
@@ -246,8 +235,6 @@ async function runArm(browser, arm, identity, reportDir) {
         }
         return result;
     } catch (error) {
-        // Every user-visible/hand-count assertion is a product failure. Only
-        // explicitly tagged byte-identity/transport failures remain INVALID.
         result.observation = observation.snapshot();
         result.writeProbe = await page.evaluate(() => window.__c15WriteProbe).catch(() => null);
         result.pageErrors = errors;

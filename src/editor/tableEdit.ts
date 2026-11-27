@@ -23,50 +23,13 @@ import type { ColumnAlign, RowSpan, TableLayout } from './tableModel';
 // must stay that way.
 import { restoreRenderedCell, tableModelOf } from './tableWidget';
 
-/* ── Editing a table through its cells ────────────────────────────────────
- *
- * Every cell of a rendered table is a contenteditable="plaintext-only" island
- * (tableWidget.ts), and this module is what happens inside one: the keyboard
- * contract, the write-back, the row and column commands, and the cell's own
- * context menu.
- *
- * Two rules run through all of it.
- *
- * WRITE THROUGH, NEVER BUFFER. Every input event dispatches a document change
- * immediately, so the document stays the single source of truth and autosave,
- * ⌘S, vault search, the graph, tab switching and pane unmount all keep working
- * with no new code. There is nowhere safe to flush a buffered edit FROM: a pane
- * unmount destroys the widget, and destroy() runs inside a CodeMirror update
- * where dispatching throws.
- *
- * SURGICAL, NEVER RECONSTRUCTED. A write replaces the narrowest span that
- * actually changed — one cell, one line, one segment per line. Nothing here
- * ever rewrites a table the user already has, which is what makes their
- * hand-aligned padding, their alignment colons and their `\|` escapes survive
- * an edit to the cell beside them byte for byte. Rebuilding from a parsed grid
- * would also DELETE data: a body row with more cells than the header is
- * truncated on render, and a serializing writer would write that truncation
- * back to the file on the first keystroke.
- *
- * The session is module-level rather than per-pane because it is per-DOCUMENT
- * state that outlives any React pane: the widget's handlers are attached to an
- * element CodeMirror pools and re-dresses, and anything they reach has to be
- * stable for the app's life.
- */
-
-/** The cell currently being typed in, if any. One at a time, by construction:
- *  focus is what starts a session and losing it is what ends one. */
 interface Session {
     dom: HTMLElement;
     view: EditorView;
     cell: HTMLElement;
-    /** Rendered indices — the header is row 0 and the delimiter is not a row. */
     row: number;
     col: number;
-    /** The table source this session's next dispatch will produce. Published
-     *  BEFORE the dispatch; see publishExpected. */
     expected: string;
-    /** Caret offset within the cell's text, for the focus repair below. */
     offset: number;
 }
 let session: Session | null = null;
@@ -75,28 +38,12 @@ export function activeCellSession(): { dom: HTMLElement; expected: string } | nu
     return session ? { dom: session.dom, expected: session.expected } : null;
 }
 
-/**
- * How this module tells the user something failed — a refused clipboard read in
- * a cell, and nothing else today. Wired ONCE by App to `tell`. A module-level
- * setter, not a prop or a facet: it must be stable for the app's life (a
- * widget's handlers outlive the pane that built them) and src/editor/ must not
- * learn about React. Defaults to a console.warn so a caller that runs before
- * App mounts is never silent.
- */
 let notify: (message: string) => void = (message) => { console.warn(message); };
 
 export function setTableNotify(next: (message: string) => void): void {
     notify = next;
 }
 
-/**
- * Where this table sits in the CURRENT document.
- *
- * Never a remembered position: the widget knows its own contents and not where
- * they are, and by the time a key is pressed the document above it may have
- * moved. posAtDOM throws for a detached node, which is the same treatment
- * imageWidget's embedAt gives it.
- */
 function locate(view: EditorView, dom: HTMLElement): TableLayout | null {
     let pos: number;
     try {
@@ -107,7 +54,6 @@ function locate(view: EditorView, dom: HTMLElement): TableLayout | null {
     return parseTableLayout(view.state.doc, pos);
 }
 
-/** The table's rendered shape, read off the widget's own model. */
 function shapeOf(dom: HTMLElement): { rows: number; columns: number } | null {
     const model = tableModelOf(dom);
     return model ? { rows: model.cellText.length, columns: model.columns } : null;
@@ -117,14 +63,6 @@ function cellElement(dom: HTMLElement, row: number, col: number): HTMLElement | 
     return dom.querySelector(`.cm-table-cell[data-row="${row}"][data-col="${col}"]`);
 }
 
-/* ── The caret, inside a cell ─────────────────────────────────────────────
-   CodeMirror's own caret is not drawn here — view.hasFocus is false while a
-   cell holds focus, so .cm-cursor stays hidden and there is no double caret.
-   What shows is the browser's native caret, which drawSelection's own theme
-   restores for any focused element inside .cm-content. So all this code has to
-   do is keep a DOM Range in the right place. */
-
-/** How many characters into the cell a DOM position is. */
 function offsetOf(cell: HTMLElement, node: Node, offset: number): number {
     const measure = document.createRange();
     measure.selectNodeContents(cell);
@@ -164,8 +102,6 @@ function placeCaret(cell: HTMLElement, offset: number): void {
     selection?.addRange(range);
 }
 
-/** Put the caret where a horizontal coordinate points, so arrowing down into a
- *  table lands under the column the caret was already in. */
 function placeCaretAtX(cell: HTMLElement, x: number): void {
     const rect = cell.getBoundingClientRect();
     const at = Math.min(Math.max(x, rect.left + 1), Math.max(rect.left + 1, rect.right - 1));
@@ -180,31 +116,12 @@ function placeCaretAtX(cell: HTMLElement, x: number): void {
     placeCaret(cell, (cell.textContent ?? '').length);
 }
 
-/**
- * Put focus back in the cell after a write — the MECHANISM, not a safety net.
- *
- * Measured: a dispatch that changes the table's source blurs the focused cell
- * to BODY, even though the <td> element is the same node and is still
- * connected and updateDOM returned true. Chromium blurs it during CodeMirror's
- * re-attach. Without this repair the table is one you can type exactly one
- * character into: the first keystroke lands, focus goes to the body, and every
- * one after it goes nowhere. (Re-measured in this app's real extension stack:
- * with the repair, a five-character burst reaches the document and the file;
- * without it, only the first character does.)
- */
 function repairFocus(current: Session): void {
     if (document.activeElement === current.cell) return;
-    // The cell can genuinely be gone: typing `-` into every header cell makes
-    // the header row itself a valid separator line, which parseGrid rejects by
-    // design, so the whole table stops being decorated and the widget is
-    // destroyed mid-write-back. Focusing a detached node would silently do
-    // nothing; saying so is better than relying on that.
     if (!current.cell.isConnected) return;
     current.cell.focus({ preventScroll: true });
     placeCaret(current.cell, Math.min(current.offset, (current.cell.textContent ?? '').length));
 }
-
-/* ── Beginning and ending a session ──────────────────────────────────────── */
 
 function beginCellEdit(view: EditorView, dom: HTMLElement, cell: HTMLElement): void {
     const row = Number(cell.dataset.row);
@@ -213,16 +130,8 @@ function beginCellEdit(view: EditorView, dom: HTMLElement, cell: HTMLElement): v
     const layout = locate(view, dom);
     if (!layout) return;
 
-    // The focused cell shows its RAW SOURCE — `a \| b`, not the unescaped
-    // `a | b` the rendered cell shows. That is what the rest of the live
-    // preview already does (put the caret on a bold word and the `**` appear),
-    // applied at cell granularity, and it is what makes an untouched cell a
-    // byte-identical no-op on the way out.
     const span = layout.rows[row]?.cells[col];
     const raw = span ? view.state.sliceDoc(span.from, span.to) : '';
-    // Only when it differs — the common case is a cell with no inline markdown,
-    // where rewriting the text node would throw away the caret the click just
-    // placed and drop it at the end of the cell instead.
     if ((cell.textContent ?? '') !== raw) {
         cell.textContent = raw;
         placeCaret(cell, raw.length);
@@ -235,11 +144,6 @@ function beginCellEdit(view: EditorView, dom: HTMLElement, cell: HTMLElement): v
         offset: caretOffset(cell),
     };
 
-    // Park the document selection on the table's own start, so every other
-    // reader of state.selection sees something sane while the real caret is in
-    // a cell. Legal because a boundary is never "strictly inside", and safe
-    // because CodeMirror does not move the DOM selection while focus is off the
-    // contentDOM.
     const main = view.state.selection.main;
     if (!main.empty || main.from !== layout.from) {
         view.dispatch({ selection: { anchor: layout.from } });
@@ -255,26 +159,9 @@ export function endCellEdit(): void {
     restoreRenderedCell(ending.dom, ending.cell);
 }
 
-/**
- * Every dispatch that changes this table's source WHILE A SESSION IS LIVE
- * publishes its expected result first.
- *
- * updateDOM refuses the session's own element to any widget whose text is not
- * the one this edit just wrote. During the dispatch the source has changed but
- * `expected` would still hold the previous value, so the guard fires, CodeMirror
- * finds no reusable tile, builds a fresh one through toDOM, and destroys the
- * old one — which endCellEdit turns into the cell being torn out from under the
- * caret mid-word.
- *
- * The structural commands do NOT use this. They end the session instead: a
- * published `expected` sends updateDOM down its "our own write-back, touch
- * nothing" branch, and a table that just gained a row would never be redrawn.
- */
 function publishExpected(dom: HTMLElement, next: string): void {
     if (session && session.dom === dom) session.expected = next;
 }
-
-/* ── The write-back ──────────────────────────────────────────────────────── */
 
 function writeBack(): void {
     const current = session;
@@ -285,13 +172,6 @@ function writeBack(): void {
     const { text, map } = escapeNewPipes(raw);
     let offset = caretOffset(cell);
     if (text !== raw) {
-        // Escaped BEFORE the dispatch, so the DOM and the document agree —
-        // which is what makes the identity check below exact. Only what the
-        // reader can undo by typing goes in here: `|` became `\|` because they
-        // typed a `|`, and a pasted newline became a space. The trailing-
-        // backslash guard is deliberately NOT part of this (see `written`
-        // below) — it is not something a keystroke can take back, so a cell
-        // holding it could not be edited out of that state at all.
         cell.textContent = text;
         offset = map(offset);
         placeCaret(cell, offset);
@@ -302,8 +182,6 @@ function writeBack(): void {
     if (!layout) return;
     if (!layout.rows[current.row]) return;
 
-    // A cell the source does not back — a body row shorter than the header,
-    // which renders as empty.
     if (current.col >= layout.rows[current.row].cells.length) {
         layout = widenRow(view, current.dom, layout, current.row);
         if (!layout) return;
@@ -314,60 +192,16 @@ function writeBack(): void {
     const span = layout.rows[current.row]?.cells[current.col];
     if (!span) return;
 
-    // TRIMMED on the way into the document, though not in the DOM.
-    //
-    // A cell's span excludes the padding either side of it, because that
-    // padding is the writer's and this feature never reformats it. So writing
-    // the DOM's text verbatim would re-insert whatever whitespace it currently
-    // carries ON TOP of the padding already in the file — and it compounds,
-    // because the DOM keeps that whitespace for the rest of the session. Typing
-    // `a b c` into `| a |` left `| a b c   |`: one extra space per space
-    // keystroke, invisible in the rendered table (GFM trims cells) and there in
-    // the user's file for good. The DOM keeps `text` untrimmed so the caret map
-    // and the caret itself are undisturbed mid-word; only what lands in the
-    // document is trimmed, which also makes a trailing-space keystroke the
-    // no-op transaction it should be.
-    //
-    // The trailing-backslash guard therefore has to run HERE, on the trimmed
-    // string, rather than inside escapeNewPipes: the trim is precisely what
-    // strips the whitespace that would otherwise hide an odd backslash run from
-    // it (`escapeNewPipes('cmd \ ').text.trim()` is `cmd \`, which escapes the
-    // row's closing pipe and costs an unpadded table a whole column). And it is
-    // applied to `written` alone, never to the DOM: the transformation is
-    // idempotent, so a cell carrying its result became a fixed point — typing
-    // `\` gave `\\` and no Backspace could ever remove it, because the next
-    // input event re-escaped what had just been deleted. `abutsPipe` is the only
-    // case that needs it at all; anywhere else the character after the span is a
-    // space, and `\ ` is not an escape.
     const abutsPipe = span.to === layout.rows[current.row].pipes[current.col + 1];
     const trimmed = text.trim();
     const written = abutsPipe ? protectTrailingBackslash(trimmed) : trimmed;
     if (view.state.sliceDoc(span.from, span.to) === written) return;
 
     publishExpected(current.dom, sourceAfter(view, layout, [{ from: span.from, to: span.to, insert: written }]));
-    // input.type so history() groups consecutive keystrokes exactly as typing
-    // in the document does — which is what makes one ⌘Z undo one burst.
     view.dispatch({ changes: { from: span.from, to: span.to, insert: written }, userEvent: 'input.type' });
     repairFocus(current);
-
-    // Deliberately NOT calling updateTabContent and NOT flushing: the pane's own
-    // update listener fires on any docChanged, and the 1 s save debounce is also
-    // the asset-diff undo grace period.
 }
 
-/**
- * Widen a row the header has outgrown, so a cell the source does not back can
- * be written to at all.
- *
- * Its OWN transaction, on purpose: it is a structural change to the line, and
- * folding it into the character the user just typed would make one ⌘Z undo
- * both. Two spaces per cell, like blankRowText and insertColumn — which is what
- * puts the empty cell's caret position one space in, so the first character
- * typed into it lands as `| X |`.
- *
- * Returns the RE-LOCATED layout, because every offset in the old one is stale
- * the moment this dispatches.
- */
 function widenRow(view: EditorView, dom: HTMLElement, layout: TableLayout, row: number): TableLayout | null {
     const line = layout.rows[row];
     if (!line) return null;
@@ -380,11 +214,8 @@ function widenRow(view: EditorView, dom: HTMLElement, layout: TableLayout, row: 
     return locate(view, dom);
 }
 
-/** One change, in document offsets. */
 interface Edit { from: number; to?: number; insert?: string }
 
-/** What the table's source becomes once `changes` (ascending, non-overlapping)
- *  are applied — the string a live session has to publish before dispatching. */
 function sourceAfter(view: EditorView, layout: TableLayout, changes: Edit[]): string {
     const source = view.state.sliceDoc(layout.from, layout.to);
     let out = '';
@@ -398,8 +229,6 @@ function sourceAfter(view: EditorView, layout: TableLayout, changes: Edit[]): st
     return out + source.slice(at);
 }
 
-/* ── Focus ──────────────────────────────────────────────────────────────── */
-
 export function focusTableCell(
     dom: HTMLElement,
     row: number,
@@ -408,8 +237,6 @@ export function focusTableCell(
 ): boolean {
     const cell = cellElement(dom, row, col);
     if (!cell) return false;
-    // focus() fires focusin synchronously, which is what begins the session and
-    // swaps the cell to its raw source — so the caret is placed afterwards.
     cell.focus({ preventScroll: true });
     if (where === 'start') placeCaret(cell, 0);
     else if (where === 'end') placeCaret(cell, (cell.textContent ?? '').length);
@@ -418,13 +245,11 @@ export function focusTableCell(
     return document.activeElement === cell;
 }
 
-/** Focus a cell of the table starting at `from`, after an edit has rebuilt it. */
 function focusAfterEdit(view: EditorView, from: number, row: number, col: number): void {
     const dom = tableDomAt(view, from);
     if (dom) focusTableCell(dom, row, col, 'start');
 }
 
-/** Leave the table entirely, with the caret in the document beside it. */
 function leaveTable(view: EditorView, dom: HTMLElement, side: 'from' | 'to'): void {
     const layout = locate(view, dom);
     endCellEdit();
@@ -444,13 +269,6 @@ export function tableDomAt(view: EditorView, from: number): HTMLElement | null {
     return null;
 }
 
-/* ── Structural commands ─────────────────────────────────────────────────
-   Each is ONE transaction whose changes are sorted ascending, and each ends
-   the edit session first (see publishExpected). None of them confirms: a
-   deletion here is a text edit and one ⌘Z undoes it, while `ask` is reserved
-   for operations that move a FILE. */
-
-/** The table's lines in document order — header, delimiter, then body rows. */
 function linesOf(layout: TableLayout): { span: RowSpan; delimiter: boolean }[] {
     return [
         { span: layout.rows[0], delimiter: false },
@@ -461,14 +279,10 @@ function linesOf(layout: TableLayout): { span: RowSpan; delimiter: boolean }[] {
 
 export function insertRow(view: EditorView, dom: HTMLElement, afterRow: number): boolean {
     if (!canWrite(view.state)) return false;
-    // Precondition, and the reason tableMenuEntries disables "Insert row above"
-    // on the header: GFM cannot express a row above the header at all.
     if (afterRow < 0) return false;
     const layout = locate(view, dom);
     if (!layout || afterRow >= layout.rows.length) return false;
 
-    // A row "after the header" goes below the DELIMITER — two header rows is
-    // not a thing GFM can say.
     const at = afterRow === 0 ? layout.delimiter.to : layout.rows[afterRow].to;
     endCellEdit();
     view.dispatch({
@@ -483,9 +297,6 @@ export function deleteRow(view: EditorView, dom: HTMLElement, row: number): bool
     if (!canWrite(view.state)) return false;
     const layout = locate(view, dom);
     if (!layout) return false;
-    // The header is not a row anyone can delete, and taking the last body row
-    // would stop the whole thing matching — the table would silently become
-    // three lines of raw pipe text.
     if (row <= 0 || row >= layout.rows.length || layout.rows.length <= 2) return false;
 
     endCellEdit();
@@ -508,9 +319,6 @@ export function insertColumn(view: EditorView, dom: HTMLElement, afterCol: numbe
         if (afterCol + 1 < span.pipes.length) {
             return { from: span.pipes[afterCol + 1] + 1, insert: cell };
         }
-        // A row too short to reach the insertion point is padded to it in the
-        // same transaction, so every line still ends with the same number of
-        // pipes and the column really is a column.
         const pad = cell.repeat(afterCol + 1 - span.cells.length);
         return { from: span.pipes[span.pipes.length - 1] + 1, insert: pad + cell };
     });
@@ -547,13 +355,6 @@ export function deleteColumn(view: EditorView, dom: HTMLElement, col: number): b
     return true;
 }
 
-/**
- * Swap body row `row` with its neighbour above (-1) or below (+1).
- *
- * The two LINES trade places byte for byte, so each row keeps its own padding,
- * escapes and trailing whitespace; nothing is re-serialized. The header is not a
- * body row and nothing moves above it, because GFM has no second header.
- */
 export function moveRow(view: EditorView, dom: HTMLElement, row: number, delta: -1 | 1): boolean {
     if (!canWrite(view.state)) return false;
     const layout = locate(view, dom);
@@ -577,15 +378,6 @@ export function moveRow(view: EditorView, dom: HTMLElement, row: number, delta: 
     return true;
 }
 
-/**
- * Swap column `col` with its neighbour to the left (-1) or right (+1), on every
- * line including the delimiter, so the column's alignment travels with it.
- *
- * Each line trades the two raw segments between its pipes, padding and all. A
- * row too SHORT to hold both is the one case needing more than a swap: its last
- * present cell moves out into a new one and leaves an empty cell behind, so the
- * value still sits under the heading it belonged to.
- */
 export function moveColumn(view: EditorView, dom: HTMLElement, col: number, delta: -1 | 1): boolean {
     if (!canWrite(view.state)) return false;
     const layout = locate(view, dom);
@@ -619,11 +411,6 @@ export function moveColumn(view: EditorView, dom: HTMLElement, col: number, delt
     return true;
 }
 
-/**
- * Set a column's alignment by rewriting that one cell of the delimiter row
- * (`---`, `:---:` or `---:`) and nothing else. `null` is GFM's default, which
- * renders left.
- */
 export function setColumnAlign(view: EditorView, dom: HTMLElement, col: number, align: ColumnAlign): boolean {
     if (!canWrite(view.state)) return false;
     const layout = locate(view, dom);
@@ -634,8 +421,6 @@ export function setColumnAlign(view: EditorView, dom: HTMLElement, col: number, 
     const present = delimiter.pipes.length - 1;
     const change: Edit = col < present
         ? { from: delimiter.cells[col].from, to: delimiter.cells[col].to, insert: text }
-        // A delimiter row too short to reach this column is padded out to it,
-        // the way insertColumn pads a short row.
         : {
             from: delimiter.pipes[present] + 1,
             insert: ` ${delimiterCellText(null)} |`.repeat(col - present) + ` ${text} |`,
@@ -655,9 +440,6 @@ export function deleteTable(view: EditorView, dom: HTMLElement): boolean {
 
     let from = layout.from;
     let to = layout.to;
-    // The table's own line goes with it rather than being left behind as a
-    // blank one; on the last line there is no trailing newline, so the
-    // preceding one goes instead.
     if (to < view.state.doc.length) to += 1;
     else if (from > 0) from -= 1;
 
@@ -670,30 +452,10 @@ export function deleteTable(view: EditorView, dom: HTMLElement): boolean {
 export function insertTableAtCursor(view: EditorView, rows: number, cols: number): boolean {
     if (!canWrite(view.state)) return false;
     const head = view.state.selection.main.head;
-    // A caret parked on a table's own edge is sitting on one of that table's
-    // LINES — `from` is the header line's start, and atomic motion parks the
-    // caret there deliberately, as does the editor menu moving it to wherever
-    // the right-click landed. Inserting at that line's end would drop the new
-    // table between the old one's header and its delimiter, and BOTH would stop
-    // being tables. So a table under the caret is stepped over, not into.
     const under = tableLayoutAt(view.state.doc, head);
     const line = view.state.doc.lineAt(under ? under.to : head);
     const body = blankTableText(rows, cols);
 
-    // A table has to start its own line, with a blank line on BOTH sides of it.
-    // After, so whatever follows is not read as another body row — and before,
-    // for the exact mirror reason, which is the half that was missing: the
-    // pattern's body group `(?:^\|.+\|[ \t]*\n?)+` accepts EVERY pipe-fenced
-    // line under a table, so a new table written straight beneath an existing
-    // one's last row is swallowed whole, delimiter row and all. Measured on
-    // `| a | b |` / `| --- | --- |` / `| c | d |` / (blank): inserting on that
-    // blank line left ONE six-row table whose fourth row rendered the literal
-    // `---  ---` as data, and no new table — so `tableFrom` was the start of
-    // nothing, `tableDomAt` returned null, and the reader got no caret either.
-    // The non-blank branch's leading '\n\n' has always supplied this; the
-    // blank-line branch did not, and that blank line is exactly where the caret
-    // lands when the reader right-clicks the gap under a table
-    // (DocumentPane moves it to the click before opening the menu).
     const onBlankLine = line.text.trim().length === 0;
     const lead = onBlankLine && line.number > 1
         && view.state.doc.line(line.number - 1).text.trim().length > 0 ? '\n' : '';
@@ -701,16 +463,11 @@ export function insertTableAtCursor(view: EditorView, rows: number, cols: number
     const insert = onBlankLine ? lead + body + '\n' : '\n\n' + body + '\n';
     const tableFrom = from + (onBlankLine ? lead.length : 2);
 
-    // Deliberately not `input.type`: the caret-adoption rule watches for a typed
-    // insertion ending at a table's edge, and this command places its own caret.
     view.dispatch({ changes: { from, insert }, userEvent: 'input' });
     const dom = tableDomAt(view, tableFrom);
-    // The first HEADER cell, which is where Google Docs leaves it.
     if (dom) focusTableCell(dom, 0, 0, 'start');
     return true;
 }
-
-/* ── Moving between cells ────────────────────────────────────────────────── */
 
 function stepCell(view: EditorView, dom: HTMLElement, row: number, col: number, delta: 1 | -1): void {
     const shape = shapeOf(dom);
@@ -719,10 +476,8 @@ function stepCell(view: EditorView, dom: HTMLElement, row: number, col: number, 
     let nextCol = col + delta;
     if (nextCol >= shape.columns) { nextCol = 0; nextRow += 1; }
     if (nextCol < 0) { nextCol = shape.columns - 1; nextRow -= 1; }
-    if (nextRow < 0) return;                       // Shift-Tab in the first cell: nothing
+    if (nextRow < 0) return;
     if (nextRow >= shape.rows) {
-        // Tab out of the last cell appends a row and lands in it, the way it
-        // does in every table editor.
         insertRow(view, dom, shape.rows - 1);
         return;
     }
@@ -747,14 +502,6 @@ function insertTextAtCaret(cell: HTMLElement, text: string): void {
     selection?.addRange(range);
 }
 
-/* ── The keyboard contract ───────────────────────────────────────────────
-   CodeMirror never sees a keystroke inside a cell — eventBelongsToEditor is
-   false for any event whose path crosses a widget that ignores events, and
-   every keymap in this app is a domEventHandler — so this handler IS the whole
-   contract. listIndentKeymap's Tab, closeBrackets, mathEditingExtensions,
-   formatKeymap AND historyKeymap are all simply not running in here. Anything
-   not listed falls through to the browser, which is what makes ordinary typing,
-   ⌘X/⌘C/⌘V and text selection work natively and need no permission. */
 function onCellKeyDown(view: EditorView, dom: HTMLElement, event: KeyboardEvent): void {
     const current = session;
     const targetCell = (event.target as HTMLElement | null)?.closest('.cm-table-cell') ?? null;
@@ -764,10 +511,6 @@ function onCellKeyDown(view: EditorView, dom: HTMLElement, event: KeyboardEvent)
     const key = event.key.toLowerCase();
 
     if (mod) {
-        // ⌘Z has to be bound explicitly for the same reason Tab does: the
-        // history keymap is outside the widget, so an unbound ⌘Z would reach
-        // only the browser's per-element contenteditable undo stack, which
-        // knows nothing about the transactions this module dispatched.
         if (key === 'z' || key === 'y') {
             event.preventDefault();
             endCellEdit();
@@ -776,7 +519,6 @@ function onCellKeyDown(view: EditorView, dom: HTMLElement, event: KeyboardEvent)
             return;
         }
         if (key === 'a') {
-            // The cell's contents, not the document's.
             event.preventDefault();
             const range = document.createRange();
             range.selectNodeContents(cell);
@@ -786,13 +528,9 @@ function onCellKeyDown(view: EditorView, dom: HTMLElement, event: KeyboardEvent)
             return;
         }
         if (key === 'b' || key === 'i') {
-            // plaintext-only makes the browser's formatBold a no-op anyway, and
-            // formatKeymap's own Mod-b never reaches in here. Bold in a cell is
-            // typed `**like this**`.
             event.preventDefault();
             return;
         }
-        // ⌘X / ⌘C / ⌘V and everything else: the browser's, natively.
         return;
     }
 
@@ -810,15 +548,11 @@ function onCellKeyDown(view: EditorView, dom: HTMLElement, event: KeyboardEvent)
         case 'Enter':
             event.preventDefault();
             if (event.shiftKey) {
-                // GFM's only in-cell line break, and already in the cell
-                // allowlist — so it is inserted as the literal text `<br>`.
                 insertTextAtCaret(cell, '<br>');
                 writeBack();
                 return;
             }
             if (shape && current.row + 1 >= shape.rows) {
-                // From the last row, Enter appends one and lands in it — in the
-                // same column, which is where the reader's eye already is.
                 const from = locate(view, dom)?.from;
                 if (from === undefined || !insertRow(view, dom, shape.rows - 1)) return;
                 const next = tableDomAt(view, from);
@@ -828,8 +562,6 @@ function onCellKeyDown(view: EditorView, dom: HTMLElement, event: KeyboardEvent)
             focusTableCell(dom, current.row + 1, current.col, 'end');
             return;
         case 'Escape':
-            // preventDefault AND stopPropagation: this menu-free surface sits
-            // inside CodeMirror, which binds Escape too.
             event.preventDefault();
             event.stopPropagation();
             leaveTable(view, dom, 'to');
@@ -850,7 +582,6 @@ function onCellKeyDown(view: EditorView, dom: HTMLElement, event: KeyboardEvent)
             return;
         case 'ArrowUp':
             event.preventDefault();
-            // Alt moves the row, as Alt+Up moves a line everywhere else in the editor.
             if (event.altKey) { moveRow(view, dom, current.row, -1); return; }
             if (current.row > 0) focusTableCell(dom, current.row - 1, current.col, 'end');
             else leaveTable(view, dom, 'from');
@@ -865,20 +596,6 @@ function onCellKeyDown(view: EditorView, dom: HTMLElement, event: KeyboardEvent)
     }
 }
 
-/* ── The cell's own context menu ─────────────────────────────────────────── */
-
-/**
- * Replace a run of one cell's RAW text and write it back.
- *
- * The menu's Cut and Paste act on the cell, not on the document's selection,
- * and they have to: focusin parks the document selection at the table's start,
- * so reusing the editor menu's clipboard actions here would copy nothing and
- * paste the clipboard into the document immediately BEFORE the table.
- *
- * The offsets are captured when the menu is built rather than read when the row
- * is clicked, because by then the menu has taken focus and the cell's own DOM
- * selection is gone.
- */
 function replaceInCell(
     view: EditorView, dom: HTMLElement, row: number, col: number,
     from: number, to: number, insert: string,
@@ -886,10 +603,6 @@ function replaceInCell(
     if (!canWrite(view.state)) return;
     let layout = locate(view, dom);
     if (!layout) return;
-    // A cell the row is too short to have has no span to replace. writeBack
-    // widens the row before its first write; without the same treatment here,
-    // Paste on a padded cell would be a dead menu row — the clipboard read has
-    // already succeeded and nothing would happen and nothing would say why.
     if (col >= (layout.rows[row]?.cells.length ?? 0)) {
         layout = widenRow(view, dom, layout, row);
         if (!layout) return;
@@ -899,12 +612,6 @@ function replaceInCell(
     const current = view.state.sliceDoc(span.from, span.to);
     const start = Math.max(0, Math.min(current.length, from));
     const end = Math.max(start, Math.min(current.length, to));
-    // Trimmed for the same reason writeBack's is: the span excludes the
-    // padding, so pasting text with an edge space would add one to the file.
-    // And guarded against a trailing backslash after that trim, for the reason
-    // writeBack's is — a pasted line break becomes a trailing space here
-    // (tableMenuEntries' Paste collapses it), which is exactly the shape that
-    // hid an odd backslash run from a guard applied before the trim.
     const trimmed = escapeNewPipes(current.slice(0, start) + insert + current.slice(end)).text.trim();
     const text = span.to === layout.rows[row].pipes[col + 1]
         ? protectTrailingBackslash(trimmed)
@@ -922,8 +629,6 @@ function replaceInCell(
 }
 
 export function tableMenuEntries(view: EditorView, target: HTMLElement): ContextMenuEntry[] | null {
-    // Reading mode has no table menu of its own — the event falls through to
-    // the editor's, which is where Copy and Select all still make sense.
     if (!canWrite(view.state)) return null;
     const cell = target.closest('.cm-table-cell') as HTMLElement | null;
     const dom = cell?.closest('.cm-table-widget') as HTMLElement | null;
@@ -964,7 +669,6 @@ export function tableMenuEntries(view: EditorView, target: HTMLElement): Context
             run: async () => {
                 const read = await readClipboardText();
                 if (!read.ok) { notify(CLIPBOARD_READ_BLOCKED); return; }
-                // A cell is one line.
                 replaceInCell(view, dom, row, col, start, end, read.text.replace(/\s*\r?\n\s*/g, ' '));
             },
         },
@@ -1007,15 +711,8 @@ export function tableMenuEntries(view: EditorView, target: HTMLElement): Context
     ];
 }
 
-/* ── The grips' menus ───────────────────────────────────────────────────
-   What a row's grip and a column's grip offer (see tableWidget's gripButton).
-   Built when the grip is pressed, like the cell menu, and acting through the
-   same commands, so a grip is a shortcut to the table's existing operations
-   plus the three that only make sense for a whole row or column: move, align. */
-
 const HEADER_REASON = "A table's first row is its header.";
 
-/** A command row, carrying its `reason` only while it is disabled. */
 function command(id: string, label: string, run: () => void, blocked: string | false = false, danger = false): ContextMenuEntry {
     return {
         kind: 'command', id, label, run, danger,
@@ -1044,7 +741,6 @@ export function rowMenuEntries(view: EditorView, dom: HTMLElement, row: number):
 
 export function columnMenuEntries(view: EditorView, dom: HTMLElement, col: number): ContextMenuEntry[] {
     const columns = shapeOf(dom)?.columns ?? 0;
-    // GFM's unmarked column renders left, so it counts as left here too.
     const current = locate(view, dom)?.align[col] ?? 'left';
     const align = (value: 'left' | 'center' | 'right', label: string) => command(
         `align-${value}`, label, () => { setColumnAlign(view, dom, col, value); },
@@ -1069,26 +765,15 @@ export function columnMenuEntries(view: EditorView, dom: HTMLElement, col: numbe
     ];
 }
 
-/* ── Wiring ──────────────────────────────────────────────────────────────── */
-
-/* Delegated on the CONTAINER, never per cell: a shape change replaces every
-   cell element but never the container, so per-cell listeners would have to be
-   re-hung on every row insertion. Each handler reads data-row/data-col off the
-   event's target, so nothing closes over the widget instance that built the
-   DOM — which is the rule that has to hold, because that instance is replaced
-   on every keystroke. */
 const wired = new WeakSet<HTMLElement>();
 
 export function attachCellEditing(view: EditorView, dom: HTMLElement): void {
-    // Idempotent: updateDOM re-runs this after a shape rebuild, and the
-    // container it is called with is the same element every time.
     if (wired.has(dom)) return;
     wired.add(dom);
 
     dom.addEventListener('mousedown', (event) => {
         const target = event.target as HTMLElement | null;
         if (target?.closest('.cm-table-cell') || target?.closest('.cm-table-control')) return;
-        // A press on the widget's chrome must not put a caret in it.
         event.preventDefault();
     }, true);
 
@@ -1121,7 +806,6 @@ export function attachCellEditing(view: EditorView, dom: HTMLElement): void {
 
     dom.addEventListener('beforeinput', (event) => {
         const type = (event as InputEvent).inputType;
-        // A cell is one line and holds no formatting of its own.
         if (type === 'insertParagraph' || type === 'insertLineBreak' || type.startsWith('format')) {
             event.preventDefault();
         }
@@ -1130,8 +814,6 @@ export function attachCellEditing(view: EditorView, dom: HTMLElement): void {
     dom.addEventListener('paste', (event) => {
         const current = session;
         if (!current || current.dom !== dom) return;
-        // Two independent guards against markup entering a cell: this, and
-        // contenteditable="plaintext-only".
         event.preventDefault();
         const text = (event as ClipboardEvent).clipboardData?.getData('text/plain') ?? '';
         insertTextAtCaret(current.cell, text.replace(/\s*\r?\n\s*/g, ' '));
@@ -1152,23 +834,15 @@ export function attachCellEditing(view: EditorView, dom: HTMLElement): void {
     dom.addEventListener('contextmenu', (event) => {
         const target = event.target as HTMLElement | null;
         const cell = target?.closest('.cm-table-cell') as HTMLElement | null;
-        if (!cell) return;                       // the chrome: let the editor's menu have it
-        // Chromium puts the caret where the right-click landed, but only if the
-        // cell takes focus — and the clipboard rows are built from the cell's
-        // own selection, so a session has to be live by the time they are.
+        if (!cell) return;
         if (document.activeElement !== cell) cell.focus({ preventScroll: true });
         const entries = tableMenuEntries(view, cell);
         if (!entries) return;
         event.preventDefault();
-        // Otherwise this would also reach .view-content and raise the editor's
-        // menu on top of the table's.
         event.stopPropagation();
         openContextMenu({
             x: event.clientX,
             y: event.clientY,
-            // "<noun> actions" — the form every raiser uses, so a screen
-            // reader hears one shape of name whichever surface was clicked
-            // (File actions, Folder actions, Vault actions, Note actions).
             label: 'Table actions',
             opener: document.activeElement as HTMLElement | null,
             entries,

@@ -25,8 +25,6 @@ function rectPath(w: number, h: number): readonly PathOp[] {
         { op: 'L', p: { x: w, y: h } }, { op: 'L', p: { x: 0, y: h } }, { op: 'Z' }];
 }
 
-/** Collect complete Scene strips while respecting focus promotion and selected
- * subtree exclusion. Candidate resolution is sliced outside cursor callbacks. */
 export async function collectSnapCandidates(options: {
     readonly runtime: BoardRuntime; readonly scene: NonNullable<BoardRuntime['scene']>; readonly doc: BoardDoc;
     readonly sheet: SheetId; readonly focus: ParentId; readonly selected: readonly NodeId[]; readonly bounds: Rect; readonly threshold: number;
@@ -40,19 +38,15 @@ export async function collectSnapCandidates(options: {
     const tick = async () => { check(); await cooperate(); check(); work = 0; started = performance.now(); };
     const selected = new Set<NodeId>();
     for (const id of options.selected) { selected.add(id); if (due()) await tick(); }
-    // The selection's own subtree never snaps to itself. Its ancestor frames do stay targets (a child lines up with its
-    // frame's edges), while its ancestor groups are not targets: a group is recursed into, so its members are.
     const excluded = (id: NodeId) => selected.has(id) || ancestorChain(doc, id).some(ancestor => selected.has(ancestor));
     const xs = [bounds.x, bounds.x + bounds.width / 2, bounds.x + bounds.width];
     const ys = [bounds.y, bounds.y + bounds.height / 2, bounds.y + bounds.height];
     const strips: { axis: 'x' | 'y'; value: number; maxDistance: number }[] = [];
     for (const value of xs) strips.push({ axis: 'x', value, maxDistance: threshold });
     for (const value of ys) strips.push({ axis: 'y', value, maxDistance: threshold });
-    // Default, calibration cut by owner: equal-gap candidates require perpendicular overlap.
     strips.push({ axis: 'y', value: bounds.y + bounds.height / 2, maxDistance: bounds.height / 2 + threshold },
         { axis: 'x', value: bounds.x + bounds.width / 2, maxDistance: bounds.width / 2 + threshold });
     const candidates = new Set<NodeId>();
-    // A group is never a snap target as a whole: its members are, and a connector (arrow) is never a target at all.
     const snapLeaves = function* (id: NodeId): Generator<NodeId> {
         const pending: NodeId[] = [id];
         for (let guard = 0; pending.length && guard < 100_000; guard++) {
@@ -88,8 +82,6 @@ export async function collectSnapCandidates(options: {
     check(); return candidates;
 }
 
-/** Logical boxes wholly inside all inherited frames are exact snap inputs.
- * A partial box is not a surrogate for visible geometry and must be refused. */
 export function createSnapVisibility(doc: BoardDoc): (id: NodeId, bounds: Readonly<Rect>) => 'visible' | 'hidden' | 'partial' {
     const frames = new Map<NodeId, CertifiedClipRegion>();
     return (id, bounds) => {

@@ -8,7 +8,6 @@ import type { CaretIndex, CaretLine, CaretPosition, CaretStop, FaceTable, TextCl
 interface CachedLine { readonly line: CaretLine; readonly start: number; readonly top: number; readonly index: number }
 const CARET_CACHE_BYTES = 16 * 1024 * 1024;
 const lineBytes = (line: CaretLine) => 256 + line.stops.length * 176 + line.clusters.length * 128;
-/** Unchanged wrapped lines retain their prefix measurements across text revisions. */
 export class CaretLineCache {
     private readonly entries = new Map<string, CachedLine>();
     private bytes = 0;
@@ -31,7 +30,6 @@ export class CaretLineCache {
     clear(): void { this.entries.clear(); this.bytes = 0; }
 }
 
-/** Prefix measurements use the same face and reference-size canvas as the paint. */
 export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, table: FaceTable, measurer: ReferenceMeasurer, cache?: CaretLineCache): CaretIndex {
     const sparse = longAsciiCaretIndex(request, paint, table, measurer);
     if (sparse) return sparse;
@@ -76,8 +74,6 @@ export function makeCaretIndex(request: TextLayoutRequest, paint: TextPaint, tab
                 if (i) pieces.push({ src: [fragment.src[0] + boundaries[i - 1], fragment.src[0] + boundaries[i]], bounds: { x: Math.min(positions[i - 1], positions[i]), y: line.top, width: Math.abs(positions[i] - positions[i - 1]), height: line.bottom - line.top }, rtl: fragment.rtl, line: lineIndex });
             }
         }
-        // Mark and bidi boundaries can split one Unicode grapheme into several painted fragments.
-        // Its UTF-16 code units must all report the same selection/IME rectangle.
         const graphemes = new Map<number, TextCluster>();
         for (const piece of pieces) {
             const relative = piece.src[0] - line.src[0];

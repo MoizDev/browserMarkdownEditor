@@ -17,13 +17,11 @@ export interface ClosedCanvasSourceLease {
     release(): Promise<void>;
 }
 
-/** A C5 projection owns only this immutable read lease, never an editable board. */
 export async function acquireClosedCanvasSource(options: {
     readonly root: FileSystemDirectoryHandle;
     readonly activation: number;
     readonly path: string;
     readonly handle: FileSystemFileHandle;
-    /** 'pdf-ink' leases the outer PDF bytes; the consumer admits the board inside them. */
     readonly kind: 'drawing' | 'notebook' | 'pdf-ink';
     readonly signal: AbortSignal;
     readonly documentId: string;

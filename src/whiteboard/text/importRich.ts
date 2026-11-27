@@ -49,7 +49,6 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
     const clean = function* (text: string): Generator<void, string> {
         const fixed = yield* repairLegacyCharacterSteps(text, MAX_TEXT_LENGTH - total);
         replaced += fixed.surrogates; controls += fixed.controls;
-        // Each emitted block contributes its separator in push(), not here as well.
         total += fixed.contentLength;
         return fixed.text;
     };
@@ -63,8 +62,6 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
         if (preservedBytes > MAX_TEXT_LENGTH * 4) fail('Unsupported rich data exceeds preservation limit');
         return value;
     };
-    // A known legacy node can also carry fields from a newer schema. Keep those
-    // fields as an opaque zero-width mark, without copying its whole subtree.
     const unknownFields = function* (object: RecordValue, keep: (key: string, value: unknown) => boolean): ImportSteps<string | null> {
         const original = originals?.get(object);
         const fields: string[] = [];
@@ -211,8 +208,6 @@ function* convertSteps(input: unknown, originals?: WeakMap<object, RawJson | Jso
             runs = []; first = false;
         };
         const append = function* (value: string, styling: Marks): Generator<void, void> {
-            // A legacy producer can split CRLF at a mark boundary. It is still
-            // one projected separator, even when empty carrier runs intervene.
             if (endedCR && value.startsWith('\n')) { value = value.slice(1); endedCR = false; }
             if (value.length) endedCR = value.endsWith('\r');
             const normalized = yield* clean(value);
@@ -393,7 +388,6 @@ async function finishCooperative(steps: ImportSteps<RichImportResult>, options: 
     }
 }
 
-/** Data-only ProseMirror mapping; unrepresentable input keeps its legacy source read-only. */
 export function convertLegacyRichText(input: unknown, originals?: WeakMap<object, RawJson | JsonSpan>): RichImportResult {
     return finish(convertSteps(input, originals));
 }
@@ -437,7 +431,6 @@ function* spanSteps(root: JsonSpan): ImportSteps<RichImportResult> {
     }
 }
 
-/** Lexical spans preserve unknown tokens; no partial conversion is returned after cancellation. */
 export function convertLegacyRichSpan(root: JsonSpan): RichImportResult { return finish(spanSteps(root)); }
 export async function convertLegacyRichSpanCooperative(root: JsonSpan, options: PlainTextOptions): Promise<RichImportResult> {
     let materialized: Awaited<ReturnType<typeof materializeLegacySpan>>;

@@ -3,11 +3,7 @@ import type { ClipboardHtmlFrameHost } from '../clipboard/htmlFrameHost';
 import { checkContentUrl, type UrlEnvironment } from '../security/urlPolicy';
 import { SECURITY_LIMITS } from '../security/limits';
 
-// Provenance: SEC-7 and media §11 explicit preview consent; independent bounded
-// CORS fetch and opaque metadata projection, no upstream engine source.
-/** The page's own text, and the image and icon addresses it declares (not yet fetched); `page` is the URL the request was made to. */
 export interface LinkPreviewResult { readonly title: string; readonly description: string; readonly image: string; readonly icon: string; readonly page: string }
-/** Call only in response to the user's explicit Fetch preview action. */
 export async function fetchLinkPreview(options: {
     readonly url: string;
     readonly environment: UrlEnvironment;

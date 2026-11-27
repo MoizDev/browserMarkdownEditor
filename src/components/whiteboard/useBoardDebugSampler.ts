@@ -8,7 +8,6 @@ const SAMPLE_MS = 250;
 const OUTLINE_LIMIT = 200;
 const VISIT_CHUNK = 4096;
 
-/** A top-level node's document box, or null for a node whose box is not one rectangle (a path, a connector). */
 function topLevelBox(node: object, sheet: string): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null {
     const fields = node as Readonly<Record<string, unknown>>;
     if (String(fields.parent) !== sheet) return null;
@@ -18,9 +17,6 @@ function topLevelBox(node: object, sheet: string): { readonly x: number; readonl
         ? { x: fields.x, y: fields.y, width, height } : null;
 }
 
-/** Samples the Debug overlay's counts while Debug mode is on. The visible count is the spatial query over the viewport
- * that selection itself runs, so it is the engine's answer rather than a second geometry. The outlines are the
- * top-level box-shaped nodes only: the overlay shows where nodes are, not the engine's exact hit geometry. */
 export function useBoardDebugSampler(runtime: BoardRuntime, lease: NativeViewLease | null): void {
     useEffect(() => {
         if (!lease) return;

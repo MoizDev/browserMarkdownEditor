@@ -46,8 +46,6 @@ export async function boardMediaRefs(source: Uint8Array | ReadableStream<Uint8Ar
   const scanHash = (hash: string) => { for (const name of byHash.get(hash) ?? []) names.add(name); };
   const finishHex = () => {
     const parent = stack[stack.length - 1];
-    // A media record's own hash does not resolve to the hash filename when `file` names
-    // a displaced copy. Resolve that one at object close, after seeing both fields.
     if (!(!isKey && parent?.role === 'record' && parent.key === 'id') && hexLength >= 64) {
       scanHash(hexFirst); scanHash(hexRun);
     }
@@ -243,7 +241,6 @@ export async function boardMediaRefs(source: Uint8Array | ReadableStream<Uint8Ar
     consume(decoder.decode());
     if ((mode as string) === 'atom') finishAtom();
     if (mode !== 'normal' || !rootDone || stack.length) fail();
-    // The native marker wins even when the compatibility document appeared first.
     if (formatSeen) return rootFormat === 'board' && recordsSeen && endSeen ? { ok: true, names: [...names] } : { ok: false, reason: 'unknown-format' };
     return documentSeen && storeSeen ? { ok: true, names: [...names] } : { ok: false, reason: 'unknown-format' };
   } catch { return { ok: false, reason: 'unreadable' }; }

@@ -23,8 +23,6 @@ function publish(value:unknown,persist=true){
  if(JSON.stringify(state)===JSON.stringify(next))return;
  state=freeze(next);
  if(persist){
-  // Mirrored writers report failure rather than throw; keep the reader's
-  // existing warning and live preference even when storage is unavailable.
   const failed=!writeJSON('readingPreferences',next);
   if(failed&&!persistenceFailed&&typeof window!=='undefined')window.dispatchEvent(new Event('reading-persistence-unavailable'));
   persistenceFailed=failed;

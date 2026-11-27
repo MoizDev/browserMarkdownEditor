@@ -11,42 +11,26 @@ import type { UrlEnvironment } from '../security/urlPolicy';
 import type { StoreMedia } from '../media/storage.types';
 import type { BoardRuntime } from './runtime';
 
-// Provenance: media actions for the one picture or link card a view has selected;
-// independent host composition over the picture commands, replacement and preview gestures.
-
-/** The single selected picture or link card, and whether an edit may run on it right now. */
 export interface MediaSelection {
     readonly id: NodeId;
     readonly kind: 'picture' | 'linkcard';
-    /** The reason an edit cannot run now (the row shows it), or null when it can. */
     readonly blocked: string | null;
-    /** Replacing needs the document's proof-carrying storage port, which every board document now supplies. */
     readonly replaceable: boolean;
-    /** A picture whose media is a video: its playback is offered by the view, not by these actions. */
     readonly video: boolean;
-    /** An animated picture this view can decode frame by frame; its play row is offered by the view, as for video. */
     readonly animated: boolean;
 }
-/** What the crop editor starts from: the original's pixel size, and the window and circle the picture shows now. */
 export interface PictureCropInfo { readonly width: number; readonly height: number; readonly window: CropWindow; readonly circle: boolean }
 export interface MediaActions {
-    /** Null unless exactly one picture or link card is selected. `writable` is the view's own write permission. */
     selection(writable: boolean): MediaSelection | null;
     replace(id: NodeId, file: Blob, name: string): Promise<void>;
     crop(id: NodeId, preset: PictureCropPreset): void;
     invert(id: NodeId): void;
     cropSource(id: NodeId): PictureCropInfo | null;
-    /** The original bytes, as the editor previews them. */
     readOriginal(id: NodeId, signal: AbortSignal): Promise<Blob | null>;
-    /** One content step: the editor's window and circle. */
     cropWindow(id: NodeId, window: CropWindow, circle: boolean): void;
-    /** The picture's alternative text, as the description dialog starts from it. */
     alternativeText(id: NodeId): string;
-    /** One content step: the description the dialog saved. */
     setAlt(id: NodeId, text: string): void;
-    /** Saves a copy of the picture's original bytes through the browser's download; nothing in the document changes. */
     downloadOriginal(id: NodeId): void;
-    /** Fetches the link preview for an explicit user request; the preview becomes inert text on commit. */
     cardPreview(id: NodeId): Promise<void>;
 }
 export interface MediaActionOptions {
@@ -54,9 +38,7 @@ export interface MediaActionOptions {
     readonly memory: MemoryAllocator;
     readonly environment: UrlEnvironment;
     current(): boolean;
-    /** The document's storage port for replacement bytes (a PDF page's embedded port, or a file board's filesystem port); absent where replacing is not supported. */
     readonly storeMedia?: StoreMedia;
-    /** Reads a picture's original bytes through the document's own media source (a PDF page's own, or a file board's). */
     readonly readMedia?: (entry: MediaEntry, signal: AbortSignal) => Promise<Blob | null>;
 }
 

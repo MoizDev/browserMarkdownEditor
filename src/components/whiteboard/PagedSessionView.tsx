@@ -27,7 +27,6 @@ function Attached<T extends object, S extends BoardSessionPort>({ lease, host }:
         readiness={snapshot.readiness} paint={snapshot.paint} />;
 }
 
-/** Notebook and PDF ink share the same App-owned session and per-pane lease lifecycle. */
 export default function PagedSessionView<T extends object, S extends BoardSessionPort>(props: PagedSessionViewProps<T, S>) {
     const lease = useBoardViewLease({ adapter: props.adapter, attachView: props.attachView, onError: props.onAttachError,
         parameters: { mode: props.mode, visible: props.isVisible, focused: props.isFocused, theme: props.theme, inverted: props.inverted } });

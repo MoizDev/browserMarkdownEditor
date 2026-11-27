@@ -2,7 +2,6 @@ import type { PdfSemanticRole } from '../../utils/pdfPageText';
 import { GENERATED, INVISIBLE, LINE_HYPHEN, UNICODE_ERROR, boxAt, character, differentLine, strongRtl, validBox } from './types';
 import type { RawPageText, Schema2Geometry, Schema2Interval, Schema2Projection } from './types';
 
-/** Canonical text follows PDFium character order, never a visual re-sort. */
 export function buildPdfiumPageText(raw: RawPageText, geometry: Schema2Geometry): Schema2Projection {
     const parts: string[] = [], intervals: Schema2Interval[] = [], tokenBreaks: number[] = [];
     const charU16 = new Uint32Array(raw.n + 1), reasons = new Set<string>();

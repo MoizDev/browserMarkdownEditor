@@ -12,8 +12,6 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 function finiteCount(value: unknown): boolean { return Number.isSafeInteger(value) && (value as number) >= 0; }
 
-/** A contained writer cannot authorize a filesystem commit: this validates the
- * reply's shape, then the App save funnel rechecks owner, revision and disk. */
 function validateReply(op: WriterOp, value: unknown): void {
     if (!record(value)) throw new Error('Malformed PDF writer response');
     if (op === 'writer.prepareSource') {

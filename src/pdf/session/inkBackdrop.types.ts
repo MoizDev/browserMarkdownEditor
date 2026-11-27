@@ -15,7 +15,6 @@ export interface PdfInkBackdropOptions {
     isFocused(): boolean;
     emphasisEnabled(): boolean;
     onError(error: unknown): void;
-    /** Host must cover the original surface opaquely while this is true. */
     onUpdating?(updating: boolean): void;
     signal?: AbortSignal;
 }
@@ -29,10 +28,7 @@ export interface PdfInkBackdrop {
         captureRegion(rect: Rect, maxSide: number, signal?: AbortSignal): Promise<ImageBitmap>;
     };
     setVisible(visible: boolean, focused?: boolean): void;
-    /** The document's font-profile epoch. A snapshot pins the epoch it was taken at; a font provided
-     * later advances it and invalidates that snapshot, so a capture re-pins only by taking a new one. */
     fontEpoch(): number;
-    /** Call only after a real committed current shared frame, never a bridge presentation, naming the backend that presented it. */
     notePresentation(backend: CompositorBackend): void;
     dispose(): void;
 }

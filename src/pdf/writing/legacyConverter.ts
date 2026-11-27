@@ -1,5 +1,3 @@
-// Lazy worker-only legacy path: PDFium's public attachment API cannot recreate
-// arbitrary Filespec metadata or AF associations. No imported-PDF parser is ours.
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFObjectCopier, PDFRawStream } from 'pdf-lib';
 import type { PDFObject } from 'pdf-lib';
 import { boundedAttachmentBytes, inventoryAttachments } from '../../utils/pdfAttachmentTree';
@@ -10,9 +8,7 @@ import { Sha256 } from '../../utils/sha256';
 export interface LegacyConversionInput {
     pristine: Blob;
     outer: Blob;
-    /** Names reserved for this revision's pristine, board, fence, media and mark. */
     reservedNames: readonly string[];
-    /** Stable board format identifier supplied by its owner. */
     format: string;
 }
 export interface LegacyConversionResult {
@@ -51,9 +47,6 @@ function compare(a: Uint8Array, b: Uint8Array): number {
     return a.length - b.length;
 }
 
-/** Build a separate pristine-based working graph with the lossless named union.
- * Unknown outer AF associations cannot be mapped safely to changed pages using
- * public PDFium, so refuse rather than silently relocate or remove them. */
 export async function convertLegacyAttachmentUnion(input: LegacyConversionInput,
     cooperate: () => Promise<void>): Promise<LegacyConversionResult> {
     if (!(input.pristine instanceof Blob) || !(input.outer instanceof Blob) || input.pristine.size >= LIMIT || input.outer.size >= LIMIT ||
@@ -71,8 +64,6 @@ export async function convertLegacyAttachmentUnion(input: LegacyConversionInput,
         if (owned.has(entry.id) && entry.keys[0].decodeText() === 'original.pdf' &&
             new Sha256().update(bytesOf(entry.spec)).digest() !== pristineHash) throw new Error('Pristine attachment does not match the source');
     }
-    // Unmarked legacy names become ours only when the full guarded role reader
-    // validates the pair and its embedded pristine bytes match this source.
     const legacy = await inspectPdfRole(outerBytes, 'legacy-conversion');
     const validLegacy = legacy.kind === 'annotated' && new Sha256().update(legacy.original).digest() === pristineHash;
     if (validLegacy) {
@@ -109,9 +100,6 @@ export async function convertLegacyAttachmentUnion(input: LegacyConversionInput,
                 reserved.add(target);
                 let targetRaw = raw;
                 if (target !== name) {
-                    // PDFium reports Filespec /UF rather than the name-tree key.
-                    // Clone only that spec so an existing AF reference stays
-                    // attached to the untouched original, with other metadata intact.
                     const spec = pristine.context.lookup(raw);
                     if (!(spec instanceof PDFDict)) throw new Error('Cannot alias an unreadable Filespec');
                     const renamed = spec.clone();

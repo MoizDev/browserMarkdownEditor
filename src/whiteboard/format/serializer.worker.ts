@@ -142,16 +142,12 @@ async function build(input: SerializerBuild, context: WorkerContext): Promise<Se
         }
         const assembly = take(table.assemble(input.expected, fields.size ? { fields, raw: new Map() } : null));
         await context.slice();
-        // The existing app-owned incremental hash avoids allocating a second 1 GiB buffer.
-        // Hash the assembled bytes, never the line-key integrity digest.
         const hash = new Sha256();
         for (let offset = 0; offset < assembly.blob.size; offset += 1024 * 1024) {
             hash.update(new Uint8Array(await assembly.blob.slice(offset, offset + 1024 * 1024).arrayBuffer()));
             await context.slice();
         }
         const sha256 = hash.digest();
-        // Keep recovery metadata in a Blob beside the exact written bytes, not a million-entry
-        // structured-clone to the UI. A later worker can re-prime without re-reading the disk File.
         const parts: string[] = [];
         let batch = '', count = 0;
         for (const position of table.positions()) {

@@ -1,4 +1,3 @@
-// Outside-app browser instrumentation; no engine implementation is reproduced here.
 import fs from 'node:fs';
 import { chromium } from 'playwright';
 import { createRequire } from 'node:module';
@@ -69,8 +68,6 @@ export function installBrowser({ vaultName, theme, polling, recordWriteSizes }) 
   FileSystemFileHandle.prototype.createWritable = async function(...args) {
     const id = ++state.sequence;
     let resolved=paths.get(this);
-    // Observers and worker structured clones can mint fresh handle objects. Identity maps alone
-    // missed PDF writes; resolve the actual descendant path, never guess from a basename.
     if(resolved===undefined){const root=await navigator.storage.getDirectory();const parts=await root.resolve(this);if(parts){resolved=parts.join('/');paths.set(this,resolved);}}
     const entry = { id, path: resolved ?? null, name: this.name, started: performance.now(), closed: null, error: null };
     state.writes.push(entry);
@@ -104,8 +101,6 @@ export async function launchRuntime(options = {}) {
   let context;
   try {
     if (browser.version() !== browserPin.version) throw Error(`HARNESS_BROWSER_ASSERT: ${browser.version()}, expected ${browserPin.version}`);
-    // Never reuse a person's existing profile; this package owns and closes
-    // its local pinned browser. Physical-device transport is not claimed here.
     context = await browser.newContext({ viewport: options.viewport || { width: 1440, height: 1000 }, deviceScaleFactor: options.deviceScaleFactor ?? 1, permissions: ['clipboard-read','clipboard-write'], hasTouch: true });
     const page = await context.newPage();
     const network = [], responses = [], nativeReceipts = [], responseObjects = new Map(), errors = [], consoleMessages = [];
@@ -115,13 +110,9 @@ export async function launchRuntime(options = {}) {
     page.on('pageerror', e => errors.push(String(e)));
     page.on('console', m => { if(m.type()==='error'||m.type()==='warning')consoleMessages.push({type:m.type(),text:m.text()}); });
     if (options.blockOffOrigin) await context.route('**/*', route => { const u=route.request().url(); return /^https?:/.test(u)&&new URL(u).origin!==new URL(baseURL).origin?route.abort():route.continue(); });
-    // The pinned CfT survives native handle restore. The shim is opt-in only;
-    // its storage representation cannot stand in for the app's real restore.
     let shimHits = 0;
     if (options.idbShim) await context.route(/\/idb-keyval\.js(?:\?|$)/, async route => { shimHits++; await route.fulfill({ contentType:'text/javascript',body:idbShim }); });
     const params = { vaultName: options.vaultName || 'ParityVault', theme: options.theme === null ? null : (options.theme || 'light'), polling: !!options.polling, recordWriteSizes:!!options.recordWriteSizes };
-    // One ordered init script: a separate reference initializer can otherwise
-    // run before the instrumentation it extends after a real reload.
     const after = (options.afterInstrumentation || []).map(fn => `(${fn.toString()})();`).join('\n');
     await context.addInitScript({ content: `(${installBrowser.toString()})(${JSON.stringify(params)});\n${after}` });
     const cdp = await context.newCDPSession(page);

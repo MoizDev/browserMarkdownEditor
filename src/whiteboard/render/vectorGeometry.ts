@@ -6,11 +6,7 @@ import type { FigureNode, Node, OpaqueNode } from '../model/nodes';
 import type { BoardTextGeometry } from './textGeometry';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: geometry providers, shared text request and opaque-record contracts;
-// independent composition, no third-party source.
 export type BoardVectorGeometry = FigureGeometry | TextGeometry | ContainerGeometry | PolylineGeometry;
-// Bounded v1 kernel policy: 0.01 world-unit curve/length error, 0.01 CSS-pixel
-// picking error, four CSS pixels of hit margin, and at most 8192 path pieces.
 const BUDGET = { kernelVersion: 1, pathError: 0.01, lengthError: 0.01,
     maxPieces: 8192, hitMarginCss: 4, hitErrorCss: 0.01 } as const;
 function check(signal: AbortSignal): void { signal.throwIfAborted(); }
@@ -51,7 +47,6 @@ function vectorGeometry(node: Readonly<VectorNode>, options: VectorOptions, labe
     }
 }
 
-/** Current actual faces, including browser fallback; this does not start font loading. */
 export function prepareBoardVectorGeometryNow(node: Readonly<Node>, options: VectorOptions): BoardVectorGeometry {
     requireVector(node, options.zoom);
     const label = needsText(node) ? positioned(options.text.prepareNow(node, { revision: options.revision, zoom: options.zoom })) : null;
@@ -73,7 +68,6 @@ export async function prepareBoardVectorGeometry(node: Readonly<Node>, options: 
     return vectorGeometry(node, options, label);
 }
 
-/** The preserved source stays inert; unreadable dimensions use the opaque placeholder default. */
 export async function prepareOpaqueGeometry(node: Readonly<OpaqueNode>, signal: AbortSignal,
     cooperate?: () => Promise<void>): Promise<FigureGeometry> {
     const tick = async () => {

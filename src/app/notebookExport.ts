@@ -12,16 +12,11 @@ import type { UseNotebookExportDeps } from './useNotebookExport';
 import { isCancellation } from '../platform/workers/envelope';
 import { loadChunk } from '../platform/chunkLoad';
 
-/**
- * A notebook's Export to PDF: the render, then the destination transaction.
- * Loaded on the gesture (useNotebookExport), never at startup.
- */
 export interface NotebookExportDeps extends UseNotebookExportDeps {
   exportedNotebooksRef: React.MutableRefObject<Map<string, DiskVersion>>
   notebookExportInFlightRef: React.MutableRefObject<boolean>
 }
 
-/** Export the notebook's frozen render; destination consent is a separate transaction. */
 export async function handleExportNotebook(deps: Pick<NotebookExportDeps,
   'tell' | 'notify' | 'getVaultActivation' | 'tabsRef' | 'rootHandleRef' | 'currentVaultIdRef' |
   'readerEpochRef' | 'notebookExportInFlightRef' | 'ask' | 'trashInFlightRef' | 'reconcileQueueRef' |
@@ -32,7 +27,6 @@ export async function handleExportNotebook(deps: Pick<NotebookExportDeps,
     notebookExportInFlightRef,
   } = deps;
   if (!file.parentHandle || notebookExportInFlightRef.current) return;
-  // Held while it waits too: a second press meanwhile is the same export.
   notebookExportInFlightRef.current = true;
   let ready: { file: ActiveFile; exporter: NotebookExporter } | string;
   try { ready = await exportSource(deps, file); } finally { notebookExportInFlightRef.current = false; }
@@ -50,7 +44,6 @@ export async function handleExportNotebook(deps: Pick<NotebookExportDeps,
   notebookExportInFlightRef.current = true;
   try {
     let paper: import('../utils/paper').NotebookPaper, bytes: Uint8Array;
-    // Changed under the export (closed, replaced, reloaded): said, never a press that did nothing.
     const changed = () => { if (rootHandleRef.current === root) notify(`Nothing was exported: "${file.name}" was closed or changed while it was being exported. Export it again.`); };
     if (typeof exporter === 'function') {
       const exported = await exporter();
@@ -82,16 +75,8 @@ export async function handleExportNotebook(deps: Pick<NotebookExportDeps,
   } finally { try { nativeJob?.release(); } finally { notebookExportInFlightRef.current = false; } }
 }
 
-/** How long Export to PDF waits for an old notebook's editable copy to take its tab, and for an open notebook's board to
- *  be ready to export (measured: the swap ~0.1 s, the copy's board ~0.4 s). */
 const EXPORT_SOURCE_WAIT_MS = 15_000;
 
-/**
- * What Export to PDF exports: the notebook the person pressed it on, or, when an editable copy of that old notebook is
- * being made, the copy, once it has taken the tab. Pressed in the tenth of a second that swap takes, the export ran on the
- * original, found its tab gone when it finished, and did nothing at all; pressed just after, it said to open a notebook
- * that was open. A string is what to tell the person instead.
- */
 async function exportSource(deps: Pick<NotebookExportDeps, 'tabsRef'>, file: ActiveFile): Promise<{ file: ActiveFile; exporter: NotebookExporter } | string> {
   const { tabsRef } = deps;
   const deadline = Date.now() + EXPORT_SOURCE_WAIT_MS;
@@ -115,8 +100,6 @@ async function exportSource(deps: Pick<NotebookExportDeps, 'tabsRef'>, file: Act
   }
 }
 
-// Shared destination transaction for a staged notebook PDF. The source owner
-// is pinned before rendering; no worker receives a filesystem handle.
 export async function commitNotebookPdf(deps: Pick<NotebookExportDeps,
   'ask' | 'notify' | 'tabsRef' | 'currentVaultIdRef' | 'trashInFlightRef' | 'reconcileQueueRef' |
   'inspectExportTarget' | 'writeNotebookExport' | 'exportedNotebooksRef'

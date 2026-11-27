@@ -1,12 +1,7 @@
 import { EditorView, ViewPlugin } from '@codemirror/view';
 
 const pendingReadingSelection = new WeakMap<EditorView, () => void>();
-/** CM finishes synchronising its own selection after updateDOM. Restore the
- * widget's native selection only after that, with no transaction/undo entry. */
 export const tableReadingSelection = [ViewPlugin.define(view => {
-    // CM ignores a widget selection only when its ANCHOR is in the widget. A
-    // forward prose→table range otherwise becomes a source-edge selection before
-    // any presentation capture can run. Both endpoints belong to native reading.
     const onSelection = (event: Event) => {
         if (!view.state.readOnly) return;
         const sel = view.contentDOM.ownerDocument.getSelection();
@@ -36,8 +31,6 @@ export const tableReadingSelection = [ViewPlugin.define(view => {
     }
 })];
 
-// Each endpoint has its own representation: CM source or table/cell + rendered
-// UTF-16 offset. Mixed and backwards selections must have one owner, too.
 export function captureReadingSelection(view: EditorView): (() => void) | null {
     const sel = view.contentDOM.ownerDocument.getSelection();
     if (!sel?.anchorNode || !sel.focusNode || sel.isCollapsed
@@ -75,12 +68,9 @@ export function captureReadingSelection(view: EditorView): (() => void) | null {
     } catch { return null; }
 }
 export function preserveTableReadingSelection(table: HTMLElement, view: EditorView): (() => void) | null {
-    // A second table updates after the first has destroyed its endpoint. Keep the
-    // first whole-range capture until CM's update listener restores it once.
     return pendingReadingSelection.get(view) ?? captureReadingSelection(view);
 }
 
-/** Queue only after the widget DOM has been re-dressed. */
 export function queueTableReadingSelection(view: EditorView, restore: () => void): void {
     pendingReadingSelection.set(view, restore);
 }

@@ -32,8 +32,6 @@ function figure(value: unknown): FigureTag {
         width: finite(box.width, 0, 1e8), height: finite(box.height, 0, 1e8) }, alt: text(o.alt, 1024), offset: integer(o.offset, 0, 1_000_000) };
 }
 
-/** Rebuilds parser-controlled records after semantic validation. Typed-array storage
- * is already transferred, but a shared or oversized backing buffer is not accepted. */
 export async function rebuildPdfTextReply(value: unknown, expected: {
     docKey: string; page: number; detail: PdfTextDetail; geometry?: Readonly<PageGeometry>;
 }, signal?: AbortSignal): Promise<PageTextReply> {
@@ -49,8 +47,6 @@ export async function rebuildPdfTextReply(value: unknown, expected: {
         if (o.model !== undefined || o.digest !== undefined || o.sel !== undefined) invalidPdfReply();
     } else {
         if (!expected.geometry || o.model === undefined || o.digest === undefined || (expected.detail === 'select') !== (o.sel !== undefined)) invalidPdfReply();
-        // Preliminary shape checks keep the existing semantic validator from
-        // touching unbounded views or treating a clone's prototype as authority.
         const m = record(o.model, ['schema', 'physicalPageIndex', 'text', 'intervals', 'tokenBreaks', 'quality', 'reasons', 'geometry']);
         const g = record(m.geometry, ['physicalPageIndex', 'viewBox', 'rotation', 'userUnit', 'width', 'height', 'viewportTransform']);
         const intervals = list(m.intervals, 400_000), breaks = list(m.tokenBreaks, 200_000);

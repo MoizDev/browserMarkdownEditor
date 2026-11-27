@@ -25,11 +25,9 @@ export interface BoardCopySnapshotOptions {
     readonly toleranceWorld?: number;
 }
 
-/** A copy owns its original Scene and resource pins until its snapshot leases retire. */
 export async function createBoardCopySnapshot(options: BoardCopySnapshotOptions): Promise<CopySnapshot> {
     const { runtime } = options, session = runtime.session, live = session.doc, owner = session.owner;
     const state = runtime.selection.getSnapshot(), selection = [...new Set(options.selection ?? state.selected)], revision = live.rev;
-    // Captured before the first await: this copy's paint uses its own start binding, never a later rebind.
     const signal = options.signal ?? new AbortController().signal, scene = runtime.scene, paintBinding = runtime.paintBinding;
     const cooperate = options.cooperate ?? yieldToHost;
     if (!scene || !scene.ready || scene.revision !== revision) throw new Error('Clipboard scene is not ready');
@@ -77,8 +75,6 @@ export async function createBoardCopySnapshot(options: BoardCopySnapshotOptions)
             }
         }
         if (!roots.length) throw new Error(`This version can't copy opaque content: ${skipped.join(', ')}`);
-        // Skipping opaque records must not create a clipboard group that the
-        // native model would immediately dissolve on admission.
         for (const node of copied.values()) if (node.kind === 'group') {
             let count = 0; for (const child of source.children.get(node.id) ?? []) { if (copied.has(child.id)) count++; if (due()) await tick(); }
             if (count < 2) throw new Error(`Skipping opaque content would leave an invalid copied group: ${node.id}`);
@@ -173,7 +169,6 @@ export async function createBoardCopySnapshot(options: BoardCopySnapshotOptions)
         const ownerLease: ClipboardLease = { release() { if (!released) { released = true;
             try { release(snapshot.leases); } finally { release(held); }
         } } };
-        // Source and projection keep the original resources alive even after the view closes.
         const result: CopySnapshot = { ...snapshot, revision, selected: selection, skippedOpaque: skipped,
             payload: { ...snapshot.payload, from: { ...snapshot.payload.from, kind: source.kind } }, leases: [ownerLease] };
         transferred = true; return result;

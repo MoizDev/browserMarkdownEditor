@@ -4,9 +4,6 @@ import { createWebgl2Factory } from './gfx/webgl2';
 import { registerGpuPaneFactory } from './gpuPaneFactory';
 import type { GpuPaneFactory } from './gpuPaneFactory';
 
-/** The broker creates and owns the native context; this registration only binds its qualified
- * generation to the shared compositor. Backing admission and resize belong to the attaching actor.
- */
 export const createGpuPane: GpuPaneFactory = async options => {
     let compositor: GpuCompositor | null = null;
     const services = {
@@ -34,5 +31,4 @@ export const createGpuPane: GpuPaneFactory = async options => {
     }
 };
 
-/** Called once by platform startup; importing a module never creates a context or schedules work. */
 export function registerWebgl2PaneFactory(): void { registerGpuPaneFactory(createGpuPane); }

@@ -6,10 +6,6 @@ import type { TileContentIdentity, TileKey } from './geometry';
 export type CoverageIntent = 'screen' | 'capture' | 'export' | 'selection' | 'agent';
 export type CoverageClass = 'exact' | 'standin' | 'stale-version' | 'expired-fallback' | 'hole';
 
-/** Issued/leased by the document session, never authorized or extended by the compositor (§5.1:486).
- * geometryDigest covers page/region count, sizes and rotations. The session sets the immutable
- * deadline using the shared versionBridgeDurationMs policy, not a fresh deadline on every frame.
- */
 export interface VersionBridge {
     readonly fromToken: RenderToken;
     readonly toToken: RenderToken;
@@ -21,9 +17,7 @@ export interface VersionBridge {
 }
 
 export interface BridgeCompatibility {
-    /** Consumer checks appearance semantics for this candidate, including emphasis mode. */
     readonly appearanceCompatible: boolean;
-    /** False immediately when an erase/transform/recolour makes this region misleading. */
     readonly regionCompatible: boolean;
 }
 
@@ -36,9 +30,7 @@ export interface CoverageRequest {
     readonly now: number;
 }
 
-/** One healthy, budgeted publication, not merely an arrived or queued cache entry. */
 export interface CoverageProvider extends BridgeCompatibility {
-    /** Unique publication id, including resource generation; two replacements cannot alias it. */
     readonly id: string;
     readonly key: TileKey;
     readonly region: Readonly<Rect>;
@@ -52,7 +44,6 @@ export interface CoverageRegion {
     readonly region: Readonly<Rect>;
     readonly provider: CoverageProvider | null;
     readonly class: CoverageClass;
-    /** Expired pixels may remain labelled fallback, but cannot prove usable/sharp coverage. */
     readonly covers: boolean;
     readonly sharp: boolean;
 }
@@ -80,7 +71,6 @@ export function intersectRegions(a: Readonly<Rect>, b: Readonly<Rect>): Rect | n
     return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null;
 }
 
-/** Disjoint half-open remainders; no epsilon can erase a real narrow strip (§5.4:535). */
 function subtract(region: Readonly<Rect>, covered: Readonly<Rect>): Rect[] {
     const overlap = intersectRegions(region, covered);
     if (!overlap) return [{ ...region }];
@@ -122,9 +112,6 @@ function rank(provider: CoverageProvider, request: CoverageRequest): RankedProvi
 
 function stable(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
 
-/** Choose exactly one provider per rectangle: never blend coarse/fine or old/new alpha together.
- * This is preparation metadata, NOT C9's authoritative every-frame pixel coverage mask (§14.1).
- */
 export function coverRegion(request: CoverageRequest, providers: readonly CoverageProvider[]): readonly CoverageRegion[] {
     validateTileRect(request.region);
     if (!Number.isFinite(request.scale) || request.scale <= 0 || !Number.isFinite(request.now)) throw new RangeError('Invalid coverage request');

@@ -1,10 +1,6 @@
 import type { DocumentSessionStore } from './documentSessions';
 import type { ContentSource } from './documentBuffers';
 
-// C-01a wires App's exit guard and hidden-page checkpoint; W-10 registers the
-// drawing, notebook and annotated-PDF serializers; C-14 drains before every
-// flushTab caller. This store outlives panes and cached EditorStates.
-
 export interface PendingSerializer {
     documentId: string; // OpenTab.id, not the path that a rename can change.
     hasPendingEdits(): boolean;
@@ -25,7 +21,6 @@ function notifyPending(): void {
     }
 }
 
-/** Bind the App-owned store; a stale StrictMode cleanup cannot remove its successor. */
 export function installDocumentSessions(store: DocumentSessionStore): () => void {
     sessionBinding?.unsubscribe();
     const binding = { store, unsubscribe: store.subscribe(notifyPending) };
@@ -39,7 +34,6 @@ export function installDocumentSessions(store: DocumentSessionStore): () => void
     };
 }
 
-/** Report in the first unserialised-change task, not in a later pane effect. */
 export function registerPending(serializer: PendingSerializer): () => void {
     // The token is the registration, not the serializer: StrictMode may register
     // the very same reporter twice before its older cleanup runs.
@@ -54,7 +48,6 @@ export function registerPending(serializer: PendingSerializer): () => void {
     };
 }
 
-/** Read synchronously by the exit guard; an unreadable reporter stays protected. */
 export function anyPending(): boolean {
     try {
         for (const entry of sessionBinding?.store.entries() ?? []) {
@@ -69,7 +62,6 @@ export function anyPending(): boolean {
     return false;
 }
 
-/** Pin pending session revisions before pagehide can suspend asynchronous work. */
 export function checkpointSessions(report: (documentId: string, source: ContentSource) => void): void {
     for (const entry of sessionBinding?.store.entries() ?? []) {
         try {
@@ -78,7 +70,6 @@ export function checkpointSessions(report: (documentId: string, source: ContentS
     }
 }
 
-/** Start every current serializer before awaiting a PDF's asynchronous build. */
 async function drainRegistered(documentId?: string): Promise<void> {
     const failures: unknown[] = [];
     const work: Promise<void>[] = [];
@@ -91,8 +82,6 @@ async function drainRegistered(documentId?: string): Promise<void> {
     for (const entry of sessionBinding?.store.entries() ?? []) {
         if (documentId !== undefined && entry.documentId !== documentId) continue;
         const { adapter } = entry;
-        // The edits already made land first: a nudge still being prepared had nothing to drain yet, so a Reload right after
-        // one checkpointed nothing and was refused, and its save landed 1.3 s later.
         if (adapter.settle || adapter.drain) work.push((async () => { await adapter.settle?.(); await adapter.drain?.(); })());
     }
     if (work.length) {
@@ -118,7 +107,6 @@ async function drainRegistered(documentId?: string): Promise<void> {
     if (failures.length) throw new AggregateError(failures, 'Could not drain pending document serializers.');
 }
 
-/** A second checkpoint re-reads the pending set after the first drain settles. */
 function enqueueDrain(documentId?: string): Promise<void> {
     const run = drainQueue.then(() => drainRegistered(documentId));
     // A refused PDF drain must not poison the queue and prevent a later retry.
@@ -128,12 +116,6 @@ function enqueueDrain(documentId?: string): Promise<void> {
 
 export function drainAll(): Promise<void> { return enqueueDrain(); }
 
-/**
- * Wait, at most `deadlineMs`, for the edits already made in this document to land (SessionAdapter `settle`), while its
- * view is still on screen. Closing a tab hides its board, and hiding cancels a change that is still being prepared: a
- * nudge of 220 PDF annotations pressed just before the close was dropped, and the close said it could not save. True when
- * nothing is left landing.
- */
 export async function settle(documentId: string, deadlineMs: number): Promise<boolean> {
     const entry = [...(sessionBinding?.store.entries() ?? [])].find(item => item.documentId === documentId);
     if (!entry?.adapter.settle) return true;
@@ -146,16 +128,13 @@ export async function settle(documentId: string, deadlineMs: number): Promise<bo
     } finally { clearTimeout(timer); }
 }
 
-/** True while this document may have a change still landing, so a close must `settle` it before hiding its view. */
 export function isLanding(documentId: string): boolean {
     const entry = [...(sessionBinding?.store.entries() ?? [])].find(item => item.documentId === documentId);
     try { return !!entry?.adapter.settle && entry.adapter.hasPendingEdits(); } catch { return true; }
 }
 
-/** Drain the current reporter for this document without draining other panes. */
 export function drain(documentId: string): Promise<void> { return enqueueDrain(documentId); }
 
-/** Registration, removal and completed drains synchronously notify subscribers. */
 export function subscribePending(listener: () => void): () => void {
     listeners.add(listener);
     return () => { listeners.delete(listener); };

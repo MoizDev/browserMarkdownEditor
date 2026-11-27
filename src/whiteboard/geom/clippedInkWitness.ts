@@ -22,8 +22,6 @@ function insideDisc(x: number, y: number, centre: Disc, radius: number): boolean
     return dyadicSubtract(square, dyadicMultiply(r, r)).n <= 0n;
 }
 
-/** Find a fully visible point of an error-contracted ink disc. Exhausting the
- * finite grid proves nothing and is deliberately not returned as a miss. */
 export function createClippedInkWitnessJob(coverage: InkCoverage, matrix: Affine, frames: readonly CertifiedClipRegion[], query: Query,
     options: { readonly maxSamples?: number; readonly maxWork?: number } = {}): {
         step(budget: { readonly deadline: number; readonly maxWork: number }): InkWitnessResult; cancel(): void;

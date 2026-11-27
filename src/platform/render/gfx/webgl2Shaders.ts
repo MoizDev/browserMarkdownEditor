@@ -12,9 +12,6 @@ const block = `layout(std140) uniform GfxUniforms0 {
     vec4 options;
 };`;
 
-/** Private platform shader only: arbitrary stream GLSL is never rewritten (vr-lead ruling).
- * Source, backdrop and mask are distinct views; an attached destination is never sampled.
- */
 export const COMPOSITION_SHADER: ShaderModule = {
     id: 'platform-private-composition', revision: 1,
     glsl: {
@@ -93,11 +90,6 @@ void main() {
     },
 };
 
-/** Resolves a grid coverage target (see CoverageTargetOptions) and paints it: each device pixel is the box average of its
- * grid×grid r8 texels, then one composite. The uniform block is the composition block, reused: sourceRect.xy is the
- * target's device origin, sourceRect.z its grid, sourceSizeOpacityEffect.xy its texel size, backdropRect the paint
- * (rgb, alpha), and options.x selects 'modulate' (k = mix(1, rgb, alpha·c), for the fixed-function modulate blend) or
- * 'normal' (premultiplied source-over). Texels are fetched exactly: no filter, no sampler state, so no half-texel bias. */
 export const GRID_RESOLVE_SHADER: ShaderModule = {
     id: 'platform-private-grid-resolve', revision: 1,
     glsl: {
@@ -143,10 +135,6 @@ void main() {
     },
 };
 
-/** Resolves one overlap-atlas slot into an r8 coverage plane (endCoverage 'coverage'): plane pixel p reads the atlas device pixel
- * slot + (p − destination.xy) and box-averages its 16×16 texels, so the value is exact (no filter). The uniform block is the
- * composition block: destination is the plane rectangle, sourceRect.xy the slot's atlas device origin, and
- * sourceSizeOpacityEffect.y the atlas height in texels. It writes one channel and no backdrop, so it is never composited. */
 export const GRID16_RESOLVE_SHADER: ShaderModule = {
     id: 'platform-private-grid16-resolve', revision: 1,
     glsl: {
@@ -187,9 +175,6 @@ void main() {
     },
 };
 
-/** Lays a group that is composited with 'modulate': the premultiplied colour over white, k = rgb + (1 − a) (each channel),
- * scaled by opacity and the clip mask first, so a transparent pixel is exactly neutral (k = 1). The fixed-function blend
- * then multiplies the surface by k once. The composition vertex stage is shared; only the output differs. */
 export const MODULATE_COMPOSITE_SHADER: ShaderModule = {
     id: 'platform-private-modulate-composite', revision: 1,
     glsl: {
@@ -221,11 +206,6 @@ void main() {
     },
 };
 
-/** Draws a batch of textured quads in one instanced call (see GpuPass batching in compositor.ts). Each instance carries its
- * device destination (x0, y0, x1, y1) and its texel source (x, y, w, h) as two per-instance vec4 attributes, so the batch is
- * one vertex buffer slice and no uniform array, which would cap the batch at the uniform block's size. The uniform block is
- * the single quad's first and last vec4s: viewport, and texture size with opacity. By reading: the single quad draws one
- * rectangle per call, so a tile layer's N tiles were N draws and N uniform packs. */
 export const TEXTURED_QUAD_BATCH_SHADER: ShaderModule = {
     id: 'platform-textured-quad-batch', revision: 1,
     glsl: {
@@ -276,8 +256,6 @@ void main() {
     },
 };
 
-/** Resolves an area target (union ink's exact-area accumulator): each device px is min(1, |acc|) of its one r32f texel,
- * composited through the paint output. The uniform block and the quad vertex stage are the grid resolve's, unchanged. */
 export const AREA_RESOLVE_SHADER: ShaderModule = {
     id: 'platform-private-area-resolve', revision: 1,
     glsl: {

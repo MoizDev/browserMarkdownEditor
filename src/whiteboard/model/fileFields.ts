@@ -2,8 +2,6 @@ import type { NotebookPaper } from '../../utils/paper';
 import type { BoardKey, NodePropKey } from '../change/ops';
 import type { UiBlock } from './styles';
 
-// R-W23: raw entries name exactly one native record token. The encoder and CH-1
-// share this mapping, so a property set cannot leave an older raw token in charge.
 export const NODE_FILE_FIELDS = {
     parent: ['parent'], order: ['order'], page: ['page'], x: ['x'], y: ['y'],
     rotation: ['rot'], locked: ['locked'], opacity: ['opacity'],

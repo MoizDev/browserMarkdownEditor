@@ -1,5 +1,3 @@
-// This shim replaces the storage library, not application code. Handles are packed
-// recursively because recent-vaults stores them inside objects inside arrays.
 const shim = `
 const prefix = '__h_idb:';
 async function pack(value) {
@@ -45,18 +43,12 @@ export async function update(key, updater) { await set(key, updater(await get(ke
 export function createStore() { return undefined; }
 `;
 
-/** Explicit arms only. The no-shim arm exercises native structured cloning.
- * @param {import('playwright').BrowserContext} context
- * @param {{arm: 'pinned-chrome'|'idb-shim', mode?: 'dev'|'production'|'benchmark'}} options
- */
 export async function installReload(context, { arm, mode = 'dev' }) {
     if (!['pinned-chrome', 'idb-shim'].includes(arm)) throw new Error(`Name a reload arm, not ${arm}`);
     const identity = { arm, shim: arm === 'idb-shim', interceptions: 0 };
     if (arm === 'idb-shim') {
         if (mode !== 'dev') throw new Error('idb-shim routes the dev idb-keyval module; use the pinned-Chrome arm for production bundles');
         const pattern = /\/(?:[^?#]*\/deps\/idb-keyval\.js|node_modules\/idb-keyval\/[^?#]*\.js)(?:\?|$)/;
-        // Raw binding owns the outer route when present; declare the same shim
-        // bytes to it, rather than silently bypassing either storage or binding.
         Object.defineProperty(identity, 'moduleOverrides', { value: [{ name: 'idb-keyval reload shim', pattern, body: shim,
             contentType: 'text/javascript', onServe: () => { identity.interceptions++; } }] });
         await context.route(pattern, async route => {
@@ -67,10 +59,6 @@ export async function installReload(context, { arm, mode = 'dev' }) {
     return identity;
 }
 
-/** A fragment-only goto preserves this marker and therefore cannot pass.
- * @param {import('playwright').Page} page
- * @param {{arm: 'pinned-chrome'|'idb-shim'}} options
- */
 export async function forceReload(page, { arm }) {
     if (!['pinned-chrome', 'idb-shim'].includes(arm)) throw new Error('Reload arm must be explicit');
     const marker = `reload-${Date.now()}-${Math.random()}`;

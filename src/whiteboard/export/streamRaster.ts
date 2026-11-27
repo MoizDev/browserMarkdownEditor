@@ -19,8 +19,6 @@ async function wire(item: PaintItem, scale: number, signal: AbortSignal): Promis
     material: { fill: item.material.color, blend: item.material.blend } }
 }
 
-/** Send bounded geometry chunks and owned image copies, then rasterize and compress entirely
- * in the shared export worker. The caller retains the pinned source through settlement. */
 export async function streamRasterPng(
   source: PaintNodeSource, images: PaintImageProvider, world: Readonly<Rect>, scale: number,
   signal: AbortSignal, options: { background?: string; clipboard?: boolean } = {},
@@ -55,7 +53,6 @@ export async function streamRasterPng(
           if (item.kind === 'image' && !sent.has(item.imageKey)) {
             let lease
             try { lease = await images.acquire(item.imageKey, source.token, signal) } catch (error) {
-              // A picture whose file is missing is sent as the screen's placeholder, and the rest of the PNG is made.
               const placeholder = signal.aborted ? null : await missingPictureBitmap(images, item.imageKey, error)
               if (!placeholder) throw error
               if (signal.aborted) { placeholder.close(); signal.throwIfAborted() }

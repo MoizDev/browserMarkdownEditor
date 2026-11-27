@@ -6,7 +6,6 @@ import type { PaintItem } from './paintStream';
 
 const BLOCK_BYTES = 65_536, ENTRY_BYTES = 256;
 
-/** One immutable frame's conservative bounds, shared by its sequential tile producer. */
 export class PaintBoundsCache {
     private entries = new WeakMap<PaintItem, Readonly<{ bounds: Rect | null }>>();
     private readonly leases: ByteLease[] = [];

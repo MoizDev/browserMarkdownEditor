@@ -2,9 +2,6 @@ import type { NativeAttachment } from './nativeInventory';
 import { attachmentMarker } from './attachments';
 import { WRITE_MARK_ATTACHMENT } from './writeIdentity';
 
-/** PDFium cannot inspect arbitrary Filespec metadata or AF ownership. Its
- * direct path is limited to attachment-free pristine documents and a fully
- * understood app-owned outer set; everything else goes to the legacy converter. */
 export function preservationPath(pristine: readonly NativeAttachment[], outer: readonly NativeAttachment[],
     format: string, pristineFingerprint: string, outerFingerprint: string): 'native' | 'legacy' {
     if (!format || !/^[0-9a-f]{64}$/.test(pristineFingerprint) || !/^[0-9a-f]{64}$/.test(outerFingerprint)) throw new Error('Invalid preservation identity');

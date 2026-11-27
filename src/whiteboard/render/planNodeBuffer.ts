@@ -6,9 +6,7 @@ import type { PaintNode } from './paintStream';
 import { paintNodeBytes } from './residentBytes';
 import type { ScenePaintNodeStream } from './scenePaintStream';
 
-/** Charged in chunks, as the resolved-node cache charges, so the buffer never holds more than its lease covers. */
 const CHUNK = 64 * 1024;
-/** The most one plan's shared read may keep. Past it the read stops keeping nodes and later passes stream their own. */
 export const PLAN_NODE_BUFFER_MAX_BYTES = 32 * 1024 * 1024;
 
 const contains = (outer: Readonly<Rect>, inner: Readonly<Rect>) => inner.x >= outer.x && inner.y >= outer.y
@@ -16,8 +14,6 @@ const contains = (outer: Readonly<Rect>, inner: Readonly<Rect>) => inner.x >= ou
 const intersects = (a: Readonly<Rect>, b: Readonly<Rect>) => a.x <= b.x + b.width && b.x <= a.x + a.width
     && a.y <= b.y + b.height && b.y <= a.y + a.height;
 
-/** Whether some item of `node` may paint in `apron`: the test a tile applies to each item, applied to the node first, so a
- * pass sees only the nodes it would have streamed (its barriers and sensitivity count only inside its own apron). */
 function meets(node: PaintNode, apron: Readonly<Rect>): boolean {
     for (const items of [node.underlay ?? [], node.content]) for (const item of items) {
         const job = new PaintBoundsJob(item);
@@ -29,17 +25,12 @@ function meets(node: PaintNode, apron: Readonly<Rect>): boolean {
 }
 
 export interface PlanNodeBufferOptions {
-    /** The world every pass of the plan lies within: one read of it serves them all. */
     readonly world: Readonly<Rect>;
-    /** Opens the bounded stream of a world, exactly as a tile's own stream is opened. */
     readonly open: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
     readonly memory: MemoryAllocator;
     readonly maxBytes?: number;
 }
 
-/** One read of a plan's world, kept in canonical order. One pass (the owner) reads the sheet while the read is whole; later
- * passes replay the kept nodes. `serve` returns null whenever the buffer cannot serve a pass (another pass is reading, the
- * read broke or overflowed, or the apron lies outside the world), and the caller then opens its own stream as before. */
 export class PlanNodeBuffer {
     private readonly controller = new AbortController();
     private nodes: PaintNode[] = [];
@@ -60,7 +51,6 @@ export class PlanNodeBuffer {
         this.maxBytes = options.maxBytes ?? PLAN_NODE_BUFFER_MAX_BYTES;
     }
 
-    /** A stream of `apron` served from this read, or null when the caller must open its own. */
     async serve(apron: Readonly<Rect>, signal: AbortSignal): Promise<ScenePaintNodeStream | null> {
         if (this.disposed || this.broken || !contains(this.options.world, apron)) return null;
         if (this.ended) return this.keeping && this.stream ? new Reader(this, this.stream, apron, signal, false) : null;
@@ -90,12 +80,6 @@ export class PlanNodeBuffer {
         return next;
     }
 
-    /** Keeps `node` while the byte bound and the pool allow it. The first refusal stops keeping for good and gives back what was
-     * kept: a buffer that stopped keeping serves no pass again (see serve), so its nodes would only hold the pool.
-     * Admitted as work ahead of need (`prefetch`): the buffer only saves later passes their own stream, so a refusal is no pressure
-     * and the room is the tile runs' first. Asked as a normal reservation it held the pool beside the plan's own resolved copy of the
-     * same nodes, every next tile run was refused for room nothing gave back, and an old 454-stroke notebook stayed on "Waiting for
-     * memory to draw this board…" for good (measured, CfT 157, one pane at 1280x820: buffer 14.5 MB, resolved 14.5 MB, pool 33.6 MB). */
     keep(node: PaintNode): void {
         if (!this.keeping) return;
         const needed = this.bytes + paintNodeBytes(node);
@@ -123,18 +107,14 @@ export class PlanNodeBuffer {
         return freed;
     }
 
-    /** Whether the owner keeps nodes. Stops for good once the bound or the pool refuses one, or the plan sheds it. */
     isKeeping(): boolean { return this.keeping; }
-    /** The bytes the kept nodes are charged: work ahead of need, never part of the plan's floor. */
     get chargedBytes(): number { return this.leased; }
     count(): number { return this.nodes.length; }
     at(index: number): PaintNode { return this.nodes[index]!; }
-    /** The complete kept list a replaying pass reads; a later shed leaves this list to that pass. */
     snapshot(): readonly PaintNode[] { return this.nodes; }
 
     finish(): void { this.ended = true; this.owner = null; }
 
-    /** The owner gave up before the end: the partial read is never replayed, and its stream is released. */
     abandon(owner: Reader): Promise<void> {
         if (this.owner === owner) this.owner = null;
         if (this.ended) return Promise.resolve();
@@ -156,12 +136,9 @@ export class PlanNodeBuffer {
         return stream ? this.pulling.then(() => stream.release()).catch(() => {}) : Promise.resolve();
     }
 
-    /** Meets a pass's apron: exposed for the readers of this buffer. */
     static meets = meets;
 }
 
-/** One pass's view of the shared read: its own cursor and apron. The owner also reads the sheet; a replaying pass only reads
- * what the owner kept. Metadata and checks come from the underlying stream, so the pass is checked as its own stream was. */
 class Reader implements ScenePaintNodeStream {
     private cursor = 0;
     private released = false;
@@ -179,7 +156,6 @@ class Reader implements ScenePaintNodeStream {
     readonly mayPaint: ScenePaintNodeStream['mayPaint'];
     readonly occupiedRoot: ScenePaintNodeStream['occupiedRoot'];
 
-    /** A replaying pass's list, taken when it starts; the owner reads the buffer's own list as it grows. */
     private readonly replay: readonly PaintNode[] | null;
 
     constructor(private readonly buffer: PlanNodeBuffer, private readonly source: ScenePaintNodeStream,

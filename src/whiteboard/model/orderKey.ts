@@ -1,4 +1,3 @@
-// document-model.md §4, M-4; R-W7/R-W12 settle signed integers and bottom insertion.
 export type OrderKey = string;
 const DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 const BASE = 62n;
@@ -58,7 +57,6 @@ function encodeInteger(value: bigint): string | null {
     return String.fromCharCode(value < 0n ? 91 - count : 96 + count) + digits;
 }
 
-// Fractions have an implicit zero suffix below and an exclusive 1.0 above.
 function fractionBetween(a: string, b: string | null): string {
     let prefix = '';
     for (let i = 0; ; i++) {
@@ -87,8 +85,6 @@ function between(a: OrderKey | null, b: OrderKey | null): OrderKey {
         }
         const previous = encodeInteger(value);
         if (inside(previous, a, b)) return previous;
-        // At the lower limit, use the reserved integer as a prefix, never as a key.
-        // An integer bound one above it needs MIN+'V', not upper+'V' (which is above b).
         return MIN_KEY + fractionBetween('', upper === MIN_KEY ? b!.slice(upper.length) : null);
     }
     const lower = integerPart(a);
@@ -108,8 +104,6 @@ function between(a: OrderKey | null, b: OrderKey | null): OrderKey {
     const high = integerValue(upper);
     if (high - low >= 2n) {
         const middle = encodeInteger(low + (high - low) / 2n);
-        // Imported non-canonical heads can disagree numerically with lexical order.
-        // They stay verbatim; only a candidate that is lexically inside may be used.
         if (inside(middle, a, b)) return middle;
     }
     return lower + fractionBetween(a.slice(lower.length), null);
@@ -142,7 +136,6 @@ export function keysBetween(a: OrderKey | null, b: OrderKey | null, n: number): 
     return keys;
 }
 
-// Apply re-keys the parent's sorted siblings in the same transaction (and inverse).
 export function needsRekey(key: OrderKey): boolean { return key.length > REKEY_LENGTH; }
 
 export function compareOrder(a: { readonly order: OrderKey; readonly id: string }, b: { readonly order: OrderKey; readonly id: string }): number {

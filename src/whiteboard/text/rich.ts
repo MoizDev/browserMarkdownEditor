@@ -34,7 +34,6 @@ export type { FragmentSnapshotOptions } from './fragmentSnapshot';
 export { admitRichFragmentCooperative } from './admitFragment';
 export type { RichFragmentAdmissionOptions } from './admitFragment';
 
-/** TX-2 operations use UTF-16 offsets in the newline-separated projection. */
 export interface RichTextOperations {
     plain(value: RichText): string;
     fromPlain(value: string): RichText;
@@ -58,5 +57,4 @@ export interface RichImportResult {
     readonly repairs: readonly string[];
     readonly unrepresentable: readonly string[];
 }
-/** Legacy values are data, not executable schema objects. */
 export type ImportRichText = (value: unknown) => RichImportResult;

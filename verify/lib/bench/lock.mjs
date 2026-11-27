@@ -9,9 +9,6 @@ function alive(pid) {
     if (!Number.isSafeInteger(pid) || pid < 1) return false;
     try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
 }
-// An accepted timing is only as good as the quiet machine under it, and only the person running
-// it can promise that: they declare how long the machine stays otherwise idle, from the moment
-// the run starts. Fixed once per process, so every check compares against the same window.
 let declaredWindow;
 function timingWindow() {
     if (declaredWindow) return declaredWindow;
@@ -24,7 +21,6 @@ export async function assertGrant(mode) {
     const cls = mode === 'accepted' ? 'bench' : 'run';
     const window = mode === 'accepted' ? timingWindow() : null;
     if (window) {
-        // The window has a time-of-day, not an expiry timestamp; crossing midnight is the preceding day.
         const [hours, minutes, seconds] = window.since.split(':').map(Number);
         const start = new Date(); start.setHours(hours, minutes, seconds, 0);
         if (start.getTime() > Date.now()) start.setDate(start.getDate() - 1);
@@ -70,7 +66,6 @@ export async function acquireBenchLock(mode) {
     try { await fd.writeFile(JSON.stringify(holder, null, 2)); await fd.sync(); }
     catch (error) { await fd.close(); await unlink(lockPath); throw error; }
     await fd.close();
-    // Inherited by child processes too: the functional-only target observer refuses a timed run.
     process.env.BME_TIMED_RUN = holder.token;
     return { holder, async assertHeld() {
         try {

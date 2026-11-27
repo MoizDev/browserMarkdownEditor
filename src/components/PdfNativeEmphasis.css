@@ -6,8 +6,6 @@
     pointer-events: none;
 }
 
-/* Above, rather than alongside, the pills: a blocked clipboard explanation
-   must not push the page/zoom controls outside a narrow pane. */
 .pdf-copy-notice {
     position: absolute;
     right: 0;

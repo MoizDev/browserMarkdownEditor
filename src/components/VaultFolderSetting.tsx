@@ -1,12 +1,3 @@
-// Settings → Terminal → "Vault folder on disk".
-//
-// A new terminal starts in the folder of the file you are in, which means the
-// helper has to know where this vault really is. It finds that itself, by the
-// marker the editor writes at the vault root (helper/src/vaultPath.ts) — so
-// this row is the fallback, not the mechanism: it shows what was found, and
-// takes a typed path when the search came up empty (a vault outside the home
-// directory, on a network share, behind a permission the helper does not have).
-//
 // IT ASKS THE HELPER ONLY WHEN THE PANEL IS OPEN, and only when a connection
 // already exists: Settings must never be the thing that raises Chrome's Local
 // Network Access prompt (the rule agentBridge exists to keep). With no helper
@@ -55,8 +46,6 @@ export function VaultFolderSetting({ vaultId }: { vaultId: string | null }) {
         looking: 'Looking…',
         found: '',
         missing: "VaultAgent couldn't find this vault. Paste its full path to start terminals in it.",
-        // Deliberately specific: the usual cause is pasting the wrong folder,
-        // and the marker is the thing that proves which vault a folder is.
         rejected: "That folder isn't this vault (no matching .VaultAgent/vault.json in it).",
     }[status.kind];
 

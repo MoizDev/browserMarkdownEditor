@@ -1,6 +1,5 @@
 import { inflateSync } from 'node:zlib';
 import fs from 'node:fs/promises';
-// Small original PNG reader for Chromium screenshots: non-interlaced, 8-bit RGB/RGBA.
 export function decodePNG(buffer) {
   buffer=Buffer.from(buffer);if(buffer.subarray(0,8).toString('hex')!=='89504e470d0a1a0a')throw Error('Not PNG');
   let width,height,channels,depth,interlace;const chunks=[];

@@ -27,22 +27,11 @@ import { hasHostedNativeOwner } from './nativeOwners';
 import { tracksAssets } from './tracksAssets';
 import { loadHelpDoc } from '../utils/helpDocLoader';
 
-/** How many closed documents ⌥⇧T can reach back through. Session-only and
- *  bounded: a long session closes hundreds of tabs and nobody reaches past a
- *  handful, while an unbounded list would pin a path per close for the day. */
 const CLOSED_TAB_MEMORY = 20;
-/** How long closing a board waits for its last change to land (a nudge of 4,000 strokes measured 4.4 s), and how long
- *  before the status line says so. */
 const CLOSE_SETTLE_MS = 15_000;
 const CLOSE_SETTLE_QUIET_MS = 400;
-/** How long after a close that could not save the save is tried again. */
 const CLOSE_RETRY_MS = 2000;
 
-/**
- * Every way one document stops being open: its release (buffers, sessions,
- * per-path records), closing with a save first, overwrite and removal, the
- * ⌥⇧T reopen stack, unreadable-tab retry, and the editing-mode switch.
- */
 export interface UseTabLifecycleDeps {
   clearSaveTimer: (path: string) => void;
   tabsRef: React.RefObject<OpenTab[]>;
@@ -100,12 +89,9 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     setDiskState, showStatus,
   } = deps;
 
-  /** Everything that has to happen for ONE document to stop being open, short
-   *  of the two state updates (which differ per caller). */
   const releaseTab = useCallback((path: string) => {
     // Callers drain and save before releasing, or explicitly discard the tab.
     clearSaveTimer(path);
-    // The document's disk state goes with it.
     const doc = tabsRef.current.find(t => t.file.path === path);
     if (doc) {
       documentSessions.release(doc.id, 'tab-close');
@@ -127,41 +113,12 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     const owner = indexGraphRef.current;
     if (owner) void owner.client.dropOverlay(path).catch(() => {});
     notifySearchChanges();
-    // A successful closing flush has already captured the render data.
     clearPdfRenderData(path);
-    // A notebook's exporter closes over its editor; dropping it is what stops a
-    // closed notebook pinning that editor for the rest of the session.
     clearNotebookRenderData(path);
-    // Same: the flush above captured its own diff before this ran. A closed
-    // note has no unsaved edits left to attribute an asset change to.
     assetRefsRef.current.delete(path);
     boardBaselinesRef.current.remove(path);
   }, [clearSaveTimer, documentBuffers, documentSessions, indexGraphRef, recoveryEvent, syncExitGuard, assetRefsRef, boardBaselinesRef, bufferPathIdsRef, bytesGenerationsRef, diskStateRef, invalidReaderTokens, pdfRebuildRef, pdfSeedSourcesRef, pdfSeedsRef, readerIdentityCache, tabsRef]);
 
-  /**
-   * A rename or move that lands on a name another tab is holding. renameFile /
-   * moveFile deliberately overwrite (an explicit move onto a name is the user
-   * saying so), so that tab's file no longer exists — its buffer must NOT be
-   * flushed, or it would write itself straight back over the file that just
-   * replaced it. Dropping it here is what keeps one path from ending up in two
-   * tabs, drawing one document under two names.
-   *
-   * Called on EVERY overwrite, whether or not the file being renamed is itself
-   * open: the hazard belongs to the tab holding the destination name, which
-   * still holds a handle resolving to that very directory entry. Skipping it
-   * when the source happened to be closed left that tab's autosave to put the
-   * old bytes back over the file that had just replaced them.
-   *
-   * BEFORE the moved document's own per-path state is re-keyed onto this path,
-   * never after: `releaseTab` clears exactly the two slots (the parked PDF
-   * render data, the asset-diff baseline) that movePdfRenderData/moveAssetRefs
-   * write, so running it second wiped the survivor's rather than the loser's —
-   * silently dropping pending annotations and killing that note's asset diff
-   * for the rest of the session.
-   */
-  // `keep`: the overwrite was NOT the reader's doing (a `mv` noticed on disk), so
-  // the buffer's unsaved edits are flushed as a closing document's — its file
-  // now holds other bytes, so they land beside it as a `(conflict)` copy.
   const releaseOverwritten = useCallback(async (path: string, movedFrom: string, keep = false) => {
     if (path === movedFrom) return;
     if (!tabsRef.current.some(t => t.file.path === path)) return;
@@ -172,46 +129,24 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
       if (result === 'failed' || (result === 'skipped' && pending)) throw new Error('Could not preserve the overwritten document.');
     }
     releaseTab(path);
-    // Its tab goes too. renamePath would drop it as it re-points the moved
-    // document, but only when the moved one is open — and closing it here is
-    // also what fronts a NEIGHBOUR of the tab that vanished rather than
-    // whichever tab happens to be leftmost in the column.
     setLayout(l => closePath(l, path));
     setTabs(prev => prev.filter(t => t.file.path !== path));
   }, [releaseTab, flushTab, documentSessions, setLayout, setTabs, tabsRef]);
 
-  /** Close one document. Its tab goes; the column goes with it only if that was
-   *  the column's last tab (see utils/tabPanes.ts closePath). */
   const removeTab = useCallback((path: string) => {
     releaseTab(path);
     setLayout(l => closePath(l, path));
     setTabs(prev => prev.filter(t => t.file.path !== path));
   }, [releaseTab, setLayout, setTabs]);
 
-  /**
-   * The documents the user closed, oldest first — the stack ⌥⇧T pops.
-   *
-   * PATHS, not the tabs themselves: a reopen reads the file again, so a note
-   * edited elsewhere between the close and the reopen comes back as it now is
-   * (its buffer was flushed on the way out, so nothing is lost either way), and
-   * a closed PDF or notebook costs nothing to hold on to. Only a close the USER
-   * asked for is recorded: a rename, an overwrite or a vault switch takes a tab
-   * away for a reason that reopening would undo (see releaseOverwritten).
-   */
   const closedPathsRef = useRef<string[]>([]);
-  // Two vaults share paths freely, so the stack is emptied on a switch rather
-  // than left to resolve "notes/todo.md" against whichever vault is open now.
   useEffect(() => { closedPathsRef.current = []; }, [currentVaultId]);
   const rememberClosed = useCallback((paths: readonly string[]) => {
-    // Closing, reopening and closing a note again puts it back on top rather
-    // than leaving two entries for one document.
     const stack = closedPathsRef.current.filter(p => !paths.includes(p));
     stack.push(...paths);
     closedPathsRef.current = stack.slice(-CLOSED_TAB_MEMORY);
   }, []);
 
-  // A close that could not save tries once more on its own after this long: told "your next change tries again", the
-  // person had nothing left to change, and the close had already failed once.
   const retryClosingSave = useCallback((tab: OpenTab) => {
     setTimeout(() => {
       const now = tabsRef.current.find(t => t.id === tab.id);
@@ -249,12 +184,9 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
           await drain(tab.id);
           if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
           const result = await flushTab(path);
-          // A board's acknowledged write still finishes its after-write step as tracked work; checking before
-          // it settles misreads a clean board as pending (seen closing a written drawing beside a PDF pane).
           if (result === 'written') await drain(tab.id);
           const pending = documentSessions.hasPendingEdits(tab.id);
           if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
-          // The tab as it is NOW: the one captured when the close began may still say dirty for a write that has since landed.
           const dirtyNow = tabsRef.current.find(t => t.id === tab.id)?.dirty ?? tab.dirty;
           if (result === 'changed' || result === 'deleted') {
             setLayout(l => openTabIn(l, path));
@@ -267,7 +199,6 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
             retryClosingSave(tab);
             return;
           }
-          // Reopening while the save was in flight reuses this very document.
           if (reopenedClosingRef.current.has(tab.id)) return;
           releaseTab(path);
           setTabs(prev => prev.filter(t => t.id !== tab.id));
@@ -281,9 +212,6 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
         } finally { stopClosing(tab); }
       })();
     };
-    // Hiding a board cancels a change still being prepared for it (a nudge, a paste, a delete of many items), so the close
-    // waits, with the board on screen, for what the person already did to land. Measured: a select-all nudge of 220 PDF
-    // annotations closed 80 ms after the key was dropped, and the close said it could not save; nothing reached the file.
     if (!docs.some(tab => isLanding(tab.id))) { leave(); return; }
     void (async () => {
       let told = false;
@@ -304,15 +232,6 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     closeDocuments([path], () => setLayout(l => closePath(l, path)));
   }, [closeDocuments, setLayout]);
 
-  /**
-   * Put the last closed document back (⌥⇧T), through the same opener a click in
-   * the file tree uses.
-   *
-   * Reaches further back rather than failing: an entry already open again, or
-   * whose file has since been trashed, renamed or moved, is dropped and the one
-   * before it tried. So the chord either lands on a document or does nothing —
-   * it never reopens a ghost tab of a file that is gone.
-   */
   const reopenClosedTab = useCallback(async () => {
     for (;;) {
       const path = closedPathsRef.current.pop();
@@ -326,18 +245,6 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     }
   }, [handleFileClick, closingRef, fileTreeRef, reopenedClosingRef, setLayout, tabsRef]);
 
-  /**
-   * Read an unreadable tab's file again (see OpenTab.readError). Resolves true
-   * when the tab now holds the file's text.
-   *
-   * Serialized per document — a double click, or the pane's button and a tree
-   * click together, would otherwise race two reads into one tab. The updaters
-   * match on the tab's id, not its path: a close, rename or vault switch can
-   * land mid-read, and must turn the result into a no-op rather than hand the
-   * text to whatever answers to that path by then. A success remounts the pane
-   * (EditorPane keys it on readError), so its view is built from the real text
-   * exactly as on a fresh open.
-   */
   const retryingReadsRef = useRef(new Set<string>());
   const retryUnreadTab = useCallback(async (path: string): Promise<boolean> => {
     const tab = tabsRef.current.find(t => t.file.path === path);
@@ -354,7 +261,6 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
         return true;
       } finally { retryingReadsRef.current.delete(tab.id); }
     }
-    // The guide's text is a chunk of the app, not a file: a restore that could not fetch it kept its tab, unreadable.
     if (tab?.readError && tab.file.isHelp) {
       if (retryingReadsRef.current.has(tab.id)) return false;
       retryingReadsRef.current.add(tab.id);
@@ -389,8 +295,6 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
       documentBuffers.report(tab.id, content, true);
       documentBuffers.setReadable(tab.id, representationFor(current.file.name).bufferKind === 'text');
       bumpBytesGeneration(tab.id);
-      // The asset-diff baseline the restore held back, taken under the path the
-      // document answers to NOW.
       if (!binaryDrawing && ((tracksAssets(current.file) && !assetRefsRef.current.has(current.file.path)) ||
           (isCanvasFile(current.file.name) && !boardBaselinesRef.current.capture(current.file.path)))) {
         rememberAssetRefs(current.file, content);
@@ -401,8 +305,6 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
       return true;
     } catch (err) {
       const current = tabsRef.current.find(t => t.id === tab.id);
-      // Closed, or its vault switched away, while the read was out: nothing
-      // left to update or to tell anyone about.
       if (!current) return false;
       // NotFoundError on the handle this read started with only means "gone" if
       // the tab still holds that handle: a rename or move mid-read retargets
@@ -425,8 +327,6 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
       retryingReadsRef.current.delete(tab.id);
     }
   }, [readFileVersioned, readBytesVersioned, rememberAssetRefs, removeTab, tell, resolveFileHandle, setDiskState, documentBuffers, bumpBytesGeneration, seedDocumentBuffer, assetReadableWakeRef, assetRefsRef, boardBaselinesRef, diskStateRef, invalidReaderTokens, setTabs, tabsRef]);
-  // handleFileClick is declared long before this, and reads it through a ref
-  // rather than growing a dependency.
   useEffect(() => { retryUnreadTabRef.current = retryUnreadTab; }, [retryUnreadTab, retryUnreadTabRef]);
 
   const pendingPdfMode = useRef(new Set<string>());
@@ -436,25 +336,16 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     const tab = tabsRef.current.find(t => t.file.path === path);
     if (!tab || !canChangeTabMode(tab)) return;
     const mode = requestedMode ?? (tab.mode === 'edit' ? 'read' : 'edit');
-    // A PDF whose DiskBar is up stays as it is until the bar is answered, and nothing else is said: the bar is the
-    // message. Switched under it, Annotate refused with "The PDF source is not eligible for editing", and leaving Annotate
-    // with unsaved ink left the pane on "Applying annotations…" behind "The board is read-only"; a refusal in a dialog
-    // ("Could not continue") then covered the bar's own buttons (measured: Keep mine not reachable until it was dismissed).
     if (tab.representation.loadedKind === 'pdf' && mode !== tab.mode && diskStateRef.current.has(tab.id)) return;
-    // A page turn being written: Annotate waits for it and opens on the turned pages (utils/pdfTurnHold.ts), so the
-    // tab's mode stays what is on screen meanwhile; the same toggle again takes the request back.
     if (tab.representation.loadedKind === 'pdf' && pdfTurnHeld(tab.id)) {
       if (!requestedMode && cancelAfterPdfTurn(tab.id)) return;
       if (mode === 'edit') {
-        // Made as any other switch to Annotate is, once the turn is released: the document is found again by id (it may
-        // have been renamed meanwhile), and a tab showing Text goes through Original first, as the direct switch does.
         afterPdfTurn(tab.id, () => {
           const now = tabsRef.current.find(t => t.id === tab.id);
           if (now && now.mode === 'read') changeTabModeRef.current(now.file.path, 'edit');
         });
         return;
       }
-      // An explicit request for reading (the agent's, a command's) withdraws a waiting Annotate switch as the toggle does.
       cancelAfterPdfTurn(tab.id);
     }
     if (mode === tab.mode) return;
@@ -464,14 +355,9 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     if (tab.representation.loadedKind === 'pdf' && tab.mode === 'edit' && (view?.flushPending || nativePdf)) {
       if (pendingPdfMode.current.has(tab.id)) return;
       pendingPdfMode.current.add(tab.id);
-      // Native ink reports through its document bridge, not the retired canvas view reporter.
       void Promise.resolve(view?.flushPending?.()).then(async () => {
         const needsSave = documentBuffers.isDirty(tab.id) || !nativePdf && tabsRef.current.find(t => t.id === tab.id)?.dirty;
         const outcome = await flushTab(path, !!needsSave);
-        // Leaving Annotate goes ahead only once its ink is on disk (or there was none to write). A flush that met the other
-        // program's write ('changed'), a deleted file, or a write that failed abandons the switch: the board stays up with
-        // the ink, and the bar or the save notice says what happened. Committed regardless, the pane went to Original with
-        // the ink unwritten and sat blank on "Applying annotations…" under the bar (measured: 4 of 4 timings).
         const unsaved = documentBuffers.isDirty(tab.id) || !nativePdf && !!tabsRef.current.find(t => t.id === tab.id)?.dirty;
         if (outcome === 'failed' || outcome === 'changed' || outcome === 'deleted' || outcome === 'skipped' && unsaved
           || diskStateRef.current.has(tab.id)) return;

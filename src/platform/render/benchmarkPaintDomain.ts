@@ -11,7 +11,6 @@ export interface BenchmarkPaintDomain {
     readonly vector: boolean;
 }
 
-/** Geometry names the denominator only. Current/stand-in pixels come from executed paint. */
 export function benchmarkPaintDomain(snapshot: { readonly layout: Readonly<PageStack> | null; readonly layers: readonly CompositorLayer[] },
     frame: ScheduledFrame, backend: CompositorBackend = 'canvas2d'): BenchmarkPaintDomain {
     const view = frame.view;
@@ -19,7 +18,6 @@ export function benchmarkPaintDomain(snapshot: { readonly layout: Readonly<PageS
     const height = Math.round(view.viewport.height * view.viewport.dpr);
     const rects: RectI[] = [];
     const append = (rect: Readonly<Rect>) => {
-        // Single-sample GPU fragments are evaluated at pixel centres, not an AA envelope.
         const x = Math.max(0, Math.ceil(rect.x - 0.5));
         const y = Math.max(0, Math.ceil(rect.y - 0.5));
         const right = Math.min(width, Math.ceil(rect.x + rect.width - 0.5));
@@ -48,8 +46,6 @@ export function benchmarkPaintDomain(snapshot: { readonly layout: Readonly<PageS
         }
         return Object.freeze({ get vector() { return vector(); }, rects: Object.freeze(rects) });
     }
-    // An infinite vector document has no raster denominator or page gaps. Object fidelity
-    // remains the separate canonical painter's responsibility, never a cache-coverage claim.
     if (snapshot.layers.some(layer => layer.group === 'document')) append({ x: 0, y: 0, width, height });
     return Object.freeze({ get vector() { return vector(); }, rects: Object.freeze(rects) });
 }

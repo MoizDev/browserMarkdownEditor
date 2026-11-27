@@ -151,8 +151,6 @@ export async function saveText(page, path, text) {
     return witness;
 }
 
-// Mirrors V-01a readWitness: fence on successful closes (including seed and
-// outside writes), then ONE read, retrying only transient NotReadableError.
 export async function readWitness(page, { name, path, report, afterCompletedCloses }) {
     const { path: closePath, count, timeoutMs, intervalMs } = afterCompletedCloses;
     const deadline = Date.now() + timeoutMs;

@@ -9,7 +9,6 @@ import type { Ask, Tell } from './useAppDialogs';
 import type { FlushTab, IndexGraphRef, NativePolicy, PdfRebuildEntry, RecoveryEvent, SetDiskState, SetTabs } from './types';
 import { loadChunk } from '../platform/chunkLoad';
 
-/** The App-scope values `useDiskBarActions` reads, named as App names them. */
 export interface UseDiskBarActionsDeps {
   tabsRef: React.RefObject<OpenTab[]>;
   rootHandleRef: React.RefObject<FileSystemDirectoryHandle | null>;
@@ -58,11 +57,6 @@ export function useDiskBarActions(deps: UseDiskBarActionsDeps) {
     readFileVersioned, writeFileVersioned, writeConflictCopy,
   } = deps;
 
-  /**
-   * The DiskBar's buttons. Serialized per document (the bar disables itself
-   * too). Whichever version the reader does not pick is kept beside the file
-   * as `name (conflict).ext` — never dropped.
-   */
   const resolvingRef = useRef(new Set<string>());
   const handleDiskAction = useCallback(async (path: string, action: DiskAction) =>
     (await loadChunk(() => import('./diskBarActions'))).handleDiskAction({

@@ -55,7 +55,6 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
     });
 }
 
-/** The App slot owns the pristine source. This view owns only its layer and subscriptions. */
 export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Promise<PdfInkBackdrop> {
     const { source } = options, token = Object.freeze({ ...source.token });
     options.signal?.throwIfAborted();
@@ -125,7 +124,6 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     retained.views.add(lease);
     let disposed = false, updating = false;
     let latestView: ViewState | null = null;
-    // The backend of the board's last certified presentation (complete, sharp, current): what the next frame is judged on.
     let presentedOn: CompositorBackend | undefined;
     const sync = () => {
         const views = [...retained.views].filter(view => view.visible);
@@ -167,9 +165,6 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
             if (!isCurrent() || transition.isActive(bridge)) return;
             const tiles = layer.current();
             tiles?.expireBridge();
-            // Covered only when the current pages cannot replace the old version's stand-ins at the next frame: a board already
-            // showing them sharp lost nothing, and covering it flashed the opaque cover and detached input mid-stroke (the expiry
-            // lands 2 s after Original advanced the generation; measured: back to Annotate at once, 19-34 ms flashes, 2 of 3).
             if (updating || presentedOn && latestView && sharpOn(tiles, latestView, presentedOn)) return;
             updating = true; options.onUpdating?.(true);
         };
@@ -227,7 +222,6 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
                             checkSource();
                             if (tile.key.contentRevision !== pdfVariantRevision('plain', epoch)) throw stale();
                             const bitmap = await actual.document.producer.render(tile, AbortSignal.any([signal, controller.signal]));
-                            // The arrival is counted by the tile producer; a bitmap dropped here must release that count too.
                             try { signal.throwIfAborted(); checkSource(); return bitmap; }
                             catch (error) { consumePdfTileArrival(bitmap); bitmap.close(); throw error; }
                         } };
@@ -248,9 +242,6 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         notePresentation(backend) {
             presentedOn = backend;
             if (!updating || !latestView || !isCurrent() || !lease.visible || !options.isVisible()) return;
-            // The pages are proved on the backend that presented, as the compositor proves them (definition.ts). Proved on canvas2d
-            // always, a WebGL2 board never cleared 'Updating PDF view…': its tiles give their bitmaps up once uploaded, so the CPU
-            // test failed on every sharp frame (measured: back to Annotate 1.3 s after Original, 3 of 3 runs covered for good).
             if (!sharpOn(layer.current(), latestView, backend)) return;
             updating = false; options.onUpdating?.(false);
         },

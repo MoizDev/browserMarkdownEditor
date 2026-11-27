@@ -24,13 +24,9 @@ import { planBoardClipboardPlacement } from './placement';
 import type { ClipboardIntent, ClipboardTarget } from './types';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-/** Text pasted from the top edge of the view keeps this many screen pixels clear of it (catalogue c.8). */
 const TEXT_TOP_CLEARANCE_PX = 40;
-/** The nodes that carry a link address, the same set the Edit link command reaches. */
 const LINKABLE_KINDS: ReadonlySet<string> = new Set(['figure', 'sticky', 'picture', 'linkcard', 'embed']);
 
-// Provenance: external clipboard placement, text-layout and atomic change
-// contracts; independent authoring path, no third-party source.
 export type ExternalClipboardContent =
     | { readonly kind: 'plain'; readonly text: string }
     | { readonly kind: 'rich'; readonly fragment: RichFragment }
@@ -38,7 +34,6 @@ export type ExternalClipboardContent =
 export interface InsertClipboardTextOptions {
     readonly runtime: BoardRuntime;
     readonly target: Readonly<ClipboardTarget>;
-    /** Must check the captured target's session, vault epoch and generation. */
     current(target: Readonly<ClipboardTarget>): boolean;
     readonly receivingBoardId: string;
     readonly cameraZoom: number;
@@ -46,20 +41,16 @@ export interface InsertClipboardTextOptions {
     readonly embedManifest?: EmbedManifest;
     readonly intent: ClipboardIntent;
     readonly content: ExternalClipboardContent;
-    /** A pasted address goes into the one selected link-carrying node instead of making a new card (paste, not drop or embed insertion). */
     readonly aimAtSelectedLink?: boolean;
     readonly signal?: AbortSignal;
     cooperate?(): Promise<void>;
 }
 
-/** Pasted text is sized to the view: one line may be as wide as 920 units (never narrower than 200, nor than 90% of the view), a
- * longer text wraps at 90% of the view. Wider text becomes fixed-width at that limit; narrower text stays auto-sized. */
 export function pastedTextFit(width: number, lines: number, viewportWidth: number): { readonly autoSize: boolean; readonly w: number } {
     const limit = Math.max(1, lines > 1 ? 0.9 * viewportWidth : Math.min(920, Math.max(200, 0.9 * viewportWidth)));
     return width > limit ? { autoSize: false, w: limit } : { autoSize: true, w: width };
 }
 
-/** Empty text creates no object; whitespace and newline-only text are preserved literally. */
 export async function insertClipboardText(options: InsertClipboardTextOptions): Promise<string | null> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev, basis = insertionBasis(doc);
     const target = Object.freeze({ ...options.target, viewport: Object.freeze({ ...options.target.viewport }),
@@ -67,7 +58,6 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
     const signal = options.signal ?? new AbortController().signal;
     const check = () => {
         signal.throwIfAborted();
-        // No revision fence: what lands is carried over to the board as it is then (rebaseInsertion).
         if (!options.current(target) || runtime.session !== session || session.owner !== owner || session.doc !== doc
             || session.isReadOnly || runtime.selection.getSnapshot().sheet !== target.sheet) {
             throw new DOMException('Clipboard target became stale', 'AbortError');
@@ -141,8 +131,6 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
         const stack = boardPageStack(doc.host), first = stack?.rects[0];
         if (stack && !first) throw new Error('Clipboard target has no page');
         const base = { id, parent: target.sheet, order: initialOrder, page: stack ? 0 : -1, x: -(first?.x ?? 0), y: -(first?.y ?? 0), ext: null };
-        // These are persisted card dimensions, not a placement estimate; the renderer
-        // supplies the actual painted geometry used below and never fetches a preview.
         const embed = url !== undefined && options.embedEnvironment ? resolveEmbedCandidate(url, options.embedEnvironment, options.embedManifest) : null;
         let node: Node = url !== undefined ? embed ? createEmbed({ ...base, ...embedCardSize(embed.provider), url })
             : createLinkcard({ ...base, w: 320, h: 180, url, preview: null }) : createText({ ...base, text: text!, color: style.color, size: style.size, font: style.font,
@@ -169,7 +157,6 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             intent: options.intent, containsFrame: false, source: { from: null,
                 bounds: { x: measured.x, y: measured.y, w: measured.width, h: measured.height } } });
         const parent = placement.parent, siblings = doc.children.get(parent) ?? [], order = keyBetween(siblings.at(-1)?.order ?? null, null);
-        // Text is lifted, never moved down, so its top stays clear of the view's top edge.
         const floor = target.viewport.y + TEXT_TOP_CLEARANCE_PX / options.cameraZoom;
         const lift = node.kind === 'text' ? Math.max(0, floor - (measured.y + placement.delta.y)) : 0;
         const wx = placement.delta.x, wy = placement.delta.y + lift;

@@ -12,8 +12,6 @@ const multiply = (a: Affine, b: Affine): Affine => [
     a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5],
 ];
 
-/** Public object/filter metadata only. A candidate is not proof that PDFium
- * missed ink; the host samples already-rendered pixels to form a warning. */
 export function pdfiumJbig2Regions(runtime: PdfiumRuntime, page: number, geometry: PageGeometry,
     limits: Readonly<EngineLimits>): PdfiumJbig2Regions {
     const budget = Math.min(limits.maxOutlineNodes, 20_000), maxDepth = Math.min(limits.maxOutlineDepth, 64);

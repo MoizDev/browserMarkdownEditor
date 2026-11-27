@@ -25,8 +25,6 @@ function minMagnitude(range: Range): Dyadic {
 function enclose(range: Range): Interval { return { lo: dyadicRatioInterval(range.lo, ONE).lo, hi: dyadicRatioInterval(range.hi, ONE).hi }; }
 function pointBounds(p: { readonly x: Dyadic; readonly y: Dyadic }): BoundsPoint { return { x: dyadicRatioInterval(p.x, ONE), y: dyadicRatioInterval(p.y, ONE) }; }
 
-/** Certified affine stroke against a closed CSS capsule. Local-disk witnesses
- * are exact; interval subdivision proves separation without a sampled stroke. */
 export function createAnisotropicSweepJob(curve: ExactCurve, matrix: Affine, localRadius: number, start: Vec2 | ExactCurvePoint, end: Vec2 | ExactCurvePoint, marginCss: number,
     limits: { readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number } = {}): {
         step(budget: { readonly deadline: number; readonly maxWork: number }): AnisotropicSweepResult; cancel(): void;

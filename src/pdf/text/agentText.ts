@@ -69,13 +69,11 @@ async function readPages(document: PdfPoolDocument, requestedPages: readonly num
     return pages;
 }
 
-/** One awaited request at a time and one deadline for the whole page list. */
 export async function pdfAgentPages(document: PdfPoolDocument, requestedPages: readonly number[], signal: AbortSignal,
     current: () => boolean = () => true): Promise<PdfAgentPage[]> {
     return readPages(document, requestedPages, deadline(signal), current);
 }
 
-/** Closed files take a transient pool lease, never a second parser or index. */
 export async function readPdfAgentText(pool: PdfPool, options: PdfOpenOptions, first: number, maxPages: number,
     maxChars: number, signal: AbortSignal, current: () => boolean = () => true): Promise<PdfAgentTextResult> {
     const combined = deadline(signal, options.signal);
@@ -102,7 +100,6 @@ export async function readPdfAgentText(pool: PdfPool, options: PdfOpenOptions, f
     } finally { await document.close(); }
 }
 
-/** Closed-file vault_view: a transient lease on the same engine, never a second parser. */
 export async function renderPdfAgentPage(pool: PdfPool, options: PdfOpenOptions, page: number, maxSide: number,
     signal: AbortSignal, current: () => boolean = () => true): Promise<{ pageCount: number; png: Blob | null; emphasis?: PdfEmphasisCapability }> {
     const combined = deadline(signal, options.signal), emphasisEnabled = getReadingPreferences().emphasis.enabled;

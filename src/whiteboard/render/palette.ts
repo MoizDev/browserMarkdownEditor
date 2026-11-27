@@ -2,7 +2,6 @@ import type { Rgba } from '../../platform/types';
 import type { Swatch } from '../model/styles';
 import { rgba, type PaintPalette, type SwatchColours } from './colour';
 
-// STYLE's recorded palette supplies role colours; unmeasured pattern geometry remains a separate concern.
 type Row = readonly [stroke: string, highlight: string, semi: string, pattern: string, lined: string];
 type Rows = Readonly<Record<Swatch, Row>>;
 const light: Rows = {
@@ -54,7 +53,6 @@ function palette(rows: Rows, background: string, solid: string, revision: number
             fill: frozenStroke, 'lined-fill': Object.freeze(lined) }), background: colour(background) });
 }
 
-// INK-H1 records white light/paper and #1e1e1e dark-board backdrops. Paper always selects light.
 export const DEFAULT_BOARD_PALETTES: Readonly<{ light: PaintPalette; dark: PaintPalette }> = Object.freeze({
     light: palette(light, 'ffffff', 'fcfffe', 1),
     dark: palette(dark, '1e1e1e', '010403', 2),

@@ -12,32 +12,7 @@ import {
 import { openContextMenu } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
 
-/* ── The note's ⌘F box ─────────────────────────────────────────────────────
-   CodeMirror's own search panel was a full-width form along the bottom of the
-   note: three word buttons, three labelled checkboxes and a second row of
-   Replace controls, with no count of what it found. This is the same search —
-   CodeMirror's query, highlighter, commands and keys, so ⌘G/F3, the reveal
-   scroll and fold-opening all still apply — drawn as the compact box the PDF
-   pane floats in its top-right corner (components/PdfFindBar.tsx): a field,
-   "3 of 12", ‹ › ×, the three match options as toggles, and Replace behind a
-   disclosure in Edit mode.
-
-   It floats: the panel is absolutely placed inside CodeMirror's sticky top
-   panel container (cmTheme.ts), so it takes no height from the note and stays
-   in the corner however far the note scrolls.
-
-   Unlike CodeMirror's panel, Replace follows the mode LIVE (`update`): that
-   one decided once, in its constructor, so every ⌘E had to close and reopen it
-   to add or drop the row. Reacting in place keeps the query, the focused
-   control and its caret with no rebuild at all. */
-
-/** Matches counted for "3 of 12" before it says "10,000+" instead. Measured
- *  cost on a 400 KB note: a full count of a one-letter query is ~4 ms, so the
- *  cap is about bounding the array, not the time. */
 const COUNT_CAP = 10_000;
-/** A document edit while the box is open recounts after this pause rather than
- *  on every keystroke: the count is the only part of the box that reads the
- *  whole note. */
 const RECOUNT_DELAY_MS = 120;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, string> = {}, text?: string): HTMLElementTagNameMap[K] {
@@ -63,14 +38,12 @@ function countMatches(state: EditorState, query: SearchQuery): Count {
     return { starts, ends, capped: false };
 }
 
-/** Index of the first match starting at or after `pos` (length if none). */
 function firstAtOrAfter(starts: readonly number[], pos: number): number {
     let lo = 0, hi = starts.length;
     while (lo < hi) { const mid = (lo + hi) >> 1; if (starts[mid] < pos) lo = mid + 1; else hi = mid; }
     return lo;
 }
 
-/** Index of the match the selection sits on, or -1. */
 function currentIndex(count: Count, from: number, to: number): number {
     let lo = 0, hi = count.starts.length - 1;
     while (lo <= hi) {
@@ -156,10 +129,6 @@ class FindPanel implements Panel {
         this.dom = el('div', { class: 'bme-find', role: 'search', 'aria-label': 'Find in note' });
         this.dom.append(main, this.replaceRow);
         this.dom.addEventListener('keydown', event => this.keydown(event));
-        // A native listener that stops the event, so the note's own right-click
-        // menu (DocumentPane's React onContextMenu on .view-content, whose
-        // argument is that everything reaching it is note text) never sees a
-        // click in this box — the same arrangement tableEdit's menu uses.
         this.dom.addEventListener('contextmenu', event => this.contextMenu(event));
 
         this.showQuery(this.query);
@@ -168,9 +137,6 @@ class FindPanel implements Panel {
     }
 
     mount(): void {
-        // CodeMirror's panel does the same: opening the box puts the keyboard
-        // in Find with its text selected. A view rebuilt around an already-open
-        // box hands it back (noteSearch.ts returnKeyboard).
         this.searchField.select();
     }
 
@@ -209,9 +175,6 @@ class FindPanel implements Panel {
         if (query.replace && !this.replaceOpen) this.setReplaceOpen(true, false);
     }
 
-    /** Read the fields into a query. A new search moves to its first match at
-     *  or after where the reader is — the current match while refining one —
-     *  as the PDF box and every browser's find do. */
     private commit(): void {
         const query = new SearchQuery({
             search: this.searchField.value,
@@ -230,9 +193,6 @@ class FindPanel implements Panel {
         if (searchChanged) this.jumpFrom(this.view.state.selection.main.from);
     }
 
-    /** Select the first match starting at or after `from`, wrapping to the top.
-     *  From the current match's own start, a match that still fits as the
-     *  query grows stays the current one. */
     private jumpFrom(from: number): void {
         const { starts } = this.count;
         if (!starts.length) return;
@@ -240,11 +200,6 @@ class FindPanel implements Panel {
         this.select(at < starts.length ? at : 0);
     }
 
-    /** The next or previous match from the selection, wrapping. The box steps
-     *  itself rather than through `findNext`/`findPrevious`: those re-select
-     *  all of Find's text whenever Find has the keyboard (`selectSearchInput`),
-     *  so a letter typed after ↩ replaced the query instead of refining it —
-     *  and typing "apple" as-you-go left "e" in the field (measured). */
     private step(direction: 1 | -1): void {
         if (this.recountTimer !== undefined) this.recount();
         const { starts } = this.count, total = starts.length;
@@ -291,8 +246,6 @@ class FindPanel implements Panel {
         this.prev.disabled = this.next.disabled = !total;
     }
 
-    /** Replace exists only where the note can change. Leaving Edit mode with the
-     *  keyboard in the Replace row puts it at the end of Find, not on <body>. */
     private showMode(): void {
         const editable = !this.view.state.readOnly;
         this.disclosure.hidden = !editable;
@@ -317,11 +270,8 @@ class FindPanel implements Panel {
 
     private keydown(event: KeyboardEvent): void {
         if (event.isComposing) return;
-        // ⌘G/⇧⌘G and F3 step here too, for the reason `step` gives; the
-        // note's own ⌘G (keyboard in the text) stays CodeMirror's findNext.
         const findKey = event.key === 'F3' || (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'g';
         if (findKey) { event.preventDefault(); this.step(event.shiftKey ? -1 : 1); return; }
-        // Escape and ⌘F — searchKeymap's 'search-panel' scope.
         if (runScopeHandlers(this.view, event, 'search-panel')) { event.preventDefault(); return; }
         if (event.key !== 'Enter') return;
         if (event.target === this.searchField) {
@@ -341,8 +291,6 @@ class FindPanel implements Panel {
         if (!(field instanceof HTMLInputElement)) return;
         const value = field.value, from = field.selectionStart ?? 0, to = field.selectionEnd ?? from;
         const selected = value.slice(from, to);
-        // A blocked clipboard is said in the status slot for a few seconds,
-        // then the count comes back.
         const tell = (message: string) => {
             this.issue = message;
             this.showStatus();
@@ -353,8 +301,6 @@ class FindPanel implements Panel {
             if (!field.isConnected || field.value !== value) return;
             field.focus();
             field.setSelectionRange(from, to);
-            // execCommand keeps the field's own undo history; setRangeText is
-            // the fallback where Chrome refuses it.
             if (!document.execCommand('insertText', false, text)) {
                 field.setRangeText(text, from, to, 'end');
                 this.commit();
@@ -376,9 +322,6 @@ class FindPanel implements Panel {
     }
 }
 
-/** `search({ createPanel })` for every text document's view. `scrollToMatch`
- *  is the same effect given to `search()`: CodeMirror keeps its config facet
- *  private, so the box is handed it to scroll its own jumps the same way. */
 export function findPanel(scrollToMatch: ScrollToMatch): (view: EditorView) => Panel {
     return view => new FindPanel(view, scrollToMatch);
 }

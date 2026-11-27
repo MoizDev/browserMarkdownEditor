@@ -17,7 +17,6 @@ interface Header {
     schema: boolean;
     paper: boolean;
     hasPaper: boolean;
-    /** Root `records` is an array and root `schema` an object: tldraw's own file layout (.tldr). */
     records: boolean;
     rootSchema: boolean;
 }
@@ -53,7 +52,6 @@ function scan(text: string, prefix: boolean): { header: Header; valid: boolean }
         }
         return false;
     };
-    // Only short keys/header strings are decoded, never records or payloads.
     const smallString = (start: number, maxLength = 96): string | undefined => {
         if (text[start] !== '"' || i - start > maxLength) return undefined;
         return JSON.parse(text.slice(start, i)) as string;
@@ -98,9 +96,6 @@ function scan(text: string, prefix: boolean): { header: Header; valid: boolean }
                     if (key === 'paper') { header.hasPaper = true; header.paper = object; }
                     if (key === 'records') header.records = array;
                     if (key === 'schema') header.rootSchema = object;
-                    // Canonical native files need only their header, not a walk
-                    // through megabytes of points. Reordered keys use the full
-                    // lexical walk; format still takes precedence over document.
                     if (prefix && header.native && header.kind) { nativeHeader = true; return true; }
                 } else if (scope === 'document') {
                     if (key === 'store') header.store = object;
@@ -111,7 +106,6 @@ function scan(text: string, prefix: boolean): { header: Header; valid: boolean }
                 if (text[i] === close) { i++; return true; }
                 if (text[i++] !== ',') return false;
                 space();
-                // A trailing comma is not JSON and the old reader rejects it.
                 if (text[i] === close) return false;
             }
             return false;
@@ -143,9 +137,6 @@ function scan(text: string, prefix: boolean): { header: Header; valid: boolean }
     return { header, valid: nativeHeader || (valid && i === text.length) };
 }
 
-/** The guard-release classifier. No library, DOM, filesystem or engine imports.
- *  A native header wins even when its body is damaged: this build cannot edit
- *  either. Legacy input, however, must be complete JSON before it may mount. */
 export function sniffCanvas(text: string, ext: string): CanvasSniff {
     const name = ext.toLowerCase();
     const expectedKind: CanvasKind = name.endsWith('.notebook') || name === 'notebook' ? 'notebook'
@@ -154,23 +145,17 @@ export function sniffCanvas(text: string, ext: string): CanvasSniff {
         format, kind, expectedKind,
         kindMismatch: kind !== undefined && kind !== expectedKind && !(format === 'legacy-drawing' && expectedKind === 'pdf-ink'),
     });
-    const source = text.trim(); // includes a leading BOM; never changes the caller's bytes
+    const source = text.trim();
     if (!source) return result('empty', expectedKind);
     if (source[0] !== '{') return result('not-a-board');
     const first = scan(source.slice(0, 256), true);
     if (first.header.native && first.header.kind) return result('native', first.header.kind);
     const { header, valid } = source.length <= 256 ? first : scan(source, false);
     if (header.native) return result('native', header.kind);
-    // PDF's inert old-attachment fence must not stand up a library editor even
-    // when board.json is missing; the PDF role reader owns attachment precedence.
     if (!valid || header.fence || (header.hasPaper && !header.paper)) return result('not-a-board');
     if (header.document && header.store && header.schema) {
         return header.paper ? result('legacy-notebook', 'notebook') : result('legacy-drawing', 'whiteboard');
     }
-    // tldraw's own file ({tldrawFileFormatVersion, schema, records}), by the rule the importer reads it with
-    // (whiteboard/import/records/envelope.ts). Called 'not-a-board' here while the engine opened it as an old board, a
-    // `.tldr` got the read-only view without the offer of a copy (measured: dialog count 0), and the agent was told the
-    // file was not a drawing.
     if (!header.hasDocument && header.records && header.rootSchema) {
         return header.paper ? result('legacy-notebook', 'notebook') : result('legacy-drawing', 'whiteboard');
     }
@@ -178,7 +163,6 @@ export function sniffCanvas(text: string, ext: string): CanvasSniff {
     return result('not-a-board');
 }
 
-/** Shared by the notice and the app/agent write-authority seams. */
 export function canvasReadOnlyReason(sniff: CanvasSniff): string | null {
     if (sniff.kindMismatch) {
         const actual = sniff.kind === 'notebook' ? 'a notebook' : sniff.kind === 'pdf-ink' ? 'PDF annotations' : 'a drawing';

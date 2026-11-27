@@ -3,8 +3,6 @@ import { reserveDecode } from './budgets';
 import type { ArchiveInfo, ResourceData } from './types';
 import { EPUB_LIMITS as L } from './types';
 import archiveWorkerUrl from './archive.worker.ts?worker&url';
-// Kept (platform/workers/script.ts): a book is read again each time its pane is shown, in a worker of its own, so an open
-// book stopped opening once a newer version replaced this one on the server (measured: "Could not open this book").
 const archiveWorker=workerScript(archiveWorkerUrl,{keep:true});
 let running=0;
 const waiters:(()=>void)[]=[];
@@ -29,12 +27,9 @@ export class ArchiveClient {
    if(this.lifetime.signal.aborted){worker.terminate();throw this.lifetime.signal.reason}
    let answered=false;
    worker.onmessage=({data:m})=>{answered=true;const task=this.pending.get(m?.id);if(!task)return;this.pending.delete(m.id);clearTimeout(task.timer);task.release();if(typeof m.error==='string')task.reject(Error(m.error));else task.resolve(m.result)};
-   // Before its first answer its script may not have loaded: the reader ends with that reason in plain words, and a kept
-   // copy that would not run is dropped so Retry fetches it again (platform/workers/script.ts).
    worker.onerror=event=>{if(answered){this.dispose(Error('EPUB_WORKER_ERROR'));return}worker.onerror=null;void startFailure(worker,event).then(cause=>this.dispose(cause??Error('EPUB_WORKER_ERROR')))};
    return this.worker=worker;
   });
-  // A script that could not be fetched ends the reader with that reason (a ChunkLoadError: gone, or unreachable).
   this.started.catch(error=>this.dispose(error));
   signal?.addEventListener('abort',this.onAbort,{once:true});this.lifetime.signal.addEventListener('abort',()=>signal?.removeEventListener('abort',this.onAbort),{once:true});
   if(signal?.aborted)this.dispose();

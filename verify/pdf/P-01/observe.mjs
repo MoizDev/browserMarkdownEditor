@@ -1,5 +1,3 @@
-// Outside browser observations and a controller for *scratch hold builds only*.
-// No app state, function, module or renderer object is read/called by this code.
 export async function installPdfObservations(context) {
     await context.addInitScript(() => {
         let sequence = 0, nextCanvas = 0, plan = null;
@@ -47,15 +45,10 @@ export async function installPdfObservations(context) {
                 const result = original.apply(this, args), id = canvasId(this.canvas), entry = canvases.get(id);
                 const previousDepth = entry.depth;
                 entry.depth = Math.max(0, entry.depth + (method === 'save' ? 1 : -1));
-                // Only root boundaries can change the live drawing-root count.
-                // Recording every glyph's nested save copied the whole canvas
-                // table thousands of times without adding an observation.
                 if (previousDepth === 0 || entry.depth === 0) log(method, { id, live: live() });
                 return result;
             };
         }
-        // Resizing is the browser's backing-store release and also clears its
-        // drawing-state stack. Observe the native setter, never change its value.
         for (const axis of ['width', 'height']) {
             const descriptor = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, axis);
             Object.defineProperty(HTMLCanvasElement.prototype, axis, { ...descriptor,

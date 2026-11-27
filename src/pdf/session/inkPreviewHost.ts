@@ -7,7 +7,6 @@ import { newPdfWriteId } from '../writing/writeIdentity';
 
 type PdfHost = Extract<HostBlock, { kind: 'pdf-ink' }>;
 
-/** Preview metadata is deliberately outside the saveable PDF host schema. */
 export function createPdfInkPreviewHost(basis: {
     pristineFingerprint: string;
     geometryEngine: WriterSource['geometryEngine'];

@@ -73,7 +73,6 @@ export function measureEditorWork<T>(state: EditorState, render: () => T): T {
     return result;
 }
 
-/** Time only the existing pass; preserve its result, exceptions and widget identities. */
 export function measureEditorRender<T>(state: EditorState, reason: 'create' | 'mode' | 'coverage' | 'revGap' | 'error' | null,
     windowChars: number, render: () => T): T {
     let started: number | undefined;

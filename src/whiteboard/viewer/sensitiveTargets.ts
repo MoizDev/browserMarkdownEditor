@@ -1,9 +1,6 @@
-/** Hover and edit targets that need exact paint. The set is identity-stable: it is replaced only when
- * its membership changes, so the viewer's frame-to-frame comparison sees a change exactly once. */
 export const NO_SENSITIVE_IDS: ReadonlySet<string> = Object.freeze(new Set<string>());
 
 export interface SensitiveTargets {
-    /** The current hover and edit targets; the same object until membership changes. */
     ids(): ReadonlySet<string>;
     setHovered(id: string | null): void;
     setEditing(id: string | null): void;

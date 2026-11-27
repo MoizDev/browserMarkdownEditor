@@ -18,8 +18,6 @@ async function hashBlob(blob: Blob, cooperate: () => Promise<void>): Promise<str
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
-/** Pin the source identity and hash the actual immutable snapshots, not an App
- * pathname or a fingerprint supplied by an untrusted message. */
 export async function validateWriterSource(source: WriterSource, cooperate: () => Promise<void>): Promise<void> {
     if (!source || !(source.pristine instanceof Blob) || !(source.outer instanceof Blob) ||
         (typeof File !== 'undefined' && (source.pristine instanceof File || source.outer instanceof File)) ||

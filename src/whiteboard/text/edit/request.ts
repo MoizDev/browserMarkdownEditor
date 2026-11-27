@@ -2,13 +2,11 @@ import { figureLabelRequest, frameTitleRequest, stickyLabelRequest } from '../..
 import type { EditableTextRequest } from './bindingTypes';
 import type { RichText } from '../richText';
 
-// The text-size table is the plan's default host metric; zoom never changes layout.
 const TEXT_SIZE = { s: 18, m: 24, l: 36, xl: 44 } as const;
 const CONNECTOR_LABEL_SIZE = { s: 18, m: 20, l: 24, xl: 28 } as const;
 const zero = { top: 0, right: 0, bottom: 0, left: 0 } as const;
 const frameTitles = new WeakMap<object, RichText>();
 
-/** Resolve the same host constraints for normal paint, edit overlay, and growY. */
 export const editableTextRequest: EditableTextRequest = (node, text, options) => {
     const { revision, fontEpoch, zoom } = options;
     if (node.kind === 'text') return {

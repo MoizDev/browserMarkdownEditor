@@ -20,17 +20,13 @@ export interface BoardHeaderProps {
 
 const headerCommands = ['undo', 'redo', 'delete', 'duplicate'] as const;
 
-/** The top-left strip: menu, sheet, Undo, Redo, Delete, Duplicate and the Actions grid. */
 export function BoardHeader({ commands, locale, direction, menuLabel, menuEntries, sheetName, openSheets, actionsLabel }: BoardHeaderProps) {
     const [actionsOpen, setActionsOpen] = useState(false);
     const strip = useRef<HTMLDivElement>(null);
-    // Commands the pane is too narrow to show move to the front of the Actions grid, in order, rather than running past
-    // the pane's edge (measured: the strip needs 298px; a 207px pane cut off Delete, Duplicate and Actions itself).
     const fit = useFittingCommands(strip, headerCommands.length);
     const shownCommands = headerCommands.slice(0, fit), overflowCommands = headerCommands.slice(fit);
     const actionButton = useRef<HTMLButtonElement>(null);
     const actions = useRef<HTMLDivElement>(null);
-    // Escape returns the keyboard to the board, not to the Actions button: the button is outside the board's keyboard root.
     const closeActions = useCallback(() => {
         setActionsOpen(false);
         focusBoardInteraction(actionButton.current);
@@ -47,7 +43,6 @@ export function BoardHeader({ commands, locale, direction, menuLabel, menuEntrie
         return () => { removeEscape(); document.removeEventListener('pointerdown', onPointerDown); };
     }, [actionsOpen, closeActions]);
 
-    // The grid's last slot is one button: Group, or Ungroup when the selection is a group.
     const actionSlots: readonly BoardCommand[] = actionCommands.map(id =>
         id === 'group' && commands.state('ungroup').enabled ? 'ungroup' : id);
 
@@ -57,7 +52,6 @@ export function BoardHeader({ commands, locale, direction, menuLabel, menuEntrie
                 onClick={event => {
                     const anchor = event.currentTarget;
                     const rect = anchor.getBoundingClientRect();
-                    // The menu renders outside the pane, so a dark board's menu carries the dark tokens itself.
                     const dark = anchor.closest('[data-board-theme="dark"]') !== null;
                     openContextMenu({ x: rect.left, y: rect.bottom,
                         entries: typeof menuEntries === 'function' ? menuEntries(anchor) : menuEntries,
@@ -99,9 +93,6 @@ export function BoardHeader({ commands, locale, direction, menuLabel, menuEntrie
     </div>;
 }
 
-/** How many header commands fit beside the menu, sheet and Actions buttons. The strip is pulled 8px into the chrome
- *  overlay's inset (chrome.css), so it has the overlay column's width plus those 8px; the button step and the strip's
- *  other parts are read from the rendered strip, never assumed. */
 function useFittingCommands(strip: RefObject<HTMLDivElement | null>, count: number): number {
     const [fit, setFit] = useState(count);
     useLayoutEffect(() => {

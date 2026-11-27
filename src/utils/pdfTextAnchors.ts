@@ -7,8 +7,6 @@ export interface PdfTextAnchorOptions { sameSchema: boolean; signal?: AbortSigna
 const skeletonUnit = (unit: string) => unit !== ' ' && unit !== TOKEN_BREAK && unit !== LINE_HYPHEN;
 const cancelled = () => new DOMException('PDF anchor restoration cancelled', 'AbortError');
 
-/** Shares find's folding, break markers and automaton. Offsets and skeleton
- * ranks are built together; repeated quotes never rescan the page for context. */
 export async function resolvePdfTextAnchor(page: PdfFindPageText & { physicalPageIndex: number }, anchor: PdfTextAnchor,
     { sameSchema, signal = new AbortController().signal }: PdfTextAnchorOptions): Promise<PdfTextAnchorResolution> {
     let deadline = performance.now() + 4;
@@ -32,8 +30,6 @@ export async function resolvePdfTextAnchor(page: PdfFindPageText & { physicalPag
         let key = '', skeleton = '';
         for (const chunk of projectionChunks({ text, tokenBreaks: [], quality: 'available' })) {
             for (const unit of chunk.key) {
-                // A v1 line-end hyphen can disappear in v2. Breaks are optional
-                // in the page automaton, not mandatory units in a saved quote.
                 if (unit !== LINE_HYPHEN && unit !== TOKEN_BREAK) key += unit;
                 if (skeletonUnit(unit)) skeleton += unit;
             }

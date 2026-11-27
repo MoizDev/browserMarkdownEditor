@@ -1,10 +1,8 @@
 import { SWATCHES, type Swatch } from './styles';
 import { nearestLightSwatch } from './nearestSwatch';
 
-// default, no alias table in the plan.
 // Only drawing resolves a name; ext.raw keeps the stored token until the user recolours.
 
-/** CSS named colours (CSS Color 4 keyword set), hex without '#'. Static, so the result is deterministic. */
 export const CSS_NAMED_COLOURS: Readonly<Record<string, string>> = Object.freeze({
     aliceblue: 'f0f8ff', antiquewhite: 'faebd7', aqua: '00ffff', aquamarine: '7fffd4', azure: 'f0ffff',
     beige: 'f5f5dc', bisque: 'ffe4c4', black: '000000', blanchedalmond: 'ffebcd', blue: '0000ff',
@@ -46,12 +44,6 @@ function isSwatch(value: string): value is Swatch {
     return (SWATCHES as readonly string[]).includes(value);
 }
 
-/**
- * The drawn swatch for a stored colour name. Order: (1) a known name is itself; (2) one leading modifier
- * is stripped, and a known base draws its family, using the light variant for light/pale/soft when it
- * exists; (3) the name, or its base, that is a CSS keyword maps to the nearest known swatch; (4) anything
- * else draws black.
- */
 export function resolveDrawnSwatch(stored: string): Swatch {
     if (stored.length > MAX_NAME) return 'black';
     const name = stored.toLowerCase();

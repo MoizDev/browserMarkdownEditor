@@ -6,7 +6,6 @@ import type { NativeViewLease } from './nativeViewLease';
 import type { BoardQuestion } from './useNativeBoardDialogs';
 import { useSheetMenu } from './useSheetMenu';
 
-/** Sheet menus borrow the same session commands, page camera and owner-scoped dialog. */
 export function useNativeSheetControls(options: {
     readonly runtime: BoardRuntime;
     readonly lease: NativeViewLease;

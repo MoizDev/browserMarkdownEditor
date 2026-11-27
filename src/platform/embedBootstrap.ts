@@ -1,6 +1,5 @@
 import { EMBED_PERMISSIONS, EMBED_PROFILE, validateEmbedManifest, validateEmbedUrl } from './embedPolicy';
 
-/** Only the embedding app can hand this opaque frame its private command port. */
 function initialize(event: MessageEvent<unknown>): void {
     if (event.source !== parent || event.ports.length !== 1 || !event.data || typeof event.data !== 'object') return;
     const init = event.data as { v?: unknown; type?: unknown; profile?: unknown; token?: unknown; origins?: unknown; url?: unknown };
@@ -51,7 +50,6 @@ function initialize(event: MessageEvent<unknown>): void {
         if (!frame.credentialless || !frame.hasAttribute('credentialless')) throw new Error('Credentialless frame unavailable');
         document.documentElement.style.height = '100%';
         document.body.style.height = '100%'; document.body.style.margin = '0';
-        // This first-party backing keeps a fully opaque live slot opaque even if the provider clears its own background.
         document.body.style.backgroundColor = 'white';
         frame.style.width = '100%'; frame.style.height = '100%'; frame.style.border = '0'; frame.style.display = 'block';
         send('ready');

@@ -8,7 +8,6 @@ import { validateCommit, validateOp } from '../model/validate';
 
 export interface ImportedBoard { readonly doc: BoardDoc; readonly apply: ApplyController }
 
-// The importer repairs ordered records first; only then may the model build its indexed tables.
 export function admitImportedBoard(input: BoardDocInput, samples: SampleStoreReader): ImportedBoard {
     const sheets = Array.from(input.sheets), nodes = Array.from(input.nodes ?? []), media = Array.from(input.media ?? []);
     if (!sheets.length) throw new Error('A board needs a sheet');

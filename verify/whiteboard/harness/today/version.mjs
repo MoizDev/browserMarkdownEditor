@@ -1,12 +1,8 @@
-// Reference-only: these are the library's own registration tuples in ACTUALLY fetched JS.
-// A filename/hash identifies a build, never this package-version assertion.
 const REQUIRED = ['@tldraw/utils', '@tldraw/state', '@tldraw/state-react', '@tldraw/store', '@tldraw/validate', '@tldraw/tlschema', '@tldraw/editor'];
 const EXPECTED = '5.2.4';
 const parsed = new WeakMap();
 
 export async function assertProbeVersion(h) {
-  // Artifact binding remains an optional diagnostic, not a prerequisite for
-  // the plain reference reader (charter §0 defers gate-proof work).
   if (h.expectedReferenceBuild) await h.assertReferenceBuild();
   const evidence = [];
   for (const [url, response] of h.responseObjects) {

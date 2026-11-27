@@ -6,7 +6,6 @@ import type { PdfPoolDocument } from '../pool/types';
 import { stablePdfBlob } from './stableBlob';
 import type { PdfEmphasisController } from '../emphasis/controller';
 
-/** The pool adapter is the only engine-specific half of this session. */
 export interface OpenTiledDocument {
     readonly pages: readonly PdfPageExtent[];
     readonly poolDocument: PdfPoolDocument;
@@ -20,23 +19,14 @@ export interface TiledDocumentPool {
     open(blob: Blob, token: RenderToken, source: 'outer' | 'original', signal: AbortSignal, password?: string): Promise<OpenTiledDocument>;
 }
 
-/** App-owned prompt; null means the user cancelled, never an empty password. */
 export type PdfPasswordRequest = (token: RenderToken, incorrect: boolean, signal: AbortSignal) => Promise<string | null>;
 
-/** Layout signature only. Point mappings and version-bridge authorization must
- * additionally await exact page geometry; extents never imply an affine. */
 export function pdfGeometryDigest(pages: readonly PdfPageExtent[]): string {
     return JSON.stringify(['display-extents-v1', pages.map(page => [page.index, page.width, page.height])]);
 }
 
 interface Slot { value: unknown; dispose?: () => void | Promise<void> }
 
-/**
- * App/session lifetime, not a component lifetime. The source snapshot and
- * pool document survive pane hide, graph trips and StrictMode remounts. A new
- * byte generation is a different instance; rename is not. The App closing
- * barrier calls close only after saves/exports and outstanding views drain.
- */
 export class PdfTiledDocumentSession {
     private readonly controller = new AbortController();
     private readonly slots = new Map<symbol, Slot>();
@@ -51,8 +41,6 @@ export class PdfTiledDocumentSession {
     constructor(readonly token: RenderToken, readonly source: 'outer' | 'original',
         private readonly acquireSnapshot: (signal: AbortSignal) => Promise<{ blob: Blob; stat: { lastModified: number; size: number }; dispose(): void }>,
         private readonly pool: TiledDocumentPool, private readonly isTokenCurrent: (token: RenderToken) => boolean,
-        /** Called once, as the open starts, with the memory-backed copy still being made: its fingerprint is the version.
-         * It rejects when the snapshot could not be read through (changed or gone on disk): see `open`. */
         private readonly onStableBlob?: (blob: Promise<Blob>, stat: { lastModified: number; size: number }, signal: AbortSignal) => void,
         private readonly requestPassword?: PdfPasswordRequest) {}
 
@@ -65,13 +53,6 @@ export class PdfTiledDocumentSession {
                 // admits (a File would carry its name into the contained engine).
                 const disk = snapshot.blob instanceof File;
                 const blob = disk ? snapshot.blob.slice(0, snapshot.blob.size, 'application/pdf') : snapshot.blob;
-                // The first page is drawn from the disk snapshot itself while its memory-backed copy is made beside it:
-                // copying first held every open for the whole file (measured: ~250 ms for a 287 MB textbook from OPFS,
-                // 770 ms under load, before the engine saw a byte). The guarantee is unchanged: a read of the snapshot
-                // after the file changed on disk fails (NotReadableError) rather than returning new bytes, so the engine,
-                // the copy and the fingerprint each see the snapshot's bytes or an error, never a mix, exactly as the copy
-                // itself did. Every worker adopts the copy when it is ready, so no later change on disk reaches this session.
-                // The copy is hashed, not the snapshot, so the disk is read once and the version cannot fail on a later change.
                 const stable = disk ? stablePdfBlob(blob, this.controller.signal) : Promise.resolve(blob);
                 void stable.catch(() => {}).finally(() => snapshot.dispose());
                 this.onStableBlob?.(stable, snapshot.stat, this.controller.signal);
@@ -102,9 +83,6 @@ export class PdfTiledDocumentSession {
                 }
                 this.document = opened;
                 if (disk) {
-                    // A copy that fails (the file changed or went while it was read) leaves the session on its snapshot:
-                    // what is drawn stays the snapshot's and an unread page fails to draw, until the owner, told through
-                    // the rejected version (sourceFactory), reloads the document under a new reader token or raises the DiskBar.
                     void stable.then(copy => this.closed ? undefined : opened.poolDocument.adoptSource(copy)).catch(() => {});
                 }
                 return opened;
@@ -115,8 +93,6 @@ export class PdfTiledDocumentSession {
         return this.opening;
     }
 
-    /** Captures pin the source until their async work has actually settled.
-     * Hiding a pane never cancels this signal; closing the session does. */
     async acquireCapture(): Promise<{ document: OpenTiledDocument; signal: AbortSignal; release(): void }> {
         if (this.closed) throw new DOMException('PDF session closed', 'AbortError');
         this.captureUsers++;
@@ -150,7 +126,6 @@ export class PdfTiledDocumentSession {
         this.password = undefined;
         this.controller.abort();
         this.closing = (async () => {
-            // A late successful open closes itself after observing `closed`.
             if (this.opening) await this.opening.catch(() => undefined);
             if (this.captureUsers) await new Promise<void>(resolve => this.captureWaiters.add(resolve));
             const document = this.document;

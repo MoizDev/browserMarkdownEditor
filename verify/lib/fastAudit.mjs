@@ -2,8 +2,6 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SourceMap } from 'node:module';
 
-/** Native invocation ledger. Reports are copied BEFORE the first await; a late
- * report can resolve a trash destination but cannot authorize earlier I/O. */
 export async function installFastAudit(context, vaultName) {
     await context.addInitScript(({ vaultName }) => {
         if (window !== window.top || typeof FileSystemDirectoryHandle !== 'function') return;
@@ -51,8 +49,6 @@ export async function readFastAudit(page) {
     });
 }
 
-/** Source maps are emitted to scratch, never requested by the browser. Keep the
- * sanctioned owners explicit: a new removeEntry elsewhere is NOT a new baseline. */
 export async function checkProductionRemovals(audit, distDir) {
     const owners = new Set(['displaceInto', 'retireAsset', 'restoreAsset', 'restoreFromTrash',
         'deleteFromTrash', 'emptyTrash', 'moveFile', 'renameFile']);
@@ -84,8 +80,6 @@ export async function checkProductionRemovals(audit, distDir) {
     }));
 }
 
-/** Every mutating native invocation, not just successful removals, has an opener.
- * A trash-done resolves the actual copy destination and pairs to that opener. */
 export function matchVaultReports(audit) {
     const done = audit.reports.filter(report => report.op === 'trash-done');
     for (const close of done) {

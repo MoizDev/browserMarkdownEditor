@@ -4,14 +4,10 @@ import type { PaintNodeSource } from '../render/paintStream'
 import type { PaintImageProvider } from '../render/resources'
 import type { ReadExportImage } from './exportImage'
 
-/** All members refer to one immutable revision; the lease holds geometry, media and any
- * font resources even if another edit or view detach happens during export. */
 export interface ExportSnapshot {
   readonly token: RenderToken
   readonly revision: number
-  /** Resolves only from the pinned SceneSnapshot, never from the live document. */
   paintSource(signal: AbortSignal): Promise<PaintNodeSource>
-  /** Optional page-scoped producer from this same pin, for bounded multipage output. */
   paintSourceFor?(world: Readonly<Rect> | undefined, page: number | undefined, signal: AbortSignal): Promise<PaintNodeSource>
   readonly images: PaintImageProvider
   readonly readImage: ReadExportImage
@@ -34,7 +30,6 @@ export async function withExportSnapshot<T>(
   } finally { snapshot.release() }
 }
 
-/** A source may resolve asynchronously, but it must still name the pinned snapshot. */
 export async function snapshotPaintSource(snapshot: ExportSnapshot, signal: AbortSignal,
   scope?: { readonly world: Readonly<Rect>; readonly page: number }): Promise<PaintNodeSource> {
   const source = scope && snapshot.paintSourceFor

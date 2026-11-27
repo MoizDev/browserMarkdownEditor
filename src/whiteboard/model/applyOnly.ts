@@ -6,11 +6,6 @@ import type { MediaEntry, MediaId } from './media';
 import { attachedTargets, createNode, type Node, type NodeRecord } from './nodes';
 import type { OrderKey } from './orderKey';
 
-// Only change/apply.ts imports this module. R-W26: all explicit allocation,
-// lookup and planning precede write(). Native Map/Set/splice operations are the
-// commit primitives. A throw after the first write is a defect, not a recoverable
-// validation error: apply tries its inverses, then seals the session read-only
-// (D-10), since it must never serialize a potentially inconsistent document.
 export interface PreparedMutation { write(): void }
 export class ModelInvariantError extends Error {}
 export type ModelOp = Exclude<Op, { readonly t: 'splice' }>;
@@ -23,8 +18,6 @@ type MutableDoc = Omit<{ -readonly [K in keyof BoardDoc]: BoardDoc[K] },
     preservedMediaRefs: Map<MediaId, number>; opaqueDescendants: Map<ParentId, number>;
 };
 function forApply(doc: BoardDoc): MutableDoc {
-    // Readonly is ownership, not frozen/copied data. Only the apply path writes
-    // the same model-owned records/maps that every reader borrows.
     return doc as MutableDoc;
 }
 function required<T>(value: T | undefined, reason: string): T {
@@ -54,8 +47,6 @@ class MembershipPlan {
     private readonly buckets = new Map<Map<IndexKey, Set<NodeId>>, Map<IndexKey, Bucket>>();
     private readonly ordered: Bucket[] = [];
     change<K extends IndexKey>(index: Map<K, Set<NodeId>>, key: K, id: NodeId, add: boolean): void {
-        // Map keys are opaque to the planner; each captured map is only ever
-        // accessed with its own K. No mutable index escapes this private plan.
         const map = index as Map<IndexKey, Set<NodeId>>;
         let plans = this.buckets.get(map);
         if (!plans) this.buckets.set(map, plans = new Map());
@@ -93,10 +84,6 @@ function subtreeIds(doc: BoardDoc, id: NodeId, output: NodeId[]): void {
     const children = childrenOf(doc, id);
     for (let i = 0; i < children.length; i++) subtreeIds(doc, children[i].id, output);
 }
-// RV-22: strict opaque-descendant counts move O(depth) on EVERY ancestry edit;
-// zero entries are deleted. Inverses run this same path. Public readers get only
-// hasOpaqueDescendant(), never this map. A one-child group's million-node frame
-// must not be walked on every normalization/commit check.
 function opaqueMovePlan(doc: MutableDoc, node: Node, before: ParentId | null, after: ParentId | null): PreparedMutation | undefined {
     const count = (doc.opaqueDescendants.get(node.id) ?? 0) + (node.kind === 'opaque' ? 1 : 0);
     if (!count || before === after) return undefined;
@@ -163,7 +150,6 @@ function deleteNodePlan(doc: MutableDoc, id: NodeId): PreparedMutation {
         if (siblings.length === 0) doc.children.delete(node.parent);
         members.write();
         opaque?.write();
-        // Incoming edges remain discoverable until CH-1 detaches them.
         doc.nodes.delete(id);
     } };
 }

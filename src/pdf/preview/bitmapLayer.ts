@@ -31,7 +31,6 @@ function onScreen(rect: PreviewRect, view: ViewState): boolean {
         && projected.x + projected.width > 0 && projected.y + projected.height > 0;
 }
 
-/** A temporary PDF-owned layer; scheduling, device and both drawing paths come from the host. */
 export class PreviewBitmapLayer implements Layer {
     readonly bitmaps: PreviewBitmapStore;
     private readonly uploaded = new Map<PreviewTile, UploadedTile>();
@@ -50,16 +49,12 @@ export class PreviewBitmapLayer implements Layer {
         });
     }
 
-    /** Prospective demand is installed by the actor's ResizeObserver before this shared-frame phase.
-     * Starting copies in the viewer's sync callback races the first observation and its zero grant.
-     */
     queueCpuPrepare(prepare: ((view: ViewState) => void) | null): void {
         this.cpuPrepare = prepare;
         this.cpuBlocked = false;
         if (prepare) this.host.invalidate('pdf-preview-copy-ready');
     }
 
-    /** A denied reservation is retried on the next real pane wake, not in a frame loop. */
     deferCpuPrepare(prepare: (view: ViewState) => void): void {
         if (this.disposed || this.cpuPrepare) return;
         this.cpuPrepare = prepare;
@@ -137,8 +132,6 @@ export class PreviewBitmapLayer implements Layer {
                     return;
                 }
                 const lease = this.host.allocator.gpu.reserve(tile.bytes);
-                // The tile stays missing (hasGpuWork) until the lifecycle's budget-change wake;
-                // needsFrame must not poll a grant that has not changed.
                 if (!lease) return;
                 let texture: TextureHandle;
                 try {

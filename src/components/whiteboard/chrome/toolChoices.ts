@@ -7,12 +7,10 @@ export type ToolLabel =
     | 'arrowDown' | 'arrowRight' | 'line' | 'highlight' | 'laser' | 'frame'
     | 'pentagon' | 'octagon' | 'trapezoid' | 'rhombus2';
 
-/** A label with its chord after an em dash ("Draw — D"); the chord is already platform-formatted. */
 export function chordLabel(label: string, shortcut: string | undefined): string {
     return shortcut ? `${label} — ${shortcut}` : label;
 }
 
-/** Every figure, in the order the more-tools popover lists them. The bar's figure slot shows one of them. */
 const figures: readonly [ToolLabel, string][] = [
     ['rectangle', 'rectangle'], ['ellipse', 'ellipse'], ['triangle', 'triangle'],
     ['diamond', 'diamond'], ['hexagon', 'hexagon'], ['oval', 'oval'], ['rhombus', 'rhombus'],
@@ -23,15 +21,10 @@ const figures: readonly [ToolLabel, string][] = [
 ];
 
 export interface ToolChoices {
-    /** The bar's nine tools, in order; the chevron that opens `more` follows them. */
     readonly primary: readonly ToolChoice[];
-    /** Every tool not on the bar: each other figure, line, highlighter, laser and frame. */
     readonly more: readonly ToolChoice[];
 }
 
-/** Labels and chords come from the same locale and keymap as the rest of the board chrome. `lastFigure` is the figure
- *  the figure tool last drew (rectangle until one is chosen): the bar's figure slot shows it, and picking another
- *  figure from More tools moves that figure into the slot, so the slot always shows the figure in use. */
 export function toolChoices(
     label: (key: ToolLabel) => string,
     shortcut: (id: string, figure?: string) => string | undefined,

@@ -9,8 +9,6 @@ import { matchingIdentity, validBoardIdentity, type BoardJobIdentity } from '../
 import { boardWorker } from '../workers/client';
 import type { HtmlClipboardMarkers } from './classify';
 
-// Provenance: opaque clipboard profile, bounded transport and shared-memory
-// ownership contracts; independent host protocol, no third-party source.
 const CHUNK = 192 * 1024, LIMIT = SECURITY_LIMITS.clipboardHtmlBytes;
 type Reply = { readonly type: string; readonly seq?: unknown; readonly result?: unknown };
 export interface ClipboardHtmlFrameOptions {
@@ -22,7 +20,6 @@ export interface ClipboardHtmlProjection {
     readonly rich: RichFragment;
     readonly dataImages: readonly Readonly<{ blob: Blob; alt: string; order: number; textOffset: number }>[];
     readonly refusedImages: readonly Readonly<{ name: string; reason: string }>[];
-    /** Keeps decoded bytes accounted until the caller has retained or discarded them. */
     release(): void;
 }
 export interface ClipboardHtmlFrameHost {
@@ -62,8 +59,6 @@ export function createClipboardHtmlFrameHost(options: ClipboardHtmlFrameOptions)
         signal.throwIfAborted();
         if (typeof html !== 'string' || html.length > LIMIT) throw new RangeError('Clipboard HTML is too large');
         if (!options.isCurrent(identity)) throw new DOMException('Clipboard HTML request became stale', 'AbortError');
-        // Includes input copies, inert DOM and structured-cloned output; large
-        // envelopes may be refused by the shared governor before parsing.
         const lease = options.memory.reserve(8 * 1024 * 1024 + html.length * 24);
         if (!lease) throw new Error('Insufficient memory to parse clipboard HTML');
         let frame: ReturnType<typeof createContainedFrame> | undefined, timer: ReturnType<typeof setTimeout> | undefined;

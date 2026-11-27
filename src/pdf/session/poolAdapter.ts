@@ -5,8 +5,6 @@ import type { TiledDocumentPool } from './documentSession';
 import { createPdfEmphasisController } from '../emphasis/controller';
 import type { PdfEmphasisController } from '../emphasis/controller';
 
-/** Bridges the retained pool lease to the pane without letting a component open
- * or close workers. The producer is built against that exact source lease. */
 export function tiledPoolAdapter(pool: PdfPool, producer: (document: PdfPoolDocument, emphasis: PdfEmphasisController) => PdfTileProducer): TiledDocumentPool {
     return {
         async open(blob, token, source, signal, password) {

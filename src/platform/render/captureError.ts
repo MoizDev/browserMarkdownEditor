@@ -14,7 +14,6 @@ const messages: Record<CaptureErrorCode, string> = {
     'superseded': 'A newer queued thumbnail replaced this capture.',
 };
 
-/** Stable caller-facing codes, never an engine-controlled error string in a UI. */
 export class CaptureError extends Error {
     constructor(readonly code: CaptureErrorCode, options?: ErrorOptions) {
         super(messages[code], options);

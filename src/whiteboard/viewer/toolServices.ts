@@ -38,7 +38,6 @@ import type { BoardCardActions } from './cardControls';
 import { isCancellation } from '../../platform/workers/envelope';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-/** The board's context-menu request: the pointer, the element the menu hangs from, and the locked node it targets, if any. */
 export interface BoardContextMenuRequest { readonly point: { readonly x: number; readonly y: number }; readonly opener: HTMLElement; readonly locked: NodeId | null }
 export interface BoardToolServicesOptions {
     readonly runtime: BoardRuntime;
@@ -57,13 +56,9 @@ export interface BoardToolServicesOptions {
     readonly visible: () => boolean;
     readonly focused: () => boolean;
     readonly inputFrames: { schedule(callback: () => void): () => void };
-    /** The board's always-snap preference, read live on each gesture; absent means no always-snap. */
     readonly alwaysSnap?: () => boolean;
-    /** Dynamic size mode: new text and notes are created at 1 / zoom. */
     readonly dynamicSize?: () => boolean;
-    /** The board's wrap-mode preference, read live on each gesture (brush selects only what it fully encloses). */
     readonly wrapMode?: () => boolean;
-    /** Ctrl/Cmd-drag from a resize handle of the one selected picture crops it from that edge; false when it cannot be cropped. */
     readonly cropFromHandle?: (id: NodeId, edge: { readonly dx: -1 | 0 | 1; readonly dy: -1 | 0 | 1 }, pointer: { readonly pointerId: number; readonly x: number; readonly y: number }) => boolean;
     readonly mappings: MappingHistory;
     readonly sampleToSurface: (sample: RealSample) => Point;
@@ -73,18 +68,15 @@ export interface BoardToolServicesOptions {
     readonly ui: {
         readonly mac: boolean;
         readonly text: BoardTextEditorOptions['ui'];
-        /** The embed and link-card chips' actions; the native canvas supplies them, a view without an embed host omits them. */
         readonly cards?: BoardCardActions | null;
         shortcutsEnabled(): boolean;
         modalOpen(): boolean;
         isDirectPen(event: PointerEvent): boolean;
         ownsWheel(event: WheelEvent): boolean;
-        /** Preferences: the Edge scrolling preference, the Input device choice, and whether the mouse wheel's zoom turn is inverted. */
         edgeScrolling(): boolean;
         mouseWheel(): boolean;
         invertMouseZoom(): boolean;
         error(error: unknown): void;
-        /** A quiet status message for the board's own surface (R-11 kept-locked notice). */
         notice?(message: string): void;
         contextMenu(request: BoardContextMenuRequest): void;
         persistToolLock?(locked: boolean): void;
@@ -96,17 +88,14 @@ export interface BoardToolServicesOptions {
         keyboardCursorInitial?: BoardInputServices['keyboardCursorInitial'];
         keyboardCursorVisible?: BoardInputServices['keyboardCursorVisible'];
         clearLatches?(): void;
-        /** The host's one existing board context menu, opened at an actual keyboard anchor. Absent means no keyboard menu. */
         openKeyboardContextMenu?(request: KeyboardContextRequest): void;
     };
     readonly commands: BoardInputServices['commands'];
-    /** The App supplies real permission-aware import and clipboard backends. */
     readonly imports: {
         media(sample: RealSample, modifiers: Modifiers): PointerRoute<unknown>;
         drop(event: DragEvent): void;
         paste(event: ClipboardEvent): void;
         cancelPending(): boolean;
-        /** Settles once the pastes, drops and duplicates on their way have landed; null when there are none. */
         landing(): Promise<void> | null;
         dispose(): void;
     };
@@ -116,7 +105,6 @@ function route<T>(tool: Tool<T>, context: T): PointerRoute<unknown> {
     return { tool: { id: tool.id, begin: (sample, modifiers) => tool.begin(sample, modifiers, context) }, context: undefined };
 }
 
-/** View-owned routing only: history, tools, samples and document remain session-owned. */
 export function createBoardToolServices(options: BoardToolServicesOptions) {
     const { runtime, engine, camera, token, inputToken, ui } = options;
     if (engine.session !== runtime.session || !options.imports || typeof options.imports.media !== 'function'
@@ -131,7 +119,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         fontEpoch: () => runtime.render.text.fonts.epoch, current: t => current() && options.current(t), onError: ui.error });
     const preview = createBoardPreview({ runtime, engine, render: runtime.render, images: options.images, current, onError: ui.error,
         view: () => ({ camera: camera.camera, viewport: options.viewport() }) });
-    // Editing activation: the overlay's kits compile now, not at the first drag's request.
     preview.warm();
     const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, cameraController: camera,
         motion: { glideTo: (target, durationMs) => options.platform().glideTo(target, durationMs), cancel: () => options.platform().cancelMotion() },
@@ -140,20 +127,15 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap, wrapMode: options.wrapMode, cropFromHandle: options.cropFromHandle,
         editSticky: async id => { await text.editText(id); }, editTextAt: (id, point, pointerId, clicks) => text.editTextAt(id, point, pointerId, clicks), cards: ui.cards, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu,
         onKeptLocked: kept => ui.notice?.(keptLockedMessage(kept.length)) });
-    // Hover and edit targets from real callbacks: the text editor reports the node it holds, and the
-    // pointer's hover is hit-tested by the same point query the select tool uses. Changes invalidate the view.
     const sensitive = createSensitiveTargets(() => { if (!disposed) options.interaction.invalidate(); });
     let hoverPick: AbortController | null = null, hoverSeq = 0;
     const endHoverPick = () => { hoverPick?.abort(); hoverPick = null; };
     const clearHover = () => { sensitive.setHovered(null); select.setHover(null); select.setConnectorHover(null, null, false); };
-    // The last pointer event over the board: the hover re-picks under it when the drawing or the selection changes, so the
-    // outline never stays on a shape that moved or went away under a still pointer. A gesture owns the pointer, so it re-picks nothing.
     let lastPointer: PointerEvent | null = null;
     const trackHover = (event: PointerEvent) => {
         lastPointer = event.type === 'pointerout' ? null : event;
         endHoverPick();
         const tool = runtime.tools.getSnapshot().active.id;
-        // The arrow tool hovers too: the target an end would bind to is found by the same resolver the drop uses (catalogue a.2).
         const arrow = tool === 'connector';
         if (event.type === 'pointerout' || (tool !== 'select' && tool !== 'eraser' && !arrow) || !current()
             || (event.pointerType !== 'mouse' && event.pointerType !== 'pen')) { clearHover(); return; }
@@ -163,17 +145,13 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         const controller = new AbortController(), seq = ++hoverSeq;
         hoverPick = controller;
         if (arrow) {
-            // Ctrl (on macOS too) and Cmd are the no-target keys for an arrow end (catalogue a.2), so they show no hover at all.
             if (event.ctrlKey || event.metaKey) { select.setConnectorHover(null, null, false); return; }
             const world = surfaceToWorld(at, camera.camera), exact = event.altKey, elbow = runtime.session.doc.ui.next.route === 'elbow';
-            // A hint, as the hover pick below: a failed resolve clears it, and the next move asks again.
             attachments.resolve(world, controller.signal, { precise: false, exact, route: 'arc', input }).then(attached => {
                 if (!controller.signal.aborted && seq === hoverSeq) select.setConnectorHover(attached?.target ?? null, world, exact, elbow);
             }, () => { if (!controller.signal.aborted && seq === hoverSeq) select.setConnectorHover(null, null, false); });
             return;
         }
-        // Hover is a hint: a pick that fails clears it and the next move asks again. Its failure reached the board's notice
-        // on every pointer move along an undecidable edge before (measured: "Point hit is geometrically uncertain" at 8.0 px).
         point.hitHover(at, input, controller.signal).then(id => {
             if (!controller.signal.aborted && seq === hoverSeq) { sensitive.setHovered(id); if (tool === 'select') select.setHover(id); }
         }, () => { if (!controller.signal.aborted && seq === hoverSeq) { sensitive.setHovered(null); if (tool === 'select') select.setHover(null); } });
@@ -189,7 +167,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         && t.vaultEpoch === inputToken.vaultEpoch && t.tabId === inputToken.tabId && t.sessionGeneration === inputToken.sessionGeneration
         && t.viewGeneration === inputToken.viewGeneration && editable(), style: () => runtime.session.doc.ui, camera,
         mappings: options.mappings, invalidate: options.interaction.invalidate, onError: ui.error });
-    // Released shapes land in the order they were drawn, each prepared after the one before has applied.
     let creationTail: Promise<void> = Promise.resolve();
     const creationTurn = () => {
         const ready = creationTail;
@@ -204,11 +181,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const invalidate = () => options.interaction.invalidate();
     const laserTrail = new LaserTrail(() => performance.now());
     let laserSheet: string | null = null;
-    // The eraser's path while it erases. A pointer that stops consumes its trail from the oldest end over ERASE_TRAIL_MS.
     const ERASE_TRAIL_MS = 350;
     let erasePath: { x: number; y: number; time: number }[] = [];
-    // The eraser's reach around its path, in CSS px: the trail is drawn as wide as what it erases. It was 12 px across under a
-    // 16 px reach, so a stroke beside the trail went with it.
     let eraseReach = 8;
     const scheduleTrails = () => {
         deadline?.(); deadline = null;
@@ -234,8 +208,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         if (erasePath.length > 512) erasePath.splice(0, erasePath.length - 512);
         invalidate(); scheduleTrails();
     };
-    // The quick overview fits the sheet's content, which contentBounds reads asynchronously. Z's press reads it ahead, and it is kept
-    // per document revision: a stale box is not used, so Shift never waits on the read and fits the viewport alone instead.
     let overviewContent: { readonly rev: number; readonly box: ContentRect | null } | null = null;
     let overviewPending: { readonly rev: number; readonly controller: AbortController } | null = null;
     const prepareOverview = () => {
@@ -277,7 +249,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         previewTextColumn(x: number, y: number, width: number | null) { column = { x, y, width }; invalidate(); },
         clearTextColumnPreview() { column = null; invalidate(); },
     };
-    // A creation's route. A toolbar drag (`follow`) centres the shape on the pointer and moves it with the pointer until release.
     const creation = (choice: ToolChoice, sample: RealSample, follow: boolean): PointerRoute<unknown> => {
         const variant = choice.variant ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle';
         if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
@@ -289,7 +260,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
             editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,
                 { ...request, input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };
     };
-    // A bar tool pressed on the chrome and dragged onto the board. Tools without a toolbar drag return null: the press is then a click.
     const resolveChromeDrag = (choice: ToolChoice, sample: RealSample, _modifiers: Modifiers): PointerRoute<unknown> | null => {
         if (!editable()) return null;
         switch (choice.id) {
@@ -327,8 +297,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         if (!event.defaultPrevented && editable() && options.focused() && !ui.modalOpen() && !text.manager.current) options.imports.paste(event);
     };
     options.surface.addEventListener('paste', paste);
-    // A secondary click on a locked node targets it for the context menu without selecting it (F-CTX-006). The hit is
-    // asynchronous, so the pointer and opener are read from the event now, before the browser releases it.
     const contextMenuAt = (event: MouseEvent) => {
         event.preventDefault();
         const opener = event.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement;
@@ -337,7 +305,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         let world: Point;
         try { world = surfaceToWorld(options.clientToSurface(point.x, point.y), options.view().camera); } catch (error) { ui.error(error); open(null); return; }
         const signal = new AbortController().signal;
-        // A locked node is targeted without being selected (F-CTX-006); any other press first selects what it lands on.
         void select.lockedAt(world, signal).then(async locked => {
             if (locked === null) {
                 try { await select.secondarySelect(world, signal); }
@@ -353,14 +320,12 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
         edgeScrolling: ui.edgeScrolling, mouseWheel: ui.mouseWheel, invertMouseZoom: ui.invertMouseZoom,
         animateZoom: (zoom, anchor) => { options.platform().cancelMotion(); options.platform().animateZoom(camera.clampZoom(zoom), anchor); },
-        // A pan's release slides the view; a new press stops whatever motion is still running (both were unwired before).
         startFling: samples => options.platform().startFling(samples),
         cancelMotion: () => options.platform().cancelMotion(),
         editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen,
         handleDoubleClick: (surface, world, time) => select.doubleClickHandle(surface, world, time),
         commands: { run: (id, event) => {
             if (select.command(id)) return true;
-            // grid and focus are document state: a non-editable view consumes them rather than letting the host's global route promote them.
             if ((id === 'preferences.grid' || id === 'preferences.focus') && !editable()) return true;
             return options.commands.run(id, event);
         } },
@@ -381,7 +346,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
         select.writeOverlays(frame); text.writeOverlays(frame);
-        // A laser trail belongs to the page it was drawn on: a page switch drops every session.
         const sheet = runtime.selection.getSnapshot().sheet;
         if (sheet !== laserSheet) { laserSheet = sheet; laserTrail.clear(); }
         const laserStrokes = laserTrail.frame(frame.timestamp);
@@ -390,7 +354,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         if (!svg) { svg = document.createElementNS(svgNS, 'svg'); svg.setAttribute('aria-hidden', 'true');
             svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg); }
         svg.setAttribute('viewBox', `0 0 ${frame.view.viewport.width} ${frame.view.viewport.height}`); svg.replaceChildren();
-        // Each laser stroke is one element at 0.7 opacity, so an overlap inside one stroke is not drawn darker.
         for (const stroke of laserStrokes) {
             if (stroke.points.length === 1) {
                 const p = worldToSurface(stroke.points[0], frame.view.camera), dot = document.createElementNS(svgNS, 'circle');
@@ -413,8 +376,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
             path.setAttribute('stroke-width', String(eraseReach * 2)); path.style.stroke = 'var(--text-muted)'; path.setAttribute('opacity', '0.35'); svg.append(path);
         }
         if (brush || column) {
-            // An auto-size text is created centred on the pointer's height (text/edit/createText.ts), so its mark is too; a dragged
-            // width is anchored at its top edge and its mark starts there.
             const box = brush ?? (() => { const p = worldToSurface(column!, frame.view.camera); return { x: p.x,
                 y: column!.width === null ? p.y - 11 : p.y, width: (column!.width ?? 1 / frame.view.camera.z) * frame.view.camera.z, height: 22 }; })();
             const rect = document.createElementNS(svgNS, 'rect');

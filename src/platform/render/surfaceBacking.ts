@@ -11,14 +11,9 @@ export interface SurfaceBackingOptions {
     readonly canvas: HTMLCanvasElement;
     readonly displayed: boolean;
     readonly now: number;
-    /** Called once the bytes a refused resize asked for fit again (the governor's sized wake), so the owner retries the resize. */
     readonly wake?: () => void;
 }
 
-/** Browser-owned canvas backing, not arena memory. A rebuilding canvas is ordinary working
- * scratch until the old display is zeroed and this exact allocation is promoted. Counting both
- * against the one display grant would prevent a full-size pane from ever restoring its GPU.
- */
 export class SurfaceBacking implements MemoryAllocator {
     private readonly display: MemoryCacheHandle;
     private readonly scratch: MemoryCacheHandle;
@@ -43,7 +38,6 @@ export class SurfaceBacking implements MemoryAllocator {
         } catch (error) { this.display.close(); throw error; }
     }
 
-    /** Reservations can exceed a shrunken canvas until an indivisible lease can be returned. */
     get reservedBytes(): number { return [...this.leases].reduce((sum, lease) => sum + lease.bytes, 0); }
 
     reserve(bytes: number): ByteLease | null {
@@ -60,16 +54,12 @@ export class SurfaceBacking implements MemoryAllocator {
         this.leases.delete(lease);
     }
 
-    /** Reserve the incremental peak before asking the browser for the new backing. A failed
-     * resize keeps its charge until the caller zeros the actual canvas, never pretending it freed.
-     */
     resize(width: number, height: number, resizeSurface: ResizeSurface): SurfaceResizeResult | null {
         if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 0 || height < 0) throw new RangeError('Invalid backing size');
         const requested = width * height * POLICY.surfaceReserveBytesPerPixel;
         if (!Number.isSafeInteger(requested)) throw new RangeError('Backing size exceeds safe accounting');
         let held = this.reservedBytes;
         if (!this.displayed && requested > 0 && held > requested) {
-            // A staged canvas can release an indivisible oversized lease without touching the display.
             const zeroed = resizeSurface(0, 0);
             if (!zeroed.complete || zeroed.width !== 0 || zeroed.height !== 0 ||
                 this.options.canvas.width !== 0 || this.options.canvas.height !== 0) return zeroed;
@@ -77,9 +67,6 @@ export class SurfaceBacking implements MemoryAllocator {
             held = 0;
         }
         if (requested > held && !this.reserve(requested - held)) {
-            // A refused backing waits for its bytes, sized, as the 2D compositor's does (compositor2d awaitCapacity): a pane whose GPU
-            // surface is refused behind its 2D picture asks no frame of its own, so without the wake nothing retried it once the
-            // layers had settled (found with the re-shown PDF of GpuPaneCandidate.zeroed, whose refusal never cleared).
             const wake = this.options.wake;
             if (wake) (this.displayed ? this.display : this.scratch).whenAvailable?.(wake, requested - held);
             return null;
@@ -94,15 +81,11 @@ export class SurfaceBacking implements MemoryAllocator {
         return result;
     }
 
-    /** The caller has synchronously zeroed the actual canvas, not merely requested cleanup. */
     releaseZeroed(): void {
         if (this.options.canvas.width || this.options.canvas.height) throw new Error('Canvas backing is still live');
         for (const lease of this.leases) this.release(lease);
     }
 
-    /** A zeroed kept canvas may rebuild behind a different displayed backend. Its new
-     * allocation is working scratch until that old display has actually been relinquished.
-     */
     stage(): void {
         if (this.closed || this.options.canvas.width || this.options.canvas.height || this.leases.size) {
             throw new Error('Only a released zero-size backing can be staged');
@@ -110,8 +93,6 @@ export class SurfaceBacking implements MemoryAllocator {
         this.displayed = false;
     }
 
-    /** Called only after the selected old canvas has released its actual backing. `floor`: canvas2d's own display, which the
-     * governor never refuses (MemoryGovernor.promoteCanvasBacking). */
     promote(floor = false): boolean {
         if (this.closed) return false;
         if (this.displayed) return true;

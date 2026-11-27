@@ -17,8 +17,6 @@ export interface EncodedChanges {
     commit(): void;
 }
 
-/** Session-owned count/digest and per-record revisions. No full-board walk on an edit: the
- * transaction's touched set is the sole input, including media whose reference count changed. */
 export class RecordChanges {
     private readonly versions = new Map<string, number>();
     private digest = new RecordKeyDigest();
@@ -96,7 +94,6 @@ export class RecordChanges {
                 commit: () => {
                     if (committed) return;
                     if (this.revision !== previous) throw new Error('Stale prepared serializer change');
-                    // Encoding and synchronous handoff can fail; neither may advance the digest.
                     for (const replacement of replacements) {
                         if (replacement.revision === null) this.versions.delete(replacement.key);
                         else this.versions.set(replacement.key, replacement.revision);

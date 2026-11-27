@@ -26,7 +26,6 @@ export function pdfiumTransformBox(matrix: Affine, left: number, bottom: number,
     return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
 
-/** Index-only sizes are estimates until the page's actual display transform is read. */
 export function pdfiumPageSize(runtime: PdfiumRuntime, document: number, index: number, maxPoints: number): PdfiumPageSize {
     if (!Number.isSafeInteger(index) || index < 0 || index > 0x7fffffff) throw new PdfEngineError('RangeError', 'Invalid PDF page index');
     if (!Number.isFinite(maxPoints) || maxPoints <= 0) throw new PdfEngineError('EngineBroken', 'Invalid PDF page limit');
@@ -41,7 +40,6 @@ export function pdfiumPageSize(runtime: PdfiumRuntime, document: number, index: 
     });
 }
 
-/** Exact crop/origin/rotation mapping, obtained from PDFium only for a loaded page. */
 export function pdfiumPageGeometry(runtime: PdfiumRuntime, page: number, index: number, size: PdfiumPageSize): PageGeometry & { userUnit: 1 } {
     const quarter = runtime.call('FPDFPage_GetRotation', page);
     if (!Number.isInteger(quarter) || quarter < 0 || quarter > 3) throw new PdfEngineError('PageError', 'Invalid PDF page rotation');

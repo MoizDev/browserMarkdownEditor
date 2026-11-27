@@ -1,10 +1,5 @@
 interface Entry<Value> { readonly value: Value; readonly weight: number }
 
-/**
- * An LRU keyed by object identity without retaining the key. Values must not
- * themselves point back to their key. Dead keys can leave values until ordinary
- * eviction, so the byte and entry bounds apply even when GC has not run.
- */
 export class WeakIdentityLru<Key extends object, Value> {
     private readonly ids = new WeakMap<Key, number>();
     private readonly entries = new Map<number, Entry<Value>>();

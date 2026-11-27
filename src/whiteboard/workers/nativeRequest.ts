@@ -2,7 +2,6 @@ import { FORMAT_LIMITS } from '../format/schema';
 import type { BoardKind } from '../model/doc';
 import type { ParseNativeRequest } from './nativeParseTypes';
 
-// Native-format §7 and C5: the worker receives copied bytes, never a disk File.
 export function validateNativeRequest(payload: unknown): ParseNativeRequest {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new TypeError('Invalid native request');
     const keys = Reflect.ownKeys(payload);

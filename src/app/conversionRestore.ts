@@ -12,11 +12,6 @@ import { TRASH_DIR } from '../utils/assets';
 import { hasHostedNativeOwner } from './nativeOwners';
 import type { UseConversionRestoreDeps } from './useConversionRestore';
 
-/**
- * Putting a converted file's pre-conversion copy back, found in the Trash by
- * its recorded digest. Reached only from the tree row of a converted document,
- * so it loads on that gesture (useConversionRestore), never at startup.
- */
 export type ConversionRestoreDeps = UseConversionRestoreDeps;
 
 export async function restoreBeforeConversion(deps: Pick<ConversionRestoreDeps,
@@ -51,7 +46,6 @@ export async function restoreBeforeConversion(deps: Pick<ConversionRestoreDeps,
     if (nativeKind && (!nativeTab || !current())) { notify('Open the converted document in its native view first to locate its pre-conversion copy.'); return; }
     const source = nativeKind ? null : await readFileVersioned(node.handle);
     const recorded = nativeKind ? nativeTab?.representation.legacyOriginalSha256 : source ? conversionDigestFromText(source.text, node.name) : null;
-    // A board an earlier version converted in place records no digest: it is found by what it kept of its old file.
     const evidence = !recorded && source ? conversionEvidenceFromText(source.text, node.name) : null;
     if ((!recorded || !/^[a-f0-9]{64}$/.test(recorded)) && !evidence) {
       notify('No pre-conversion copy is recorded for this file.');
@@ -60,9 +54,6 @@ export async function restoreBeforeConversion(deps: Pick<ConversionRestoreDeps,
     const items = await listTrash();
     const queue = [...items];
     let match: TrashItem | undefined, digest = recorded ?? '';
-    // Where the earlier version put the backup: this folder's Trash, under the board's name or that name numbered
-    // (freeEntryName). A file that fits AND is there is preferred to one elsewhere; the board may have moved since, so
-    // a fit elsewhere still counts when it is the only one.
     const boardTrash = joinVaultPath(parentVaultPath(node.path), TRASH_DIR);
     const dot = node.name.lastIndexOf('.'), stem = dot > 0 ? node.name.slice(0, dot) : node.name, extension = dot > 0 ? node.name.slice(dot) : '';
     const keptHere = (item: TrashItem) => parentVaultPath(item.sourcePath) === boardTrash && (item.name === node.name
@@ -73,12 +64,10 @@ export async function restoreBeforeConversion(deps: Pick<ConversionRestoreDeps,
       const item = queue[i];
       if (item.kind === 'directory') { if (item.children) queue.push(...item.children); continue; }
       if (item.origin !== 'trashed') continue;
-      // The earlier version kept the old file under its own name, so only a drawing or notebook name can be it.
       if (evidence && (!isCanvasFile(item.name) || isNativeDrawingFile(item.name))) continue;
       try {
         const file = await handleIO.file(item.handle as FileSystemFileHandle);
         if (evidence) {
-          // The first bytes say whether it is an old board at all, before the whole file is read and parsed.
           if (!startsAsOldBoard(await file.slice(0, 512).text(), item.name)) continue;
           if (!matchesConversionEvidence(evidence, await file.text())) continue;
           const hash = await fingerprintSnapshot(file, controller.signal);
@@ -92,9 +81,6 @@ export async function restoreBeforeConversion(deps: Pick<ConversionRestoreDeps,
     }
     if (!current()) return;
     if (evidence) {
-      // Two different files that both fit, in the same standing, are two versions of the board (one trashed by hand):
-      // which one was converted is not known, so none is chosen for the person.
-      // Evidence that is not the board's alone is trusted only where the earlier version put the backup (ConversionEvidence.distinctive).
       const candidates = foundHere.size || !evidence.distinctive ? foundHere : found;
       if (candidates.size > 1) {
         notify(`${candidates.size} files in Trash could each be this ${isNotebookFile(node.name) ? 'notebook' : 'drawing'}'s copy from before conversion, so none was restored. Open Trash to restore the one you want.`);

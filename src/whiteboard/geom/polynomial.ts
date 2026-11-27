@@ -1,11 +1,10 @@
 import type { Dyadic } from './numeric';
 
-export type ExactPolynomial = bigint[]; // Ascending powers.
+export type ExactPolynomial = bigint[];
 export interface DyadicRootCell { readonly index: bigint; readonly depth: number; readonly point: boolean }
 const absolute = (value: bigint) => value < 0n ? -value : value;
 function trim(value: ExactPolynomial): ExactPolynomial { while (value.length && value[value.length - 1] === 0n) value.pop(); return value; }
 
-/** Bounded integer polynomial arithmetic; every Euclidean step is cooperative. */
 export function createPolynomialArithmetic(maxBits: number) {
     if (!Number.isSafeInteger(maxBits) || maxBits < 64 || maxBits > 65536) throw new RangeError('Invalid polynomial bit limit');
     const valid = (value: bigint) => { if ((absolute(value) >> BigInt(maxBits)) !== 0n) throw new RangeError('Polynomial arithmetic bit limit'); };
@@ -31,8 +30,6 @@ export function createPolynomialArithmetic(maxBits: number) {
         if (positive && value[value.length - 1] < 0n) for (let i = 0; i < value.length; i++) { value[i] = -value[i]; yield; }
         return value;
     };
-    // A positive pseudo-division multiplier preserves the rational remainder's
-    // sign; the signed Sturm sequence must not normalize that sign away.
     const remainder = function* (left: ExactPolynomial, right: ExactPolynomial): Generator<void, ExactPolynomial> {
         if (!right.length) throw new Error('Polynomial division by zero');
         const divisor = right[right.length - 1] < 0n ? right.map(value => -value) : [...right];
@@ -120,7 +117,6 @@ export function createPolynomialArithmetic(maxBits: number) {
         }
         return changes;
     };
-    /** Isolate distinct roots, including even-multiplicity and dyadic endpoint roots. */
     const roots01 = function* (input: ExactPolynomial, options: { readonly minDepth: number; readonly maxDepth: number; readonly maxNodes: number }):
         Generator<void, readonly DyadicRootCell[]> {
         const { minDepth, maxDepth, maxNodes } = options;

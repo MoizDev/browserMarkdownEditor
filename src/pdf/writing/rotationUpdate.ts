@@ -1,22 +1,3 @@
-// Turning PDF pages as an INCREMENTAL UPDATE: the file's bytes stay exactly as
-// they were, and a short section appended after them redefines only the turned
-// page dictionaries (each a copy of the original with a new /Rotate) and points
-// a new cross-reference section back at the old one through /Prev.
-//
-// Why: the old route re-saved the whole document through PDFium and then tried
-// to prove that the re-save changed nothing else, decoding and hashing every
-// stream to do it. That took ~9s on a 62-page scan and was refused outright for 7
-// of 9 real PDFs (the inventory changed across the re-save, or hit its work cap).
-// Appended, the original is a byte-exact prefix of the result, so "nothing else
-// changed" is a prefix comparison plus a parse of the few objects after it.
-//
-// GROWTH IS BOUNDED. A section this writer appended is marked (MARK, twice: where
-// it starts and right before its xref, so finding it costs nothing). When the
-// file still ends with one, the next turn REPLACES it instead of stacking another:
-// it is rebuilt over the untouched prefix with every page's final angle, so four
-// presses back to the start return the file to its original bytes exactly. A
-// section anyone else appended afterwards is left alone and stacked upon.
-
 import { asQuarter } from '../../utils/pdfRotation';
 import {
     PdfObjectReader, PdfSyntaxError, asInt, dictGet, keywordAt, parseObjectHeader, parseValue, readStartXref, readXrefSection,
@@ -27,16 +8,13 @@ import type { PdfDictValue, PdfValue } from './rotationReader';
 export const ROTATION_MARK = '%local-vault-pdf/v1;rotation;base=';
 const MAX_PAGES = 100_000, MAX_NODES = 250_000, MAX_DEPTH = 64;
 
-/** Quarter turns: `all` for every page, plus per-page extras (Alt-turns). */
 export interface RotationTurns { readonly all: number; readonly pages: ReadonlyArray<readonly [number, number]> }
 
 export interface PdfRotationPage { readonly num: number; readonly gen: number; readonly dict: PdfDictValue; readonly rotate: number }
 
 export interface OwnRotationSection {
-    /** Length of the untouched prefix this section was appended to. */
     readonly base: number;
     readonly kind: 'table' | 'stream';
-    /** Page objects the section redefines, with their /Rotate. */
     readonly objects: ReadonlyMap<number, { gen: number; dict: PdfDictValue; rotate: number; offset: number }>;
 }
 
@@ -44,7 +22,6 @@ export interface RotationPlan {
     readonly base: number;
     readonly appendix: Uint8Array;
     readonly pageCount: number;
-    /** The prefix's angles and the result's, per page. */
     readonly before: number[];
     readonly rotations: number[];
     readonly replaced: boolean;
@@ -65,14 +42,12 @@ async function rotateValue(reader: PdfObjectReader, value: PdfValue | undefined)
     return asQuarter(resolved.value);
 }
 
-/** Every page leaf in document order, with its effective (inherited, indirect-resolved) /Rotate. */
 export async function readPageTree(reader: PdfObjectReader, yieldNow?: () => Promise<void>): Promise<PdfRotationPage[]> {
     const root = await reader.resolve(dictGet(reader.last.trailer, 'Root'));
     if (root?.kind !== 'dict') throw new PdfSyntaxError('PDF catalog is missing');
     const top = dictGet(root, 'Pages');
     if (top?.kind !== 'ref') throw new PdfSyntaxError('PDF page tree is not an indirect object');
     const pages: PdfRotationPage[] = [], seen = new Set<number>();
-    // Depth-first, children in order: a stack of pending kids, reversed on push.
     const stack: Array<{ num: number; inherited: number | undefined; depth: number }> = [{ num: top.num, inherited: undefined, depth: 0 }];
     while (stack.length) {
         const { num, inherited, depth } = stack.pop()!;
@@ -103,7 +78,6 @@ export async function readPageTree(reader: PdfObjectReader, yieldNow?: () => Pro
     return pages;
 }
 
-/** One object of an appended section: a dictionary, or a dictionary with its stream (a direct /Length). */
 export interface AppendedObject {
     readonly gen: number;
     readonly dict: PdfDictValue;
@@ -111,13 +85,10 @@ export interface AppendedObject {
     readonly stream?: { readonly start: number; readonly length: number };
 }
 
-/** A section this app appended (marked with `mark`) that the file still ends with; null when it does not.
- * Strict: anything but exactly the shape appendObjects writes is not "ours" and is never replaced. */
 export async function readAppendedSection(bytes: Uint8Array, mark: string):
     Promise<{ base: number; kind: 'table' | 'stream'; objects: Map<number, AppendedObject> } | null> {
     let xref: number;
     try { xref = readStartXref(bytes); } catch { return null; }
-    // The marker is the line right before the final xref section.
     const lineEnd = xref - 1;
     if (bytes[lineEnd] !== 10) return null;
     let lineStart = lineEnd;
@@ -168,7 +139,6 @@ export async function readAppendedSection(bytes: Uint8Array, mark: string):
     } catch { return null; }
 }
 
-/** The page-turn section this writer appended last, if the file still ends with one; null when it does not. */
 export async function readOwnRotationSection(bytes: Uint8Array): Promise<OwnRotationSection | null> {
     const section = await readAppendedSection(bytes, ROTATION_MARK);
     if (!section) return null;
@@ -181,7 +151,6 @@ export async function readOwnRotationSection(bytes: Uint8Array): Promise<OwnRota
     return { base: section.base, kind: section.kind, objects };
 }
 
-/** The page dictionary as written, with /Rotate set (and only that changed). */
 export function turnedDictionary(page: PdfRotationPage, rotate: number): string {
     const entries = new Map(page.dict.entries);
     entries.delete('Rotate');
@@ -196,12 +165,8 @@ function trailerValue(trailer: PdfDictValue, key: string): string | undefined {
 
 const encoder = new TextEncoder();
 
-/** An object to append: its number and generation, and its body (a dictionary, or a dictionary and its stream). */
 export interface ObjectBody { readonly num: number; readonly gen: number; readonly body: Uint8Array }
 
-/** Builds a section of `objects` over the prefix `bytes[0, base)`, marked with `mark` where it starts and right
- * before its cross-reference section, which is of the prefix's own kind (table or stream) and points back
- * through /Prev. Objects are redefinitions: their numbers must already lie below the trailer's /Size. */
 export function appendObjects(prefix: PdfObjectReader, base: number, prevXref: number, mark: string, objects: readonly ObjectBody[]): Uint8Array {
     const trailer = prefix.last.trailer, size = asInt(dictGet(trailer, 'Size'));
     if (size === undefined || size <= 0) throw new PdfSyntaxError('PDF trailer has no /Size');
@@ -241,8 +206,6 @@ export function appendObjects(prefix: PdfObjectReader, base: number, prevXref: n
         push(`${table}trailer\n<< /Size ${size} ${common.join(' ')} >>\nstartxref\n${xref}\n%%EOF\n`);
         return join();
     }
-    // A cross-reference stream, matching the file's own last section. Uncompressed:
-    // a handful of 7-byte rows is not worth a filter readers must then support.
     const self = size;
     const all = [...rows, [self, xref, 0] as [number, number, number]];
     const index: number[] = [];
@@ -261,7 +224,6 @@ export function appendObjects(prefix: PdfObjectReader, base: number, prevXref: n
     return join();
 }
 
-/** Builds the appended section for `pages` (index → final angle) over the prefix `bytes[0, base)`. */
 function appendSection(prefix: PdfObjectReader, base: number, prevXref: number, tree: readonly PdfRotationPage[],
     changes: ReadonlyArray<readonly [number, number]>): Uint8Array {
     return appendObjects(prefix, base, prevXref, ROTATION_MARK, changes.map(([index, rotate]) => {
@@ -270,7 +232,6 @@ function appendSection(prefix: PdfObjectReader, base: number, prevXref: number, 
     }));
 }
 
-/** Plans the turn over `bytes`. Null means the file already shows these angles: nothing to write. */
 export async function planRotation(bytes: Uint8Array, turns: RotationTurns, yieldNow?: () => Promise<void>): Promise<RotationPlan | null> {
     const full = await PdfObjectReader.open(bytes);
     if (dictGet(full.last.trailer, 'Encrypt') !== undefined) throw new PdfSyntaxError('Encrypted PDF cannot be rotated');

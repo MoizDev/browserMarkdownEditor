@@ -43,8 +43,6 @@ function publicHost(hostname: string): boolean {
         if (words.slice(0, 5).every(value => value === 0) && words[5] === 0xffff) {
             return publicV4([words[6] >>> 8, words[6] & 255, words[7] >>> 8, words[7] & 255]);
         }
-        // Global-unicast only; reject documentation, protocol-assignment and 6to4
-        // ranges rather than permitting IPv4 tunnel forms to bypass the IPv4 policy.
         return (words[0] & 0xe000) === 0x2000 && words[0] !== 0x2002
             && !(words[0] === 0x2001 && ((words[1] & 0xfe00) === 0 || words[1] === 0x0db8));
     }
@@ -54,8 +52,6 @@ function publicHost(hostname: string): boolean {
     return true;
 }
 
-/** Clicks may navigate local destinations. Network-capable preview/embed use additionally
- * excludes special literal addresses and our own endpoints; this cannot detect DNS rebinding. */
 export function checkContentUrl(value: string, use: UrlUse, environment: UrlEnvironment): UrlDecision {
     if (typeof value !== 'string' || value.length > SECURITY_LIMITS.urlCharacters
         || value.startsWith('//') || (use !== 'click' && use !== 'preview' && use !== 'embed')) {

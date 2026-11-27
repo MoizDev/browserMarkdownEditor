@@ -7,18 +7,16 @@ import { bestShiftSsim } from './ssim.mjs';
 const ROOT = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 const MASKS = new URL('./glyph-masks.manifest.json', import.meta.url);
 
-// planning/40-platform/verification.md:236–242. These are the programme's budgets,
-// not tunables chosen by a caller or values inferred from an observed difference.
 const A_MAX_CHANNEL = 1;
-const A_CHANGED_FRACTION = 0.0001; // line 236: 0.01% (not 0.01 as a fraction).
+const A_CHANGED_FRACTION = 0.0001;
 const B_MAX_CHANNEL = 8;
-const B_OVER_TWO_FRACTION = 0.005; // line 237: 0.5%.
+const B_OVER_TWO_FRACTION = 0.005;
 const B_MIN_SSIM = 0.99;
-const B_MASS_MIN = 0.95; // lines 241–242, overall coverage.
+const B_MASS_MIN = 0.95;
 const B_MASS_MAX = 1.05;
 const CELL_SIZE = 32;
 const B_CELL_RELATIVE = 0.1;
-const C_MAX_CHANNEL = 4; // line 238: no glyph allowance without a reviewed mask.
+const C_MAX_CHANNEL = 4;
 const C_GLYPH_MAX_CHANNEL = 8;
 
 function channelDelta(a, ai, b, bi) {
@@ -69,8 +67,6 @@ function inkMass(expected, actual, background, shift) {
             referenceCells[cell] += massA;
             const xx = x + dx;
             const yy = y + dy;
-            // Outside the translated image there is no candidate ink. Full-image totals
-            // above still include ALL original pixels, not just the translated overlap.
             if (xx >= 0 && xx < actual.width && yy >= 0 && yy < actual.height) {
                 candidateCells[cell] += dx || dy ? inkAt(actual, (yy * actual.width + xx) * 4, background) : massB;
             }
@@ -82,8 +78,6 @@ function inkMass(expected, actual, background, shift) {
     for (let cell = 0; cell < referenceCells.length; cell++) {
         const a = referenceCells[cell];
         const b = candidateCells[cell];
-        // vr-lead's explicit zero/tiny-cell ruling: NO positive-mass floor or absolute
-        // epsilon. An AA-only false failure stays visible for an evidence-based review.
         const passed = a === 0 ? b === 0 : Math.abs(b - a) <= a * B_CELL_RELATIVE;
         if (!passed) failures.push({ column: cell % columns, row: Math.floor(cell / columns), reference: a, candidate: b, ratio: a === 0 ? null : b / a });
     }
@@ -120,10 +114,6 @@ async function glyphMask(fixture, expectedHash, width, height) {
     return { allowed, identity: record, manifestSha256: sha256(manifestBytes) };
 }
 
-/** Compare PNG bytes captured from the real app. No golden is created or changed here.
- * B requires an explicit background and a capture cropped to the document surface, not
- * app chrome; otherwise page/chrome ink would drown a missing stroke's coverage.
- */
 export async function comparePictures({ expected: expectedBytes, actual: actualBytes, kind, fixture, outDir, name, useGlyphMask = false }) {
     if (!['A', 'B', 'C'].includes(kind) || !fixture?.id || !/^[a-f0-9]{64}$/.test(fixture.sha256 ?? '') || !/^[a-z0-9][a-z0-9._-]*$/i.test(name ?? '')) throw new Error('Comparison needs A/B/C, a named/hash-bound fixture and a portable artifact name');
     if (![1, 1.25, 2].includes(fixture.dpr)) throw new Error('Picture DPR must be declared as 1, 1.25 or 2');

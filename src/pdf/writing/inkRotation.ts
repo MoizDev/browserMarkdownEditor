@@ -1,26 +1,3 @@
-// Turning the pages of a PDF annotated here, with every mark on them: an incremental update, like a plain turn.
-//
-// WHAT AN ANNOTATED PDF IS (pdfiumWriter.ts): the visible pages are the embedded original's pages with the
-// ink stamped onto them in PDF user space, plus attachments — the original itself (original.pdf), the board
-// (board.json, every mark in each page's DISPLAYED frame), and a write mark binding the board to these
-// exact bytes. Every save rebuilds the visible pages from the original and the board.
-//
-// SO A TURN MUST CHANGE THREE THINGS, and appends exactly those:
-//   - the visible page dictionaries, with the new /Rotate. The stamped ink is in user space, which /Rotate
-//     does not move, so it turns with the page as ink on a sheet of paper does: nothing is re-stamped;
-//   - the embedded original, turned the same way (rotationUpdate.ts over its bytes, so its own original is
-//     still a byte-exact prefix and four turns restore it exactly). The next save rebuilds from it;
-//   - the board, its marks moved into the turned frames (inkBoardTurn.ts) and its host record describing
-//     the turned original exactly as PDFium reads it, which is what reopening it checks (session/inkHost.ts);
-//   - and a new write mark over the whole result, binding that board to it.
-// The stream objects of the three attachments and the turned pages are REDEFINED in one appended section
-// (same object numbers), so the name tree, the filespecs and every other object stay byte-exact.
-//
-// FROM THE BASE, ALWAYS. A section this writer appended (INK_ROTATION_MARK) that the file still ends with is
-// replaced, and the new one is computed from the untouched prefix with each page's TOTAL turn: the marks go
-// through one transform from where they were, never a chain of them, and when every page is back where it
-// started the section disappears and the file is its original bytes again.
-
 import { PDFDocument } from 'pdf-lib';
 import type { WorkerContext } from '../../platform/workers/serve';
 import { checkPdfWriteMarkForBoard, pdfWriteMarkV2Placeholder, sealPdfWriteMark } from '../../utils/pdfWriteMark';
@@ -58,7 +35,6 @@ function hash(bytes: Uint8Array): string {
     return digest.digest();
 }
 
-/** Why the inspector would not let this file be edited, as the reason a turn gives the person. */
 function inspectionRefusal(inspection: Exclude<PdfInkInspection, { kind: 'native' }>): RotationRefusal {
     if (inspection.kind === 'plain') return 'unsupported-format';
     switch (inspection.reason) {
@@ -68,8 +44,6 @@ function inspectionRefusal(inspection: Exclude<PdfInkInspection, { kind: 'native
         case 'unsupported-format': case 'invalid-marker': return 'newer-annotations';
         case 'invalid-write-mark': return 'foreign-change';
         case 'missing-attachment': return 'missing-attachment';
-        // Too large to inspect, two candidates, a nested source, an inspection that failed: none of these says the
-        // annotations are damaged, and "incomplete or damaged" sent a person looking for a loss that had not happened.
         default: return 'unverified';
     }
 }
@@ -85,7 +59,6 @@ function pdfText(value: PdfValue | undefined): string | undefined {
     return String.fromCharCode(...b);
 }
 
-/** The embedded-file stream objects of the app's attachments, found through the catalog's EmbeddedFiles tree. */
 async function attachmentStreams(reader: PdfObjectReader): Promise<Map<string, { num: number; gen: number }>> {
     const found = new Map<string, { num: number; gen: number }>();
     const root = await reader.resolve(dictGet(reader.last.trailer, 'Root'));
@@ -119,7 +92,6 @@ async function attachmentStreams(reader: PdfObjectReader): Promise<Map<string, {
     return found;
 }
 
-/** The section INK_ROTATION_MARK wrote, if the file ends with one that is exactly ours over its prefix. */
 async function ownInkSection(bytes: Uint8Array): Promise<{ base: number; pages: Map<number, number>; objects: Set<number> } | null> {
     const section = await readAppendedSection(bytes, INK_ROTATION_MARK);
     if (!section) return null;
@@ -146,7 +118,6 @@ async function ownInkSection(bytes: Uint8Array): Promise<{ base: number; pages: 
     } catch { return null; }
 }
 
-/** PDFium's reading of the turned pages, exactly as an ink source acquisition reads them (session/inkAcquisition.ts). */
 function turnedGeometries(runtime: PdfiumRuntime, bytes: Uint8Array, indices: readonly number[]): Map<number, PageGeometry> {
     const doc = WriterNativeDocument.openBytes(runtime, bytes), result = new Map<number, PageGeometry>();
     try {
@@ -169,11 +140,9 @@ interface Basis {
     readonly pristineFingerprint: string;
     readonly board: string;
     readonly writeId: string;
-    /** Each page's angle in the file as it is now (the own section's, else the prefix's). */
     readonly current: number[];
 }
 
-/** The untouched prefix this turn is computed from, inspected as an annotated PDF of this app. */
 async function basis(bytes: Uint8Array, slice: () => Promise<void>): Promise<Basis> {
     const own = await ownInkSection(bytes);
     const base = own ? own.base : bytes.length, prefix = bytes.subarray(0, base);
@@ -189,9 +158,6 @@ async function basis(bytes: Uint8Array, slice: () => Promise<void>): Promise<Bas
     } finally { inspector.dispose(); }
 }
 
-/** The geometry engine a board's host names (session/inkAcquisition.ts, the reader pool's): render and writer workers
- * load one engine, so this writer is it. Asked of the pool instead, the turn read it while the pane swapped bytes and
- * the pool briefly had no open document: measured, the second of four quick presses refused a valid board. */
 function engineOf(runtime: PdfiumRuntime): Engine {
     return { id: 'pdfium', build: `${runtime.buildId}/${runtime.artifactSha256}`, generation: 1 };
 }
@@ -203,7 +169,6 @@ function sameEngine(value: unknown, engine: Engine): boolean {
 
 interface Turned { pristine: Uint8Array; pristineBase: number; board: string; writeId: string; rotations: number[] }
 
-/** Everything a turn produces from its basis, deterministically but for the write id it is given. */
 async function turnFromBasis(runtime: PdfiumRuntime, b: Basis, rotations: number[], engine: Engine, writeId: string,
     slice: () => Promise<void>): Promise<Turned> {
     const count = b.tree.length, base = b.tree.map(page => page.rotate);
@@ -212,7 +177,6 @@ async function turnFromBasis(runtime: PdfiumRuntime, b: Basis, rotations: number
     const plan = await planRotation(b.pristine, turns, slice);
     const pristine = plan ? new Uint8Array(plan.base + plan.appendix.length) : b.pristine;
     if (plan) { pristine.set(b.pristine.subarray(0, plan.base)); pristine.set(plan.appendix, plan.base); }
-    // The original's pages are the visible pages' source: their angles agree, or the file is not what a save writes.
     if (!plan || plan.pageCount !== count || plan.rotations.some((angle, i) => angle !== rotations[i])) throw new Refused('unsupported-format');
     const indices = q.flatMap((amount, i) => amount ? [i] : []);
     const geometry = turnedGeometries(runtime, pristine, indices);
@@ -227,14 +191,11 @@ async function turnFromBasis(runtime: PdfiumRuntime, b: Basis, rotations: number
             || pdf.schema !== 1 || pdf.sourceFingerprint !== b.pristineFingerprint || pdf.writeId !== b.writeId
             || !Array.isArray(pdf.pages) || pdf.pages.length !== count
             || (migration && (!Array.isArray(migration.previousFrames) || migration.previousFrames.length !== count))) throw new BoardTurnRefused('invalid');
-        // A board measured by another build of the engine does not open editable here (inkHost.ts validHost), and its
-        // page records are that engine's: this one cannot vouch for them.
         if (!sameEngine(pdf.geometryEngine, engine)) throw new Refused('other-engine');
         const pages = (pdf.pages as Array<Record<string, unknown>>).map((page, i) => {
             const turned = geometry.get(i);
             if (!turned) return page;
             const was = page as { width: number; height: number };
-            // The marks were moved within the old page's frame; the turned page must be exactly that frame, turned.
             const [w, h] = q[i] % 2 ? [was.height, was.width] : [was.width, was.height];
             if (turned.width !== w || turned.height !== h) throw new BoardTurnRefused('invalid');
             return { index: turned.index, width: turned.width, height: turned.height, rotate: turned.rotate, userUnit: turned.userUnit, toUserSpace: [...turned.toUserSpace] };
@@ -258,15 +219,12 @@ function streamBody(dict: string, data: Uint8Array): Uint8Array {
     return out;
 }
 
-/** The appended section (sealed with its write mark) for `turned`, over the basis. */
 async function section(b: Basis, turned: Turned): Promise<Uint8Array> {
     const reader = await PdfObjectReader.open(b.prefix);
     const objects: ObjectBody[] = b.tree.flatMap((page, index) => turned.rotations[index] === page.rotate ? []
         : [{ num: page.num, gen: page.gen, body: encoder.encode(turnedDictionary(page, turned.rotations[index])) }]);
     const board = encoder.encode(turned.board), packed = await deflate(board);
     const stream = (name: typeof NAMES[number]) => b.streams.get(name)!;
-    // Stored as-is: an original PDF's own streams are already compressed, and deflating a large scan again costs
-    // seconds for nothing. The board is text, and deflates well.
     objects.push({ ...stream('original.pdf'), body: streamBody(`<< /Type /EmbeddedFile /Length ${turned.pristine.length} /Params << /Size ${turned.pristine.length} >> >>`, turned.pristine) });
     objects.push({ ...stream('board.json'), body: streamBody(`<< /Type /EmbeddedFile /Filter /FlateDecode /Length ${packed.length} /DL ${board.length} /Params << /Size ${board.length} >> >>`, packed) });
     // Last, so its placeholder is the file's last mark (utils/pdfWriteMark.ts), as PDFium's writer leaves it.
@@ -279,7 +237,6 @@ async function section(b: Basis, turned: Turned): Promise<Uint8Array> {
     return output.slice(b.base);
 }
 
-/** Plans the turn of an annotated PDF of this app. Write safety and role were established by the caller. */
 export async function planInkRotation(runtime: PdfiumRuntime, bytes: Uint8Array, turns: RotationTurns, context: WorkerContext): Promise<Rotate> {
     const slice = () => context.slice();
     try {
@@ -292,7 +249,6 @@ export async function planInkRotation(runtime: PdfiumRuntime, bytes: Uint8Array,
         const rotations = b.current.map((angle, i) => asQuarter(angle + 90 * (turns.all + extra[i])));
         const before = b.tree.map(page => page.rotate);
         if (rotations.every((angle, i) => angle === before[i])) {
-            // Every page is back where the prefix has it: the file is the prefix again, byte for byte.
             if (b.base === bytes.length) return { kind: 'unchanged' };
             return { kind: 'update', appendix: new ArrayBuffer(0), base: b.base, pageCount: count, before, rotations };
         }
@@ -308,19 +264,6 @@ export async function planInkRotation(runtime: PdfiumRuntime, bytes: Uint8Array,
     }
 }
 
-/**
- * The proof of an annotated turn, by a fresh writer, before App may write it. Independent for the file (it is
- * re-read as opening it will, by the inspector, pdf-lib and PDFium); for the board it recomputes the turn with the
- * planner's own `turnBoardText`, so it proves the bytes written are the bytes planned, not the map itself. Besides the page
- * proof a plain turn gets (nativeRotate.ts verifyPageTurn: exact prefix, section shape, pdf-lib and PDFium
- * re-reads), with the three attachment streams as the only other objects the section may redefine:
- *   - the whole result inspects as an annotated PDF of this app, as opening it will (write mark, board
- *     identity, original's write safety);
- *   - its original passes the plain turn's proof against the prefix's original;
- *   - its board is, byte for byte, the prefix's board turned by each page's total turn, with a host
- *     record of the turned original as PDFium reads it — so Annotate opens it editable;
- *   - PDFium reads the visible turned pages exactly as the original's, which the acquisition requires.
- */
 export async function verifyInkRotation(runtime: PdfiumRuntime, input: Uint8Array, output: Uint8Array, base: number,
     rotations: readonly number[], context: WorkerContext): Promise<void> {
     const slice = () => context.slice();
@@ -343,7 +286,6 @@ export async function verifyInkRotation(runtime: PdfiumRuntime, input: Uint8Arra
         if (hash(pristine) !== hash(expected.pristine) || inspection.pristineFingerprint !== hash(expected.pristine)) throw fail('the embedded original is not the turned original');
         await verifyPageTurn(runtime, b.pristine, pristine, expected.pristineBase, rotations, context, PAGE_TURN);
         if (await inspection.board.text() !== expected.board) throw fail('the board is not the turned board');
-        // What the acquisition compares: each visible page reads exactly as the original's page.
         const turned = rotations.flatMap((angle, i) => angle !== b.tree[i].rotate ? [i] : []);
         const sample = turned.filter((_, k) => k % Math.max(1, Math.ceil(turned.length / 24)) === 0);
         const visible = turnedGeometries(runtime, output, sample), inner = turnedGeometries(runtime, pristine, sample);

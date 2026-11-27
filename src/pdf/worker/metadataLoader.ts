@@ -13,7 +13,6 @@ interface MetadataModule {
 }
 const unavailable = () => new DOMException('PDF metadata module is unavailable', 'AbortError');
 
-/** The fixed module belongs to this worker incarnation, not to its first waiter. */
 export function createPdfMetadataLoader() {
     let closed = false, requested = false, supplying = false, ready: MetadataModule | undefined;
     let resolve!: (value: MetadataModule) => void, reject!: (error: unknown) => void;

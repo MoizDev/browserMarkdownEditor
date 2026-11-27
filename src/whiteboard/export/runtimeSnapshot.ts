@@ -18,15 +18,12 @@ import { prepareRaster, type PreparedRaster } from './prepareRaster';
 import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BoardCaptureSnapshotOptions {
-    /** Narrowed (foreign edit by whiteboard-a3 for the closed-source seam): reads only the scene, document owner and media. */
     readonly runtime: Pick<BoardRuntime, 'scene' | 'media'> & { readonly session: Pick<BoardRuntime['session'], 'doc' | 'owner'> };
     readonly sheetId: SheetId;
     readonly request: CaptureRequest;
     readonly memory: MemoryAllocator;
-    /** Must remain usable for this captured entry after its originating view closes. */
     readonly readMedia: (entry: Readonly<MediaEntry>, signal: AbortSignal) => Promise<Blob>;
     readonly signal?: AbortSignal;
-    /** The caller owns this pre-await scene pin until the capture has settled. */
     readonly pin?: SceneSnapshot;
     readonly selectedNodeIds?: ReadonlySet<string>;
     readonly onError: (error: unknown) => void;
@@ -49,7 +46,6 @@ function validBytes(value: number): number {
     return value;
 }
 
-/** Pins one Scene revision synchronously. It never uses the pane's current frame or GPU owner. */
 export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions): CaptureSnapshot {
     const { runtime, sheetId, memory } = options, scene = runtime.scene, doc = runtime.session.doc, request = options.request;
     options.signal?.throwIfAborted();
@@ -183,8 +179,6 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
             for (const item of paperItems) { allUnderlay.push(item); await checkpoint(); }
             for (const item of underlay) { allUnderlay.push(item); await checkpoint(); }
             const rasterFrame: PaintFrame = { ...frame, underlay: allUnderlay };
-            // This is the same conservative provisional profile as boardLayers:
-            // native Path2D has no measurable byte size and is not allocated until after admission.
             let estimate = 0;
             const add = (bytes: number) => { estimate = validBytes(estimate + validBytes(bytes)); };
             for (const band of [rasterFrame.underlay, rasterFrame.content]) for (const item of band) {

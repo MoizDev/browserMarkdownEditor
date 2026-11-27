@@ -52,8 +52,6 @@ function difference(base: TextWindow, value: string, selection: EditSelection): 
     return { from: base.start + from, to: base.start + oldEnd, text: value.slice(from, newEnd), selection };
 }
 
-// The element takes platform input, but the canvas remains the only visible
-// text. The caller owns transactions and supplies the current model snapshot.
 export class EditHost {
     readonly element: HTMLDivElement | HTMLTextAreaElement;
     private readonly context: EditContextLike | null;
@@ -241,7 +239,6 @@ export class EditHost {
             this.pending = null;
             this.compositionBase = null;
             this.callbacks.composition(null);
-            // Restore the input window as well as the canvas after a cancelled IME edit.
             this.sync();
             return;
         }

@@ -19,8 +19,6 @@ import { getPdfRenderData } from '../utils/pdfRenderCache';
 import { canRebuildAnnotatedPdf } from '../utils/pdfRole';
 import { PdfBuildRefused, pdfSnapshotRefusal } from '../utils/pdfBuildRefusal';
 
-/** A save a newer revision overtook while it ran (the person kept drawing): not a failure, the newer change saves next. Told as
- *  'not saved' it raised 'Could not continue' on every stroke drawn during a converted notebook's first save (round 8 matrix). */
 class SaveSuperseded extends Error {}
 import { anyPending, checkpointSessions, drain, drainAll, subscribePending } from '../utils/unloadCoordinator';
 import { markLeaving } from '../utils/recoveryJournal';
@@ -33,26 +31,21 @@ import { clearSaveNotice, showSaveNotice } from '../utils/saveNotices';
 import { tracksAssets } from './tracksAssets';
 import { isAppReplaced, loadChunk } from '../platform/chunkLoad';
 
-/** Everything the save funnel reads from App. Refs are App's own `useRef`s. */
 export interface UseSaveFunnelDeps {
-  // useFileSystem()
   writeFile: FileSystemContextValue['writeFile'];
   writeFileBytes: FileSystemContextValue['writeFileBytes'];
   writeFileVersioned: FileSystemContextValue['writeFileVersioned'];
   writeConflictCopy: FileSystemContextValue['writeConflictCopy'];
   getVaultActivation: FileSystemContextValue['getVaultActivation'];
-  // App: vault, index graph, recovery journal, trash
   currentVaultIdRef: React.RefObject<string | null>;
   rootHandleRef: React.RefObject<FileSystemDirectoryHandle | null>;
   indexGraphRef: IndexGraphRef;
   recoveryEvent: RecoveryEvent;
   trashInFlightRef: React.RefObject<boolean>;
-  // App: dialogs and the status line
   notifyRef: React.RefObject<Notify>;
   tellRef: React.RefObject<Tell>;
   setSaveStatus: (message: string) => void;
   showStatus: (message: string, ms: number) => void;
-  // useOpenDocuments
   tabsRef: React.RefObject<OpenTab[]>;
   setTabs: SetTabs;
   documentBuffers: DocumentBufferStore;
@@ -66,17 +59,14 @@ export interface UseSaveFunnelDeps {
   saveTimersRef: React.RefObject<Map<string, ReturnType<typeof setTimeout>>>;
   flushingRef: React.RefObject<Map<string, number>>;
   nativeCanvasHost: NativeCanvasHost;
-  // useDiskState
   pdfRebuildRef: React.RefObject<Map<string, PdfRebuildEntry>>;
   diskStateRef: React.RefObject<Map<string, 'conflict' | 'deleted'>>;
   setDiskState: SetDiskState;
   setPdfRebuildNotice: (id: string, notice: OpenTab['pdfRebuild']) => void;
   currentPdfOwner: (identity: ReaderIdentity) => OpenTab | undefined;
   keepPdfBaseline: (entry: PdfRebuildEntry, trashOwned?: boolean) => Promise<boolean>;
-  // usePdfSeeds
   pdfSeedForRef: React.RefObject<(id: string) => Promise<DiskVersion | null> | undefined>;
   pdfSeedsRef: React.RefObject<Map<string, Promise<DiskVersion | null>>>;
-  // useAssetLifecycle
   assetRefsRef: React.RefObject<Map<string, { saved: Set<string>; references: Set<string> }>>;
   boardBaselinesRef: React.RefObject<BoardSaveBaselines>;
   assetActivationsRef: React.RefObject<WeakMap<FileSystemDirectoryHandle, number>>;
@@ -100,8 +90,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     queueReconcile, requeueAssetsAffected,
   } = deps;
 
-  // ── Per-tab autosave ────────────────────────────────────────────────────
-  // Write callbacks stay stable across pane and graph updates.
   const writeFileRef = useRef(writeFile);
   const writeFileBytesRef = useRef(writeFileBytes);
   useEffect(() => { writeFileRef.current = writeFile; }, [writeFile]);
@@ -112,27 +100,13 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     if (pending) { clearTimeout(pending); saveTimersRef.current.delete(path); }
   }, [saveTimersRef]);
 
-  // The versioned write and the conflict copy, through refs for the reason
-  // writeFile is: flushTab — and every timer downstream of it — keeps its identity.
   const writeFileVersionedRef = useRef(writeFileVersioned);
   const writeConflictCopyRef = useRef(writeConflictCopy);
   useEffect(() => { writeFileVersionedRef.current = writeFileVersioned; }, [writeFileVersioned]);
   useEffect(() => { writeConflictCopyRef.current = writeConflictCopy; }, [writeConflictCopy]);
-  /**
-   * Writes are SERIALIZED per document (by id, so a rename mid-write cannot
-   * split one document's chain in two). Two overlapping writes to one file —
-   * a timer and ⌘S, or a long PDF build and the next stroke — used to land in
-   * completion order; now each also moves the disk baseline, and the second
-   * must check against the version the first wrote, not race it.
-   */
   const flushChainsRef = useRef(new Map<string, Promise<unknown>>());
-  // Documents whose failed save the person was already told about: told once, until a save of it succeeds again.
   const guardedRef = useRef(false);
   const checkpointNowRef = useRef<() => Promise<void>>(() => Promise.resolve());
-  // The journal and the save start here, while the page is still alive, not only on pagehide: a person who chose
-  // "Reload" right after a stroke or a keystroke lost it with nothing to recover (measured: drawing, notebook, PDF and
-  // note, 0 ms after the change), and in the pinned Chrome an IndexedDB write begun on pagehide was lost in 31 of 32
-  // runs. Its journal write is committed at once (`markLeaving`). If they stay, it is only an early save.
   const beforeUnload = useCallback((event: BeforeUnloadEvent) => {
     event.preventDefault();
     event.returnValue = '';
@@ -149,12 +123,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
   }, [beforeUnload, documentSessions, flushingRef, tabsRef]);
   const pendingWritesRef = useRef(new Map<string, { revision: number; promise: Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> }>());
 
-  /**
-   * Keep a closing document's unsaved text when its file can no longer take it
-   * — it changed on disk, or is gone — as a `(conflict)` copy beside it. The
-   * tab is going away, so there is nobody left to ask, and dropping the edits
-   * would be the silent loss this whole mechanism exists to prevent.
-   */
   const keepClosingEdits = useCallback(async (
     root: FileSystemDirectoryHandle | null, path: string, name: string, data: string | Uint8Array | Blob, guard?: () => boolean,
   ) => {
@@ -163,8 +131,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         try { reportVault({ op: 'write', path, caller: 'closing-conflict' }); } catch { /* Measurement must not interrupt a write. */ }
       }
       const copy = await writeConflictCopyRef.current(path, data, root, guard);
-      // A dialog, not the status line: the tab is gone, and the edits are now in
-      // a file the reader did not ask for — they must hear where.
       void tellRef.current({
         title: 'Your unsaved edits were kept',
         confirmLabel: 'OK',
@@ -178,18 +144,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     }
   }, [notifyRef, tellRef]);
 
-  // Drain a tab's serializer, then write the latest funnel buffer to its OWN handle.
-  // Closing callers keep the tab and its canvas alive until this settles.
-  //
-  // Every write is VERSIONED: it lands only if the file is still what this
-  // document last read or wrote (FileSystemContext.writeFileVersioned). A file
-  // changed on disk puts the tab into 'conflict', a deleted one into 'deleted'
-  // — the DiskBar asks the reader — and nothing autosaves it until they choose.
-  // `closing`: the tab is going away (close, trash, vault switch), so a write
-  // that cannot land keeps the text as a `(conflict)` copy instead.
-  // `vaultRoot`: the vault the document belongs to, for a closing copy — the
-  // vault switch passes the one being left, since by then the context already
-  // names the next one.
   const flushTab = useCallback(async (
     path: string | null, force: boolean | 'rewrite' = false, closing = false,
     vaultRoot?: FileSystemDirectoryHandle | null, trashOwned = false, serializerCallback = false,
@@ -200,8 +154,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     // An old-format board is never written, by any route: not a save, a close, a ⌘S or a vault switch (utils/oldBoards.ts).
     // Before the drain and the checkpoint below, whose board source would otherwise read as newer than the file's text.
     if (initial.representation.oldBoard || nativePoliciesRef.current.get(initial.id)?.oldBoard) return 'skipped';
-    // Save captures immediately. Only leaving the document awaits unfinished
-    // work; legacy serializers retain their migration fallback until attached.
     const initialSource = documentBuffers.get(initial.id)?.source;
     const legacyCanvas = (isCanvasFile(initial.file.name) || initial.representation.loadedKind === 'pdf') && typeof initialSource === 'string';
     if (!serializerCallback && (closing || legacyCanvas)) try { await drain(initial.id); } catch (error) {
@@ -222,9 +174,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         sessionReportRef.current(tab.id, source);
       }
     } catch (error) { console.error('Could not capture document:', error); return 'failed'; }
-    // Also when the checkpoint reported its change itself: a board hands its last change off from inside `checkpoint`,
-    // through the funnel, which armed a save this flush already covers. Left armed, it kept the app's Reload waiting a
-    // second for it after the write had landed (measured: a nudge then Reload, written at 145 ms, reloaded at 1.3 s).
     clearSaveTimer(path);
     const pendingRevision = documentBuffers.revisionForDocument(tab.id);
     const pending = documentSessions.hasPendingEdits(tab.id);
@@ -236,11 +185,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       && policy.activation === getVaultActivation() && policy.retainedThroughGeneration === (bytesGenerationsRef.current.get(tab.id) ?? 0)
       && hasWritableHostedNativeOwner(documentSessions.get(tab.id), tab.id) && documentSessions.isLiveOwner(tab.id, bufferedSource.owner);
     if (nativeSource && !nativeAuthorized) return 'skipped';
-    // Native pending work includes the own-save source rebind, not just new
-    // content. Rewriting an already-acknowledged checkpoint bumps PDF bytes
-    // without a second checkpoint acknowledgement, stranding that live source.
-    // Keep mine is the exception: the file is somebody else's now, and the saved checkpoint is the version being kept
-    // (its caller replaces a PDF's session after the write, so no live source is left stranded).
     const rewrite = force === 'rewrite' && nativeSource;
     if (nativeSource && !documentBuffers.isDirty(tab.id) && !rewrite) return 'skipped';
     const acceptedFlushable = documentBuffers.get(tab.id)?.flushable;
@@ -248,7 +192,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       && (nativeAuthorized || tab.representation.loadedKind === 'pdf' && getPdfRenderData(path))))) return 'skipped';
     const held = diskStateRef.current.get(tab.id);
     if (!tab.dirty && !documentBuffers.isDirty(tab.id) && !pending && !force) return 'skipped';
-    // A drain reports into the synchronous funnel before React commits its tab.
     let captured;
     try { captured = documentBuffers.retainSnapshotOf(path); }
     catch (error) { console.error('Could not capture document:', error); return 'failed'; }
@@ -262,7 +205,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     const bufferRevision = captured?.revision;
     const sourceRevision = typeof bufferedSource === 'string' ? undefined : bufferedSource?.revision;
     const sessionAtCall = documentSessions.get(tab.id);
-    // An old annotated PDF's first rebuild keeps its original in Trash; a drawing or notebook is never converted in place.
     const conversionDigest = nativeSource && tab.representation.loadedKind === 'pdf' ? tab.representation.legacyOriginalSha256 : undefined;
     const conversionIdentity = conversionDigest ? nativeCanvasHost.identity(tab.id) : undefined;
     const existingWrite = pendingWritesRef.current.get(tab.id);
@@ -277,10 +219,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     const { id, file } = tab;
     const handle = tab.file.handle as FileSystemFileHandle;
     const isPdf = tab.representation.status === 'ready' && tab.representation.loadedKind === 'pdf';
-    // An annotated PDF tab's buffer is not the file; the file on disk is a
-    // real PDF, rebuilt from the pristine original + the overlays the canvas
-    // parked for us. No render data yet means the canvas has not reported a
-    // change — which is also every PDF only ever read.
     const nativePdf = nativeSource && tab.representation.status === 'ready' && tab.representation.loadedKind === 'pdf';
     const pdfData = isPdf && !nativeSource ? getPdfRenderData(path) : undefined;
     const pdfEntry = isPdf && !nativeSource ? pdfRebuildRef.current.get(id) : undefined;
@@ -307,10 +245,7 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       if (refusal) { setSaveStatus('Not saved'); showSaveNotice(id, new PdfBuildRefused(refusal).message); return 'skipped'; }
       if (!closing && pdfEntry?.value.role.kind === 'annotated' && pdfEntry.value.role.writeMark.kind === 'foreign' && !pdfEntry.approved) return 'skipped';
     }
-    // Captured now too: a vault switch clears every baseline right after its
-    // flushes, and this write still has to be checked against this one.
     const baselineAtCall = getBaseline(id);
-    // A PDF's fingerprint starts here if this is the first write to need one.
     const seedAtCall = pdfSeedForRef.current(id);
     const rootAtCall = vaultRoot ?? rootHandleRef.current;
     const activationAtCall = rootAtCall ? assetActivationsRef.current.get(rootAtCall) ?? -1 : -1;
@@ -322,8 +257,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       return data;
     };
 
-    // Held: the DiskBar is asking. Nothing is written over the file — but a tab
-    // going away keeps its text beside it rather than taking it along.
     if (held) {
       if (!closing) return 'skipped';
       try {
@@ -352,18 +285,12 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
 
     const write = async (): Promise<'written' | 'changed' | 'deleted' | 'skipped' | 'failed'> => {
       try {
-        // A legacy file's first rebuild is the destructive boundary, not entry
-        // to Annotate. An oversized revision above never even creates a copy.
         if (pdfEntry && !closing && !await keepPdfBaseline(pdfEntry, trashOwned)) return diskStateRef.current.get(id) === 'deleted' ? 'deleted' : diskStateRef.current.has(id) ? 'changed' : 'skipped';
         if (pdfEntry && closing && !held && !await keepPdfBaseline(pdfEntry, trashOwned)) return 'skipped';
         if (!closing && diskStateRef.current.has(id)) return 'skipped';
-        // Off the main thread: stamping overlays costs ~150ms per annotated
-        // page (~4.2s at 30 pages), which would land as stutter under the pen.
         const data = isPdf && !nativeSource
           ? await (await loadChunk(() => import('../utils/pdfBuildClient'))).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
           : await buildCaptured();
-        // A PDF's baseline is hashed in the background at open; never write
-        // without it (seedPdfBaseline).
         const seed = pdfSeedsRef.current.get(id) ?? seedAtCall;
         const seeded = seed ? await seed : null;
         const expected = getBaseline(id) ?? baselineAtCall ?? seeded ?? null;
@@ -415,12 +342,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         // this must not put one back (getBaseline is set from open to close).
         if (getBaseline(id) || tabsRef.current.some(t => t.id === id)) {
           setBaseline(id, result.version);
-          // A self-save of annotated-PDF ink keeps the byte generation: the writer builds every save from the pristine
-          // source plus the board's full ink, so the bytes just written are what this pane already shows, and a new
-          // generation would rebind the pane — new immutable tokens, an opaque Updating cover with input detached —
-          // dropping any press in the ~150 ms after each autosave (whiteboard's person-click matrix: 2 of 6 PDF rows).
-          // The versioned baseline above still moves, and any outside change still bumps and rebinds. Original catches
-          // up once it is what shows the file, with no board on screen (PdfPane → usePdfActions.adoptSavedPdfInk).
           const selfSave = nativeSource && !!sessionAtCall && documentSessions.get(id) === sessionAtCall
             && typeof bufferedSource !== 'string' && bufferedSource?.owner.session === sessionAtCall.serial;
           if (isPdf && !selfSave) bumpBytesGeneration(id);
@@ -433,19 +354,10 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
           pdfEntry.baseline = result.version;
           setPdfRebuildNotice(id, { state: 'kept', generation: pdfEntry.value.role.generation, approved: pdfEntry.approved, copyName: pdfEntry.copyName });
         } else if (isPdf && pdfRebuildRef.current.has(id) && getBaseline(id) === result.version) {
-          // A rebuild notice speaks for the file it inspected. A write that did not go through it (converted Classic
-          // ink's first save, native ink) replaced that file, so "Before the first save, a copy is kept in Trash" stayed
-          // up after the save and after later turns; its entry would also call the next reader version a conflict.
           pdfRebuildRef.current.delete(id);
           setPdfRebuildNotice(id, undefined);
         }
-        // Stamped here, the one save funnel, rather than re-statted: the
-        // explorer's Modified-time sort then moves the note to the top without
-        // a getFile() per save (utils/fileTimes.ts). The write's own stat now.
         recordFileWritten(path, result.version.lastModified);
-        // Queued rather than awaited: reconciling reads the note's neighbours,
-        // and a save's "Saved" status (and the graph rebuild below) should not
-        // wait on that — but two of them must not interleave either.
         requeueAssetsAffected(path);
         if (assetBaseline && embedsAfter && referencesAfter) {
           const before = assetBaseline.saved;
@@ -460,8 +372,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
           path, parentHandle: file.parentHandle ?? null, text: snapshot,
           before: new Set(), after: new Set(), board: boardBaselinesRef.current.committed(boardBaseline, snapshot),
         });
-        // Only clear `dirty` if the content hasn't changed since we snapshotted.
-        // By id: a rename mid-write moved the document, not the write.
         if (sourceRevision !== undefined && documentSessions.get(id) === sessionAtCall) sessionAtCall?.adapter.acknowledge(sourceRevision, 'written');
         if (bufferRevision !== undefined) {
           documentBuffers.markSaved(id, bufferRevision);
@@ -494,11 +404,7 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         const current = !documentSessions.hasPendingEdits(id);
         setTabs(prev => prev.map(t =>
           t.id === id && current ? { ...t, dirty: false } : t));
-        // Any column on screen, not only the focused one: with the editor split
-        // the status line speaks for everything the reader can see.
         if (current && visiblePathsRef.current.includes(path)) {
-          // Re-armed, not stacked: rapid saves used to leave a handful of live
-          // timers all racing to clear the same message.
           showStatus('Saved', 2000);
         }
         if (graphAtCall && graphAtCall === indexGraphRef.current && graphAtCall.root === rootAtCall
@@ -515,21 +421,10 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       } catch (err) {
         if (err instanceof PdfBuildRefused) { setSaveStatus('Not saved'); showSaveNotice(id, err.message); return 'skipped'; }
         if (err instanceof SaveSuperseded) return 'failed';
-        // A board's first save that put its pictures in .Assets under new names: the names are an edit at a newer revision, whose
-        // own save follows at once, so this save is superseded, not failed (whiteboard/host/saveBuild.ts; matched by name, the app
-        // does not import the engine). Treated as a failure, every old board with a picture flashed "was not saved" on its first save.
         if (err instanceof Error && err.name === 'MediaLocationsChanged') return 'failed';
         console.error('Auto-save failed:', err);
-        // Never silent, for any document: the person is told it was not saved and why; the tab stays dirty, so the next edit's
-        // save tries again. A drawing or notebook used to fail into the console alone.
-        // A notice, never a dialog: this fires while the person types, and a dialog took their next keys (utils/saveNotices.ts).
-        // One per document, replaced by a retry that fails again and removed by the save that succeeds.
         setSaveStatus('Not saved');
         const what = isPdf ? 'The PDF' : `“${path.split('/').pop()}”`;
-        // What saving needs is gone from the server (a newer version replaced this one): another change cannot bring it
-        // back. The app's own Reload refuses while a document is unsaved, but the changes are in the recovery journal:
-        // measured with a save that kept failing, the browser's reload asked before leaving and Recover gave every stroke
-        // back. Written workers are kept (platform/workers/script.ts), so an open document should never get here.
         if (isAppReplaced(err)) showSaveNotice(id, `${what} was not saved: a newer version of the app replaced this one, and this page can no longer save it. Reload the page from your browser, then choose Recover to get your changes back.`);
         else showSaveNotice(id, `${what} was not saved: ${describeReadError(err).replace(/[.\s]+$/, '')}. Your next change tries again.`);
         return 'failed';
@@ -558,8 +453,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       syncExitGuard();
     }
     } finally { captured?.release(); }
-    // queueReconcile is stable (a useCallback over refs), so flushTab — and
-    // every timer and listener downstream of it — keeps its identity.
   }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, indexGraphRef, nativeCanvasHost, recoveryEvent, queueReconcile, requeueAssetsAffected, setDiskState, keepClosingEdits, syncExitGuard, getVaultActivation, keepPdfBaseline, currentPdfOwner, setPdfRebuildNotice,
     assetActivationsRef, assetRefsRef, boardBaselinesRef, bytesGenerationsRef, currentVaultIdRef, diskStateRef,
     flushingRef, nativePoliciesRef, notifyRef, pdfRebuildRef, pdfSeedForRef, pdfSeedsRef, reconcileQueueRef,
@@ -567,20 +460,9 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
 
   const scheduleSave = useCallback((path: string) => {
     clearSaveTimer(path);
-    // flushTab clears the (now-fired) timer itself, so no delete needed here.
     saveTimersRef.current.set(path, setTimeout(() => flushTab(path), 1000));
   }, [clearSaveTimer, flushTab, saveTimersRef]);
 
-  // Buffer an edit against ONE named document and schedule its save.
-  // Path-explicit on purpose, and the only content funnel there is: several
-  // documents are editable at once — one per column — and the drawing canvas
-  // serializes on a debounce that can fire after its pane has gone away. Either
-  // way the text must land in the document it came from — never in whichever
-  // pane happens to have focus by then.
-  //
-  // `fromDisk`: the text was just reloaded from the file (a reload in place —
-  // editor/externalReload.ts). It is buffered like any edit, but it IS the file,
-  // so the tab stays clean and nothing is scheduled to write it back.
   const updateTabContent = useCallback((path: string, content: ContentSource, options?: ContentChangeOptions & {
     nativeTransition?: { revision: number; prior: ContentSource };
   }) => {
@@ -590,7 +472,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       || transitionBuffer.source !== transition.prior || transitionBuffer.owner.documentId !== content.owner.documentId
       || transitionBuffer.owner.session !== content.owner.session)) return;
     const policy = target && nativePoliciesRef.current.get(target.id);
-    // Only its disk's own text reaches an old-format board's buffer (a reload in place); the board shown never reports in.
     if (target && (target.representation.oldBoard || policy?.oldBoard) && !(typeof content === 'string' && options?.fromDisk)) return;
     const liveNativePolicy = !!target && !!policy && policy.kind === (target.representation.loadedKind === 'pdf' ? 'pdfInk' : target.representation.loadedKind)
       && policy.activation === getVaultActivation()
@@ -631,10 +512,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     const wasDirty = documentBuffers.isDirty(target.id);
     const buffer = documentBuffers.report(target.id, content, !!options?.fromDisk, !options?.fromDisk);
     if (!buffer) return;
-    // Never into an unreadable tab's buffer: nothing edits one (its pane builds
-    // no editor), but the funnel guards itself — see OpenTab.readError.
-    // A disk report is saved by definition; tell the funnel, or a capture still pending for the older edit finds the
-    // revision moved and reports a failure (measured: DiskBar conflict then Keep mine, 'Recovery revision changed before capture').
     if (options?.fromDisk) {
       void recoveryEvent({ type: 'written', documentId: target.id, revision: buffer.revision, fingerprint: getBaseline(target.id)?.hash ?? '' });
       return;
@@ -658,7 +535,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
               sessionReportRef.current(target.id, source);
             }
             if (documentSessions.get(target.id) !== session || documentBuffers.get(target.id)?.revision !== buffer.revision) throw new Error('Recovery revision changed before capture');
-            // undefined: no change past the session's baseline yet, e.g. a legacy board just converted on open.
             return session.adapter.journalDelta?.();
           } });
       }
@@ -713,11 +589,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     void run.finally(() => { if (checkpointRef.current === run) checkpointRef.current = null; });
     return run;
   }, [flushTab, getVaultActivation, documentSessions, tabsRef]);
-  // A write clears `dirty` only when nothing is pending at that moment (above), but a board acknowledges its write while
-  // its after-write step is still tracked work, so that check always saw it pending and nothing cleared it afterwards:
-  // every drawing drawn on kept `dirty` for good, and closing it said "Could not save" although its file held every
-  // stroke (measured: 3 strokes saved, close refused, every time). When the session's pending work settles, a tab with
-  // nothing left to write is clean. PDFs keep their own rule (an annotation snapshot is dirty until rebuilt).
   const settleCleanTabs = useCallback(() => {
     if (!tabsRef.current.some(t => t.dirty && t.representation.loadedKind !== 'pdf' && !documentSessions.hasPendingEdits(t.id))) return;
     setTabs(prev => {
@@ -730,7 +601,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       return changed ? next : prev;
     });
   }, [documentSessions, setTabs, tabsRef]);
-  /** Write out everything pending now — what leaving the page does — for a reload the app offers (useUpdateNotice). */
   const checkpointNow = useCallback(async () => {
     checkpointSessions((id, source) => {
       const prior = documentBuffers.get(id)?.source;

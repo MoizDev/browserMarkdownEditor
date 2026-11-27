@@ -11,8 +11,6 @@ export interface NoteFacts {
     embeds: string[];
 }
 
-// The editor's markdownLanguage uses these same syntax extensions. Its extra
-// CodeMirror configuration supplies highlighting and indentation, not grammar.
 const markdown = parser.configure([GFM, Subscript, Superscript, Emoji]);
 
 function markdownTarget(raw: string): string | null {
@@ -53,7 +51,6 @@ export function noteFacts(text: string, tree: Tree = markdown.parse(text)): Note
     return { wikilinks, mdLinks, embeds };
 }
 
-/** Yield between parser advances so governor pause/cancellation take effect. */
 export async function noteFactsSliced(text: string, slice: () => Promise<void>): Promise<NoteFacts> {
     const parse = markdown.startParse(text);
     let tree: Tree | null;

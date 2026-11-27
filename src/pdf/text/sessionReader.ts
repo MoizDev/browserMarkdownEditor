@@ -6,8 +6,6 @@ import type { PdfPoolTextSource } from './poolReader';
 const readerSlot = Symbol('pdf-text-reader');
 const visibleOwners = new WeakMap<PdfTextReader, Map<symbol, boolean>>();
 
-/** Multiple surfaces can share one session reader. Hiding one must never abort
- * another's scan; only the last visible owner may pause or age out its index. */
 export function retainPdfTextReaderVisibility(reader: PdfTextReader, initial: boolean): {
     setVisible(visible: boolean): void; release(): void;
 } {
@@ -28,9 +26,6 @@ export function retainPdfTextReaderVisibility(reader: PdfTextReader, initial: bo
     };
 }
 
-/** Session ownership keeps one canonical find index across Original/Text and
- * pane remounts; a byte-generation change receives a new session and reader.
- * The source must therefore be session-owned, never a closure over a pane. */
 export function sessionPdfTextReader(session: PdfTiledDocumentSession, source: PdfPoolTextSource,
     initialPageIndex: number): PdfTextReader {
     const existing = session.getSlot<PdfTextReader>(readerSlot);

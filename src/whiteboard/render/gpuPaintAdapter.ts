@@ -1,7 +1,3 @@
-// The board's GPU paint adapter: the surface the layers call, over the tile composer (gpu/tileComposer.ts). The composer
-// tiles the paint on the GPU; this file holds what only the device and the reference can supply: the tile laying (a
-// modulate slice is a modulate group), the CPU raster that takes the items no GPU route draws, and the route wiring.
-// Design: planning/60-implementation/gpu-handoff/PLAN.md §3.3.
 import type { Rect, ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease, GfxDevice, GpuPass, RectI, TextureHandle } from '../../platform/render/gfx/api';
@@ -27,10 +23,7 @@ import { createTextRoute, type TextRoute } from './gpu/routeText';
 const SIZE = TILE_SIZE;
 const NO_INK: ReadonlySet<string> = new Set();
 const TILE_BYTES = SIZE * SIZE * 4;
-/** The quad that lays a composed tile: the whole texture onto its destination, linear, no coverage classification. */
 const QUAD = Object.freeze({ opacity: 1, sampling: 'linear', coverage: 'none' } as const);
-/** A modulate tile is laid as an isolated group composited by fixed-function modulate (dst·k, h10): no backdrop copy. The
- * composer draws the other multiply slices, the ones not over opaque rects, through its own multiply group (counted). */
 const MODULATE_GROUP = Object.freeze({ opacity: 1, blend: 'modulate', colourEffect: 'none' } as const);
 
 type DocumentIdentity = Pick<FrameToken, 'vaultEpoch' | 'documentId' | 'bytesGeneration' | 'session'>;
@@ -52,7 +45,6 @@ function timed<T>(surface: string, stage: AuditStage, fn: () => T): T {
     try { return fn(); } finally { auditStage(surface, stage, performance.now() - t0); }
 }
 
-/** Lays a composed tile on the surface. A modulate tile is wrapped in a modulate group, so it multiplies what is under it. */
 function createLay(host: LayerHost): TileLay {
     const bounds: RectI = { x: 0, y: 0, width: 0, height: 0 };
     return (pass: GpuPass, texture: TextureHandle, source: Readonly<Rect>, dest: Readonly<Rect>, blend: Blend): void => {
@@ -67,34 +59,23 @@ function createLay(host: LayerHost): TileLay {
     };
 }
 
-/** A route that keeps a cache the governor can reclaim (the text atlas pages, the image textures); absent when it keeps none. */
 interface EvictingRoute extends ItemRoute { evictTextures?(bytes: number, frameId: number): number }
 
-/** A run the CPU route rasters: one tile-sized texture, uploaded once. */
 interface CpuRun extends PreparedRun {
     readonly route: 'cpu';
     readonly texture: TextureHandle;
     readonly device: GfxDevice;
-    /** The lease the texture was created on: its bytes are what this run reports, read from the lease, not from a count. */
     readonly lease: ByteLease;
-    /** The device generation the lease was granted in. A new generation abandons the old one, and returns its leases. */
     readonly generation: number;
 }
 type CpuRoute = ItemRoute & ResourcedRoute;
 
-/** The route for what no GPU route draws: each run is rastered on the CPU, once, into a tile-sized scrap and drawn as a quad.
- * A modulate run is painted multiply over white, which is exactly the k the modulate cover produces; an over run is painted
- * over transparency. The composer counts every such run as fallback:item-cpu, so this route counts only its raster and upload. */
 function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRoute {
     let resources: PaintResources2d | null = null;
     let scratch: OffscreenCanvas | null = null;
-    // The scratch canvas is CPU memory the governor must see: it is leased on the layer's CPU pool, and only that lease is reported.
     let scratchLease: ByteLease | null = null;
     const live = new Set<CpuRun>();
-    // A run is held only while its device generation is the host's: a new generation (or a lost device) abandons the old
-    // one, and the arena returns every lease it granted, so a stale run's bytes are no longer reserved to this layer.
     const current = (run: CpuRun): boolean => run.device === host.device() && run.generation === host.generation;
-    // Path geometry of a fragment or ink part, built once per item and device scale: the reference holds only its own items' paths.
     const paths = new WeakMap<PaintItem, { scale: number; prepared: PreparedPath2d }>();
     const pathOf = (item: PaintItem, scale: number, paint: PaintResources2d): PreparedPath2d => {
         if (item.kind !== 'path' && item.kind !== 'ink') return paint.path(item);
@@ -140,7 +121,6 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
             }
             const lease = host.allocator.gpu.reserve(TILE_BYTES);
             if (!lease) return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
-            // The claim comes after the reservations: a refused reservation spends no upload allowance.
             if (!budget.claimUpload(TILE_BYTES)) { host.allocator.gpu.release(lease); return { status: 'deferred' }; }
             let texture: TextureHandle | null = null;
             let bitmap: ImageBitmap | null = null;
@@ -159,17 +139,14 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
                 texture = device.createTexture(SIZE, SIZE, 'rgba8', ['sample', 'copy-dst'], lease);
                 device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },
                     { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-                // Counted once the raster has its texture: the composer counts the fallback with the same pixels.
                 auditCount(surface, 'cpu-raster', 1, { px: SIZE * SIZE });
                 const run: CpuRun = { route: 'cpu', blend, texture, device, lease, generation: host.generation };
                 live.add(run);
                 return { status: 'ready', value: run };
             } catch (error) {
-                // A texture owns its lease: destroying it returns the bytes; without one, the lease goes back itself.
                 if (texture) device.destroy(texture); else host.allocator.gpu.release(lease);
                 if (isBudgetRefusal(error)) return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
                 auditCount(surface, 'fallback:cpu-failed', 1, { px: SIZE * SIZE });
-                // A device's non-budget failure goes to the GPU error channel: the pane demotes to canvas2d instead of failing the open.
                 host.reportGpuError(error);
                 return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
             } finally {
@@ -196,12 +173,9 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
             if (scratchLease) host.allocator.cpu.release(scratchLease);
             scratchLease = null;
             scratch = null;
-            // The paint's resources reach its prepared snapshot, and through it the whole paint: the composer hands them over again
-            // with the next paint it prepares (measured: a hidden 10,060-stroke drawing's geometry held here).
             resources = null;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
-            // The ledger is the leases the live runs hold on this generation's device: each run's own lease, never a count.
             let gpuBytes = 0;
             for (const run of live) if (current(run)) gpuBytes += run.lease.bytes;
             return { gpuBytes, cpuBytes: scratchLease?.bytes ?? 0 };
@@ -211,88 +185,51 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
 }
 
 export interface GpuPaintAdapter {
-    /** Indexes the reference's paint, composes what the view needs within the frame's limit. `omit` is the drag's omitted nodes.
-     * True when anything visible changed since the previous prepare (the composer's report); true when it could not tell. */
     prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean;
-    /** The content of the paint this adapter last prepared, as one number: equal values draw the same picture. It is the same
-     * whether or not that paint was presented, and moves on every change that can alter the composite (an edit, an eviction, a
-     * live part drawn, a resource change, an index in progress). The board compares it with the value it presented. */
     contentKey(): number;
-    /** True when the last draw list cannot be drawn for this view: the layer is incomplete, and critical until it prepares again. */
     listInvalid(view: ViewState): boolean;
-    /** Indexes a paint to completion within `maxMs`, outside any frame (the same filter the frames apply, so the index matches). */
     warm(prepared: PreparedPaint2d, maxMs: number): boolean;
-    /** The paint the composed tiles were built from, once a paint has been prepared. */
     readyFrame(): PaintSource | null;
     readyPaint(): PreparedPaint2d | null;
     readyInkNodeIds(): ReadonlySet<string> | null;
-    /** Encodes the composed tiles of one band onto the frame's offscreen targets. */
     encodeOffscreen(passes: OffscreenPasses, view: ViewState, band: PaintBand): void;
-    /** See TileComposer.offscreenSettled. */
     offscreenSettled(submitted: boolean): void;
-    /** Lays one band's tiles. `omitNodes` is accepted for the callers that still pass it; the omission is applied in prepare. */
     drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void;
     coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean };
     release(reason: GpuReleaseReason): void;
     needsFrame(): boolean;
-    /** True while the layer waits on a refused GPU admission with nothing else to do (see the composer's memoryBlocked). */
     memoryBlocked(): boolean;
-    /** True while this frame would take an item the screen shows off it: the layer is critical, so the previous picture stays (see the
-     * composer's holding). */
     holding(): boolean;
-    /** The last drawn frame left an item in view out (the composer's incomplete): the board is still working. */
     incomplete(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
     cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number };
-    /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
-     * not used this frame. Returns the bytes freed. */
     evictGpu(bytes: number, frameId: number): number;
-    /** True when the device holds this picture's texture, so the reference paint need not decode its bitmap (PaintLayerResources). */
     textureHeld(imageKey: string): boolean;
-    /** Stamps what the view shows as used in `frameId`, before the frame's prepare: its partial relief leaves it (see Layer.protectFrame). */
     protectFrame(frameId: number, view: ViewState): void;
-    /** The governor's CPU pressure: frees up to `bytes` of idle CPU memory (the path route's outline geometry, unused this
-     * frame). Returns the bytes freed. The board's cpuEvict hook forwards to it. */
     evictCpu(bytes: number): number;
-    /** The GPU bytes the visible tiles at the current scale need, for a viewport of `width` by `height` (view units). */
     gpuMandatoryBytes(viewport: { width: number; height: number }): number;
-    /** The ink node ids in the tiles this adapter drew in the current composite: filled in drawGpu, cleared at the next prepare.
-     * The wet layer skips these nodes in the same composite, so translucent ink never doubles at hand-over. */
     drawnInkNodeIds(): ReadonlySet<string>;
-    /** The nodes whose live parts this adapter laid for one band in the current composite (cleared at the next prepare). The board
-     * counts a changed node as drawn only when it is here, so a live part the composer deferred or denied is not counted. */
     drawnLiveNodeIds(band: PaintBand): ReadonlySet<string>;
     drewNothing(band: PaintBand): boolean;
-    /** The nodes whose live parts this prepare planned for one band, valid once prepare returns (cleared at the next prepare). */
     plannedLiveNodeIds(band: PaintBand): ReadonlySet<string>;
     dispose(): void;
 }
 
 export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void,
     options: {
-        /** Accepted for the live-stroke layer's call site, which h6 removes. The composer redraws a stroke's dirty rects
-         * through the same path as any content, so this flag no longer changes what is drawn; it is counted. */
         readonly streaming?: boolean;
         readonly audit?: string;
-        /** Rects whose surface is opaque: a multiply slice inside one composes by modulate, elsewhere by isolation. */
         readonly opaqueWorld?: () => readonly Rect[];
-        /** An overlay: its few plain parts are drawn live each frame, with no tile grant (see the composer's liveOverlay). */
         readonly liveOverlay?: boolean;
-        /** Content whose live and tiled pictures are the same pixels (see the composer's liveMatchesTiles). */
         readonly liveMatchesTiles?: boolean;
-        /** Whether the frame changes for input anyway (see the composer's inputActive). */
         readonly inputActive?: () => boolean;
-        /** The geometry service's pins a live zoom holds (see GeometryPins in tileComposer.ts); absent holds none. */
         readonly pins?: GeometryPins;
-        /** A live-only overlay's nodes (its gesture's): the composer indexes and draws only these items of the paint it is handed. */
         readonly liveNodes?: ReadonlySet<string>;
     } = {}): GpuPaintAdapter {
     const surface = options.audit ?? 'board';
     if (options.streaming) auditCount(surface, 'option:streaming-ignored');
     let disposed = false;
     let lastFrame = -1;
-    // The paint the composer is handed: an overlay's own nodes only, so its index never walks the rest of the paint it was built from.
-    // One filtered copy per source paint, reused by the foreground and background calls of its frame.
     let filtered: { source: PreparedPaint2d; out: PreparedPaint2d } | null = null;
     const forComposer = (prepared: PreparedPaint2d): PreparedPaint2d => {
         const include = options.liveNodes;
@@ -302,29 +239,19 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         filtered = { source: prepared, out };
         return out;
     };
-    // The paint a two-phase frame's foreground call prepared, for its background call (which the composer's prepare completes).
     let pendingPrepared: PreparedPaint2d | null = null;
     let presented: PreparedPaint2d | null = null;
-    // The device and generation the composer's leases were granted on, set when it last prepared. Once either changes the
-    // arena has returned those leases, so the composer's bytes are no longer reserved to this layer and are not reported.
     let ledger: { device: GfxDevice; generation: number } | null = null;
     let omitPrepared: ReadonlySet<string> | null = null;
-    // The view the composed tiles were last prepared for: the store keeps the tiles on it, so its eviction spares them.
     let lastView: ViewState | null = null;
     let inkMemo: { frame: number; paint: PreparedPaint2d; set: ReadonlySet<string> } | null = null;
     const lay = createLay(host);
     const cpu = createCpuRoute(host, surface, lay);
     const ink = createInkRoutes(host, surface);
-    // One path route and its clip admission share one coverage kit: the composer admits every route's clips through it.
     const pathRoute = createPath(host, surface);
-    // The layer has one wake slot, and the store (the free list's trim) and the composer (a refused position's retry) both arm
-    // deadlines on it. The slot takes the earliest armed one, so neither cancels the other (gpu). A slot is cleared by its owner:
-    // the store's on each frame before the trim, the composer's when its retry is handled or satisfied.
     const wakes: Record<'store' | 'retry', number | null> = { store: null, retry: null };
     const armWake = (slot: 'store' | 'retry', deadline: number | null): void => {
         wakes[slot] = deadline;
-        // The other slot's deadline, once passed, was delivered when it passed (the scheduler fires a due deadline once): sent again
-        // with this one, it was due again, so a slot its owner left armed woke the pane at every frame that re-armed the other.
         const now = performance.now();
         for (const other of ['store', 'retry'] as const) if (other !== slot && wakes[other] !== null && wakes[other] <= now) wakes[other] = null;
         let first: number | null = null;
@@ -332,12 +259,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         host.wakeAt(first);
     };
     const withWake = (slot: 'store' | 'retry'): LayerHost => new Proxy(host, {
-        // The host's other members are read on the host itself, so its getters (the generation) stay live.
         get: (target, key) => key === 'wakeAt' ? (deadline: number | null) => armWake(slot, deadline) : Reflect.get(target, key, target),
     });
     const store = createTileStore(withWake('store'), surface);
     const imageRoute = createImageRoute(host, surface);
-    // The factory is typed as the generic item route; the text route's own type carries its zoom hooks (setZoom, exact).
     const textRoute = createTextRoute(host, surface) as TextRoute;
     const routes: TileRoutes = {
         path: pathRoute.route,
@@ -347,11 +272,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         text: textRoute,
         cpu,
     };
-    // The composer's index of the paint's items, by world position. It holds every item, and so every stroke's coverage, of the
-    // frame it indexed: kept through a hide, a hidden 10,060-stroke drawing still held its whole geometry (measured, heap snapshot).
     const parts = createTileParts(host, surface);
-    /** The routes' GPU caches, each freeing only what `frameId` did not use (`keepRecent`: nor the edge sets the frame before it used);
-     * the sum is what was freed. */
     const evictRoutes = (bytes: number, frameId: number, keepRecent = false): number => {
         pathRoute.beginFrame(frameId); ink.beginFrame(frameId);
         let freed = pathRoute.coverage.evict(bytes);
@@ -371,7 +292,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         ...(options.liveMatchesTiles ? { liveMatchesTiles: true } : {}),
         ...(options.inputActive ? { inputActive: options.inputActive } : {}),
         ...(options.pins ? { pins: options.pins } : {}),
-        // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
         slowGpu: () => host.trouble() === 'slow-gpu',
         reclaimRoutes: (bytes, frame) => evictRoutes(bytes, frame, true),
     });
@@ -381,7 +301,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             return composer.warm(forComposer(prepared), maxMs);
         },
         prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean {
-            // The background call of a two-phase frame: the composer completes the paint its foreground call prepared (no new frame).
             if (budget.phase === 'background') {
                 const pending = pendingPrepared;
                 pendingPrepared = null;
@@ -394,7 +313,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     return true;
                 }
             }
-            // Only this frame's background call reads the paint its foreground call left: a foreground call drops any earlier one.
             pendingPrepared = null;
             if (disposed || lastFrame === budget.frameId) return true;
             lastFrame = budget.frameId;
@@ -404,16 +322,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) {
                 if (renderAuditEnabled()) {
                     auditCount(surface, !prepared ? 'prepare:hidden:no-paint' : !device ? 'prepare:hidden:no-device' : 'prepare:hidden:document');
-                    // Per frame, so a run's counters name the frames a present was hidden in (the release hole's correlation).
                     if (!device) auditCount(surface, `prepare:hidden:no-device:f${budget.frameId}`);
                 }
-                // A device that is merely absent (the 2D bridge: the first CPU picture, a resize) keeps the presented picture and the
-                // composer's tiles and textures: the same device comes back for the same paint. A device that is lost or released
-                // releases this layer through the pane (releaseGpu), and every route and kit rebinds to a new one. Released here, each
-                // bridge dropped the whole picture's GPU work and rebuilt it right after, under the pressure that had stepped the
-                // quality (measured, a 4000x3000 picture zoomed to 400% on a WebGL2 PDF at DPR 2: 46-57 bridge frames, each a release).
-                // Only a paint of another document, or none, drops them. The ledger stays with them, so the governor still sees
-                // the kept bytes and its trim still reaches them through evictGpu (a layer reporting none is skipped by the pane).
                 const bridge = !device && !!prepared && documentMatches(prepared.root, budget.token) && documentMatches(prepared.sourceFrame, budget.token);
                 if (!bridge) { composer.release('hidden'); presented = null; ledger = null; }
                 omitPrepared = null;
@@ -421,7 +331,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             }
             omitPrepared = omit?.size ? omit : null;
             ledger = { device, generation: host.generation };
-            // The frame has come: the store's deadline is handled (its trim runs in the composer's prepare, and re-arms if not due).
             armWake('store', null);
             let changed = true;
             try {
@@ -435,7 +344,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             }
             presented = prepared;
             lastView = view;
-            // A two-phase frame's foreground call answers false: its background call (later this frame) gives the answer.
             if (budget.phase === 'foreground') { pendingPrepared = prepared; return false; }
             return changed;
         },
@@ -446,7 +354,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             const nodes = presented.root.inkNodeIds;
             if (!nodes.size) return nodes;
             if (!lastView) return new Set();
-            // Memoized per prepare: the composer only changes in prepare, and the board asks several times a frame.
             if (inkMemo && inkMemo.frame === lastFrame && inkMemo.paint === presented) return inkMemo.set;
             const set = composer.inkComposed(lastView, nodes);
             inkMemo = { frame: lastFrame, paint: presented, set };
@@ -461,7 +368,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void {
             if (disposed) return;
-            // A drag's omission that reaches the draw but not the prepare is drawn in the tiles: counted, so it cannot pass silently.
             if (omitNodes?.size && !sameOmit(omitNodes, omitPrepared)) auditCount(surface, 'omit:draw-unapplied');
             timed(surface, 'draw', () => composer.drawGpu(pass, view, band));
         },
@@ -470,12 +376,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             return presented && reference.readyFrame() !== presented.sourceFrame ? { ...base, staleVersion: true } : base;
         },
         release(reason: GpuReleaseReason): void {
-            // Audit only: a released adapter has no picture to draw until it prepares again (a layer that loses its frame is traced).
             if (renderAuditEnabled()) auditTape(`adapter-release:${surface}:${reason}`);
             composer.release(reason);
-            // A hidden pane composes nothing until it is shown, and then from a paint it asks for again (attachView clears its frames).
-            // Nothing that names a paint outlives the release either: the memos below held a hidden 10,060-stroke drawing's whole paint
-            // (measured, heap snapshot of the hidden pane: every ink item through inkMemo's paint).
             if (reason === 'hidden') parts.release();
             presented = null; omitPrepared = null; lastFrame = -1; ledger = null; inkMemo = null; pendingPrepared = null; filtered = null;
         },
@@ -494,9 +396,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         },
         evictGpu(bytes: number, frameId: number): number {
             if (disposed || !(bytes > 0)) return 0;
-            // Route caches first, then composed tiles: each frees only what this frame did not use. The sum is what was freed.
             let freed = evictRoutes(bytes, frameId);
-            // A composer drawing live draws no tile: its tiles go before anything the view shows is refused (store.evict).
             if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView, composer.liveEviction());
             if (freed > 0) composer.noteEvicted();
             return freed;
@@ -508,13 +408,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         evictCpu(bytes: number): number {
             return disposed || !(bytes > 0) ? 0 : pathRoute.evictCpu(bytes);
         },
-        // GPU bytes are the composer's: each is leased by its owner (the store, a route) on the layer's GPU pool, reported once.
-        // CPU bytes are this route's own leased scratch only: a route's CPU bytes that are not leased (the text scratch, the path
-        // geometry cache) are not reported, since the governor would refuse to admit bytes it has not reserved.
         memory(): { gpuBytes: number; cpuBytes: number } {
-            // The composer's ledger (store targets and route leases, the CPU route's included) counts only while its device generation is current.
-            // A device merely absent (the 2D bridge) still holds what the bridge kept; a lost or released one has cleared the ledger
-            // (release) or moved the generation (the broker retires it before any fallback).
             const device = host.device();
             const held = ledger !== null && (device === null || ledger.device === device) && ledger.generation === host.generation;
             return { gpuBytes: held ? composer.memory().gpuBytes : 0, cpuBytes: cpu.memory().cpuBytes };

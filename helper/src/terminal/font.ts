@@ -1,12 +1,3 @@
-// The fonts the user's own terminal apps are set to, so the in-app terminal can
-// draw their prompt's icons (a Nerd Font) the way their terminal does. The
-// browser takes the first candidate that is actually installed (CSS `local()`).
-//
-// Everything is best effort and read-only: a missing, unreadable or unparsable
-// config is skipped silently, every read and command has a 2 s timeout, and what
-// is read is never logged — a config can hold anything. The parsers are pure
-// (text in, candidates out), so they are tested against fixtures.
-
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,9 +10,6 @@ const MAX_CANDIDATES = 16;
 
 type Candidate = TerminalFontCandidate;
 
-/* ───────────────────────── small format readers ───────────────────────── */
-
-/** A font name that is safe to hand to the page's CSS: no quotes, escapes, braces or controls. */
 function cleanName(raw: string | undefined): string | undefined {
     const s = raw?.trim();
     // eslint-disable-next-line no-control-regex
@@ -42,14 +30,12 @@ function make(source: string, parts: { family?: string; postscript?: string; siz
     return { source, ...(family ? { family } : {}), ...(postscript ? { postscript } : {}), ...(size ? { size } : {}) };
 }
 
-/** CSS generic and meta families name no installed font. */
 const GENERIC = new Set(['monospace', 'sans-serif', 'serif', 'cursive', 'fantasy', 'system-ui', 'ui-monospace', 'ui-sans-serif', 'auto', 'default']);
 
 function realFamily(name: string | undefined): string | undefined {
     return name && !GENERIC.has(name.trim().toLowerCase()) ? name : undefined;
 }
 
-/** JSON with comments and trailing commas (Windows Terminal, VS Code). Null when it is not that. */
 export function parseJsonc(text: string): unknown {
     let out = '';
     let i = 0;
@@ -92,7 +78,6 @@ const decodeEntities = (s: string) =>
         return ENTITIES[e.toLowerCase()] ?? m;
     });
 
-/** The XML property-list format (`defaults export … -`, `plutil -convert xml1`). Null when it is not one. */
 export function parsePlist(xml: string): PlistValue | null {
     const token = /<(\/?)([A-Za-z]+)\s*(\/?)>|<[?!][^>]*>|([^<]+)/g;
     const next = (): { close: boolean; tag: string; self: boolean } | { text: string } | null => {
@@ -109,10 +94,10 @@ export function parsePlist(xml: string): PlistValue | null {
         const t = next();
         if (!t) return '';
         if ('text' in t) {
-            next(); // the closing tag
+            next();
             return decodeEntities(t.text);
         }
-        return ''; // an empty element: `<string></string>`
+        return '';
     };
     const value = (t: { close: boolean; tag: string; self: boolean }, depth: number): PlistValue | null => {
         if (depth > 40 || t.close) return null;
@@ -171,15 +156,11 @@ export function parsePlist(xml: string): PlistValue | null {
 const isDict = (v: PlistValue | null | undefined): v is { [key: string]: PlistValue } =>
     typeof v === 'object' && v !== null && !Array.isArray(v) && !(v instanceof PlistData);
 
-/** Splits `Name 13` / `MesloLGS-NF-Regular 12.5` into the name and the trailing size. */
 function nameAndSize(s: string): { name: string; size?: number } {
     const m = /^(.*\S)\s+(\d+(?:\.\d+)?)$/.exec(s.trim());
     return m ? { name: m[1], size: parseFloat(m[2]) } : { name: s.trim() };
 }
 
-/* ───────────────────────── per-app parsers ───────────────────────── */
-
-/** `~/.config/ghostty/config`: `font-family = "X"` repeats for fallbacks; an empty value clears the list. */
 export function parseGhostty(text: string): Candidate[] {
     const families: string[] = [];
     let size: string | undefined;
@@ -194,7 +175,6 @@ export function parseGhostty(text: string): Candidate[] {
     return families.map(f => make('ghostty', { family: f, size })).filter((c): c is Candidate => !!c);
 }
 
-/** iTerm2 (`defaults export com.googlecode.iterm2 -`): the default profile's `Normal Font`, "PostScriptName size". */
 export function parseIterm2(plist: string): Candidate[] {
     const root = parsePlist(plist);
     if (!isDict(root)) return [];
@@ -210,7 +190,6 @@ export function parseIterm2(plist: string): Candidate[] {
     return c ? [c] : [];
 }
 
-/** `kitty.conf`: `font_family Name`, or the newer `family="Name" postscript_name="…"` form. */
 export function parseKitty(text: string): Candidate[] {
     let family: string | undefined;
     let postscript: string | undefined;
@@ -237,7 +216,6 @@ export function parseKitty(text: string): Candidate[] {
     return c ? [c] : [];
 }
 
-/** `alacritty.toml`: `[font.normal] family = "X"` (or the inline `normal = { family = "X" }`), `[font] size = 12`. */
 export function parseAlacritty(text: string): Candidate[] {
     let section = '';
     let family: string | undefined;
@@ -263,7 +241,6 @@ export function parseAlacritty(text: string): Candidate[] {
     return c ? [c] : [];
 }
 
-/** `wezterm.lua`, by pattern (it is a program): `wezterm.font("X")`, `wezterm.font_with_fallback({ "A", "B" })`. */
 export function parseWezterm(text: string): Candidate[] {
     const code = text.replace(/--[^\n]*/g, '');
     const size = /font_size\s*=\s*([\d.]+)/.exec(code)?.[1];
@@ -278,7 +255,6 @@ export function parseWezterm(text: string): Candidate[] {
     return names.map(n => make('wezterm', { family: n, size })).filter((c): c is Candidate => !!c);
 }
 
-/** Windows Terminal `settings.json`: the default profile's font, then `profiles.defaults`. */
 export function parseWindowsTerminal(text: string): Candidate[] {
     const root = parseJsonc(text) as { defaultProfile?: unknown; profiles?: { defaults?: unknown; list?: unknown[] } } | null;
     if (!root || typeof root !== 'object') return [];
@@ -300,7 +276,6 @@ export function parseWindowsTerminal(text: string): Candidate[] {
     return out;
 }
 
-/** VS Code `settings.json`: `terminal.integrated.fontFamily` is a CSS list; each real family is a candidate. */
 export function parseVscode(text: string): Candidate[] {
     const root = parseJsonc(text) as Record<string, unknown> | null;
     if (!root || typeof root !== 'object') return [];
@@ -316,7 +291,6 @@ export function parseVscode(text: string): Candidate[] {
     return out;
 }
 
-/** Terminal.app, step 1 (`defaults export com.apple.Terminal -`): the default profile's `Font`, an archived NSFont. */
 export function terminalAppFontData(plist: string): string | null {
     const root = parsePlist(plist);
     if (!isDict(root)) return null;
@@ -328,7 +302,6 @@ export function terminalAppFontData(plist: string): string | null {
     return font instanceof PlistData && font.base64 ? font.base64 : null;
 }
 
-/** Terminal.app, step 2 (that archive after `plutil -convert xml1`): its NSFont's `NSName` (a PostScript name) and `NSSize`. */
 export function parseTerminalAppFont(archiveXml: string): Candidate[] {
     const root = parsePlist(archiveXml);
     if (!isDict(root) || !Array.isArray(root.$objects)) return [];
@@ -345,17 +318,12 @@ export function parseTerminalAppFont(archiveXml: string): Candidate[] {
     return [];
 }
 
-/* ───────────────────────── collecting ───────────────────────── */
-
 export interface FontHintDeps {
     platform: string;
     home: string;
     env: Record<string, string | undefined>;
-    /** The file's text, or null if it is missing/unreadable/too big. */
     readText(path: string): Promise<string | null>;
-    /** A command's stdout, or null on any failure. */
     run(cmd: string[]): Promise<string | null>;
-    /** `plutil -convert xml1` of a binary property list given as base64: XML, or null. */
     decodeArchive(base64: string): Promise<string | null>;
 }
 
@@ -377,7 +345,6 @@ export const realFontHintDeps: FontHintDeps = {
         return r.code === 0 && !r.timedOut ? r.stdout : null;
     },
     async decodeArchive(base64) {
-        // Through a file: runCapture feeds stdin as UTF-8 text, which would mangle a binary plist.
         const dir = mkdtempSync(join(tmpdir(), 'bme-font-'));
         try {
             const file = join(dir, 'font.plist');
@@ -402,17 +369,10 @@ async function terminalApp(deps: FontHintDeps): Promise<Candidate[]> {
     const plist = await deps.run(['defaults', 'export', 'com.apple.Terminal', '-']);
     const data = plist && terminalAppFontData(plist);
     if (!data) return [];
-    // The archive is a binary plist: plutil is the one tool that reads it.
     const archive = await deps.decodeArchive(data);
     return archive ? parseTerminalAppFont(archive) : [];
 }
 
-/**
- * Candidates, best first. A terminal app's own font wins over VS Code's, and
- * Terminal.app's — everyone has it, whether or not they use it, and its default
- * has no icons — comes last, so a font the user chose for a terminal they do use
- * is tried first.
- */
 export async function collectFontHints(deps: FontHintDeps = realFontHintDeps): Promise<TerminalFontCandidate[]> {
     const { home, env, platform } = deps;
     const xdg = env.XDG_CONFIG_HOME || join(home, '.config');

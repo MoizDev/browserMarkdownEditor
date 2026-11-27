@@ -1,4 +1,3 @@
-// document-model.md §2, M-2: imported ids are opaque; only new ids use this alphabet.
 declare const nodeIdBrand: unique symbol;
 declare const sheetIdBrand: unique symbol;
 
@@ -39,7 +38,6 @@ function unusedId(tables: IdTables): string {
         while (id.length < 10) {
             crypto.getRandomValues(bytes);
             for (const byte of bytes) {
-                // Four complete copies of base62 fit below 248; modulo is unbiased there.
                 if (byte < 248) id += ALPHABET[byte % 62];
                 if (id.length === 10) break;
             }

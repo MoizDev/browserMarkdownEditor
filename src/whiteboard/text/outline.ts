@@ -18,7 +18,6 @@ function box(rect: PaintRect, color: Rgba, blend: 'normal' | 'multiply'): PageDi
         ['L', rect.x + rect.w, rect.y + rect.h], ['L', rect.x, rect.y + rect.h], ['Z']] };
 }
 
-/** The pinned layout owns line breaks and faces; HarfBuzz supplies export glyph outlines only. */
 async function* produceTextOutline(payload: unknown, context: WorkerContext, chunkPaths: boolean): AsyncGenerator<OutlinePiece> {
     if (!await validOutlineRequest(payload, context)) throw new RangeError('Invalid text export request or face generation');
     context.signal.throwIfAborted();
@@ -81,7 +80,6 @@ export function createTextOutlineStream(payload: unknown, context: WorkerContext
     return produceTextOutline(payload, context, chunkPaths);
 }
 
-/** The existing worker protocol collects one text node; streaming consumers can retain only one item. */
 export async function textOutline(payload: unknown, context: WorkerContext): Promise<PageDisplayItem[] | OutlineStreamReply> {
     if (isOutlineStreamRequest(payload)) return handleOutlineStream(payload, context, createTextOutlineStream);
     const items: PageDisplayItem[] = [];

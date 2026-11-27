@@ -21,8 +21,6 @@ export interface BootstrappedScene {
 }
 type Frame = { children: readonly Node[]; next: number; parent: number; sheet: number };
 
-/** A private, revision-pinned build. No partially constructed index is exposed; if the live
- * document changes, discard and restart rather than combining two model revisions. */
 export class SceneBootstrapJob {
     private readonly revision: number;
     private readonly columns = new SceneColumns();

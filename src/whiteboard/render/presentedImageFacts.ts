@@ -3,17 +3,11 @@ import type { PathCommand, Affine } from '../../platform/types';
 import { classifyImageFootprint, isGutterQuadDraw, texturedQuad, TILE_CROP, TILE_SIZE, type AlphaPlane, type DeviceRect } from './imageSampling';
 import type { PresentedImage } from './paintPresentation';
 
-/** `null` when the image puts nothing inside the region; `unknown` when its facts cannot be proven,
- * which keeps the true-order poster rather than a guessed translucence. */
 export type LaterPaintFact = EmbedLaterPaint | null;
 const UNKNOWN: EmbedLaterPaint = Object.freeze({ opacity: 'unknown' });
 
 const MAX_RUNS = 16_384;
 
-/** Later-paint facts of one drawn image over a live embed's device-pixel region. Only the gutter quad the draw
- * takes (imageSampling.isGutterQuadDraw) is classified, on its real positive-weight footprint: `paneTransform`
- * maps world to pane CSS, `dpr` converts to device pixels, and `alpha` is the exact readback of `image.source`.
- * Anything else takes the crop path, so it is unknown and the true-order poster stays. */
 export function imageLaterPaint(image: PresentedImage, paneTransform: Affine | null, dpr: number,
     region: DeviceRect, alpha: AlphaPlane): LaterPaintFact {
     const { item } = image;
@@ -37,6 +31,5 @@ export function imageLaterPaint(image: PresentedImage, paneTransform: Affine | n
         const x = facts.runs[i], y = facts.runs[i + 1], w = facts.runs[i + 2];
         commands.push(['M', x, y], ['L', x + w, y], ['L', x + w, y + 1], ['L', x, y + 1], ['L', x, y]);
     }
-    // Path coordinates are device pixels; the embed contract places them in pane CSS.
     return { opacity: 'opaque', coverage: { path: { d: commands, fillRule: 'nonzero', toPane: [1 / dpr, 0, 0, 1 / dpr, 0, 0] }, clips: [] } };
 }

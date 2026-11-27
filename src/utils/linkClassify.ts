@@ -1,6 +1,3 @@
-// The reader's externalHref uses the WHATWG URL parse (and www./email forms).
-// Its null also means an unsafe absolute URL, NOT permission to resolve locally.
-// Keep that distinction here without importing CodeMirror into graph utilities.
 const LOCAL_BASE = 'https://vault.invalid/';
 const LOCAL_ORIGIN = new URL(LOCAL_BASE).origin;
 const URI_SCHEME = /^[a-z][a-z\d+.-]*:/i;
@@ -26,8 +23,6 @@ function nonLocal(text: string): boolean {
     }
 }
 
-/** Classify today's regex destination before discarding directory provenance.
- *  This is not a new Markdown parser or a source-relative resolution policy. */
 export function localMarkdownTarget(raw: string, allowParent = false): string | null {
     if (hasControl(raw)) return null;
     const text = raw.trim();

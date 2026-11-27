@@ -1,14 +1,8 @@
-// Where an installed VaultAgent lives, per OS. Fixed paths on purpose: a
-// reinstall overwrites the same files, so there is never a second copy.
-// `root` (install/uninstall --root) replaces the home folder and ignores the
-// environment, so CI and the tests can check the exact layout in a temp dir.
-
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { HelperPlatform } from '../../../shared/vaultAgentProtocol.ts';
 
 export const LAUNCHD_LABEL = 'dev.bme.vaultagent';
-/** The frozen PTY host's own LaunchAgent (macOS): see helper/ptyhost/ptyhost.c. */
 export const PTYHOST_LABEL = 'dev.bme.vaultagent.pty';
 export const WINDOWS_TASK = 'VaultAgent';
 export const SYSTEMD_UNIT = 'vaultagent.service';
@@ -16,16 +10,11 @@ export const SYSTEMD_UNIT = 'vaultagent.service';
 export interface InstallLayout {
     platform: HelperPlatform;
     home: string;
-    /** Folder holding the binary (removed whole on uninstall). */
     appDir: string;
     binary: string;
     logFile: string;
-    /** macOS plist / Linux systemd unit. Windows registers a task (no file). */
     registrationFile: string | null;
-    /** Linux: XDG autostart fallback when there is no systemd user session. */
     autostartFile: string | null;
-    /** macOS only (null elsewhere): the frozen PTY host, the unix socket it
-     *  listens on (inside appDir, so uninstall removes both) and its LaunchAgent plist. */
     ptyHostBinary: string | null;
     ptyHostSocket: string | null;
     ptyHostRegistration: string | null;
@@ -72,7 +61,6 @@ export function installLayout(platform: HelperPlatform, root?: string, env: Node
 
 const xml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-/** ~/Library/LaunchAgents/dev.bme.vaultagent.plist — absolute paths: launchd expands no `~`. */
 export function launchdPlist(l: InstallLayout): string {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -108,12 +96,6 @@ export function launchdPlist(l: InstallLayout): string {
 `;
 }
 
-/**
- * The PTY host's LaunchAgent. KeepAlive unconditionally (it is a daemon that only
- * ever exits by crashing or by being booted out). ProcessType Interactive: it
- * relays keystrokes, and Standard/Background would throttle the I/O under load.
- * No stdout/stderr paths: it never logs, by design (terminal bytes pass through it).
- */
 export function ptyHostPlist(l: InstallLayout): string {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -168,11 +150,6 @@ X-GNOME-Autostart-enabled=true
 `;
 }
 
-/**
- * Task Scheduler definition. The logon trigger and the principal both name the
- * current user: an unscoped logon trigger means "any user" and needs admin
- * rights; scoped, a standard user can register it.
- */
 export function windowsTaskXml(l: InstallLayout, userId: string): string {
     return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">

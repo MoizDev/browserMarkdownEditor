@@ -33,7 +33,6 @@ records.push({ file: `${stem}-bit-flips${extension}`, kind: 'bit-flips', offsets
 const depth = 4096 + Math.floor(random() * 512);
 await write(`${stem}-deep-nesting.json`, `${'['.repeat(depth)}{"sourceSha256":"${sha256(source)}"}${']'.repeat(depth)}\n`);
 records.push({ file: `${stem}-deep-nesting.json`, kind: 'deep-nesting', depth, validity: 'valid-json-hostile-depth' });
-// A claimed count is dangerous input, not permission for a generator to allocate that many items.
 const count = 2147483647 - Math.floor(random() * 1024);
 const huge = extension.toLowerCase() === '.pdf'
     ? Buffer.from(`%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Count ${count} /Kids [] >> endobj\ntrailer << /Root 1 0 R /Size ${count} >>\n%%EOF\n`, 'ascii')

@@ -11,7 +11,6 @@ export interface PageViewTogglesProps {
     readonly toggleThumbnails: () => void;
 }
 
-/** The paged view's two toggles, shared by notebooks and PDF ink: they move into the bar's popover as a group (PagedBar). */
 export function PageViewToggles({ inverted, thumbnailsOpen, t, toggleInversion, toggleThumbnails }: PageViewTogglesProps) {
     return <>
         <button type="button" className="board-chrome-tool" aria-pressed={thumbnailsOpen} onClick={toggleThumbnails}
@@ -28,7 +27,6 @@ export interface PageNumberFieldProps {
     readonly jump: (page: number) => void;
 }
 
-/** Physical-page navigation, shared by notebooks and PDF ink: the one control the paged bar always keeps on its row. */
 export function PageNumberField({ page, count, t, jump }: PageNumberFieldProps) {
     const [draft, setDraft] = useState<string | null>(null);
     const [initial, setInitial] = useState('');
@@ -54,7 +52,6 @@ export function PageNumberField({ page, count, t, jump }: PageNumberFieldProps) 
 
 export type PagedNavigationProps = PageViewTogglesProps & PageNumberFieldProps;
 
-/** Both groups inline, for a host that lays them in its own row. */
 export function PagedNavigation(props: PagedNavigationProps) {
     return <><PageViewToggles {...props} /><PageNumberField {...props} /></>;
 }

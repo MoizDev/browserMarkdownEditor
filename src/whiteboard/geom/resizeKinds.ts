@@ -59,8 +59,6 @@ export function resizeIntrinsicKind(node: Readonly<IntrinsicResizeNode>, factors
         case 'polyline': return [{ t: 'set', id: node.id, key: 'points', value: node.points.map(p => ({ x: p.x * x, y: p.y * y })) }];
     }
 }
-// x/y placement and parent/page anchoring are supplied by the gesture plan;
-// these patches alter only the kind's representable geometry and never its paint width.
 export function resizeKind(node: Readonly<Node>, factors: KindResizeFactors, context: KindResizeContext): readonly Op[] {
     const { x, y } = factors;
     if (!Number.isFinite(x) || !Number.isFinite(y) || node.kind === 'opaque' || node.locked) throw new RangeError('Node cannot be resized');

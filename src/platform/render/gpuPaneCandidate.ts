@@ -15,8 +15,6 @@ export interface QualifiedGpuPane {
     readonly backing: SurfaceBacking;
 }
 
-/** A GPU failure is never the document's: it demotes its pane to canvas2d, so the board opens. Logged once per failure with
- * its stack, because the harness and the console show only a message otherwise. Returns the typed code it fell back with. */
 export function reportGpuFallback(where: string, error: unknown, pane: string | null = null): GfxError {
     const raw = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
     const code: GfxError = typeof raw === 'string' && GFX_CODES.includes(raw as GfxError) ? raw as GfxError : 'invalid-resource';
@@ -28,9 +26,7 @@ export function reportGpuFallback(where: string, error: unknown, pane: string | 
 
 const GFX_CODES: readonly GfxError[] = ['lost', 'out-of-budget', 'allocation', 'unsupported', 'invalid-resource', 'invalid-input', 'aborted'];
 
-/** A draw-time GPU error is retried once, after the pane has been quiet this long (no input, no gesture). */
 export const GPU_RETRY_QUIET_MS = 1000;
-/** The GPU errors of one session (one pane attach) that latch the pane on canvas2d: the first is retried, the second is not. */
 export const GPU_ERROR_LATCH_COUNT = 2;
 
 export interface GpuPaneCandidateOptions {
@@ -41,10 +37,8 @@ export interface GpuPaneCandidateOptions {
     readonly surface: () => SurfaceLease | null;
     invalidate(reason: string): void;
     onReady(pane: QualifiedGpuPane): void;
-    /** Frees up to `bytes` of this pane's GPU residency and returns the bytes it freed; 0 when it frees none. */
     onEvict(bytes: number): number;
     inputHealthy(): boolean;
-    /** True once the pane has had no input for GPU_RETRY_QUIET_MS and no gesture is running. */
     quiet(): boolean;
     frameInterval(): number | null;
 }
@@ -58,21 +52,15 @@ interface Generation {
     disposed: boolean;
     failureReported: boolean;
     deferredReported: boolean;
-    /** This generation has demoted its pane. Its first GPU error is the one counted and logged; later ones are the same fault. */
     fellBack: boolean;
 }
 
-/** Qualified devices are built against the broker's context and kept detached until the lifecycle
- * authorizes a complete current frame. A failed/old generation can never resize its successor.
- */
 export class GpuPaneCandidate {
     private current: Generation | null = null;
     private serial = 0;
-    /** Draw-time GPU errors this session (one attach of the pane), and the timer of the one quiet-time retry they allow. */
     private gpuErrors = 0;
     private retryTimer: ReturnType<typeof setTimeout> | null = null;
     private disposed = false;
-    /** An error that arrives with no current generation has nothing to demote; it is counted and logged once per candidate. */
     private orphanReported = false;
 
     constructor(private readonly options: GpuPaneCandidateOptions) {}
@@ -129,7 +117,6 @@ export class GpuPaneCandidate {
                         { width: 0, height: 0, complete: false, refused: true, generation: preparation.generation };
                 },
                 invalidate: this.options.invalidate,
-                // Every GPU compositor error demotes this pane; none reaches the owner, so a board never fails to open on one.
                 onError: error => defer(() => this.demote(generation, 'compositor', error)),
                 onDeferred: () => {
                     const compositor = generation.bundle?.compositor;
@@ -155,15 +142,9 @@ export class GpuPaneCandidate {
                 dispose: reason => this.disposeGeneration(generation, reason),
             };
         } catch (error) {
-            // A budget or allocation refusal is normal flow and is not logged; any other setup failure is, with its stack.
             const refusal = typeof error === 'object' && error !== null && 'code' in error &&
                 (error.code === 'out-of-budget' || error.code === 'allocation');
             if (!preparation.signal.aborted && !refusal) reportGpuFallback('setup', error, this.options.paneId);
-            // Only a real context loss reaches the runtime. A refused creation is already accounted by the governor's reservation;
-            // signalling it as trouble degraded the whole app's quality and showed the 'reduced to fit memory' notice for one pane's
-            // forced failure (by reading: signalTrouble → degrade → onPressureChange). A device that fails qualification
-            // ('unsupported') is no usable GPU, which the broker tells the person: as capability pressure, the second showing of
-            // such a pane degraded every pane's quality over a device fact, the gpu-h13 fault again.
             if (!preparation.signal.aborted && typeof error === 'object' && error !== null && 'code' in error && error.code === 'lost') {
                 this.reportTrouble(generation, 'lost');
             }
@@ -190,8 +171,6 @@ export class GpuPaneCandidate {
         this.options.onReady({ bundle: generation.bundle, grant, backing: generation.backing });
     }
 
-    /** The pane's GPU work threw outside the compositor's own callbacks (a frame, a layer, a request). The current device
-     * generation falls back to canvas2d; with none current the error is only reported. */
     fail(error: unknown, where: string): void {
         const current = this.current;
         if (current && !current.disposed) { this.demote(current, where, error); return; }
@@ -200,8 +179,6 @@ export class GpuPaneCandidate {
         reportGpuFallback(where, error, this.options.paneId);
     }
 
-    /** Demotes the pane once per generation: the first GPU error is counted and logged with its stack, and asks the broker
-     * to fall back; later errors of the same generation are the same fault and add nothing. */
     private demote(generation: Generation, where: string, error: unknown): void {
         if (generation.fellBack || generation.disposed || this.current !== generation) return;
         generation.fellBack = true;
@@ -219,16 +196,11 @@ export class GpuPaneCandidate {
         generation.backing.setVisible(visible, now);
     }
 
-    /** Called only by the broker after it has actually set the native canvas to zero. */
     zeroed(canvas: HTMLCanvasElement): void {
         const generation = this.current;
         if (!generation || generation.preparation.canvas !== canvas) return;
         generation.backing.releaseZeroed();
         if (generation.disposed) { generation.backing.close(); return; }
-        // A zeroed backing is no longer the display: the pane shows its 2D picture first when it is shown again, and the kept GPU
-        // rebuilds behind it as scratch until selectGpu promotes it, as a new generation's does. Left 'displayed', its rebuild was
-        // charged as a second display beside the 2D one and refused, and the 2D display goes only when the GPU presents: a PDF shown
-        // again after a tab switch stayed on its blurred 2D picture for good (measured, WebGL2 DPR 2, doc12).
         generation.backing.stage();
     }
 
@@ -240,8 +212,6 @@ export class GpuPaneCandidate {
         else if (code === 'allocation' || code === 'out-of-budget') this.options.runtime.trouble('allocation');
     }
 
-    /** A draw-time GPU error. It is its own reason, not a creation failure, so the broker does not latch it: the first error
-     * of the session is retried once the pane is quiet, and a second latches the pane on canvas2d (counted). */
     private failure(generation: number, code: GfxError): void {
         const current = this.current;
         if (!current || current.preparation.generation !== generation) return;
@@ -256,8 +226,6 @@ export class GpuPaneCandidate {
         if (!latch) this.scheduleRetry();
     }
 
-    /** One retry, when the pane is quiet. Until then it asks again each second; nothing else wakes it, and the timer is the
-     * only thing that runs while the pane is held on canvas2d. */
     private scheduleRetry(): void {
         if (this.retryTimer !== null || this.disposed) return;
         const attempt = (): void => {

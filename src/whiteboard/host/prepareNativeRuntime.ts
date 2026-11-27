@@ -44,7 +44,6 @@ export interface PrepareNativeRuntimeOptions {
 
 let legacyMemorySerial = 0, derivedMemorySerial = 0;
 
-/** Preparation owns admission and creator leases until take transfers one runtime. */
 export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions) {
     const { host, identity, signal } = options;
     if (identity.kind !== options.representation) throw new Error('Canvas representation does not match identity');
@@ -126,10 +125,6 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
             creatorLeases.push(store.retain(id, 'journal'));
             store.put(id, blob);
         }
-        // An old-format board is shown exactly as the importer read it and never written: its runtime is sealed read-only
-        // for life (no edit, recovery, agent change or save can reach the file), and the board in memory is what an
-        // editable copy is made from. Its pictures are held here too: the store drops a picture no view holds and reads it
-        // again from `.Assets`, where an old board's pictures have never been written.
         const oldPictures = legacy?.status === 'editable' ? [...legacy.media] : undefined;
         const oldReason = legacy ? oldBoardReadOnlyReason(options.representation) : null;
         const references = new Set<MediaId>();
@@ -154,14 +149,11 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
         if (!host.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
         const token = { vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
             session: identity.session, bytesGeneration: identity.bytesGeneration };
-        // Stroke LOD levels and idle geometry are rebuildable from the samples and document, so the governor may reclaim them first (`redundant-level`).
         const model = {};
         services = createBoardRenderServices({ doc, samples, media: store, token,
             modelMemory: bytes => getPlatformRuntime().governor.reportDerivedModel(model, bytes), derivedMemory: evict => {
-            // The governor reads `memory()` while publishing its readout, so the live count is kept here, not read back.
             let live = 0;
             const now = performance.now();
-            // Named for what it holds (idle geometry and stroke LOD levels). It has no pane, so it is charged to the pool only.
             const cache = getPlatformRuntime().governor.register({ id: `derived-geometry:${identity.documentId}:${++derivedMemorySerial}`,
                 owner: token, pool: 'cpu', kind: 'working', class: 'redundant-level', hiddenAt: null,
                 lastVisibleAt: now, lastUsedAt: now, memory: () => ({ live, retiring: 0 }), evict });
@@ -172,10 +164,6 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
             };
         } });
         const render = services;
-        // Post-layout admission (document-model §9.2): an elbow connector with no valid route opens the board
-        // read-only, on the real layout, before any editable transfer. A layout gap throws and fails closed.
-        // Routing measures connector targets' text, so their faces must be loaded first; without
-        // this every received board with an elbow connector and text failed to open.
         const elbows = [...doc.nodes.values()].filter(node => node.kind === 'connector' && node.route === 'elbow').map(node => node.id);
         if (elbows.length) { await render.prepareChangeGeometry(elbows, signal); signal.throwIfAborted(); }
         const admissionRefusal = elbowAdmissionRefusal(doc, render.changeGeometry);
@@ -240,11 +228,6 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                 }
                 return {
                     media: pictures.map(({ hash, extension, blob }) => ({ hash, extension, blob })),
-                    // The serializer's own build of the board in memory (the importer's records, with the bounds and text
-                    // layout this runtime measured), never a second read and import of the file. Each picture record names
-                    // the file the copy stored it in, as a save's media restore would have (encodeMedia keeps its extras),
-                    // so the copy's first save has nothing to rename. Not the session's checkpoint: that restores the
-                    // pictures into the ORIGINAL's folder as a write of its session, which an old board's session refuses.
                     async build(files, buildSignal) {
                         const overrides = [];
                         for (const picture of pictures) {
@@ -255,8 +238,6 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                             if (!encoded.ok) throw new Error(encoded.error.reason);
                             overrides.push({ identity: encoded.value.identity, bytes: new TextEncoder().encode(encoded.value.text) });
                         }
-                        // A drawing's copy opens where the person was looking at the original: its own view record, read as
-                        // any drawing's saved view is (viewCamera.ts), which still frames the content if that view shows none.
                         if (view && doc.kind === 'whiteboard' && [...doc.sheets.keys()].some(id => id === view.sheet)
                             && [view.x, view.y, view.zoom].every(Number.isFinite) && view.zoom > 0) {
                             const encoded = encodeView(doc.view, { sheet: view.sheet, x: view.x, y: view.y, zoom: view.zoom });
@@ -273,10 +254,8 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
         return {
             legacyOriginalSha256: null,
             ...(oldBoard ? { oldBoard } : {}),
-            // What the import left out, said once in the original's own notice (and, by its copy, in the copy's).
             importNotice: oldBoard?.notice ?? null,
             acceptPinnedSource(source: import('../../utils/documentBuffers').DeferredSource) {
-                // An old board's buffer is never edited (documentReading.ts), so a dirty pin of one is not a source to accept.
                 try { if (pinned.dirty && !oldBoard) { pinned.accept(source); return true; } return false; } finally { pinned.release(); }
             },
             media: store,
@@ -291,9 +270,6 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                     baseline: prime, doc, encoder, records: initialRecords(), representation: options.representation,
                     mediaPath(id) {
                         const current = host.identity(identity.documentId), entry = doc.media.get(id);
-                        // A picture read from a tldraw-format file has no file of its own yet (`file: null`, the content-addressed
-                        // name its first save writes). Without that default the first stroke on any old board holding a picture
-                        // failed its recovery capture, and the pane fell to "Could not open canvas: Recovery media path unavailable".
                         const filename = store.currentFile(id) ?? entry?.file
                             ?? (entry && (MEDIA_MIMES as readonly string[]).includes(entry.mime) ? `${id.slice(7)}.${mediaExtension(entry.mime as MediaMime)}` : null);
                         if (!current || !host.isCurrent(identity) || !filename) return null;
@@ -302,8 +278,6 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                     mediaAsset(id) {
                         const entry = doc.media.get(id), blob = store.get(id);
                         if (!entry || !blob || !(MEDIA_MIMES as readonly string[]).includes(entry.mime)) return undefined;
-                        // This names the reference encoded in the recipe, not a resolver's
-                        // alternate disk location; copy restoration must detect and remap it.
                         return { id, hash: id.slice(7), extension: mediaExtension(entry.mime as MediaMime), file: entry.file, blob };
                     },
                     retainMedia: id => store.retain(id, 'journal'),
@@ -314,9 +288,6 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                     restoreRecoveredMediaFromHost(payload, host, identity, store, recoverySignal, current),
                 onError: options.onError });
                 try {
-                    // A build first restores the board's pictures into its own folder and records their names, as a write of
-                    // this session. An old board's session never writes, and its copy stores the pictures beside itself
-                    // (useEditableCopy), so its build leaves them as the import named them: by content, `file: null`.
                     const pinMedia = oldBoard ? () => ({ restore: async () => 'unchanged' as const, release() {} })
                         : createNativeMediaRestore(store, host, identity, () => owned?.board, store);
                     owned = createOwnedBoardRuntime({ runtime: { owner, doc, samples, media: store, render,
@@ -324,11 +295,6 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                         geometry: render.changeGeometry,
                         isCurrent: candidate => candidate.documentId === identity.documentId && candidate.session === identity.session
                             && isLiveOwner(candidate) && host.isCurrent(identity),
-                        // Only the acquisition's temporary seal (and the App-immutable guards it wraps)
-                        // may refuse writes. A permanent per-call reason here could never be cleared by
-                        // activateEditing, so it is not an option (measured: cold agent stayed read-only).
-                        // A document-derived refusal (planned §9.2 read-only) holds until reload; it is not the
-                        // static per-call option removed earlier, which activateEditing could never clear.
                         readOnlyReason: () => oldReason ?? admissionRefusal ?? readOnlyReason() ?? null,
                         onFailure: options.onError, onHistoryLimit: options.onHistoryLimit,
                         scene: { token, bounds: render.bounds, retainNode: render.retainNode, realize: render.realize,
@@ -339,8 +305,6 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                     try { legacy?.dispose(); } finally { admitted.dispose(); }
                     let closing: Promise<void> | undefined;
                     return { board: owned.board, dispose() {
-                        // Revocation is immediate; the pinned native source and render services stay until the
-                        // runtime's builds have settled, because those builds read them.
                         closing ??= (async () => {
                             try { await owned?.dispose(); } finally { pinned.release(); render.dispose(); }
                         })();

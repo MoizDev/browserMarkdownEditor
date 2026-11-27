@@ -1,4 +1,3 @@
-// The terminal reservation exists before the lazy terminal or renderer is loaded.
 let active = false;
 const listeners = new Set<(active: boolean) => void>();
 

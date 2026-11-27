@@ -23,8 +23,6 @@ export async function generateCorpus(out, { clockMutant = false, browserMutant =
             if (source.split(anchor).length !== 2) {
                 throw new Error(`${kind} mutant anchor no longer matches; V-05 is unproven`);
             }
-            // Mutate the vault generator's own file entry, not an unseeded standalone note:
-            // the browser arm opens exactly this 100-note bundle through Open Vault.
             const patched = source.replace(anchor, replacement)
                 .replaceAll(/from '(\.[^']+)'/g, (_, relative) => `from '${pathToFileURL(resolve(dirname(generator), relative)).href}'`);
             const mutant = resolve(out, `${kind}-mutant.mjs`);
@@ -82,7 +80,6 @@ export async function recordManifests(records) {
         delete fixture.stream;
         return fixture;
     });
-    // PDF lanes append their own registered records here; adopting GEN-01 never deletes them.
     const path = resolve(REPO, 'verify/fixtures/pdf/manifest.json');
     let previous = [];
     try {

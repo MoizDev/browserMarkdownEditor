@@ -1,10 +1,4 @@
-/* =============================================================
-   Obsidian Dark Theme — Exact Clone
-   CSS Variables sourced from Obsidian's default dark theme.
-   ============================================================= */
-
 :root {
-  /* ── Base Colors ── */
   --background-primary: #1e1e1e;
   --background-primary-alt: #252525;
   --background-secondary: #202020;
@@ -13,7 +7,6 @@
   --background-modifier-hover: #2a2d2e;
   --background-modifier-active: #353535;
 
-  /* ── Text ── */
   --text-normal: #dcddde;
   --text-muted: #999;
   --text-faint: #666;
@@ -21,70 +14,39 @@
   --text-on-accent: #fff;
   --text-highlight-bg: rgba(255, 208, 0, 0.4);
 
-  /* ── Interactive / Accent ── */
   --interactive-accent: hsl(254, 80%, 68%);
   --interactive-accent-hover: hsl(254, 80%, 60%);
 
-  /* Base ink for language-less ``` blocks. Follows the accent (including a
-     custom one — var() resolves late) until the Settings picker overrides it
-     inline on <html>. */
   --code-block-color: var(--text-accent);
   --interactive-normal: #2a2a2a;
   --interactive-hover: #353535;
 
-  /* ── Scrollbar ── */
   --scrollbar-bg: transparent;
   --scrollbar-thumb-bg: rgba(255, 255, 255, 0.1);
   --scrollbar-active-thumb: rgba(255, 255, 255, 0.18);
 
-  /* ── Typography ── */
   --font-text: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "Roboto", sans-serif;
   --font-monospace: "SF Mono", "Menlo", "Monaco", "Consolas", "Courier New", monospace;
   --font-ui: var(--font-text);
   --font-size-normal: 16px;
   --nav-item-size: 13px;
 
-  /* ── Caret (set live from the Settings panel) ── */
   --caret-line-width: 10px;
   --caret-block-width: 0px;
   --caret-block-bg: transparent;
   --caret-radius: 0;
   --caret-transition: left 80ms ease-out, top 80ms ease-out, height 80ms ease-out;
 
-  /* ── Sizing ── */
   --nav-item-height: 28px;
   --header-height: 40px;
-  /* The row under the tab strip that names a pane's document and carries its
-     back/forward, read/edit and ⋯ buttons. Drawn over EVERY pane, at one pane
-     as at five — but the PDF panes, which float over their slot rather than
-     sitting inside it, have to offset themselves by it in CSS.
-     32, not the 26 it was when it held a name and a hover-revealed button: the
-     buttons are permanent chrome now and 24px tall, so 26 left them 1px of air
-     top and bottom. 32 gives 4, which is what the reference images read at. */
   --pane-header-height: 32px;
   --radius-s: 4px;
   --radius-m: 6px;
 
-  /* ── Tab strip ──
-     Obsidian's own tab bar, measured pixel by pixel off its Retina screenshots
-     (strip #333 / #fcfcfc, 200px slots, a 33px active tab 7px below the
-     strip's top) and matched against them at 2x. Literals rather than the generic
-     tokens because those are near Obsidian's but not it — --text-muted is
-     #999 against the tabs' #b3b3b3, --background-modifier-border #363636
-     would vanish on a #333 strip. The active tab is the one surface tied to a
-     generic token: it IS the page below it, so it follows
-     --background-primary whatever that becomes. No tab surface uses the
-     accent; Obsidian's don't either. */
   --tab-container-background: #333333;
   --tab-background-active: var(--background-primary);
   --tab-background-hover: rgba(255, 255, 255, 0.075);
   --tab-outline-color: transparent;
-  /* The header's bottom rule: the sidebar header, the tab strip and the resize
-     handle between them all draw this ONE line, so it must be one colour and
-     must NOT be --tab-outline-color, which is transparent in dark on purpose
-     (the active tab wears no ring there). One definition only —
-     --background-modifier-border is already redefined per theme and var()
-     resolves at computed-value time, so this follows both. */
   --tab-rule-color: var(--background-modifier-border);
   --tab-divider-color: #3f3f3f;
   --tab-text-color: #b3b3b3;
@@ -96,11 +58,7 @@
   --tab-radius-active: 5px;
 }
 
-/* =============================================================
-   Light Theme Overrides
-   ============================================================= */
 :root[data-theme="light"] {
-  /* ── Base Colors ── */
   --background-primary: #ffffff;
   --background-primary-alt: #f2f3f5;
   --background-secondary: #f2f3f5;
@@ -109,7 +67,6 @@
   --background-modifier-hover: rgba(0, 0, 0, 0.04);
   --background-modifier-active: rgba(0, 0, 0, 0.08);
 
-  /* ── Text ── */
   --text-normal: #2e3338;
   --text-muted: #5c5f66;
   --text-faint: #999999;
@@ -117,35 +74,22 @@
   --text-on-accent: #fff;
   --text-highlight-bg: rgba(255, 208, 0, 0.4);
 
-  /* ── Interactive / Accent ── */
   --interactive-accent: hsl(254, 80%, 60%);
   --interactive-accent-hover: hsl(254, 80%, 52%);
   --interactive-normal: #e3e5e8;
   --interactive-hover: #dadce0;
 
-  /* ── Scrollbar ── */
   --scrollbar-bg: transparent;
   --scrollbar-thumb-bg: rgba(0, 0, 0, 0.1);
   --scrollbar-active-thumb: rgba(0, 0, 0, 0.2);
 
-  /* ── Tab strip ── (measured, as above; --tab-background-active needs no
-     restating — it resolves here, against this block's #fff) */
   --tab-container-background: #fcfcfc;
   --tab-background-hover: rgba(0, 0, 0, 0.075);
-  /* #dadce0, i.e. --background-modifier-border, not its own #e4e4e4: the active
-     tab's ring, its flares and the header rule are the same grey, so the line
-     that runs from the sidebar across the resize handle into the strip does not
-     change shade halfway. */
   --tab-outline-color: #dadce0;
   --tab-divider-color: #dadada;
   --tab-text-color: #5c5c5c;
   --tab-text-color-active: #222222;
 }
-/* A whiteboard pane draws in its own board theme (F-THEME-002, R-26: Preferences > Theme and Mod+/ keep today's
-   behaviour, where the board's Dark/Light recolours its toolbars and panels too). Only the colour variables the
-   light theme overrides are re-scoped; accent and settings-driven variables stay the app's. */
-/* .board-main-menu-dark is the board's main menu when it is opened from a dark board: the menu renders outside the
-   pane, so it takes the same tokens by its own class (BoardHeader sets it from the pane it was raised in). */
 .canvas-pane[data-board-theme="dark"],
 .board-main-menu-dark {
   --background-primary: #1e1e1e;
@@ -207,7 +151,6 @@
 }
 
 
-/* ── Reset ── */
 *,
 *::before,
 *::after {
@@ -233,7 +176,6 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ── Scrollbars (Obsidian thin style) ── */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -252,9 +194,6 @@ body {
   background: var(--scrollbar-active-thumb);
 }
 
-/* =============================================================
-   Welcome Screen
-   ============================================================= */
 .welcome-screen {
   display: flex;
   align-items: center;
@@ -304,8 +243,6 @@ body {
   background: var(--interactive-accent-hover);
 }
 
-/* The loading screen once a step is slow, and the screen for a vault whose folder list could not be read. One
-   readable measure, wrapped rather than clipped at phone width, in the welcome screen's own type and buttons. */
 .startup-inner {
   max-width: min(460px, calc(100vw - 32px));
   padding: 0 16px;
@@ -339,7 +276,6 @@ body {
   color: var(--text-normal);
 }
 
-/* The browser's own words for the failure: kept to two lines (the tooltip holds all of it). */
 .startup-error {
   max-width: 100%;
   font-family: var(--font-monospace);
@@ -380,8 +316,6 @@ body {
   cursor: default;
 }
 
-/* A part of the app that failed to draw (components/ErrorBoundary.tsx), in the unreadable pane's look. In a pane
-   it fills the body; a lazy panel gets a host that takes the panel's place. */
 .part-failure-host {
   position: relative;
   flex: 1;
@@ -394,7 +328,6 @@ body {
   border-top: 1px solid var(--background-modifier-border);
 }
 
-/* Settings and the Trash fail into a card over the workspace, shaped like theirs, with their close. */
 .part-failure-card {
   position: relative;
   width: min(440px, calc(100vw - 32px));
@@ -439,9 +372,6 @@ body {
   color: var(--text-normal);
 }
 
-/* =============================================================
-   Workspace Layout
-   ============================================================= */
 .workspace {
   display: flex;
   height: 100%;
@@ -458,7 +388,6 @@ body {
   transition: width 0.15s ease;
 }
 
-/* While drag-resizing, the width must track the pointer, not ease after it. */
 .workspace-sidebar.resizing {
   transition: none;
 }
@@ -467,20 +396,10 @@ body {
   border-right: none;
 }
 
-/* Children keep their laid-out width while the drawer animates shut, instead
-   of reflowing narrower every frame. 180px = the resize clamp minimum. */
 .workspace-sidebar > * {
   min-width: 180px;
 }
 
-/* Thin strip left behind by a collapsed sidebar; its button re-expands.
-   Its top is the tab strip's band and rule, exactly as the resize handle
-   paints it, because the sidebar header it stands in for is on that band now:
-   in the sidebar colour the band and its rule stopped dead 40px short of the
-   window edge. The button is the header toggle's twin — 30×25 at the same
-   height and in the strip's colours, so the icon does not hop as the sidebar
-   collapses: the header centres its 25px toggle in 40px less its 1px rule,
-   (39 − 25) / 2 = 7. Change the two together. */
 .sidebar-rail {
   flex-shrink: 0;
   width: 40px;
@@ -512,8 +431,6 @@ body {
   color: var(--tab-text-color-active);
 }
 
-/* VaultAgent has an update (components/agentUpdateIndicator.tsx): a dot on the
-   buttons that lead to the agent panel, so it is seen with the panel closed. */
 .sidebar-rail-btn,
 .sidebar-footer-btn {
   position: relative;
@@ -528,10 +445,6 @@ body {
   pointer-events: none;
 }
 
-/* On Sparkles the dot sits exactly over the small top-right spark and stands
-   in for it (any other spot leaves a stub of it showing). On the rail icon it
-   sits on the frame's corner, so a ring in the rail's colour cuts it out —
-   without one the two strokes merge into a blob. */
 .sidebar-footer-btn .agent-update-dot {
   top: 3px;
   right: 5px;
@@ -547,9 +460,6 @@ body {
 .workspace-resize-handle {
   width: 4px;
   cursor: col-resize;
-  /* Its top is the tab strip's: a transparent handle showed the page colour
-     through the strip as a 4px notch the full header tall (measured: #1e1e1e
-     between the sidebar's edge and the #333 strip), breaking the light rule. */
   background: linear-gradient(var(--tab-container-background) calc(var(--header-height) - 1px),
     var(--tab-rule-color) 0 var(--header-height), transparent 0);
   transition: background 0.2s;
@@ -570,17 +480,11 @@ body {
   background: var(--background-primary);
 }
 
-/* The AI agent panel, docked on the right — the sidebar's mirror image: the
-   same 4px handle (on the panel's LEFT edge, so its header band continues the
-   tab strip's), the same border, and a width App clamps to 300px…50%. The
-   panel's own look lives in its lazy chunk (components/AgentPanel/). */
 .workspace-agent-panel {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  /* The stored width is clamped when set; this holds it when the WINDOW
-     shrinks afterwards, so the editor never loses more than half. */
   max-width: max(300px, 50vw);
   overflow: hidden;
   background: var(--background-secondary);
@@ -592,7 +496,6 @@ body {
   min-height: 0;
 }
 
-/* The one frame before the chunk lands: the header band only, so nothing jumps. */
 .workspace-agent-loading {
   flex: 0 0 auto;
   height: var(--header-height);
@@ -605,14 +508,6 @@ body {
   border-bottom: 1px solid var(--tab-rule-color);
 }
 
-/* ── Terminal dock (TerminalDock.tsx) ──
-   Under the editor or graph, inside .workspace-main (a column): a row-resize
-   handle, then the box the lazy TerminalPanel fills. The panel's own look is in
-   its chunk (components/TerminalPanel/). The height is a CSS variable the
-   dock writes live while dragging and commits once, like the pane dividers. */
-
-/* The dock's top rule, drawn by the handle itself: 1px in layout, with a hit
-   area that reaches 3px above and 4px below it. */
 .terminal-resize-handle {
   position: relative;
   flex: none;
@@ -621,7 +516,7 @@ body {
   cursor: row-resize;
   z-index: 10;
   user-select: none;
-  touch-action: none;          /* a touch here resizes; it never scrolls */
+  touch-action: none;
   transition: background 0.15s, box-shadow 0.15s;
 }
 
@@ -631,10 +526,6 @@ body {
   inset: -3px 0 -4px;
 }
 
-/* The same affordance as the sidebar's and the panes' handles: whatever is
-   about to move goes accent under the pointer — and a pixel thicker, upwards,
-   without shifting anything. It is also the focus ring: a browser outline on a
-   1px strip reads as a rendering fault. */
 .terminal-resize-handle:hover,
 .terminal-resize-handle:focus-visible,
 .terminal-resize-handle.is-resizing {
@@ -649,8 +540,6 @@ body {
   flex-direction: column;
   height: var(--terminal-height, 300px);
   min-height: 0;
-  /* Of .workspace-main: the stored height is clamped when set; this holds it
-     when the WINDOW shrinks afterwards, so the editor always keeps 30%. */
   max-height: 70%;
   overflow: hidden;
   background: var(--background-primary);
@@ -661,7 +550,6 @@ body {
   min-height: 0;
 }
 
-/* The one frame before the chunk lands: the header band only, so nothing jumps. */
 .workspace-terminal-loading {
   flex: 0 0 auto;
   height: var(--pane-header-height);
@@ -669,17 +557,12 @@ body {
   box-shadow: inset 0 -1px 0 var(--tab-rule-color);
 }
 
-/* For the duration of a drag only: the pointer is captured by the handle but
-   travels over xterm and the editor, which set cursors of their own. */
 body.is-resizing-terminal,
 body.is-resizing-terminal * {
   cursor: row-resize !important;
   user-select: none !important;
 }
 
-/* =============================================================
-   File Explorer (Sidebar)
-   ============================================================= */
 .file-explorer {
   display: flex;
   flex-direction: column;
@@ -691,20 +574,10 @@ body.is-resizing-terminal * {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* Centred in the band above the rule, as Obsidian's are (image 4: a 25px
-     chip 7px clear of the rule on both sides, glyph centre 19.5px down). The
-     user chose this over sitting them on the tab strip's title line (22.5px),
-     accepting that they ride ~2px above the strip's titles beside them. */
   padding: 0 8px;
   height: var(--header-height);
   flex-shrink: 0;
-  /* The strip's colour, as Obsidian's sidebar tab row is (image 4): the resize
-     handle already paints it across its top 40px, so the band runs on
-     unbroken from the sidebar's edge into the tab strip. */
   background: var(--tab-container-background);
-  /* --tab-rule-color, not the border token it currently resolves to: this is
-     the left half of the ONE line that runs on across the resize handle into
-     the tab strip, and the three owners have to move together. */
   border-bottom: 1px solid var(--tab-rule-color);
 }
 
@@ -713,10 +586,6 @@ body.is-resizing-terminal * {
   gap: 3px;
 }
 
-/* Obsidian's sidebar tabs (Files, Search) and the collapse toggle beside them:
-   34×25 chips measured off image 4 (2x: y 14–63, x 30–97), on the STRIP's tokens — they sit on the
-   strip's colour, where dark's --background-modifier-hover (#2a2d2e) would be
-   a pill darker than the #333 under it. */
 .nav-tab {
   display: flex;
   align-items: center;
@@ -747,16 +616,10 @@ body.is-resizing-terminal * {
   outline-offset: -1px;
 }
 
-/* The collapse toggle is a plain icon button, not a tab: Obsidian's is its
-   icon's own width. */
 .nav-collapse-btn {
   width: 30px;
 }
 
-/* The tree's own actions, centred under the tabs as in Obsidian (images 2, 4):
-   30×26 buttons on 32px centres, the first row of icons 22px under the rule,
-   and 6px under them to the tree — image 2's 37px from icon centre to the
-   first row's text (2px here measured 33). */
 .nav-buttons-container {
   display: flex;
   justify-content: center;
@@ -765,10 +628,6 @@ body.is-resizing-terminal * {
   flex-shrink: 0;
 }
 
-/* Shrinkable to 24px: six 30px buttons need 190px, and at the 180px minimum
-   sidebar only 164px is left — measured, a centred row that cannot shrink hung
-   5px off BOTH edges, clipping New note and Expand all. 24px still holds the
-   18px glyph with 3px either side. */
 .nav-action-btn {
   display: flex;
   align-items: center;
@@ -791,9 +650,6 @@ body.is-resizing-terminal * {
   background: var(--background-modifier-hover);
 }
 
-/* Pressed: a dropdown of its own is open, or the Auto-reveal toggle is on. Grey
-   like image 5's chip, not the accent — Obsidian marks an ON toggle by the
-   chip alone, and an accent glyph would read as a different kind of button. */
 .nav-action-btn.is-active {
   color: var(--text-normal);
   background: var(--background-modifier-active);
@@ -805,10 +661,6 @@ body.is-resizing-terminal * {
   padding: 4px 0;
 }
 
-/* ── Sidebar footer: tool icons, then Obsidian's vault row (images 1–3) ──
-   One fixed layout at every sidebar width (180–600px): nothing wraps and
-   nothing moves between rows as the sidebar is dragged. The vault name is the
-   only elastic thing, and it ends in "…". */
 .sidebar-footer {
   flex-shrink: 0;
   padding: 5px 8px 8px;
@@ -816,8 +668,6 @@ body.is-resizing-terminal * {
   background: var(--background-secondary);
 }
 
-/* 2px in, so the first icon's centre sits on the switcher's chevrons below it
-   (both 24px from the sidebar's edge). */
 .sidebar-footer-tools {
   display: flex;
   gap: 2px;
@@ -830,9 +680,6 @@ body.is-resizing-terminal * {
   align-items: center;
 }
 
-/* 30×26 — Obsidian's icon buttons: an 18px glyph in 4px/6px of padding, which
-   puts the ? and the gear on 30px centres as in image 1 (so no gap between
-   them; the 4px before the ? is the switcher's margin). */
 .sidebar-footer-btn {
   display: flex;
   align-items: center;
@@ -864,8 +711,6 @@ body.is-resizing-terminal * {
   cursor: default;
 }
 
-/* The vault switcher: a full-width pill holding the chevrons and the name,
-   greyed on hover and while its menu is open (image 2). */
 .vault-switcher {
   flex: 1;
   min-width: 0;
@@ -880,8 +725,6 @@ body.is-resizing-terminal * {
   background: transparent;
   color: var(--text-normal);
   font-family: var(--font-ui);
-  /* 13px: image 1's "downloadtemp" is 91px wide and shares its cap height
-     with image 8's 13px menu text; 14px measured 97. */
   font-size: 13px;
   font-weight: 500;
   text-align: left;
@@ -896,7 +739,6 @@ body.is-resizing-terminal * {
 
 .vault-switcher-chevrons {
   flex-shrink: 0;
-  /* Faint, not muted: image 1 draws them well under the name's weight. */
   color: var(--text-faint);
 }
 
@@ -907,13 +749,6 @@ body.is-resizing-terminal * {
   white-space: nowrap;
 }
 
-/* ── Recent vaults menu (rises from the sidebar's vault switcher) ──
-   Fixed, not absolute: the sidebar clips its overflow and can be resized
-   narrower than this menu. Position AND width both come from the switcher's
-   rect (see SidebarFooter): the menu stands on the switcher's top edge from its
-   left edge, so how wide it may grow is a function of how far that edge is
-   from the right of the screen — a content-sized menu would otherwise run off
-   it. */
 .vault-menu {
   position: fixed;
   z-index: 900;
@@ -926,28 +761,11 @@ body.is-resizing-terminal * {
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
 }
 
-/* A raised surface should read as brighter than what it covers, and in the light
-   theme --background-primary-alt is the sidebar's own colour — the menu would
-   sit on it as one flat sheet, told apart only by its 1px border. */
 :root[data-theme="light"] .vault-menu {
   background: var(--background-primary);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
 }
 
-/* An entry is TWO controls — remove, and open — but one thing on screen, so the
-   row is what highlights. Lighting only the half the pointer happens to be over
-   would read as two rows; painting both would stack the light theme's
-   translucent hover tint on itself and darken that half instead.
-
-   Two columns rather than two flex children, so a row with no minus — the open
-   vault, and "Open folder…" — still starts its label at the same x without a
-   placeholder element to hold the gap. The column is the 22px control plus the
-   2px that keeps its hover chip off the menu's own 4px padding; flush at 4, the
-   chip's rounded corner sat almost on the border. */
-/* Three columns: the minus, the vault itself, and the pin. The two controls
-   bracket the label rather than crowding one end, and each keeps its column
-   whether or not the row draws it — a row whose minus is missing (the open
-   vault) must not shift its label. */
 .vault-menu-row {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) 24px;
@@ -959,10 +777,6 @@ body.is-resizing-terminal * {
   background: var(--background-modifier-hover);
 }
 
-/* Mirrors the search result rows' keyboard treatment, drawn on the row rather
-   than the button so the ring encloses the remove control too. :focus-visible,
-   not :focus-within — the menu takes focus programmatically when it opens, and
-   a mouse user should not be shown a ring for that. */
 .vault-menu-row:has(:focus-visible) {
   background: var(--background-modifier-hover);
   outline: 1px solid var(--interactive-accent);
@@ -989,21 +803,12 @@ body.is-resizing-terminal * {
   cursor: pointer;
 }
 
-/* The app's icon button (.tree-action-btn), only quieter: this tidies a list,
-   it does not delete anything, and a row that shouted about being removable
-   would out-weigh the vault it names. Scoped to the row so these deltas outrank
-   the base class, which is defined further down this file. */
 .vault-menu-row .vault-menu-forget {
   grid-column: 1;
-  /* Flush to the label side of its column, which leaves exactly the 2px that
-     keeps the hover chip off the menu's own 4px padding — see the row above.
-     Centring it would split that gap and bring the chip back toward the edge. */
   justify-self: end;
   color: var(--text-faint);
 }
 
-/* A stronger chip than .tree-action-btn's, because the row underneath is
-   already painting --background-modifier-hover behind it. */
 .vault-menu-row .vault-menu-forget:hover:not(:disabled) {
   background: var(--background-modifier-border);
   color: var(--text-normal);
@@ -1015,8 +820,6 @@ body.is-resizing-terminal * {
   cursor: default;
 }
 
-/* The pin: faint until the row is hovered or focused, like the minus — except
-   when it is ON, where it is the row's own state and has to read at a glance. */
 .vault-menu-row .vault-menu-pin {
   grid-column: 3;
   justify-self: start;
@@ -1039,8 +842,6 @@ body.is-resizing-terminal * {
   color: var(--text-normal);
 }
 
-/* The row draws one ring for both of its buttons, so neither draws its own —
-   without this the UA's default ring nests inside the row's. */
 .vault-menu-forget:focus-visible,
 .vault-menu-pin:focus-visible,
 .vault-menu-item:focus-visible {
@@ -1054,7 +855,6 @@ body.is-resizing-terminal * {
   white-space: nowrap;
 }
 
-/* The vault already open reads as "you are here" without needing the tick. */
 .vault-menu-item[aria-current] {
   color: var(--text-normal);
 }
@@ -1071,9 +871,6 @@ body.is-resizing-terminal * {
   background: var(--background-modifier-border);
 }
 
-/* Flush with the rows above it, but on the border tint rather than the hover
-   tint — sharing hover's grey made the notice merge into whichever row the
-   pointer happened to be resting on. */
 .vault-menu-error {
   margin-top: 4px;
   padding: 6px 8px;
@@ -1084,20 +881,6 @@ body.is-resizing-terminal * {
   line-height: 1.35;
 }
 
-/* =============================================================
-   Tree Items
-   ============================================================= */
-/* SKIP THE ROWS NOBODY IS LOOKING AT.
-   A browsed-open vault is thousands of rows, and every one of them was being
-   laid out and painted — on each frame of the sidebar's 150ms width transition,
-   which is what made collapsing it feel broken (measured: ~210ms of blocked
-   main thread to move a drawer, with zero React work behind it).
-
-   `content-visibility: auto` lets the browser skip layout and paint for rows
-   outside the scroller, and the intrinsic size makes that free of side effects
-   here: rows are a FIXED height, so the scrollbar geometry it substitutes is
-   exactly what the real row would have produced. Ctrl+F still finds them —
-   `auto` keeps content searchable, unlike `hidden`. */
 .tree-item {
   content-visibility: auto;
   contain-intrinsic-size: auto var(--nav-item-height);
@@ -1109,15 +892,11 @@ body.is-resizing-terminal * {
   font-size: var(--nav-item-size);
   color: var(--text-muted);
   border-radius: 0;
-  /* Like tab titles, rows must change palette with their surrounding surface:
-     the old ink nearly disappears against the new theme during an 80ms fade. */
   user-select: none;
   position: relative;
 }
 
 .tree-item {
-  /* What the floated action buttons fade into. Restated by each row state
-     below, so the fade always matches the row it sits on. */
   --tree-row-bg: var(--background-secondary);
   --tree-row-base: var(--background-secondary);
 }
@@ -1138,13 +917,6 @@ body.is-resizing-terminal * {
   cursor: grab;
 }
 
-/* The Custom sort's insertion line: where a dragged row will land. Drawn by the
-   target row (utils/treeDrag.ts) and INSIDE its box, at its top or bottom edge,
-   never straddling the gap: .tree-item's content-visibility: auto implies paint
-   containment, which clips anything drawn outside the row. It starts at the
-   row's own indent (--tree-indent, set inline by TreeNode) so its left end says
-   which depth the drop lands at — one level deeper for first-child, the slot
-   under an open folder's header. Into a folder reuses .drag-over above. */
 .tree-item.drop-before::after,
 .tree-item.drop-after::after,
 .tree-item.drop-first-child::after {
@@ -1177,22 +949,6 @@ body.is-resizing-terminal * {
   outline-offset: -1px;
 }
 
-/* "The right-click menu open right now belongs to this row." The pointer has
-   usually left the row by the time the menu is up, so the hover tint has gone
-   and nothing else would say which row the menu's Rename and Move to Trash are
-   about.
-
-   Deliberately the HOVER tint and not is-active's: is-active means "this is the
-   file you have open", it is drawn on exactly one row, and borrowing it here
-   would make it lie about which file the editor is showing. This is the same
-   tint the row would be wearing if the pointer had stayed on it — which is
-   precisely the statement being made.
-
-   ABOVE is-active, and the order is the whole of the interaction between them:
-   the two are equally specific, so whichever comes second wins, and the open
-   file right-clicked must keep looking open rather than being demoted to the
-   weaker tint for as long as its menu is up. Nothing is lost — a row wearing
-   is-active is already the one row the eye is on. */
 .tree-item.is-context-target {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
@@ -1205,8 +961,6 @@ body.is-resizing-terminal * {
   --tree-row-bg: var(--background-modifier-active);
 }
 
-/* An active row that is ALSO hovered keeps the active background, so the fade
-   has to as well — otherwise the buttons sit on a patch of the wrong colour. */
 .tree-item.is-active:hover {
   --tree-row-bg: var(--background-modifier-active);
 }
@@ -1251,13 +1005,6 @@ body.is-resizing-terminal * {
   line-height: var(--nav-item-height);
 }
 
-/* OUT OF FLOW, not merely transparent.
-   These were `opacity: 0` and still took their full width in the row, so every
-   name was ellipsized around invisible buttons — and a folder has four of them
-   to a file's two, which is why folder names truncated hardest while the
-   sidebar sat half empty. Floated over the row's right edge instead: the label
-   gets the whole width, and the buttons appear on top of its tail on hover,
-   behind a fade so the text does not run into them. */
 .tree-item-actions {
   position: absolute;
   right: 8px;
@@ -1270,10 +1017,6 @@ body.is-resizing-terminal * {
   opacity: 0;
   transition: opacity 0.12s;
   flex-shrink: 0;
-  /* The row's own background, whichever state it is in — hovered, active, or
-     holding the context menu. `transparent` would let the name show through.
-     The hover/active tints are translucent in the light theme, so they are
-     laid over the opaque surface the row sits on — alone they let it through. */
   background:
     linear-gradient(to right, transparent, var(--tree-row-bg) 16px),
     linear-gradient(to right, transparent, var(--tree-row-base) 16px);
@@ -1309,31 +1052,16 @@ body.is-resizing-terminal * {
   background: var(--background-modifier-hover);
 }
 
-/* Nothing in the file tree ever disables one of these; the Trash panel's rows
-   do while an operation is in flight, and so does the sidebar's bin with no
-   vault open. A control that cannot act must not light up under the pointer —
-   the same `:not(:disabled)` treatment .context-menu-item gets. */
 .tree-action-btn:disabled {
   color: var(--text-faint);
   cursor: default;
 }
 
-/* TreeNode has been putting this class on its Move-to-Trash buttons with
-   nothing in this file to answer it — the modifier existed only in the markup.
-   Same red as .context-menu-item.is-danger, which already paints that very
-   command in the right-click menu, so the app keeps ONE colour for "this
-   destroys something" and the Trash panel's Delete-permanently button reuses
-   this rather than inventing a second danger class.
-
-   Hover only, never at rest: a row of icon buttons that is red before you reach
-   it reads as an error state, and the context menu's rows carry a label to
-   justify their standing colour where a bare 13px glyph does not. */
 .trash-btn:hover:not(:disabled) {
   color: #e06c75;
   background: rgba(224, 108, 117, 0.12);
 }
 
-/* Inline rename/create input */
 .tree-inline-input {
   height: var(--nav-item-height);
   padding-right: 8px;
@@ -1352,9 +1080,6 @@ body.is-resizing-terminal * {
   outline: none;
 }
 
-/* =============================================================
-   Vault Search (sidebar) — temporarily replaces the file tree
-   ============================================================= */
 .search-panel {
   display: flex;
   flex-direction: column;
@@ -1433,8 +1158,6 @@ body.is-resizing-terminal * {
   overflow-wrap: break-word;
 }
 
-/* Composes .tree-item (same row chrome as the tree it replaces); brighter
-   text than a plain tree row so file headers stand out from match lines. */
 .search-file-header {
   padding-left: 10px;
   color: var(--text-normal);
@@ -1489,7 +1212,6 @@ body.is-resizing-terminal * {
   color: var(--text-normal);
 }
 
-/* Keyboard focus on result rows mirrors the drag-over outline treatment. */
 .search-file-header:focus-visible,
 .search-match:focus-visible {
   background: var(--background-modifier-hover);
@@ -1497,8 +1219,6 @@ body.is-resizing-terminal * {
   outline-offset: -1px;
 }
 
-/* Matched text in result rows + the transient flash on the match the editor
-   just jumped to — same marker yellow as ==highlights==. */
 .search-highlight,
 .cm-reveal-highlight {
   background: var(--text-highlight-bg);
@@ -1509,9 +1229,6 @@ body.is-resizing-terminal * {
   color: var(--text-normal);
 }
 
-/* =============================================================
-   Editor Pane
-   ============================================================= */
 .editor-pane {
   display: flex;
   flex-direction: column;
@@ -1523,47 +1240,14 @@ body.is-resizing-terminal * {
 
 .view-header {
   display: flex;
-  /* Stretch, so each .tab-group fills the header's height and its boundary rule
-     can run the strip's full depth. */
   align-items: stretch;
-  /* Exactly this and no more: .editor-empty-overlay takes it as its top, and
-     .pdf-pane as its top plus one pane header. */
   height: var(--header-height);
-  /* Vertical only, and NO gap: the tab groups tile the header's full width with
-     the same flex math the columns below use, so any horizontal padding or gap
-     here would shift every group boundary off its divider. The insets the tabs
-     need live inside each group's own scroller instead.
-     The 5px top puts a group's buttons on the tab titles' line (22.5px down, as
-     measured), not on the strip's geometric centre — .tab-group-strip cancels it
-     with a matching negative margin and spans the full height. */
   padding: 5px 0 0 0;
   background: var(--tab-container-background);
-  /* The strip's bottom rule, as an INSET SHADOW rather than a border: a
-     child's background paints over it, so the active tab — which reaches the
-     header's bottom edge — breaks the rule exactly under itself and flows
-     into the page, as Obsidian's does. --tab-rule-color, not the outline: the
-     same line is drawn by .nav-tabs-header and .workspace-resize-handle, so it is
-     one colour across the seam and visible in BOTH themes. */
   box-shadow: inset 0 -1px 0 var(--tab-rule-color);
   flex-shrink: 0;
 }
 
-/* ── Tab groups (one per pane) ──
-   The strip is divided into one group per column, and a group tiles its
-   column's width exactly: the basis is 0 and TabBar overrides flex-GROW with
-   the SAME --pane-w-<i> the column below reads (see .editor-slot), so the two
-   are shared out by identical arithmetic and a divider drag — which writes
-   those variables straight onto .editor-pane with no React render — moves the
-   boundary and the rule in one frame. --pane-w-<i> can do that for both only
-   because .editor-pane holds .view-header and .editor-split alike.
-   Nothing here may take horizontal space outside the flex share: `box-sizing:
-   border-box` (the reset) is what keeps the strip's own padding inside the
-   group rather than widening it, and one stray pixel drifts every boundary
-   right of it.
-   .tab-group.is-focused exists in the markup and is deliberately unstyled: all
-   four reference images draw every group's active tab raised whether or not its
-   pane holds the focus, and the pane header's accent rule already says which
-   pane the keyboard means. */
 .tab-group {
   position: relative;
   display: flex;
@@ -1571,14 +1255,6 @@ body.is-resizing-terminal * {
   flex: 1 1 0;
 }
 
-/* The boundary between two groups, continuous with .editor-split-divider::before
-   below it: the divider's margin-left: -3px and ::before { left: 3px } cancel,
-   so its rule sits exactly at --pane-x-<i>, which is where a group's own left
-   edge is. Same token, so the two segments are one line.
-   It runs from the header's top (top: -5px undoes the 5px the group is inset
-   by) to the strip's foot. In dark that puts #363636 on the #333 strip, where
-   it is all but invisible — which is what the dark references show: there the
-   groups are told apart by the tabs, and the line appears below the strip. */
 .tab-group + .tab-group::before {
   content: '';
   position: absolute;
@@ -1590,14 +1266,6 @@ body.is-resizing-terminal * {
   pointer-events: none;
 }
 
-/* The + (new note here) and ⌄ (this pane's tabs) buttons. They follow the LAST
-   TAB rather than sitting at the group's right edge — all four reference images
-   put them there, and a `+` marooned 200px from the tabs it adds to reads as
-   belonging to the window rather than to this pane. `margin-right: auto` is
-   what leaves the slack behind them instead of in front, and the strip beside
-   them takes its width from its content (`flex: 0 1 auto`) rather than eating
-   the row. A tab still scrolls under neither: they are flex SIBLINGS of the
-   strip, outside its scroll box, so a full strip shrinks and they stay put. */
 .tab-group-actions {
   display: flex;
   align-items: center;
@@ -1608,8 +1276,6 @@ body.is-resizing-terminal * {
   padding: 0 4px 6px;
 }
 
-/* 24px square around a 16px icon, on the strip's own colours: a button sitting
-   ON the strip that wore --text-muted read #999 against the tabs' #b3b3b3. */
 .tab-group-btn {
   display: inline-flex;
   align-items: center;
@@ -1626,8 +1292,6 @@ body.is-resizing-terminal * {
   transition: color 0.15s, background 0.15s;
 }
 
-/* The strip's own hover token, not --background-modifier-hover: these sit on
-   the strip, and dark's #2a2d2e would be a pill DARKER than its #333. */
 .tab-group-btn:hover {
   color: var(--tab-text-color-active);
   background: var(--tab-background-hover);
@@ -1638,18 +1302,6 @@ body.is-resizing-terminal * {
   outline-offset: -1px;
 }
 
-/* ── The tabs of one group ──
-   Obsidian's tab strip: inactive tabs sit on the strip itself, split by short
-   dividers; the active one is a raised folder tab in the page's own colour
-   whose sides flare out into the strip's bottom rule. Every selector below is
-   scoped inside one strip, so the sibling combinators mean "within this pane". */
-
-/* The strip's left edge fades instead of guillotining a title, but ONLY once it
-   is actually scrolled: the first tab's active flare sits at x=12..18, inside
-   the strip's own left padding, so a permanent mask would eat the flare's
-   crisp curve while nothing is even clipped. A scroll-driven animation costs no
-   JS and no per-frame React; scroll() timelines are Chromium-only, which this
-   app is by design. */
 @property --tab-fade-start {
   syntax: '<length>';
   inherits: false;
@@ -1661,40 +1313,19 @@ body.is-resizing-terminal * {
 }
 
 .tab-group-strip {
-  /* An AUTO basis, so the strip is as wide as its tabs and no wider — which is
-     what puts `+` and `⌄` straight after the last one, as the references do.
-     It still shrinks (and then scrolls) when the tabs outgrow the group; the
-     slack, when there is any, sits behind the actions (their margin-right). */
   flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: flex-end;
   align-self: stretch;
-  margin-top: -5px;             /* cancels .view-header's top padding */
-  /* 10, not the first group's 18: both only have to clear the first active
-     tab's 6px flare, which lives outside its box and would otherwise be cut off
-     by the scroller. 18 is what the single strip always had and is the reading
-     the references show at the window's edge; a group that begins at a divider
-     gets the smaller inset so its first tab sits close to the boundary, as they
-     also show. Horizontal padding is safe HERE and nowhere above: it shifts the
-     tabs inside the group without moving the group's own edges. */
+  margin-top: -5px;
   padding: 0 8px 0 10px;
-  /* 32, not the padding beside it: TabBar's scrollIntoView({ inline:
-     'nearest' }) honours this, and anything it parks inside the 24px fade
-     arrives dimmed. 24 (the fade's end) + 6 (--tab-curve) + 2, so a tab scrolled
-     in from the left lands with its flare — the crisp curve the fade exists to
-     protect — clear of the ramp. The 2 is deliberate: at exactly 30 the flare's
-     leftmost column lands ON the ramp's last pixel, and a fractional scrollLeft
-     would put a sliver of it inside. */
   scroll-padding-inline: 32px 8px;
   overflow-x: auto;
   /* Load-bearing: it clips the active tab's 1px ring below y=40. The mask does
      not replace it. */
   overflow-y: hidden;
   scrollbar-width: none;
-  /* No background of its own — the strip's colour is .view-header's — so the
-     mask fades only the tabs and reveals --tab-container-background behind
-     them. */
   mask-image: linear-gradient(to right, transparent 0, #000 var(--tab-fade-start), #000 100%);
   animation: tab-strip-fade linear both;
   animation-timeline: scroll(self inline);
@@ -1702,86 +1333,34 @@ body.is-resizing-terminal * {
 }
 .tab-group-strip::-webkit-scrollbar { height: 0; }
 
-/* The window's own left edge, not a divider: 18px, which is what keeps the
-   first active tab's flare clear of the strip's start. */
 .tab-group:first-child .tab-group-strip {
   padding-left: 18px;
 }
 
 .tab {
   position: relative;
-  isolation: isolate;           /* keeps the hover pill's z-index: -1 inside the tab */
+  isolation: isolate;
   display: flex;
   align-items: center;
   gap: 4px;
-  /* 200px slots, measured, that do not grow into free space; crowded, they
-     shrink equally to an 80px floor, and past it the strip scrolls. 15px of
-     padding, the 20px .tab-trailing and the 4px gap are fixed, so the floor
-     leaves 41px of title — measured, 4 characters plus the ellipsis. Settled by
-     eye at 32 tabs in a ~1000px strip, where the old 120 fitted 8 and 64 fitted
-     15: at 64 the title box was 28px and six differently-named notes all read
-     "Ex…", while 80 fits 12 and separates names that differ in their first
-     letters. It does NOT separate prefixed ones — "MAT137 problem set" and
-     "MAT137 problem set 2" both read "MAT…" — but the widths that would (~100px,
-     6 characters) fit 9, which is barely the 8 this was raised to beat. The
-     tooltip is the answer for a crowded strip, not a wider floor. */
   flex: 0 1 var(--tab-width);
-  /* The same 200px again as a DEFINITE width, and THIS is the declaration the
-     slot above actually depends on: only a width feeds a flex container's
-     intrinsic sizing — a basis is invisible to it. The strip is content-sized
-     (`flex: 0 1 auto`, so +/⌄ follow the last tab), so with the basis alone
-     each shrinkable tab contributed only its title's max-content width, the
-     strip sized to Σ of those, and the tabs shrank equally into it: measured
-     in a 1176px pane, 110.8px at one tab and 116px at three, and a short title
-     beside a 200px-plus one left BOTH at 155.4px. The basis above is then
-     redundant (a definite width resolves `flex-basis: auto` to itself —
-     measured identical at 3/9/12/32 tabs and at the floor); it is kept because
-     it is what the slot comment above describes. Shrinking, the 80px floor and
-     the scroll past it are unchanged either way. */
   width: var(--tab-width);
-  /* An explicit floor, NOT `min-width: auto`: a flex item's automatic minimum
-     size here resolves to the chrome PLUS the title's whole max-content width —
-     measured 282px for a 29-character name, 125px for "Notes" — which makes the
-     one tab whose document failed to load three times its neighbours and pushes
-     two more out of the group. (Forcing .tab-title to `flex: 1 1 0` does not
-     change it.) */
   min-width: var(--tab-min-width);
   height: var(--tab-height);
-  /* The 4px bottom lifts the content's centre to 14.5px below the tab's top —
-     above its middle, where Obsidian's titles sit (measured against its
-     screenshots at 2x: titles, × and dividers land on the same device rows). */
   padding: 0 6px 4px 9px;
   border-radius: var(--tab-radius-active) var(--tab-radius-active) 0 0;
   background: transparent;
   color: var(--tab-text-color);
   font-size: 13px;
   font-weight: 400;
-  /* Not the app-wide `antialiased`: that thins the strokes, and the titles
-     measured 14% (light) / 25% (dark) lighter in ink than Obsidian's — with
-     `auto`, within 1% of both references. */
   -webkit-font-smoothing: auto;
   user-select: none;
   cursor: pointer;
-  /* No colour fade: the theme's background changes immediately, so the old
-     dark-theme title colour otherwise spends 80ms almost white on white. */
 }
 
-/* Inactive tabs: a rounded hover pill (::before) and the divider at the right
-   edge (::after). The active tab spends the same two pseudo-elements on its
-   flares, so these selectors and those stay disjoint. */
 .tab:not(.is-active)::before {
   content: '';
   position: absolute;
-  /* The tab's own box, exactly — same footprint and same radius as .tab.is-active.
-     It was inset 4px 2px 5px: a 24px pill in a 33px tab, sitting 1.5px below its
-     own title, 1px from the active tab's outward box-shadow ring on one side and
-     2-3px from the divider's `right: -1px` band on the other. Filling the tab
-     makes it read as a highlight and makes both shoulders 0 by construction.
-     The 1px at the bottom is the header's rule: .view-header draws it as an
-     inset shadow, which a child's background paints over, and at inset 0 the
-     pill tinted it #dadce0 -> #cbcdd0 in light — a visible step in the one line
-     the issue asks to be uniform. One row short of the foot is imperceptible
-     and leaves both shoulders 0 regardless. */
   inset: 0 0 1px;
   border-radius: var(--tab-radius-active) var(--tab-radius-active) 0 0;
   background: var(--tab-background-hover);
@@ -1796,50 +1375,28 @@ body.is-resizing-terminal * {
   content: '';
   position: absolute;
   right: -1px;
-  top: 5px;                     /* 12–32px down the strip, centred on the titles */
+  top: 5px;
   width: 1px;
   height: 20px;
   background: var(--tab-divider-color);
   pointer-events: none;
   transition: opacity 0.08s ease;
 }
-/* On a 2x screen Obsidian's divider sits on HALF pixels: centred on the
-   boundary between two tabs, 12.5–32.5px down. Chrome snaps a half-pixel
-   top/right to a whole CSS pixel (measured: 5.5px landed as 6), so the half is
-   a transform — and only where a device pixel exists for it, or a 1x screen
-   would get a blurred 2px line. */
 @media (resolution: 2dppx) {
   .tab:not(.is-active)::after { transform: translate(-0.5px, 0.5px); }
 }
-/* No divider beside the active tab or a hovered one — either side of it. The
-   last tab keeps its own. The drop-indicator variant covers a drag in flight,
-   when the caret sits between a tab and its neighbour.
-   The last selector's subject MUST be :not(.is-active): unqualified it also
-   matches the active tab when the tab to its right is hovered, and at (0,4,1)
-   it outranks .tab.is-active::after's (0,2,1) — zeroing the active tab's right
-   flare. The two above it are safe: they require the NEXT tab to be active,
-   which the subject cannot also be. */
 .tab:not(.is-active):hover::after,
 .tab:has(+ .tab.is-active)::after,
 .tab:has(+ .tab-drop-indicator + .tab.is-active)::after,
 .tab:not(.is-active):has(+ .tab:not(.is-active):hover)::after { opacity: 0; }
 
 .tab.is-active {
-  z-index: 1;                   /* its flares overlap both neighbours */
+  z-index: 1;
   background: var(--tab-background-active);
-  /* The outline sits OUTSIDE the tab, as Obsidian's does: the page-coloured
-     box is the same 200×33 in both themes, and light adds its 1px ring
-     around it (the strip's overflow clips the part below the foot). */
   box-shadow: 0 0 0 1px var(--tab-outline-color);
   color: var(--tab-text-color-active);
 }
 
-/* The flares: a concave quarter-ring either side of the active tab's foot,
-   curving its side outline into the strip's bottom rule. Each box also covers
-   the outline's 1px column for its height, so the outline turns rather than
-   running on straight to the bottom. Inside the ring shows the strip,
-   outside it the tab's colour; the half-pixel ramps between the stops keep the
-   curve from stair-stepping at 2x. */
 .tab.is-active::before,
 .tab.is-active::after {
   content: '';
@@ -1867,32 +1424,23 @@ body.is-resizing-terminal * {
 }
 
 .tab.is-dragging { opacity: 0.4; }
-/* Chrome keeps :hover on a drag's source, which drew the pill and × (and hid
-   the dirty dot) on the ghost left behind; an inactive one reads as at rest.
-   Specific enough to outrank the :hover rules. */
 .tab.is-dragging:not(.is-active):hover::before,
 .tab.is-dragging:not(.is-active):hover .tab-close { opacity: 0; }
 .tab.is-dragging:not(.is-active):hover .tab-dirty-dot { opacity: 0.7; }
 
-/* Only ever an unreadable document's warning sign (OpenTab.readError): a tab
-   carries no file-type icon, as Obsidian's don't. In the tab's own colour
-   rather than the danger red, which this app keeps for actions that destroy
-   something. */
 .tab-icon {
   display: inline-flex;
   flex-shrink: 0;
 }
 
 .tab-title {
-  flex: 1 1 auto;               /* also what pins the close button to the right edge */
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* 20px square, 6px in from the edge: the ×'s centre lands the measured 16px
-   from the tab's right edge. */
 .tab-trailing {
   position: relative;
   width: 20px;
@@ -1923,11 +1471,8 @@ body.is-resizing-terminal * {
   cursor: pointer;
   opacity: 0;
 }
-/* Full strength, in the inactive title's colour — as the reference draws it. */
 .tab:hover .tab-close,
 .tab.is-active .tab-close { opacity: 1; }
-/* Half a pixel down, onto the reference's rows at 2x (a margin would snap to
-   a whole one). A diagonal glyph is antialiased anyway, so 1x loses nothing. */
 .tab-close svg { transform: translateY(0.5px); }
 .tab-close:hover { color: var(--tab-text-color-active); background: var(--tab-background-hover); }
 .tab-close:focus-visible {
@@ -1935,12 +1480,9 @@ body.is-resizing-terminal * {
   outline: 1px solid var(--interactive-accent);
   outline-offset: -1px;
 }
-/* Hide the dirty dot whenever the close button is visible so they don't overlap. */
 .tab:hover .tab-dirty-dot,
 .tab.is-active .tab-dirty-dot { opacity: 0; }
 
-/* Zero net width (the negative margins), so the tabs hold still while one is
-   dragged; on the dividers' line, over whichever divider it lands on. */
 .tab-drop-indicator {
   position: relative;
   z-index: 2;
@@ -1951,31 +1493,9 @@ body.is-resizing-terminal * {
   margin: 0 -1px 8px;
   background: var(--interactive-accent);
   border-radius: 1px;
-  pointer-events: none;         /* it overlaps both neighbours by 1px; a drop on it lands on them */
+  pointer-events: none;
 }
 
-/* ── The panes on screen ──
-   Columns, left to right: the workspace holds one pane in the ordinary case and
-   up to five side by side (utils/tabPanes.ts), each showing the active tab of
-   the tabs IT owns — the group directly above it in the strip. They start out
-   even and the divider between any two of them can be dragged. Splitting is
-   deliberately only ever vertical, so a pane's rectangle is a plain share of
-   the width — which is also what lets the PDF panes, which float above rather
-   than inside a pane, place themselves with two percentages.
-
-   THOSE PERCENTAGES ARE CSS VARIABLES, set on .editor-pane by EditorPane and
-   written straight onto it, frame by frame, by a divider drag: --pane-w-<i> is
-   pane i's width and --pane-x-<i> its left edge, both unitless numbers in
-   percent. Everything that has to line up with a column reads them — the slots,
-   the dividers, the PDF panes floating over the slots AND the tab groups in the
-   strip above — so one write moves all of it at once, with no React render at
-   all. (The tab-drop highlight is the one column-aligned box that does NOT read
-   them: it exists only while a TAB is in flight, which a divider drag excludes,
-   so React's own numbers are never stale under it.)
-   They live on .editor-pane rather than here because the PDF panes and the tab
-   strip are its children, not the split's; all three boxes are the same width,
-   which is what makes one set of percentages serve them, and what any change to
-   the split's own box would quietly break. */
 .editor-split {
   position: relative;
   flex: 1;
@@ -1983,11 +1503,6 @@ body.is-resizing-terminal * {
   display: flex;
 }
 
-/* The basis stays 0 and EditorPane overrides flex-GROW with --pane-w-<i>, so
-   the width is shared out by the browser dividing by the sum of the factors:
-   the columns tile the container exactly whatever rounding left behind, which a
-   percentage basis would leave as a seam or an overflow. The fallback of 1 is
-   equal columns, i.e. what a tab nobody has resized has always looked like. */
 .editor-slot {
   position: relative;
   flex: 1 1 0;
@@ -1996,24 +1511,6 @@ body.is-resizing-terminal * {
   flex-direction: column;
 }
 
-/* The line between two panes, and the handle that moves it.
-
-   Drawn OVER the panes rather than as a border on one of them: a PDF pane sits
-   above its slot and would paint straight over an edge belonging to it — which
-   goes for the grab area just as much as for the line, hence an 8px strip with
-   the 1px rule drawn inside it.
-
-   Offset 3px into the left pane and 5px into the right rather than centred: the
-   left pane's scrollbar is 6px and ends exactly at this boundary, so a centred
-   strip would leave too little of it to grab the thumb by, while the right
-   pane's first pixels are its editor's padding. 3px also clears the left pane
-   header's close button, which stops 4px short of the edge.
-
-   The z-index is load-bearing in both directions: above the panes (5) so the
-   strip is grabbable over a PDF or a drawing and the press never reaches
-   CodeMirror, and below .editor-split-dropzone (20), which exists only while a
-   TAB is in flight and has to keep winning while it is — which is what makes
-   the two gestures mutually exclusive without either knowing about the other. */
 .editor-split-divider {
   position: absolute;
   top: 0;
@@ -2024,7 +1521,7 @@ body.is-resizing-terminal * {
   z-index: 6;
   cursor: col-resize;
   user-select: none;
-  touch-action: none;          /* a touch here resizes; it never scrolls */
+  touch-action: none;
 }
 
 .editor-split-divider::before {
@@ -2038,8 +1535,6 @@ body.is-resizing-terminal * {
   transition: background 0.15s ease, width 0.15s ease;
 }
 
-/* The same affordance as the sidebar's .workspace-resize-handle: whatever is
-   about to move goes accent under the pointer. */
 .editor-split-divider:hover::before,
 .editor-split-divider:focus-visible::before,
 .editor-split-divider.is-resizing::before {
@@ -2047,44 +1542,23 @@ body.is-resizing-terminal * {
   width: 2px;
 }
 
-/* The accent rule above IS the focus ring — a browser outline on an 8px
-   full-height strip reads as a rendering fault. */
 .editor-split-divider:focus-visible {
   outline: none;
 }
 
-/* For the duration of a drag only. The pointer is captured by the handle but
-   travels over .cm-content and the PDF panes, which set cursors of their own,
-   and a descendant's cursor beats an ancestor's — so this has to reach
-   everything. */
 body.is-resizing-panes,
 body.is-resizing-panes * {
   cursor: col-resize !important;
   user-select: none !important;
 }
 
-/* ── The pane header ──
-   [← →] [centred name + dirty dot] [read/edit] [⋯], one over every pane and
-   drawn at one pane exactly as at five: the document actions live here now, not
-   in the strip, so a header that came and went with a split would take them
-   with it.
-   NO bottom rule. It used to carry one, but it now runs under every pane at all
-   times, a second full-width line 32px below the strip's own — and all four
-   reference images draw none (measured down their empty columns: a constant
-   #ffffff in light and #1c1c1c in dark from the strip's foot into the page).
-   The header wears the page's background and simply belongs to it; the accent
-   rule below is the only line, and only where it says something. */
 .editor-slot-header {
   display: flex;
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  /* A pane dragged narrow — or one a shrinking window left narrow — clips its
-     own chrome rather than painting it over the pane beside it. */
   overflow: hidden;
   height: var(--pane-header-height);
-  /* Symmetric: both ends now hold a button group, and an uneven inset put the
-     centred title off the pane's own midline. */
   padding: 0 6px;
   background: var(--background-primary);
   color: var(--text-muted);
@@ -2092,37 +1566,23 @@ body.is-resizing-panes * {
   user-select: none;
 }
 
-/* Which pane ⌘E, ⌘S and a ⋯ menu mean — worth saying only when there is more
-   than one pane to mean. At a single pane the accent line is a permanent rule
-   under the header that answers a question nobody can ask. */
 .editor-split.is-split .editor-slot.is-focused .editor-slot-header {
   color: var(--text-normal);
   box-shadow: inset 0 -2px 0 var(--interactive-accent);
 }
 
-/* The two fixed ends the centred title is measured against. They must be the
-   SAME width or `flex: 1` centres the title in what is left rather than on the
-   pane's midline: the nav is always two buttons, but the actions end is one on
-   a drawing, a notebook, this guide and an unreadable tab, which put the name
-   13px (measured) right of centre. So the actions end reserves both slots and
-   fills from the right. */
 .editor-slot-nav,
 .editor-slot-actions {
   display: flex;
   gap: 2px;
   flex-shrink: 0;
-  min-width: 50px;                /* 2 × 24px button + the 2px gap */
+  min-width: 50px;
 }
 
 .editor-slot-actions {
   justify-content: flex-end;
 }
 
-/* Centred between those ends rather than beside the nav arrows: a title that
-   started at the left edge read as a caption on the back button.
-   The 10px either side is the dirty dot's berth — see .editor-slot-dot. It is
-   symmetric so that reserving it does not push the name off the pane's midline,
-   and the ellipsis stops at the content edge, clear of the dot. */
 .editor-slot-title {
   flex: 1;
   min-width: 0;
@@ -2133,13 +1593,6 @@ body.is-resizing-panes * {
   white-space: nowrap;
 }
 
-/* Rendered only while the document is dirty, which for an autosaving editor
-   means it appears on a keystroke and goes 2s later — so in the flex line it
-   would widen the row by its 6px plus the 4px gap and slide the CENTRED title
-   5px sideways and back, twice a minute, under the eye of whoever is typing.
-   The -10px cancels exactly that (6 + 4 - 10 = 0): the dot contributes no width
-   at all and draws inside .editor-slot-title's reserved 10px right padding, so
-   the name and the buttons hold still whether it is there or not. */
 .editor-slot-dot {
   width: 6px;
   height: 6px;
@@ -2150,11 +1603,6 @@ body.is-resizing-panes * {
   opacity: 0.7;
 }
 
-/* The page's colours, not the strip's: this row sits on the document. NOT
-   hover-revealed any more — back, forward, read/edit and ⋯ are the ONLY way to
-   reach those actions now that the strip carries none of them, and chrome you
-   have to find by hovering is chrome that is not there. 24px around a 15px
-   icon, which is what sets --pane-header-height (24 + 4 + 4). */
 .editor-slot-action {
   display: inline-flex;
   align-items: center;
@@ -2171,8 +1619,6 @@ body.is-resizing-panes * {
   transition: background 0.12s, color 0.12s;
 }
 
-/* :not(:disabled), because Chrome still matches :hover on a disabled button —
-   a greyed-out back arrow lit up under the pointer without it. */
 .editor-slot-action:not(:disabled):hover {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
@@ -2183,17 +1629,12 @@ body.is-resizing-panes * {
   outline-offset: -1px;
 }
 
-/* The ends of the pane's own history. Dimmed rather than hidden: the pair is
-   the reader's landmark for where back and forward are, and an arrow that
-   vanished at the end of the history moved the other one. */
 .editor-slot-action:disabled {
   opacity: 0.35;
   cursor: default;
   background: transparent;
 }
 
-/* The pane's contents, and the positioning context for whatever surface draws
-   them (CodeMirror, or a drawing canvas over it). */
 .editor-slot-body {
   position: relative;
   flex: 1;
@@ -2207,19 +1648,12 @@ body.is-resizing-panes * {
   display: flex;
 }
 
-/* ── Merging a tab into this one ──
-   A layer over the panes, present ONLY while a tab is actually being dragged
-   (see EditorPane): CodeMirror handles `drop` itself and would insert the
-   dragged text, and a PDF pane would swallow it outright. */
 .editor-split-dropzone {
   position: absolute;
   inset: 0;
   z-index: 20;
 }
 
-/* Where the dragged tab will be slotted — the half of the pane it would land
-   beside. Same purple as the file tree's drag-over outline, drawn heavier
-   because it lands over a document rather than a 28px row. */
 .editor-split-drop-target {
   position: absolute;
   top: 0;
@@ -2231,8 +1665,6 @@ body.is-resizing-panes * {
   border-radius: var(--radius-m);
 }
 
-/* Dragged onto a tab that is already full. Saying so beats a drop that quietly
-   does nothing, which reads as a broken feature. */
 .editor-split-drop-note {
   position: absolute;
   left: 50%;
@@ -2248,23 +1680,6 @@ body.is-resizing-panes * {
   pointer-events: none;
 }
 
-/* ── Status bar ──
-   A pill floating at the bottom right of .editor-pane, over whichever pane
-   reaches it: backlinks, word and character counts and the save status, all
-   about the FOCUSED pane's document. It is not a bar across the window, as
-   Obsidian's is — with panes it would have to pick a column to sit in, and it
-   already picks one by being about the focused document.
-
-   z-index 7, between the panes' 5 (a PDF or a drawing would otherwise
-   paint straight over it) and .editor-split-dropzone's 20, which exists only
-   while a tab is in flight and has to keep winning while it is. The divider at
-   6 stays grabbable where the pill overlaps it because the pill takes no
-   pointer events.
-
-   pointer-events: none is load-bearing: the pill sits over the last lines of
-   every document, and a click or a drag-select that landed on it instead of on
-   the note would be silently swallowed. Only the one control inside takes them
-   back. */
 .app-update-notice {
   position: fixed;
   z-index: 1000;
@@ -2292,13 +1707,10 @@ body.is-resizing-panes * {
 
 .app-update-notice button:hover { color: var(--text-accent); }
 
-/* The notice column: save failures stacked above the update notice, same card. Never focused (utils/saveNotices.ts);
-   only the cards take the pointer, so the column's empty corners never swallow a click on the page under them. */
 .app-notices {
   position: fixed;
   z-index: 1000;
   right: 20px;
-  /* Clear of the status pill (bottom 10px, ~28px tall) by the same 10px it keeps from the window edge. */
   bottom: 48px;
   display: flex;
   flex-direction: column;
@@ -2342,10 +1754,6 @@ body.is-resizing-panes * {
   gap: 12px;
   padding: 4px 10px;
   border-radius: var(--radius-m);
-  /* A raised surface, NOT --background-primary: the pill floats on the page and
-     one in the page's own colour is a border with nothing inside it. Measured
-     off the reference images: #f6f6f6 on light's #ffffff and #282828 on dark's
-     #1c1c1c — which is --background-primary-alt in both, within 4/255. */
   background: var(--background-primary-alt);
   border: 1px solid var(--background-modifier-border);
   color: var(--text-muted);
@@ -2353,16 +1761,6 @@ body.is-resizing-panes * {
   pointer-events: none;
 }
 
-/* Lifted clear of the bottom-right chrome when the rightmost pane is a PDF, a
-   notebook or a whiteboard (EditorPane's `liftStatus`). Two stacks sit there:
-   a reader's .pdf-viewer-controls, top 49px up (16px + 33px), and a board's
-   bottom row (zoom and minimap toggles), top 54px up (8px inset + 46px). 62px
-   clears the higher of the two by 8px. A visible whiteboard minimap stands
-   above that row, 62px up and 142px tall (140px + its border), so the notice
-   goes above it too, with the same 8px gap. Only the minimap-open case needs
-   :has(): it is the one board pill whose height varies. It turns up there only
-   for a transient message ("Saved", a trash notice) or while a markdown pane
-   to the left is focused. */
 .status-bar.is-lifted {
   right: 16px;
   bottom: 62px;
@@ -2372,7 +1770,6 @@ body.is-resizing-panes * {
   bottom: 212px;
 }
 
-/* A visible board whose zoom controls stack over its tool bar (ViewerHost) raises the corner by that row. */
 .editor-pane:has(.board-viewer-host[data-chrome-stacked]:not(.canvas-pane-hidden *)) .status-bar.is-lifted {
   bottom: 120px;
 }
@@ -2387,9 +1784,6 @@ body.is-resizing-panes * {
   white-space: nowrap;
 }
 
-/* The backlinks count: the one thing in the pill you can press, and what
-   BacklinksPanel anchors its popover to. The negative margin lets its hover pill
-   reach past the text without adding to the pill's own height. */
 .status-bar-btn {
   pointer-events: auto;
   margin: -2px -4px;
@@ -2418,87 +1812,36 @@ body.is-resizing-panes * {
   outline-offset: -1px;
 }
 
-/* Last in the pill, and the only item whose text changes on its own. A reserved
-   slot: it reads 'Saved' after EVERY autosave (2s, App.tsx), so without one the
-   pill — which is right-anchored — would grow and shrink under the reader's eye
-   twice a minute while they type. 40px holds 'Saved' (31.98px at 11px, plus
-   room for a wider chosen font) so the common case never reflows. A min-width,
-   not a width: the rare long strings ('Put back as “…”', 'Moving “…” to
-   Trash…') still show whole, and they accompany a tree change the reader is
-   already watching, once.
-   After .status-bar-item, which it also carries, so its accent colour wins. */
 .save-status {
   min-width: 40px;
   font-size: 11px;
   color: var(--text-accent);
 }
 
-/* CodeMirror 6 container */
 .view-content .cm-editor {
   height: 100%;
   width: 100%;
   outline: none;
-  /* The room a collapsible heading's arrow needs in the left margin (see
-     "Collapsible sections"): the 20px button, its 4px gap to the text, and
-     8px for the split divider's grab strip, which reaches 5px into the pane to
-     its right — at 24px it covered the button's left edge and a click there
-     grabbed the divider (measured). */
   --heading-fold-gutter: 32px;
 }
 
 .view-content .cm-editor .cm-scroller {
   overflow: auto;
-  /* The query container the bottom buffer below measures (`cqh`). `size`, not
-     `inline-size`, because the buffer is a share of the pane's HEIGHT. Safe:
-     the scroller's height never comes from its content (100% of .cm-editor,
-     itself 100% of the absolutely-inset .view-content), and nothing
-     `position: fixed` lives inside it — CodeMirror's tooltips and the ⌘F panel
-     are .cm-editor children, siblings of this scroller. */
   container-type: size;
 }
 
-/* The scroller is focused by the app, to receive Space and PageDown after a
-   tab click (EditorPane's handKeyboardToNote) or once ⌘F's bar closes in
-   Reading mode (noteSearch's keyboardAfterSearchClose) — it is not a control,
-   and not Tab-reachable (`tabIndex -1`), so a ring round the whole note would
-   only be noise. */
 .view-content .cm-editor .cm-scroller:focus {
   outline: none;
 }
 
-/* Readable Line Length constraints */
 .view-content .cm-editor .cm-content {
   max-width: 900px;
-  /* Restrict max readable length */
   margin: 0 auto;
-  /* Center it */
-  /* Never narrower than the heading-fold arrow that lives in this margin — in
-     BOTH modes, so ⌘E never shifts the text sideways. A 0% margin setting
-     therefore means "the arrow's width", and a narrow split cannot clip it. */
   padding-left: max(var(--editor-padding, 6%), var(--heading-fold-gutter));
-  /* Responsive padding to prevent edge collision */
   padding-right: var(--editor-padding, 6%);
-  /* Issue #32's page-less-document buffer: half the pane's visible height
-     below the last line, so the end of a note can be read at mid-screen
-     instead of against the bottom edge. `cqh` (the scroller above), not `vh`:
-     a split or the open ⌘F bar shortens the scroller, and each gets half of
-     ITS height. 24px floor = cmTheme's own bottom padding, for a pane too short
-     for half to be more. Whole px because CodeMirror `parseInt`s this computed
-     padding in every measure (viewState.measure), so a fraction would leave
-     its height map off by it. A note shorter than the buffer still doesn't
-     scroll: the base theme's `min-height: 100%` + `border-box` makes the
-     content max(pane, text + padding) tall. Chosen over `scrollPastEnd()`,
-     which pads by the editor's height minus one line — every two-line note
-     scrolls and the last line can reach the top edge over an empty pane. */
   padding-bottom: max(24px, round(down, 50cqh, 1px));
 }
 
-/* A code pane is not prose: no 900px measure, no centring, no percentage
-   margins. Code starts hard against its line numbers and runs as wide as the
-   pane, because an 80-column line and a 200-column one are both normal and
-   wrapping is off — the scroller takes a long line sideways, as every editor
-   does. The bottom buffer above is kept: the last line of a file wants to be
-   readable at mid-screen just as the last line of a note does. */
 .view-content.is-code .cm-editor .cm-content {
   max-width: none;
   margin: 0;
@@ -2506,7 +1849,6 @@ body.is-resizing-panes * {
   padding-right: 24px;
 }
 
-/* ── Settings Panel Overlay ── */
 .settings-overlay {
   position: fixed;
   inset: 0;
@@ -2518,9 +1860,6 @@ body.is-resizing-panes * {
   backdrop-filter: blur(4px);
 }
 
-/* ── Confirmation dialog ──
-   Same modal treatment as Settings, sized for one question. Used where an
-   action destroys something the user cannot see (an embedded image's file). */
 .confirm-overlay {
   position: fixed;
   inset: 0;
@@ -2582,12 +1921,6 @@ body.is-resizing-panes * {
   word-break: break-word;
 }
 
-/* The chip has to read as a chip ON THE DIALOG's surface, which is
-   --background-primary-alt — and in the light theme --background-secondary is
-   the very same colour, so the background was invisible and a folder name sat
-   there as bare monospace with unexplained padding either side. The border tint
-   is the one that contrasts in both themes; it is what the tab and search-result
-   chips already use. */
 .confirm-body code {
   padding: 1px 5px;
   border-radius: 3px;
@@ -2596,12 +1929,6 @@ body.is-resizing-panes * {
   font-size: 0.92em;
 }
 
-/* ── The typed answer ──
-   Present only when the question has one (ConfirmDialog's `input`), between the
-   body and the actions. This is the app's whole replacement for prompt(): the
-   ⌘N / + name, the renames — so the field has to say why a name is refused
-   rather than failing silently the way prompt() did, which is what the error
-   line below is for. */
 .confirm-input-row {
   display: flex;
   flex-direction: column;
@@ -2619,10 +1946,6 @@ body.is-resizing-panes * {
   padding: 7px 10px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
-  /* --background-primary on the dialog's --background-primary-alt: a field has
-     to read as a well cut INTO the dialog, and --background-secondary is the
-     very same colour as the dialog in light (the trap .confirm-body code fell
-     into). */
   background: var(--background-primary);
   color: var(--text-normal);
   font-family: var(--font-text);
@@ -2634,17 +1957,12 @@ body.is-resizing-panes * {
   color: var(--text-faint);
 }
 
-/* A ring that grows the border rather than an outline offset outside it: the
-   field is full-width and 2px of outline would meet the dialog's own padding. */
 .confirm-input:focus {
   outline: none;
   border-color: var(--interactive-accent);
   box-shadow: 0 0 0 1px var(--interactive-accent);
 }
 
-/* #e06c75, the app's one red for TEXT and outlines (.context-menu-item.is-danger,
-   .trash-btn:hover) — not .confirm-btn-danger's #c0392b, which is a fill with
-   white on it and is the wrong weight for a 1px border in the dark theme. */
 .confirm-input[aria-invalid="true"] {
   border-color: #e06c75;
 }
@@ -2653,9 +1971,6 @@ body.is-resizing-panes * {
   box-shadow: 0 0 0 1px #e06c75;
 }
 
-/* The reason the confirm button beside it is disabled. Always rendered when
-   there IS a reason and never as a placeholder: a line of empty space reserved
-   under the field would push the actions around on every keystroke. */
 .confirm-input-error {
   font-size: 12px;
   line-height: 1.4;
@@ -2701,11 +2016,6 @@ body.is-resizing-panes * {
   outline-offset: 2px;
 }
 
-/* Obsidian-style modal: wide, capped to the viewport, header pinned and the
-   body scrolling — so however many settings accrue, nothing ever clips. */
-/* Focused as a whole on open (tabIndex -1) so the dialog holds the keyboard;
-   the container is not a control, so no ring — opened from the keyboard it drew
-   Chrome's default blue one around the whole panel. The Trash panel likewise. */
 .settings-panel:focus,
 .trash-panel:focus {
   outline: none;
@@ -2782,8 +2092,6 @@ body.is-resizing-panes * {
   color: var(--text-normal);
 }
 
-/* One setting per row: name + description on the left, control on the right,
-   hairlines between rows (Obsidian's settings layout). */
 .setting-row {
   display: flex;
   align-items: center;
@@ -2861,9 +2169,6 @@ body.is-resizing-panes * {
   border-radius: 10px;
 }
 
-/* A setting's current STATE, as against `.settings-value`'s number: no chip and
-   no accent, because it sits beside the control that changes it and only one of
-   the two should look pressable. */
 .settings-status {
   font-size: 12px;
   color: var(--text-muted);
@@ -2895,7 +2200,6 @@ body.is-resizing-panes * {
   transform: scale(1.2);
 }
 
-/* Segmented control (Caret Style) */
 .settings-segmented {
   display: flex;
   gap: 4px;
@@ -2927,7 +2231,6 @@ body.is-resizing-panes * {
   background: var(--interactive-accent);
 }
 
-/* Toggle switch (Smooth Caret) */
 .settings-toggle {
   position: relative;
   width: 38px;
@@ -2978,8 +2281,6 @@ body.is-resizing-panes * {
   border-color: var(--interactive-accent);
 }
 
-/* Native color input, restyled into a wide swatch that matches the text
-   inputs. The nested pseudo-elements are what actually paint the color. */
 .settings-color-input {
   width: 64px;
   height: 32px;
@@ -3053,17 +2354,6 @@ body.is-resizing-panes * {
   color: #fff;
 }
 
-/* =============================================================
-   Trash panel (components/TrashPanel.tsx)
-   Everything in every folder's .Garbage, in one modal: a list on the left, a
-   read-only preview on the right.
-   ============================================================= */
-
-/* .settings-overlay, MINUS the blur — and that omission is the requirement, not
-   an oversight to be tidied back into line with Settings. The point of this
-   panel is deciding whether a file is the one you meant to lose, and the vault
-   behind it is the only context for that: dimmed so the modal reads as raised,
-   still legible so the tree row you deleted from is still there. */
 .trash-overlay {
   position: fixed;
   inset: 0;
@@ -3078,16 +2368,6 @@ body.is-resizing-panes * {
   justify-content: center;
 }
 
-/* .settings-panel's surface, but a DEFINITE height rather than a max: the list
-   and the preview scroll independently, and `max-height` would let the box
-   shrink to whichever pane happened to be shorter — so the panel would resize
-   under the pointer as rows are put back or deleted.
-
-   No light-theme override, unlike .vault-menu and .context-menu. Those two are
-   raised over the sidebar, where --background-primary-alt IS the sidebar's own
-   #f2f3f5 and the surface disappears. This floats centred over the editor and
-   over a 50%-black scrim, so the same value reads as a lit sheet in both
-   themes. Adding one here would only make it brighter than it needs to be. */
 .trash-panel {
   width: min(900px, 92vw);
   height: min(78vh, 680px);
@@ -3115,20 +2395,12 @@ body.is-resizing-panes * {
   color: var(--text-normal);
 }
 
-/* The × is .settings-close-btn itself, not a clone of it. */
-
 .trash-body {
   flex: 1;
   min-height: 0;
   display: flex;
 }
 
-/* The list gets the larger half. Measured at 42%: a row's three fixed items —
-   the 22px icon, the origin folder, and a timestamp reserving 62px of clearance
-   for the hover buttons — left a 37-character name 32px to render in at a
-   1400px window, and nothing at all below 800px, where the row then overflowed
-   its own pane. The name is what the reader is scanning for; the preview pane
-   answers one question and can afford the narrower side. */
 .trash-list-pane {
   flex: 0 0 58%;
   min-width: 0;
@@ -3159,15 +2431,6 @@ body.is-resizing-panes * {
   padding: 14px 16px;
 }
 
-/* Rows compose .tree-item, so they arrive with its fixed height and its
-   content-visibility box — a vault that has been used for a year can have
-   thousands of these too.
-
-   RESTATING --tree-row-bg IS THE LOAD-BEARING LINE. .tree-item-actions fades
-   into `var(--tree-row-bg)`, whose default is --background-secondary: the
-   SIDEBAR's colour. Left alone, the hover buttons in this panel would sit on a
-   strip of the file tree's grey over the modal's lighter surface. Each state
-   below restates it for the same reason the tree's own states do. */
 .trash-row {
   --tree-row-bg: var(--background-primary-alt);
   --tree-row-base: var(--background-primary-alt);
@@ -3180,25 +2443,16 @@ body.is-resizing-panes * {
   --tree-row-bg: var(--background-modifier-hover);
 }
 
-/* After :hover, so the row being previewed keeps saying so while the pointer is
-   over it — the same ordering .tree-item.is-active relies on. */
 .trash-row.is-selected {
   background: var(--background-modifier-active);
   --tree-row-bg: var(--background-modifier-active);
 }
 
-/* Keyboard focus on a row, the same treatment SearchPanel's result rows get —
-   these are `role="button"` `tabIndex={0}` rows and the whole panel is
-   keyboard-reachable, so the UA's own ring on a row that paints its own
-   backgrounds is not enough to see. */
 .trash-row:focus-visible {
   outline: 1px solid var(--interactive-accent);
   outline-offset: -1px;
 }
 
-/* Takes the row's spare width, and yields it LAST. Without the grow it sat at
-   its content width and was the only item that could shrink, so every shortfall
-   came out of the one column that identifies the file. */
 .trash-row-name {
   flex: 1 1 auto;
   min-width: 0;
@@ -3207,10 +2461,6 @@ body.is-resizing-panes * {
   white-space: nowrap;
 }
 
-/* Where it was deleted from. Capped AND allowed to shrink: the cap stops a deep
-   origin folder from eating the name at a comfortable width, and the shrink is
-   what keeps the row inside its pane in a narrow window instead of overflowing
-   it — an ellipsized folder is still a recognizable one. */
 .trash-row-dir {
   margin-left: 6px;
   max-width: 40%;
@@ -3222,17 +2472,7 @@ body.is-resizing-panes * {
   color: var(--text-faint);
 }
 
-/* Right-aligned, but held 62px clear of the row's right edge, and that number
-   is measured off .tree-item-actions rather than chosen: the actions float at
-   `right: 8px` — the row's own padding — over two 22px buttons with a 2px gap
-   (46px), behind a 16px fade. 62px is where that gradient is still fully
-   transparent, so the timestamp is untouched on hover instead of dissolving
-   under the buttons that appear on top of it. Re-derive it if the row ever
-   gains or loses an action. */
 .trash-row-time {
-  /* A real gap, not `margin-left: auto`: the name grows into the row's spare
-     width now, so there is none left for an auto margin to take and the folder
-     and the date rendered flush against each other. */
   margin-left: 10px;
   padding-right: 62px;
   flex-shrink: 0;
@@ -3259,7 +2499,6 @@ body.is-resizing-panes * {
   text-decoration: underline;
 }
 
-/* The house empty state, same as .search-hint. */
 .trash-empty {
   margin: 0;
   padding: 10px 12px;
@@ -3267,18 +2506,12 @@ body.is-resizing-panes * {
   color: var(--text-faint);
 }
 
-/* The same line inside the preview pane, which already carries the padding —
-   so this one takes none. Sharing .trash-empty's `padding: 10px 12px` indented
-   every preview line 12px past the title above it and turned the title's 8px
-   gap into 18px. */
 .trash-preview-empty {
   margin: 0;
   font-size: 12px;
   color: var(--text-faint);
 }
 
-/* "No preview for this kind of file." and the size-and-date line under it are
-   two of these in a row, and with the padding gone they would be flush. */
 .trash-preview-empty + .trash-preview-empty {
   margin-top: 4px;
 }
@@ -3292,9 +2525,6 @@ body.is-resizing-panes * {
   color: var(--text-muted);
 }
 
-/* Deliberately monospace and pre-wrap: this is the file as it is ON DISK, not a
-   rendered note. Nothing here is an editor, so markdown must not look like one.
-   overflow-wrap is what keeps a minified line or a long URL inside the pane. */
 .trash-preview-text {
   margin: 0;
   white-space: pre-wrap;
@@ -3318,10 +2548,6 @@ body.is-resizing-panes * {
   border-top: 1px solid var(--background-modifier-border);
 }
 
-/* .confirm-btn's shape wearing the app's one destructive red (.trash-btn,
-   .context-menu-item.is-danger). The only control in the app that deletes
-   without a copy surviving somewhere, so the red is at rest and not only on
-   hover — unlike the row buttons, this one is read before it is reached. */
 .trash-empty-btn {
   padding: 7px 16px;
   border: 1px solid var(--background-modifier-border);
@@ -3344,9 +2570,6 @@ body.is-resizing-panes * {
   outline-offset: 2px;
 }
 
-/* An empty bin cannot be emptied. The :hover half is not redundant — a disabled
-   button still matches :hover, so without it the rule above would light up a
-   red box under a pointer that cannot do anything with it. */
 .trash-empty-btn:disabled,
 .trash-empty-btn:disabled:hover {
   background: var(--background-secondary);
@@ -3355,7 +2578,6 @@ body.is-resizing-panes * {
   cursor: default;
 }
 
-/* ── Empty state ── */
 .editor-empty {
   flex: 1;
   display: flex;
@@ -3378,12 +2600,6 @@ body.is-resizing-panes * {
   color: var(--text-faint);
 }
 
-/* No-file overlay — shown when no tab is open. Still an overlay, but no longer
-   because there is a view underneath to protect: with no tab open there are no
-   panes at all. The overlay-not-unmount rule now applies WITHIN a pane
-   (.canvas-pane, .pdf-pane over their slot), not to the editor as a whole.
-   The strip's height alone, unlike .pdf-pane's: with no panes there is no pane
-   header under the strip for this to clear. */
 .editor-empty-overlay {
   position: absolute;
   top: var(--header-height);
@@ -3397,7 +2613,6 @@ body.is-resizing-panes * {
   z-index: 5;
 }
 
-/* The loading placeholder fills its pane while the native board chunk arrives. */
 .drawing-pane {
   position: absolute;
   inset: 0;
@@ -3407,14 +2622,6 @@ body.is-resizing-panes * {
 
 
 
-/* A PDF pane floats over the slot its document occupies rather than living
-   inside it: one pane exists per OPEN PDF tab and the ones that are off screen
-   are hidden, not unmounted, so their document and reading position survive
-   tab switches — which a pane that only existed while its tab was shown could
-   never do. Its column arrives as an inline left/width pair (see PdfPane); the
-   offset below the strip and the pane header is here, because those heights are
-   the stylesheet's to know. One offset, not two: every pane wears a header now,
-   at one pane as at five. */
 .pdf-pane {
   position: absolute;
   top: calc(var(--header-height) + var(--pane-header-height));
@@ -3429,12 +2636,6 @@ body.is-resizing-panes * {
   visibility: hidden;
 }
 
-/* A whiteboard's and a notebook's float, which is the PDF pane's box exactly:
-   one per open canvas tab, standing over the column its document occupies,
-   hidden rather than unmounted when its tab goes to the back. Separate rules
-   rather than a shared class so that neither surface's look is hostage to the
-   other's — the BEHAVIOUR they share lives in components/floatingSlot.ts, where
-   sharing it is worth something. */
 .canvas-pane {
   position: absolute;
   top: calc(var(--header-height) + var(--pane-header-height));
@@ -3451,18 +2652,12 @@ body.is-resizing-panes * {
   visibility: hidden;
 }
 
-/* The box the canvas fills. `.drawing-pane` is `position: absolute; inset: 0`,
-   so it needs a positioned parent with a height of its own — and the wrapper
-   always exists, bar or no bar, so raising a DiskBar never remounts the board. */
 .canvas-pane-body {
   position: relative;
   flex: 1 1 0;
   min-height: 0;
 }
 
-/* A column, so a DiskBar above the body takes its own height and the viewer
-   below it keeps the rest. The body always exists (see PdfPane), so a bar
-   coming and going never remounts the viewer. */
 .pdf-pane {
   display: flex;
   flex-direction: column;
@@ -3474,10 +2669,6 @@ body.is-resizing-panes * {
   min-height: 0;
 }
 
-/* The turned picture a PDF shows from the click until the turned file is drawn
-   sharp (utils/pdfRotationStandIn.ts). Over the page view and its overlays (the
-   view's "Updating" cover is z 2), under the reader's controls (z 6), find bar
-   and notices, which keep working: another press turns it further. */
 .pdf-rotation-standin {
   position: absolute;
   z-index: 4;
@@ -3485,11 +2676,6 @@ body.is-resizing-panes * {
 }
 .pdf-rotation-standin canvas { display: block; width: 100%; height: 100%; }
 
-/* ── DiskBar: a document's file changed or vanished on disk ──
-   Between a pane's header and its body (inside a PDF's pane, which floats over
-   the slot). A strip in the app's own notice style rather than a dialog: the
-   reader can read on, and nothing autosaves the tab while it is up. Wraps its
-   buttons under the message when the pane is narrow. */
 .disk-bar {
   display: flex;
   flex-wrap: wrap;
@@ -3569,8 +2755,6 @@ body.is-resizing-panes * {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Stacks when the message carries an action (the notebook hand-off); a
-     single-line message is unaffected, since one child centres either way. */
   flex-direction: column;
   gap: 10px;
   color: var(--text-muted);
@@ -3579,19 +2763,15 @@ body.is-resizing-panes * {
   text-align: center;
 }
 
-/* A sentence with an action under it keeps a reading measure: Annotate's refusals ran the full width of a wide pane. */
 .pdf-pane-message > span {
   max-width: 62ch;
 }
 
-/* A canvas pane's own wait or failure, before its board exists: centred in the body like a PDF's. */
 .canvas-pane-message {
   position: absolute;
   inset: 0;
 }
 
-/* A wait label shows only once the wait has lasted: a PDF that fills in within a few hundred ms (most do, measured
-   ~0.1-0.3 s from the click) flashed "Loading PDF…" for one or two frames. Still in the DOM for assistive tech. */
 .pdf-pane-message.is-waiting,
 .canvas-pane-message.is-waiting {
   animation: pdf-pane-waiting 160ms ease-out 400ms both;
@@ -3606,7 +2786,6 @@ body.is-resizing-panes * {
 
 .pdf-tiled-paper { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .pdf-tiled-paper > div { position: absolute; background: #fff; }
-/* Inverted pages: white maps to black under the page inversion (platform/render/colour.ts). */
 .pdf-tiled-paper.is-inverted > div { background: #000; }
 
 .pdf-pane-action {
@@ -3633,27 +2812,15 @@ body.is-resizing-panes * {
   background: var(--interactive-accent);
 }
 
-/* The pane of a document the restore could not read (OpenTab.readError). Fills
-   its slot and scrolls rather than clipping, since a pane in a five-way split
-   can be narrow and short; the text keeps a readable measure when it is wide. */
 .unread-pane {
   position: absolute;
   inset: 0;
   overflow: auto;
-  /* Top-anchored at a height every pane shares, not centred: centring put each
-     pane's message at a height set by its own name's wrapping, so two in one
-     split sat visibly out of line. Anchoring also never pushes overflow past
-     the top edge, out of reach of the scrollbar, in a short pane. */
   justify-content: flex-start;
   align-items: safe center;
   container-type: inline-size;
 }
 
-/* The anchor's offset is a spacer that SHRINKS, not padding: a fixed 28vh put
-   Try again below the fold of a 420px window's split while ~120px sat empty
-   above it. It and its negative margin take back the message padding and the
-   flex gap it would add, and only it gives way: the text and button do not
-   shrink, or their overflow clips them mid-sentence first. */
 .unread-pane::before {
   content: '';
   flex: 0 1 calc(min(28vh, 220px) - 24px);
@@ -3669,25 +2836,17 @@ body.is-resizing-panes * {
   text-wrap: balance;
 }
 
-/* A pane in a five-way split can be ~150px wide, where the hint alone ran
-   taller than the pane and pushed Try again out of sight; the title, the
-   error itself and the button are what such a pane has room for. */
 @container (max-width: 260px) {
   .unread-pane-hint {
     display: none;
   }
 
-  /* A long name, or Chromium's long NotReadableError text, ran 6–8 lines at
-     ~150px; both carry their full text as a tooltip. */
   .unread-pane > .unread-pane-title,
   .unread-pane > .unread-pane-detail {
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 3;
     overflow: hidden;
-    /* The clamp's ellipsis is drawn past the last glyph and was cut at the
-       box edge (measured: 158px of content in 155px); 3px holds it — 2px did
-       not, 4px overflowed again at 99px. */
     padding-inline: 3px;
   }
 }
@@ -3710,16 +2869,11 @@ body.is-resizing-panes * {
   overflow-wrap: anywhere;
 }
 
-/* Status messages nested inside a pane must fill it to center properly (the
-   combined .pdf-pane.pdf-pane-message form is sized by its own absolute box). */
 .pdf-pane .pdf-pane-message {
   width: 100%;
   height: 100%;
 }
 
-/* ── PDF reader ──
-   The tiled view's root; its pages are painted by the platform renderer, which also
-   applies the inverted-page view preference, so no page or text-layer rules live here. */
 .pdf-viewer {
   position: relative;
   width: 100%;
@@ -3729,7 +2883,6 @@ body.is-resizing-panes * {
 ::highlight(pdf-find) { background-color: color-mix(in srgb, #f5c400 40%, transparent); color: transparent; }
 ::highlight(pdf-find-current) { background-color: color-mix(in srgb, #ff8a00 60%, transparent); color: transparent; }
 
-/* ── Bottom-right controls: page number, then zoom ── */
 .pdf-viewer-controls {
   position: absolute;
   right: 16px;
@@ -3778,9 +2931,6 @@ body.is-resizing-panes * {
   user-select: none;
 }
 
-/* Padding/font/line-height match .pdf-viewer-zoom button exactly so both pills
-   come out the same height. The input's width is set inline from the page
-   count; everything else is shared. */
 .pdf-viewer-pages {
   padding-right: 8px;
 }
@@ -3800,7 +2950,6 @@ body.is-resizing-panes * {
      for N digits" in `ch`, and under border-box the padding would eat it — at
      two digits that leaves a 4px-wide box and the number is clipped away. */
   box-sizing: content-box;
-  /* An input's default min-width would otherwise win over that width. */
   min-width: 0;
 }
 
@@ -3810,8 +2959,6 @@ body.is-resizing-panes * {
 
 .pdf-viewer-page-input:focus {
   background: var(--background-modifier-hover);
-  /* An outline, not a border: it doesn't take part in layout, so focusing
-     can't nudge the pill's width. */
   outline: 1px solid var(--interactive-accent);
   outline-offset: -1px;
 }
@@ -3823,26 +2970,13 @@ body.is-resizing-panes * {
   user-select: none;
 }
 
-/* ── Page thumbnails (PdfThumbnails.tsx) — the reader and the annotate canvas ──
-   The strip is windowed and absolutely positioned; the document beside it just
-   starts where the strip ends. */
 .pdf-viewer {
-  /* THUMB_WIDTH (108) plus 14px either side. Keep the two in step. */
   --pdf-thumbs-width: 136px;
-  /* 16 because that is pagedCanvas.ts's PAGE_TOP_GUTTER — the air Annotate
-     already had and View did not, so page 1 opens with the same air in both
-     modes (measured: View page top 56.00, Annotate 55.87). Only page 1:
-     Annotate's gutter is inside the camera bounds, so deeper in the document
-     its page still meets the strip, while this inset holds at every scroll
-     position. ⌘E itself never jumped — the round trip returns scrollTop to the
-     byte — so this is about matching air, not about fixing a jump. */
   --pdf-top-gap: 16px;
 }
 
 .pdf-thumbs {
   position: absolute;
-  /* The same inset as the document column, so the rail's top edge lines up
-     with it instead of butting the pane header. */
   top: var(--pdf-top-gap);
   left: 0;
   bottom: 0;
@@ -3915,9 +3049,6 @@ body.is-resizing-panes * {
   left: var(--pdf-thumbs-width);
 }
 
-/* The pill's icon buttons: thumbnails, invert, and the two quarter turns. One
-   rule, because they sit shoulder to shoulder in the same pill and any
-   difference between them would read as a mistake. */
 .pdf-viewer-outline-toggle,
 .pdf-capabilities-toggle,
 .pdf-viewer-thumbs-toggle,
@@ -3950,13 +3081,10 @@ body.is-resizing-panes * {
   color: var(--interactive-accent);
 }
 
-/* Rotation has no on-state to show — it is a turn, not a mode — so the press
-   itself is the only feedback the button can give. */
 .pdf-viewer-rotate-btn:active {
   color: var(--interactive-accent);
 }
 
-/* Without the motion, the accent colour alone still says "working". */
 @media (prefers-reduced-motion: reduce) {
   .pdf-viewer-rotate-btn.is-busy svg { animation: none; }
 }
@@ -3969,10 +3097,6 @@ body.is-resizing-panes * {
   font-size: 13px;
 }
 
-/* The eight folder colours, one value per theme.
-   A `.folders.json` stores the NAME, so the same folder is legible on a dark
-   sidebar and a light one — a single hex cannot be both. Dark first, since an
-   absent data-theme means dark in this app. */
 :root {
   --folder-red: #dc2626;
   --folder-orange: #ea580c;
@@ -3995,7 +3119,6 @@ body.is-resizing-panes * {
   --folder-pink: #f472b6;
 }
 
-/* The vault menu's rows carry the same icon the file tree gives that folder. */
 .vault-menu-icon {
   display: flex;
   align-items: center;
@@ -4010,14 +3133,10 @@ body.is-resizing-panes * {
   color: var(--entry-color);
 }
 
-/* A chosen colour tints the row's ICON only — the label keeps the normal text
-   colour, so a tree of customized rows still reads as a list of names rather
-   than a set of highlights. Files and folders alike. */
 .tree-item .tree-item-icon[style*="--entry-color"] {
   color: var(--entry-color);
 }
 
-/* ── "Choose icon / colour", the flyout off a folder's context menu ─────── */
 .folder-style-picker {
   display: flex;
   flex-direction: column;
@@ -4062,7 +3181,6 @@ body.is-resizing-panes * {
   box-shadow: 0 0 0 1px var(--background-modifier-border);
 }
 
-/* "No colour" reads as an empty well rather than another swatch. */
 .folder-style-color.is-none {
   background: transparent;
   box-shadow: 0 0 0 1px var(--background-modifier-border) inset;
@@ -4096,8 +3214,6 @@ body.is-resizing-panes * {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 2px;
-  /* The list is capped at 180 icons and search reaches the rest, so this scrolls
-     a bounded amount — the flyout itself must not grow past the viewport. */
   max-height: 210px;
   overflow-y: auto;
 }
@@ -4151,18 +3267,10 @@ body.is-resizing-panes * {
   cursor: default;
 }
 
-/* =============================================================
-   Live Preview — Styled Markdown Elements
-   ============================================================= */
-
-/* ── Headings ── */
 .cm-live-heading {
   line-height: 1.3;
 }
 
-/* `--heading-scale` is also read by the collapsible-section widgets below:
-   cmTheme's highlight style scales the heading's TEXT by the same factor again,
-   inside a span those line-level widgets are not in. */
 .cm-live-heading-1 {
   --heading-scale: 1.3;
   font-size: calc(var(--heading-scale) * 1em);
@@ -4204,53 +3312,20 @@ body.is-resizing-panes * {
   color: var(--text-muted);
 }
 
-/* ── Issue #20: hidden-marker line breaks ──
-   CodeMirror draws a zero-width `<img class="cm-widgetBuffer">` on each side of
-   a replaced range (needed so a caret can land beside it) and an `<img>` is a
-   line-break opportunity — so a too-wide first word after a hidden `# ` / `> `
-   / `- ` (livePreview.ts's HIDE, editor/hiddenMarker.ts) or beside the heading-
-   fold arrow could wrap onto row 2, leaving row 1 of the line blank. Taking
-   only THESE buffers out of flow fixes that; they are still rendered
-   (`position: absolute` keeps the box, just out of the line's flow), and it is
-   safe only because every HIDE is revealed the instant a caret or selection
-   touches it (livePreview.ts's cursorOnLine/cursorInRange), so no caret ever
-   needs to sit beside one of these buffers while it's absolute. Buffers beside
-   images/maths/tables are untouched — confirmed `position: static`. */
 .cm-content .cm-widgetBuffer:has(+ .cm-live-hidden),
 .cm-content .cm-live-hidden + .cm-widgetBuffer,
 .cm-content .cm-heading-fold-anchor + .cm-widgetBuffer {
   position: absolute;
 }
 
-/* ...except on a line that holds nothing else: hidden syntax only (a hidden
-   fence line, an empty `>` inside a multi-paragraph quote, `- `, `# `, a bare
-   `#`), plus the fold arrow in Reading mode. Such a line has no first word to
-   wrap, and its buffers are its only in-flow content — out of flow it had no
-   line box, so ArrowDown skipped straight over it (moving vertically reads
-   positions from line boxes) and a bare `#`'s fold arrow sat a row above its
-   line (measured −9.5px from the line's top vs 17.5px on `# Real`). Kept in
-   flow, both behave as before #20's rule. */
 .cm-content .cm-line:not(:has(> :not(.cm-widgetBuffer, .cm-live-hidden, .cm-heading-fold-anchor, br))) > .cm-widgetBuffer {
   position: static;
 }
 
-/* A fully-hidden HEADING line (a bare `#`, `# `) still reads one level short:
-   its buffers give it a line box at the LINE's font size, while a real
-   heading's text sits in a highlight span that applies --heading-scale a
-   second time (cmTheme's heading token). `1lh` is the line's own
-   (single-scaled) line-height, so scaling it once more reaches a real
-   heading's row without repeating cmTheme's math (a bare `# ` in Edit mode
-   was 27.03px against 35.16px with the caret on it). */
 .cm-content .cm-line.cm-live-heading:has(.cm-live-hidden) {
   min-height: calc(var(--heading-scale, 1) * 1lh);
 }
 
-/* ── Collapsible sections (editor/headingFold.ts, Reading mode only) ──
-   The arrow shows while the pointer is anywhere on the heading line OR in the
-   empty margin to its left. The margin half is a transparent pad: a
-   pseudo-element of the line itself, so hovering it IS hovering the line. It
-   is clipped by this pane's own .cm-scroller, so it never reaches a
-   neighbouring pane or the sidebar, and left overflow is never scrollable. */
 .cm-heading-foldable {
   position: relative;
 }
@@ -4264,35 +3339,16 @@ body.is-resizing-panes * {
   width: 100vw;
 }
 
-/* Issue #20: this used to be `display: inline-block` — zero width, exactly
-   cap-height tall, standing ON the baseline, so the button centred inside it
-   landed on the heading's capitals at every level. But an inline-block is
-   exactly the kind of box a hidden marker's zero-width
-   `<img class="cm-widgetBuffer">` can wrap a line before, so on a heading
-   whose first word was wider than the pane the anchor (plus the buffer beside
-   it) broke onto row 1 while the word wrapped to row 2, leaving row 1 blank.
-   It is now a plain, in-flow, non-replaced inline span — never itself a break
-   candidate — nudged up `-0.5cap` so its (zero-height, see .cm-heading-fold-pin
-   below) reference point sits level with the capitals instead of the
-   baseline. */
 .cm-heading-fold-anchor {
   position: relative;
   top: -0.5cap;
 }
 
-/* Font-size 0 so this contributes no line-height of its own — it exists only
-   to be the `position: relative` ancestor .cm-heading-fold-toggle's `top: 0`
-   is measured against, i.e. the anchor's own (already cap-centred) point. */
 .cm-heading-fold-pin {
   position: relative;
   font-size: 0;
 }
 
-/* Both widgets are children of the LINE, outside the highlight span that
-   scales the heading's text a second time (cmTheme), so on their own `1cap`
-   measures a smaller font than the one on screen: the arrow and pill rode
-   2-2.5px low on H1 (measured). Re-applying the line's scale gives them the
-   text's own size. The button inside is sized in px, so only `cap` moves. */
 .cm-heading-fold-anchor,
 .cm-heading-fold-placeholder {
   font-size: calc(var(--heading-scale, 1) * 1em);
@@ -4318,8 +3374,6 @@ body.is-resizing-panes * {
   transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
 }
 
-/* A collapsed section keeps its arrow on show, so hidden content is never a
-   secret. */
 .cm-heading-foldable:hover .cm-heading-fold-toggle,
 .cm-heading-fold-toggle[aria-expanded="false"] {
   opacity: 1;
@@ -4339,12 +3393,6 @@ body.is-resizing-panes * {
   transform: rotate(-90deg);
 }
 
-/* The capitals' height plus 2px each way, its middle on theirs, by the anchor's
-   trick: holding only a block SVG it has no line box, so its baseline is its
-   bottom edge, and dropping that edge 2px below the text's baseline centres
-   it on the cap height at any heading size or font. The dots are drawn, not
-   typed: a "…" glyph sits on its baseline, and as text the pill rode 3-3.5px
-   low with its dots a further 3-4px below its middle (measured). */
 .cm-heading-fold-placeholder {
   display: inline-block;
   box-sizing: content-box;
@@ -4369,73 +3417,21 @@ body.is-resizing-panes * {
   color: var(--text-normal);
 }
 
-/* ── Table Widget ──
-   Column widths and, when the columns can't all be satisfied, the table's own
-   type size are computed from measured content by editor/tableFit.ts. Three
-   things here are load-bearing for that.
-
-   A rendered table is also an OBJECT the reader edits in place (editor/
-   tableWidget.ts + tableEdit.ts): its cells are contenteditable islands and it
-   carries two corner chips of its own. That adds two structural requirements,
-   both below and both measured. */
 .cm-table-widget {
   margin: 8px 0;
 
-  /* The containing block for the corner chips, and it has to be said
-     explicitly: `contain: inline-size` below is SIZE containment only, and
-     unlike `layout`/`paint`/`strict` it does not establish one. Measured
-     without this: a chip positioned `top: 2px` inside the widget escaped to
-     .cm-content and landed at y=151 instead of y=91 — over the paragraph two
-     lines further down. Adding it costs the fit nothing, because `position`
-     does not alter inline size. */
   position: relative;
-  /* The table's own intrinsic width must never reach the editor. Restoring
-     `overflow-wrap: normal` above gives the table a real min-content again,
-     and while it is still browser-laid-out that min-content propagates up and
-     can push .cm-content WIDER than its scroller — so the first fit measures
-     an inflated text width, produces a too-generous fit, and a second fit has
-     to correct it a frame later. Containment makes this box's inline size a
-     function of its container alone, so the width the fitter reads is stable
-     and one fit is enough. */
   contain: inline-size;
 
-  /* CodeMirror's line wrapping puts `white-space: break-spaces;
-     word-break: break-word; overflow-wrap: anywhere` on .cm-content, and table
-     cells INHERIT all three. `anywhere` doesn't merely allow a mid-word break,
-     it also collapses the table's intrinsic MINIMUM width to about one
-     character per column — so `width: 100%` could squeeze a column narrower
-     than its longest word and "Location" rendered as "Locat / ion". Cells are
-     ordinary HTML text again: they wrap between words, and never inside one. */
   white-space: normal;
   overflow-wrap: normal;
   word-break: normal;
 }
 
-/* The box the table is actually laid out inside, sitting between the widget
-   and the <table>.
-
-   It exists so the overflow lives somewhere OTHER than the widget. An overflow
-   container clips in both axes — `overflow-x: auto` computes `overflow-y` to
-   `auto` too — so with this on the widget the corner chips were cut off along
-   the top and bottom edges, and a chip nudged outwards made the widget itself
-   scrollable rather than showing the chip. Same behaviour as before for the
-   table, one element further in.
-
-   What it is for is unchanged, and is only ever needed for the frames the
-   fitter hasn't sized yet: a fitted table is pinned to exactly the text width
-   and cannot overflow, but before the first fit — and on the paths where the
-   fitter bails, such as a pane that measures zero — the table is laid out by
-   the browser at `width: 100%`, and an auto table cannot go below its
-   min-content. This is what scrolls it instead of letting it run past the edge
-   of the note. It does NOT rescue oversized content inside a fitted cell: fixed
-   column widths mean such content overflows the cell while the table itself
-   still measures 100%, so there is nothing to scroll — hence the cap on
-   replaced elements below. */
 .cm-table-scroll {
   overflow-x: auto;
 }
 
-/* An unparseable table falls back to showing its source; keep its lines. */
 .cm-table-widget.cm-table-raw {
   white-space: pre-wrap;
 }
@@ -4453,33 +3449,11 @@ body.is-resizing-panes * {
   height: auto;
 }
 
-/* …with one exemption, for the SVGs a formula is partly drawn out of. KaTeX's
-   HTML output draws \sqrt surds and stretchy delimiters/accents as inline
-   <svg> and sizes them from its own stylesheet — `.katex svg { position:
-   absolute; width: 100%; height: inherit }` (katex.css) — so the cap above,
-   which exists for pictures pasted into a fitted cell, would leave a root with
-   no bar over it and a delimiter with no height.
-
-   KaTeX's declaration is restated rather than reverted: `height: revert` rolls
-   back the whole AUTHOR origin, katex.css included, and would land on the UA's
-   `auto` — the very value being escaped. Everything else KaTeX emits is a
-   <span> and is untouched by any of this. */
 .cm-table-widget .cm-table-math svg {
   max-width: none;
   height: inherit;
 }
 
-/* The fitter's sensors: this box's WIDTH is the available text width, and the
-   hidden text spans inside it change width iff the note's — or KaTeX's — font
-   metrics do. All are watched by one ResizeObserver, and none is affected by
-   anything the fitter does — so applying a fit can't re-trigger one. Zero
-   height and clipped, so they occupy nothing and can't be selected, found or
-   copied.
-
-   The selector below is a DESCENDANT one on purpose: the math probe is a span
-   of spans (see tableFit's createFitProbes), and `inline-block` on every level
-   is what makes the outer one's width the sum of its faces — a `> span` here
-   would silently stop the sensing. */
 .cm-table-probe {
   height: 0;
   overflow: hidden;
@@ -4502,9 +3476,6 @@ body.is-resizing-panes * {
 .cm-table-widget th,
 .cm-table-widget td {
   border: 1px solid var(--background-modifier-border);
-  /* In em, not px: the fitter shrinks a too-wide table by its font size, and
-     padding that stayed put would grow into the space the text just gave up.
-     0.375em/0.75em is 6px/12px at the default 16px note. */
   padding: 0.375em 0.75em;
   text-align: left;
 }
@@ -4518,13 +3489,6 @@ body.is-resizing-panes * {
   background: var(--background-primary-alt);
 }
 
-/* The delimiter row's colons, honoured. Written with the element selector in
-   front on purpose: the `text-align: left` these have to beat is the
-   `.cm-table-widget th, .cm-table-widget td` rule above, specificity (0,1,1),
-   so a bare `.cm-table-align-center` at (0,1,0) would lose to it and a table
-   whose file says `---:` would go on rendering left-aligned. As written these
-   are (0,2,1) and win. Left needs no class of its own; it is what the rule
-   above already says. */
 .cm-table-widget th.cm-table-align-center,
 .cm-table-widget td.cm-table-align-center {
   text-align: center;
@@ -4535,119 +3499,30 @@ body.is-resizing-panes * {
   text-align: right;
 }
 
-/* ── A cell is an editable island ──
-   Each <th>/<td> is contenteditable="plaintext-only" in edit mode, so the
-   pointer must say "text" over one, and the browser's own focus ring must not
-   be what marks the cell being typed in — the ring below is. */
 .cm-table-widget .cm-table-cell[contenteditable] {
   cursor: text;
   outline: none;
 }
 
-/* The cell the caret is in. Scoped through the same [contenteditable] selector
-   as the reset above rather than written as a bare class: at (0,1,0) it would
-   lose to that reset, which is (0,3,0) — two classes and an attribute —
-   `outline: none` would win, and the one piece of feedback saying which cell is
-   live would never be drawn. As written this is (0,4,0).
-
-   NO caret-color here, deliberately. drawSelection()'s hideNativeSelection
-   theme hides the native caret across .cm-content and then restores
-   `caret-color: initial` for any focused element inside it, at Prec.highest
-   (@codemirror/view:9428-9442) — which is exactly this cell. Setting one here
-   would be fighting that rule for the same pixels; the app's caret settings
-   (line/block, thickness, glide) deliberately do not reach inside a widget,
-   because .cm-cursor is drawn from document positions and a cell has none.
-
-   overflow-wrap: break-word so a long unbroken word typed into a fixed-width
-   column wraps inside its cell instead of painting across its neighbour — the
-   fitter's own last-resort rule, applied to the cell being written into. */
 .cm-table-widget .cm-table-cell[contenteditable].cm-table-cell-editing {
   outline: 1px solid var(--interactive-accent);
   outline-offset: -1px;
   overflow-wrap: break-word;
 }
 
-/* The whole table is the document's selection — what a Backspace beside it, or
-   an arrow key stepping onto its edge, produces. The ring hangs off the
-   WIDGET'S OWN class and not off .cm-image-selection, which is set on the
-   editor root: scoped to the root, a note with two tables would outline both
-   while the next keystroke deleted only one. (.cm-image-selection is still set
-   for a selected table — that is what turns the text-selection band and the
-   caret off, and both are wanted here exactly as they are for a picture.) */
 .cm-table-widget.cm-table-selected table {
   outline: 2px solid var(--interactive-accent);
   outline-offset: -1px;
 }
 
-/* One rendered formula inside a cell. Deliberately almost empty: KaTeX is
-   all-em internally and .katex's own font-size and line-height are what make
-   maths in a cell look like maths in the note, so overriding either here would
-   make the two disagree. What this DOES say is that a formula is one atom —
-   KaTeX's `.katex .base { white-space: nowrap }` already says so for each
-   base, and saying it for the whole span keeps a formula from being split
-   across lines. The fitter reads that through min-content as the column's
-   floor, which is right: a wrapped formula is not a formula. */
 .cm-table-math {
   white-space: nowrap;
 }
 
-/* `white-space` alone does NOT deliver that, because KaTeX breaks a top-level
-   `\\` STRUCTURALLY: it emits `<span class="mspace newline">` and katex.css
-   makes `.katex .katex-html > .newline { display: block }`, which no
-   white-space value on an ancestor can override. `displayMode: false` is not a
-   way out either — katex's `cr` handler sets `newLine = !displayMode || …`, so
-   in the mode a cell uses it is unconditionally true. Measured on a two-row
-   table: a cell holding `$p \\ q$` rendered on two lines and its row came out
-   65.8px against the plain row's 39.4px — so "a formula is one atom" and "rows
-   holding a formula stay the height plain rows are" were both false for the one
-   construction helpDoc used to tell people to write.
-
-   Restated back to `inline` rather than `none`: the break is dropped, not the
-   glyphs around it. Only a TOP-LEVEL break carries this class — the `\\`
-   inside `aligned`, `matrix` or `array` is the environment's own row separator
-   and lays out through the table path, untouched here.
-
-   `.cm-table-widget` is on the front to out-SPECIFY katex.css, not to scope:
-   its rule is also (0,3,0), and `katex/dist/katex.min.css` is imported from
-   EditorPane while this file is imported from main.tsx — so KaTeX's sheet is
-   injected LAST and wins every tie. Measured without the extra class: computed
-   `display` stayed `block`. */
 .cm-table-widget .cm-table-math .katex-html > .newline {
   display: inline;
 }
 
-/* …and the other half of that floor: what happens when the column does not get
-   it. The fitter caps what any one column may DEMAND at COMFORT_EM, so a
-   formula wider than ~12em is handed a column narrower than itself; its
-   last-resort `overflow-wrap: break-word` then does nothing, because the rule
-   above makes the formula unbreakable. Measured on a five-column table holding
-   one `\sum … \int` formula: without this rule the formula's box ran 18.9px
-   past its cell at a 1400px window and 62.4px at 520px, and the two rendered
-   bands differ pixel-for-pixel — i.e. that ink was landing on the neighbouring
-   column's prose, not merely overhanging in layout.
-
-   So the CELL scrolls. Not the formula: `overflow` on the formula's own span
-   would make it an inline-block, whose baseline is its bottom margin edge
-   rather than its text's — every formula would then sit off the text beside it
-   and grow the row holding it, and `vertical-align: bottom` does not recover a
-   formula taller than the line box. A table cell is not an inline box, so
-   scrolling it costs no alignment: measured, a formula's rect and the rect of
-   the text node beside it in the same cell are identical (top 482.98 / bottom
-   500.98 for both), rows holding a formula stay the height plain rows are, and
-   the fitter's own per-column min-content/max-content come out the same with
-   the rule live as with it neutralised.
-
-   The cost is that an over-wide formula is CLIPPED with no visible affordance
-   on overlay-scrollbar platforms — recoverable by scrolling the cell, but
-   nothing says so. See tableFit.ts's COMFORT_EM: an unbreakable column arguably
-   should not be capped at all. Left as is deliberately; changing the cap is a
-   fitter change, and this rule is what stops the clipping being illegible
-   overlap instead.
-
-   Scoped by :has() rather than applied to every cell: an ordinary cell can
-   never overflow (the fitter breaks its longest word instead), so this would
-   be a no-op there — and a cell being EDITED holds its raw source, not a
-   formula, so it correctly stops matching and wraps as it always has. */
 .cm-table-widget th:has(.cm-table-math),
 .cm-table-widget td:has(.cm-table-math) {
   overflow-x: auto;
@@ -4656,91 +3531,17 @@ body.is-resizing-panes * {
 .cm-table-widget code {
   font-family: var(--font-monospace);
   font-size: 0.9em;
-  /* em for the same reason the cell padding is (see above): a code chip in a
-     shrunk table would otherwise keep full-size padding around smaller type. */
   padding: 0.07em 0.28em;
   border-radius: 3px;
   background: var(--background-modifier-active);
 }
 
-/* ── The table's corner chips ──
-   Append a column (top right) and append a row (bottom left), in the shape
-   Google Docs uses. They are a layer over the table rather than anything in
-   its flow, so they cost the document no layout and cannot move the text
-   around them — and, crucially, cannot move a probe: the fitter's two sensors
-   are direct children of the widget and its inputs, so anything the chips did
-   to the flow would feed straight back into the fit.
-
-   EACH CHIP IS SUMMONED BY ITS OWN EDGE, and neither by the caret.
-   `.cm-table-near-right` / `.cm-table-near-bottom` are set by tableWidget's
-   pointer arithmetic (attachEdgeReveal) — the right edge draws the column chip,
-   the bottom edge the row chip — so the only thing that puts one on screen is a
-   reader already reaching for it. Two rules this replaced, both on purpose:
-
-   · `:focus-within` used to hold the layer up while the caret was in a cell,
-     and it FLICKERED once per character. Every write-back blurs the focused
-     cell to BODY and refocuses it synchronously (tableEdit's repairFocus, which
-     documents the same measurement from the other side), so the predicate went
-     false→true per keystroke on a transitioned property. Measured before this
-     change: typing ten characters with the pointer parked off the table drove
-     the layer 1 → 0 → 0.85 → 0 → … ten times, one full pulse per keystroke. It
-     bought nothing, either: the chips are `tabIndex: -1` and so were never
-     keyboard-reachable, and the keyboard route to a row or column is the cell's
-     own context menu.
-   · `:hover` on the whole widget used to draw BOTH chips whenever the pointer
-     was anywhere over the table — including the middle of it, where neither is
-     the thing being reached for.
-
-   Only ever drawn when the table is editable (tableWidget builds the layer only
-   when `canEdit`), so nothing here needs a read-mode guard of its own. */
 .cm-table-controls {
   position: absolute;
   inset: 0;
-  /* The layer spans the whole table; only its buttons should take clicks. */
   pointer-events: none;
 }
 
-/* Sized in em, not px, the way everything else inside this widget is — so the
-   chips follow the note's own type, which the Settings font-size slider moves.
-   Note the exact limit of that, because the comment on the cell padding above
-   promises something slightly different: the fitter shrinks a too-wide table by
-   writing a font-size onto the <table> element (tableFit.ts:512), and these two
-   sit outside it, in the widget. They therefore track the READER's type size and
-   not the fitter's shrink. That is the right way round — a chip is chrome the
-   reader reaches for, not part of the table's content — but it does mean a
-   heavily shrunk table wears chips a little larger, relative to its rows, than
-   an unshrunk one.
-
-   Themed rather than the image widget's dark-glass chip. That one is
-   deliberately theme-independent because it floats over arbitrary picture
-   content; this one floats over the note's own background, where dark glass
-   reads as foreign in the light theme.
-
-   The fill is --background-primary-alt, with a light-theme override for the
-   reason the vault menu and the context menu carry one: a raised thing has to
-   read as brighter than what it covers, and in the light theme
-   --background-primary-alt IS the table's own header tint (#f2f3f5, the value
-   --background-secondary also has). These two chips are the only part of this
-   widget's chrome that sits ON the table rather than beside it, so they are the
-   one place that collapse actually happens. The border and the small shadow are
-   what keep the circle readable in the one case a single fill cannot cover —
-   the dark theme's even body rows, which are --background-primary-alt too.
-
-   THE FILL IS CARRIED BY A CUSTOM PROPERTY, and that is not decoration.
-   `:root[data-theme="light"] .cm-table-control` is specificity (0,3,0) and
-   `.cm-table-control:hover` is only (0,2,0) — so a theme override that set
-   `background` directly would beat the hover state, which sets `background` AND
-   `color`. Measured, before this was a variable: in the light theme hovering the
-   chip left it white (the override's fill) while the ink moved to
-   --text-on-accent, i.e. #fff on #fff — the `+` vanished under the pointer at
-   the exact moment the reader was about to click it, in the one theme where the
-   two happen to be the same colour. Setting a custom property instead means the
-   override contributes no `background` declaration at all, so the state rules
-   below win by ordinary source order and the trap cannot come back.
-
-   The `+` is drawn here because the button carries none: it has a tooltip and an
-   aria-label and no text, so a glyph in the markup would have to be hidden from
-   assistive tech anyway. */
 .cm-table-control {
   --table-chip-bg: var(--background-primary-alt);
   --table-chip-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
@@ -4786,9 +3587,6 @@ body.is-resizing-panes * {
   color: var(--text-on-accent);
 }
 
-/* BOTH chips sit fully inside the widget's box, never at a negative offset: a
-   child hanging outside made the widget scrollable, which is the same hazard
-   the scroller above exists to keep away from these two. */
 .cm-table-add-col {
   top: 2px;
   right: 2px;
@@ -4799,24 +3597,12 @@ body.is-resizing-panes * {
   left: 2px;
 }
 
-/* Each edge summons its own chip and only its own; EDGE_BAND_PX in
-   tableWidget.ts is how near "near" is. Two-class specificity (0,2,0), which is
-   what beats the base rule's `opacity: 0` — and it sets neither `background`
-   nor `color`, so it does not collide with `.cm-table-control:hover` above at
-   the same weight. */
 .cm-table-near-right .cm-table-add-col,
 .cm-table-near-bottom .cm-table-add-row {
   opacity: 1;
   pointer-events: auto;
 }
 
-/* ── Row and column grips (tableWidget.ts gripButton) ──
-   One per axis, moved by the reveal pass to the row and column under the
-   pointer. OUTSIDE the table's box and flush against it: never over a cell, so
-   they cannot take a cell's click, and no gap for the pointer to fall through on
-   its way to one. Inert until revealed, for the corner chips' reason: opacity 0
-   still hit-tests. The fill is a custom property for the chips' reason too, so
-   the light-theme override cannot outrank :hover. */
 .cm-table-grip {
   --table-chip-bg: var(--background-primary-alt);
   position: absolute;
@@ -4835,8 +3621,6 @@ body.is-resizing-panes * {
   --table-chip-bg: var(--background-primary);
 }
 
-/* Six dots, drawn rather than typed: no font carries a grip glyph everywhere.
-   Each 4px tile holds one dot, so the box's size decides the count. */
 .cm-table-grip::before {
   content: '';
   position: absolute;
@@ -4881,13 +3665,10 @@ body.is-resizing-panes * {
   pointer-events: auto;
 }
 
-/* The row or column a grip's menu is acting on. Three classes, which outranks
-   the striped body rows' (0,2,2). */
 .cm-table-widget .cm-table-cell.cm-table-target {
   background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
 }
 
-/* ── Inline Formatting ── */
 .cm-live-bold {
   font-weight: 700;
 }
@@ -4910,24 +3691,12 @@ body.is-resizing-panes * {
   color: var(--text-accent);
 }
 
-/* ── Fenced Code Blocks ──
-   One continuous panel: every line of the block carries this class (the
-   hidden ``` fence rows too, doubling as top/bottom padding), and only the
-   outer corners of the first/last line are rounded. Longhand corner props so
-   a single-line block can be both start and end. */
-/* .cm-editor prefix is load-bearing: CodeMirror's own base theme sets line
-   padding via a scoped two-class selector (.ͼx .cm-line), which silently
-   beats a lone class here. */
 .cm-editor .cm-line.cm-live-codeblock {
   background-color: var(--background-modifier-hover);
   font-family: var(--font-monospace);
   font-size: 0.9em;
   padding: 0 24px;
-  /* Base ink for code text (Obsidian-style; defaults to the accent, its own
-     Settings picker can split it off); embedded-language token colors still
-     win on their own spans. */
   color: var(--code-block-color);
-  /* Anchor for the absolutely-positioned copy button on the first row. */
   position: relative;
 }
 
@@ -4941,7 +3710,6 @@ body.is-resizing-panes * {
   border-bottom-right-radius: var(--radius-m);
 }
 
-/* ── Wikilink autocomplete dropdown ── */
 .cm-tooltip.cm-tooltip-autocomplete {
   background: var(--background-primary-alt);
   border: 1px solid var(--background-modifier-border);
@@ -4988,7 +3756,6 @@ li[aria-selected] .cm-completionMatchedText {
   color: inherit;
 }
 
-/* ── Code block copy button ── */
 .cm-codeblock-copy {
   position: absolute;
   top: 6px;
@@ -5016,24 +3783,14 @@ li[aria-selected] .cm-completionMatchedText {
 }
 
 
-/* ── Highlights ── */
 .cm-live-highlight {
   background-color: var(--text-highlight-bg);
   border-radius: 2px;
   padding: 0 2px;
 }
 
-/* ── Images ──
-   An embedded picture is an object, not text: it is selected as a whole and
-   carries its own controls, so the wrapper is the positioning context for them
-   and is sized to the picture (never the line). */
 .cm-image-widget {
   display: block;
-  /* Shrink-wrapped, not full-bleed: still a block on a line of its own, but its
-     BOX is the picture. A full-width box would put the editor's selection
-     highlight — which is drawn from the replaced range's rectangle — right
-     across the rest of the line whenever the picture is selected, so a selected
-     picture read as a selected paragraph. */
   width: fit-content;
   max-width: 100%;
   margin: 16px 0;
@@ -5051,8 +3808,6 @@ li[aria-selected] .cm-completionMatchedText {
   max-width: 100%;
   height: auto;
   border-radius: var(--radius-m);
-  /* Dragging an image out of a contenteditable would tear the embed's text in
-     half; selecting it is the only gesture it has. */
   -webkit-user-drag: none;
   user-select: none;
 }
@@ -5061,19 +3816,10 @@ li[aria-selected] .cm-completionMatchedText {
   cursor: default;
 }
 
-/* The selected look: a ring around the picture, as in a word processor. Drawn
-   with a shadow rather than an outline so it hugs the rounded corners. */
 .cm-image-selected .cm-image-wrapper {
   box-shadow: 0 0 0 2px var(--interactive-accent);
 }
 
-/* …and with the ring there, the editor's own text selection is redundant: the
-   selection IS the picture, so there is no other text to mark and nowhere for a
-   caret to be. Both would otherwise show up beside the picture — the band as a
-   sliver past its edge (CodeMirror pads a replaced range with zero-width buffer
-   elements), the caret as a full-height bar as wide as the caret setting. See
-   the editorAttributes provider in livePreview.ts. The band's `!important`
-   overrides a generated CodeMirror theme rule of equal specificity. */
 .cm-image-selection .cm-selectionBackground {
   background: transparent !important;
 }
@@ -5099,15 +3845,6 @@ li[aria-selected] .cm-completionMatchedText {
   background: rgba(224, 108, 117, 0.1);
 }
 
-/* ── The selected picture's controls ──
-   Only ever visible on a selected picture, which only edit mode can produce.
-   They float over its top corners — bin to the left, size to the right — so
-   they cost the document no layout and can't move the text around them.
-
-   ONE row pinned to both edges rather than two independently-cornered groups:
-   a picture the reader has shrunk can be narrower than the two groups together,
-   and cornered separately they would end up stacked on top of each other. In a
-   row they simply run past the edge, still both reachable. */
 .cm-image-tools {
   position: absolute;
   top: 8px;
@@ -5116,7 +3853,6 @@ li[aria-selected] .cm-completionMatchedText {
   display: none;
   justify-content: space-between;
   gap: 8px;
-  /* The bar spans the picture, but only its buttons should take clicks. */
   pointer-events: none;
 }
 
@@ -5129,20 +3865,15 @@ li[aria-selected] .cm-completionMatchedText {
   gap: 2px;
 }
 
-/* Resizing needs a picture with a size — a missing one can only be removed. */
 .cm-image-widget:not(.cm-image-loaded) .cm-image-zoom {
   display: none;
 }
 
-/* Nothing to float over, and a message that must stay readable: on a picture
-   that failed to load the bin sits under the notice instead of on top of it. */
 .cm-image-widget:not(.cm-image-loaded) .cm-image-tools {
   position: static;
   margin-top: 6px;
 }
 
-/* Too small to hold its own controls (see NARROW_WIDTH): they lift clear of the
-   picture rather than covering all of it. */
 .cm-image-narrow .cm-image-tools {
   top: auto;
   right: auto;
@@ -5191,27 +3922,14 @@ li[aria-selected] .cm-completionMatchedText {
   cursor: pointer;
 }
 
-/* Only the hover. The read-mode anchor carries .cm-live-link too, and an author
-   declaration outranks the UA sheet's a:link/a:visited colours by origin alone,
-   so the base colour above already reaches it in every state — restating it
-   here would give one colour two owners, and the read-mode one would win.
-   Hover matches .cm-wikilink's: the two are one gesture, aimed elsewhere. */
 .cm-external-link:hover {
   color: var(--interactive-accent-hover);
 }
 
-/* A struck word inside a link label keeps the LINK's colour. .cm-live-strikethrough
-   mutes its own text, which is right in prose — struck text is text withdrawn —
-   but inside a label it broke the colour mid-link while the underline ran on
-   through it, so the struck part read as body text that had wandered into a
-   link. Only strikethrough sets a colour of its own; bold, italic, code and
-   highlight already inherit. This became visible when the Link branch started
-   descending into its label — before that, nothing inside one ever rendered. */
 .cm-live-link .cm-live-strikethrough {
   color: inherit;
 }
 
-/* ── List Items ── */
 .cm-live-list-item {
   padding-left: calc(36px + var(--list-indent, 0) * 28px) !important;
   position: relative;
@@ -5226,10 +3944,6 @@ li[aria-selected] .cm-completionMatchedText {
   line-height: inherit;
 }
 
-/* A number's width grows with the number, so it is anchored by its END, a few
-   px short of the content column, and grows leftwards into the gutter — the way
-   a real <ol> lays its markers out. Anchoring the start instead gave every
-   marker the same 24px slot, and "100." overflowed it into the item's text. */
 .cm-live-list-ordered::before {
   content: attr(data-marker);
   position: absolute;
@@ -5240,48 +3954,27 @@ li[aria-selected] .cm-completionMatchedText {
   white-space: pre;
 }
 
-/* Editing a list item reveals its real `- ` / `1. `. The marker is lifted out
-   of the text flow into the slot the drawn bullet occupied, so the line keeps
-   the padding above — the item's text (and its wrapped rows) stay exactly
-   where they were rendered instead of sliding left as the syntax appears.
-   `pre` matters: it makes the run un-wrappable, which is what lets the
-   right-anchored variants below overhang their slot instead of folding onto a
-   second row on top of the neighbouring line. */
 .cm-live-list-lift .cm-live-list-marker {
   position: absolute;
   left: calc(16px + var(--list-indent, 0) * 28px);
   white-space: pre;
 }
 
-/* Lifting the marker can leave a line with NOTHING in flow — `- ` and `1. ` are
-   whole lines in themselves, and one is exactly what Enter leaves behind on a
-   list item. A block whose only content is out of flow generates no line box
-   and is zero pixels tall, so the line would collapse and the document below
-   jump up over it. This strut is in flow and atomic, so the line box (and its
-   height) always exists; it is zero-width, so it shows up nowhere else. */
 .cm-live-list-lift::after {
   content: '';
   display: inline-block;
 }
 
-/* Two prefixes have no width this stylesheet can know: an ordered marker (`1. `
-   through `100. `) and a revealed indentation run. Anchor their END at the
-   content column instead of their start — the item's text then never moves and
-   a wide prefix grows leftwards into the gutter rather than over the text.
-   Must follow the rule above to win the specificity tie. */
 .cm-live-list-lift-ordered .cm-live-list-marker,
 .cm-live-list-lift-start .cm-live-list-marker {
   left: auto;
   right: calc(100% - 36px - var(--list-indent, 0) * 28px);
 }
 
-/* Fallback for a list item whose line has no marker to lift (the parser and the
-   marker regex disagreeing): the whole line flows, so it takes a narrow gutter. */
 .cm-live-list-item.cm-live-list-raw {
   padding-left: calc(16px + var(--list-indent, 0) * 28px) !important;
 }
 
-/* ── Blockquote ── */
 .cm-live-blockquote {
   border-left: 3px solid var(--interactive-accent);
   padding-left: 12px !important;
@@ -5289,14 +3982,12 @@ li[aria-selected] .cm-completionMatchedText {
   font-style: italic;
 }
 
-/* ── Horizontal Rule ── */
 .cm-hr-widget {
   height: 1px;
   background: var(--background-modifier-border);
   margin: 16px 0;
 }
 
-/* ── Mermaid diagrams ── */
 .cm-mermaid-widget {
   display: block;
   text-align: center;
@@ -5324,7 +4015,6 @@ li[aria-selected] .cm-completionMatchedText {
   white-space: pre-wrap;
 }
 
-/* ── Math (KaTeX) ── */
 .cm-math-widget {
   color: var(--text-normal);
 }
@@ -5347,23 +4037,14 @@ li[aria-selected] .cm-completionMatchedText {
   font-size: 0.85em;
 }
 
-/* ── LaTeX source (math revealed while editing) ──
-   Obsidian-style: Fira Code italics with per-token colors from the
-   tokenizer in latexSource.ts. */
 .cm-math-src {
   font-family: 'Fira Code', var(--font-monospace);
   font-style: italic;
   font-size: 0.95em;
-  /* Medium weight — 400 reads too thin for math source at this size. */
   font-weight: 500;
-  /* The markdown HIGHLIGHTER still tags [x](y) inside formulas as a link
-     (only the live-preview decorations are suppressed there) — strip its
-     underline so LaTeX source never inherits markdown looks. */
   text-decoration: none !important;
 }
 
-/* Obsidian's own vibrant palette: blue $, red commands (braces read with
-   them), purple numbers/scripts, green operators, cyan variables/parens. */
 .cm-latex-delim {
   color: #2b8eff;
 }
@@ -5409,9 +4090,6 @@ li[aria-selected] .cm-completionMatchedText {
 :root[data-theme="light"] .cm-latex-var {
   color: #0e9db8;
 }
-/* =============================================================
-   Wikilinks ([[Note]]) — rendered in the editor / live preview
-   ============================================================= */
 .cm-wikilink {
   color: var(--text-accent);
   cursor: pointer;
@@ -5424,9 +4102,6 @@ li[aria-selected] .cm-completionMatchedText {
   border-bottom-color: var(--interactive-accent-hover);
 }
 
-/* =============================================================
-   Neural Brain — Graph View
-   ============================================================= */
 .graph-view {
   display: flex;
   flex-direction: column;
@@ -5523,9 +4198,6 @@ li[aria-selected] .cm-completionMatchedText {
   font-size: 0.9em;
 }
 
-/* =============================================================
-   Linked Mentions popover (anchored to the status bar's backlinks button)
-   ============================================================= */
 .backlinks-popover {
   position: fixed;
   z-index: 900;
@@ -5629,30 +4301,6 @@ li[aria-selected] .cm-completionMatchedText {
   white-space: nowrap;
 }
 
-/* =============================================================
-   The app's own right-click menu (components/ContextMenu.tsx)
-   ============================================================= */
-
-/* One menu is on screen at a time and every surface raises the same one — note
-   text, a table cell, a file tree row, the empty tree area. It hangs from a
-   POINT in the viewport rather than from a button, so unlike .vault-menu its
-   left/top are written inline by the component after it has measured itself
-   (flip at an edge, then clamp). Everything that is not those two numbers is
-   here.
-
-   z-index 900 is the established band for a dismissible popover, shared with
-   .vault-menu and .backlinks-popover. Both bounds matter here in a way they do
-   not for those two: it has to clear CodeMirror's own .cm-tooltip (500, set in
-   node_modules and not in this file — .editor-slot has no z-index, so that 500
-   competes directly with this ladder), and it has to stay under Settings (1000)
-   and ConfirmDialog (1100), because a menu row can raise a question and the
-   question must cover the menu that asked it.
-
-   max-height with a scroll rather than a taller box: the component clamps its
-   top edge to the viewport, so a menu taller than the window would otherwise
-   have rows below the bottom edge and no way to reach them. Its dismiss-on-
-   scroll listener already excludes scrolls that happen INSIDE the menu, which
-   is what makes scrolling here safe. */
 .context-menu {
   position: fixed;
   z-index: 900;
@@ -5667,25 +4315,12 @@ li[aria-selected] .cm-completionMatchedText {
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
 }
 
-/* The same override .vault-menu carries, for the same reason and one surface
-   further: a raised sheet should read as brighter than what it covers, and in
-   the light theme --background-primary-alt IS the sidebar's colour (#f2f3f5,
-   the same value as --background-secondary). Raised over a tree row the menu
-   would be one flat sheet with the file list, told apart only by its 1px
-   border. Over the editor, which is white, it is the shadow that does the
-   work — which is why this override also keeps a shadow rather than dropping
-   to the border alone. */
 :root[data-theme="light"] .context-menu,
 :root[data-theme="light"] .context-menu-panel {
   background: var(--background-primary);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
 }
 
-/* A row. Deliberately .vault-menu-item's shape — same height, same radius, same
-   muted-until-hovered ink — because the two are the same kind of object and a
-   reader should not have to notice which one they are looking at. Only the left
-   padding differs, and only because the vault menu's rows give up 22px of it to
-   the remove control that sits ahead of every label. */
 .context-menu-item {
   display: flex;
   align-items: center;
@@ -5707,9 +4342,6 @@ li[aria-selected] .cm-completionMatchedText {
   color: var(--text-normal);
 }
 
-/* The keyboard's own highlight — the arrow keys walk these rows, so it has to
-   match what the pointer does and then say, additionally, that the keyboard is
-   here. Inset outline, as everywhere else in this file. */
 .context-menu-item:focus-visible {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
@@ -5717,18 +4349,11 @@ li[aria-selected] .cm-completionMatchedText {
   outline-offset: -1px;
 }
 
-/* A row that cannot act STAYS ON SCREEN and says why in its tooltip (Cut with
-   nothing selected, Insert table… while reading). Faint ink and no hover, so
-   it reads as unavailable rather than broken — a menu that quietly grows and
-   shrinks makes the reader hunt for a row that is simply not applicable now. */
 .context-menu-item:disabled {
   color: var(--text-faint);
   cursor: default;
 }
 
-/* Delete table, Move to Trash. The same red the failed-image notice uses, so
-   the app has one colour for "this destroys something". Only at rest and on
-   hover — a disabled danger row is still just unavailable. */
 .context-menu-item.is-danger:not(:disabled) {
   color: #e06c75;
 }
@@ -5745,9 +4370,6 @@ li[aria-selected] .cm-completionMatchedText {
   background: var(--background-modifier-border);
 }
 
-/* Text the menu carries rather than a row (the agent panel's VaultAgent
-   version). A row's flex, gap and side padding, so it starts in the labels'
-   column; smaller and faint ink, so it never reads as a disabled row. */
 .context-menu-label {
   display: flex;
   align-items: center;
@@ -5759,9 +4381,6 @@ li[aria-selected] .cm-completionMatchedText {
   cursor: default;
 }
 
-/* The ✓ column of a pick-one menu (the explorer's sort order, image 8). Every
-   row of such a menu carries it, blank where unchecked, so the labels line up
-   in one column; ordinary menus render none at all. */
 .context-menu-item-check {
   display: flex;
   align-items: center;
@@ -5771,8 +4390,6 @@ li[aria-selected] .cm-completionMatchedText {
   color: var(--text-normal);
 }
 
-/* "This row opens something." Pushed to the right edge by the row's own flex,
-   and faint because it is a hint about the row rather than part of its name. */
 .context-menu-item-arrow {
   margin-inline-start: auto;
   color: var(--text-faint);
@@ -5785,10 +4402,6 @@ li[aria-selected] .cm-completionMatchedText {
   text-align: right;
 }
 
-/* The flyout beside the menu — the table size picker lives in one. Chrome only:
-   the component positions it inline (position/left/top), because only it knows
-   the row the flyout hangs off. Anything positional here would be overridden
-   and would read as though it were doing something. */
 .context-menu-panel {
   z-index: 900;
   padding: 8px;
@@ -5798,20 +4411,6 @@ li[aria-selected] .cm-completionMatchedText {
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
 }
 
-/* ── The matrix size picker ──
-   Sweep the pointer across it, watch the rectangle light up, click to commit —
-   the gesture everyone already knows from Google Docs and Word. The cells are
-   direct grid items of this box, which is why TableSizeGrid's role="row"
-   wrappers are `display: contents`: the ARIA tree needs the rows, the layout
-   must not see them.
-
-   The column count is NOT written here. It is `TABLE_GRID_COLS`
-   (DocumentPane.tsx), the same number that decides how many cells the component
-   renders, and TableSizeGrid hands it over as `--table-grid-cols` on this
-   element. Written as a literal in both places they would agree only until
-   somebody changed one, and the failure is silent — the cells keep rendering
-   and the rows simply wrap at the wrong column. The `10` below is a fallback
-   for a grid rendered without the variable, not a second source of truth. */
 .table-size-grid {
   display: grid;
   grid-template-columns: repeat(var(--table-grid-cols, 10), 16px);
@@ -5828,16 +4427,11 @@ li[aria-selected] .cm-completionMatchedText {
   cursor: pointer;
 }
 
-/* The rectangle the click would create. Filled with the accent rather than
-   merely outlined: the whole picker is read at a glance, as a shape. */
 .table-size-cell.is-on {
   background: var(--interactive-accent);
   border-color: var(--interactive-accent);
 }
 
-/* Keyboard only — the pointer already says where it is by being there. Drawn
-   OUTSIDE the cell (a 16px box has no room for an inset ring) and lifted above
-   its neighbours so the ring is not clipped by the next cell's border. */
 .table-size-cell:focus-visible {
   outline: 1px solid var(--interactive-accent);
   outline-offset: 1px;
@@ -5845,9 +4439,6 @@ li[aria-selected] .cm-completionMatchedText {
   z-index: 1;
 }
 
-/* "4 × 3" under the grid: the same count the lit rectangle shows, for the
-   reader who is counting cells and for the screen reader that cannot see them
-   at all (the element is aria-live). */
 .table-size-label {
   margin-top: 8px;
   color: var(--text-muted);
@@ -5862,23 +4453,12 @@ li[aria-selected] .cm-completionMatchedText {
   text-align: center;
 }
 
-/* ============================================================
-   Tooltip — the one bubble utils/tooltip.ts draws for every
-   [data-tooltip]. Measured off Obsidian's own (images 2/5/6/7, at
-   2x): a 23.5px-tall body for one 12px line, 8px from glyph to
-   side, 4px corners, rgb(25,25,25) behind white text, a 5px-tall
-   10px-wide pointer, the body 8px off the target, and a faint
-   shadow. Near-black in BOTH themes, as Obsidian draws it; the dark
-   theme adds a hairline ring so it does not sink into dark chrome.
-   ============================================================ */
 :root {
   --tooltip-background: #191919;
   --tooltip-text: #fff;
   --tooltip-border: rgba(255, 255, 255, 0.12);
 }
 
-/* The ring stays, in the bubble's own colour, so both themes share one
-   geometry — the 1px is part of the measured 4px/8px padding either way. */
 :root[data-theme="light"] {
   --tooltip-border: var(--tooltip-background);
 }
@@ -5897,18 +4477,11 @@ li[aria-selected] .cm-completionMatchedText {
   color: var(--tooltip-text);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
   font-family: var(--font-ui);
-  /* 12px, not 13: rendered here against the reference, bubbles for "Expand
-     all" / "Change sort order" / "Auto-reveal current file" came out 74/119/147px
-     wide at 12px against 74/120/149 — 13px overshot every one by 4–7px.
-     15.6px lines: the one-line reference bubble is 23.5px tall and the
-     three-line one (vault switcher) 55px; 13px × 1.35 made both visibly taller. */
   font-size: 12px;
   font-weight: 400;
   line-height: 1.3;
   text-align: center;
-  /* `\n` in the attribute is a line break (the vault switcher's two lines). */
   white-space: pre-line;
-  /* A long path with no spaces wraps instead of overrunning the 300px. */
   overflow-wrap: anywhere;
   animation: tooltip-in 80ms ease-out;
 }
@@ -5921,12 +4494,6 @@ li[aria-selected] .cm-completionMatchedText {
   .tooltip { animation: none; }
 }
 
-/* The pointer: a 7px square turned 45° (a 10px base, a ~5px reach), centred on
-   the bubble's outer edge — offsets are from the padding box, hence the ring's
-   1px in -4.5px. Only its two outward edges carry the ring. It paints at
-   z-index -1 inside the bubble's stacking context: above the bubble's own
-   border, which it hides under itself so the ring runs around the tip without a
-   seam, and below the text, which it never covers. */
 .tooltip::before {
   content: '';
   position: absolute;
@@ -5973,12 +4540,6 @@ li[aria-selected] .cm-completionMatchedText {
   border-left-width: 1px;
 }
 
-/* ── Reading a .tex file ──
-   The typeset view of a LaTeX source file (components/TexView.tsx). Deliberately
-   NOT styled like markdown reading mode: a paper wants a measure, a title block
-   and real space around its display maths, and the pane it sits in is the same
-   width as a note's. `.tex-slot` is the scroller, so the keyboard target above
-   has something to focus and to page through. */
 .tex-slot {
   position: absolute;
   inset: 0;
@@ -5987,7 +4548,7 @@ li[aria-selected] .cm-completionMatchedText {
 }
 
 .tex-view {
-  padding: 28px 0 40vh;    /* the same bottom air a note's scroller keeps */
+  padding: 28px 0 40vh;
   color: var(--text-normal);
   font-size: var(--font-size-normal);
   line-height: 1.65;
@@ -6031,9 +4592,6 @@ h5.tex-heading { font-size: 1em; color: var(--text-muted); }
   margin: 0 0 0.9em;
 }
 
-/* Every block a document repeats thousands of times carries this, with a box to
-   guess by — see AGENTS.md. A 900-page thesis then lays out and paints what is
-   on screen rather than all of it on every frame. */
 .tex-para,
 .tex-display,
 .tex-code,
@@ -6049,8 +4607,6 @@ h5.tex-heading { font-size: 1em; color: var(--text-muted); }
   text-align: center;
 }
 
-/* A formula still waiting for KaTeX (TexView renders maths lazily) shows its
-   source, in the same monospace the editor uses so the swap is not a jolt. */
 .tex-math,
 .tex-math-display {
   font-family: var(--font-monospace);
@@ -6110,16 +4666,12 @@ h5.tex-heading { font-size: 1em; color: var(--text-muted); }
   font-weight: 600;
 }
 
-/* A named environment (`proof`, `theorem`, a `figure`) is drawn as a marked
-   block: the name is what a reader is scanning for, and an environment this app
-   knows nothing about still shows its contents this way rather than vanishing. */
 .tex-env {
   margin: 1.1em 0;
   padding-left: 14px;
   border-left: 2px solid var(--background-modifier-border);
 }
 
-/* `center`, `document` and friends are alignment, not content: no rule for them. */
 .tex-env.is-bare {
   margin: 0;
   padding-left: 0;
@@ -6136,7 +4688,6 @@ h5.tex-heading { font-size: 1em; color: var(--text-muted); }
   text-transform: capitalize;
 }
 
-/* A command this app does not know, kept visible exactly as written. */
 .tex-raw {
   color: var(--text-faint);
   font-family: var(--font-monospace);
@@ -6164,7 +4715,6 @@ h5.tex-heading { font-size: 1em; color: var(--text-muted); }
   font-size: 0.9em;
 }
 
-/* Equal header tracks keep the filename centred as reading actions appear. */
 .editor-slot { container-type: inline-size; }
 .editor-slot-nav, .editor-slot-actions { width: 76px; min-width: 76px; }
 .editor-history-menu { display: none; }

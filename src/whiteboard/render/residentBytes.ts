@@ -5,9 +5,6 @@ import { inkCoverageBytes } from '../ink/packedCoverage';
 import type { TextPaint } from '../text/paint';
 import { inkCoverageChunks, type PaintNode } from './paintStream';
 
-// Resident-size estimates for cached render state. Typed arrays count at their exact size; command and
-// record objects count at fixed costs. These size budgets and leases; they are not a heap measurement.
-
 export function inkChunkBytes(chunk: InkCoverage): number {
     return 256 + inkCoverageBytes(chunk);
 }
@@ -33,7 +30,6 @@ export function connectorBytes(connector: ConnectorGeometry): number {
     return bytes;
 }
 
-/** A resolved node keeps its own command arrays and the ink coverage it references alive, so both are counted. */
 export function paintNodeBytes(node: PaintNode): number {
     let bytes = 256;
     for (const items of [node.underlay ?? [], node.content]) for (const item of items) {

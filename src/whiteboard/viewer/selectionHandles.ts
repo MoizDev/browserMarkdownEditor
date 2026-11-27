@@ -20,10 +20,7 @@ export type SelectionHandleHit = Readonly<{ kind: 'resize'; handle: ResizeHandle
 export interface SelectionHandleOptions {
     readonly runtime: BoardRuntime;
     readonly overlay: HTMLElement;
-    /** Absent for an outline, which has no handles to hit. */
     readonly camera?: () => ViewState;
-    /** A read-only view draws the selection frame's outline alone: its box and stroke, and no handles, grip or stem, since
-     * nothing can be dragged there. */
     readonly outlineOnly?: boolean;
     readonly current: () => boolean;
     readonly visible: () => boolean;
@@ -37,9 +34,6 @@ function point(box: OrientedBox, x: number, y: number): Vec2 {
     const c = Math.cos(box.rotation), s = Math.sin(box.rotation);
     return { x: box.origin.x + c * x - s * y, y: box.origin.y + s * x + c * y };
 }
-/** Surface positions of the box's handles, written into `out` (no per-frame arrays): the eight resize handles as x, y pairs,
- * then the rotation grip at index 16 (x) and 17 (y). Measured by reading only: the frame path made a fresh array of eight
- * points and a rotation point for every frame, and the outline made a string from them. */
 const PROJECTED = 18;
 function projectInto(box: OrientedBox, view: ViewState, out: Float64Array, shiftX = 0, shiftY = 0): void {
     for (let i = 0; i < handles.length; i++) {
@@ -54,13 +48,8 @@ function projectInto(box: OrientedBox, view: ViewState, out: Float64Array, shift
     out[16] = cornerX + dx / length * 11.25; out[17] = cornerY + dy / length * 11.25;
 }
 
-/** Mounted chrome only: the session and renderer keep all document geometry. */
 const SVG_NS = 'http://www.w3.org/2000/svg';
-/** `last` holds the value each attribute was last written with: circles x, y pairs at 0–15, the grip at 16–17, the stem's
- * x1, y1, x2, y2 at 18–21. A frame compares numbers here and touches the DOM only for what moved, so an unmoved handle
- * costs no attribute read and no write. */
 interface HandleNodes { coarse: boolean; readonly path: SVGPolygonElement; readonly stem: SVGLineElement; readonly rotate: SVGCircleElement; readonly circles: SVGCircleElement[]; readonly last: Float64Array }
-/** Builds one frame's handle elements once, in paint order: outline, stem, rotation grip, then the resize handles. */
 function buildHandleNodes(parent: SVGSVGElement, handleCount: number): HandleNodes {
     const path = document.createElementNS(SVG_NS, 'polygon'), stem = document.createElementNS(SVG_NS, 'line'), rotate = document.createElementNS(SVG_NS, 'circle');
     path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5');
@@ -76,8 +65,6 @@ function buildHandleNodes(parent: SVGSVGElement, handleCount: number): HandleNod
     return { coarse: pointerIsCoarse(), path, stem, rotate, circles, last: new Float64Array(PROJECTED + 4).fill(Number.NaN) };
 }
 
-/** The world rotations of the unlocked leaves under `roots` (a group's children, recursively). The selection frame and the hover
- * outline both draw their box in `commonResizeRotation` of these, so a group is boxed the same way selected and hovered. */
 export function frameLeafRotations(doc: BoardDoc, roots: readonly Node[]): number[] {
     const rotations: number[] = [], pending = [...roots];
     while (pending.length) {
@@ -102,7 +89,6 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
         clear(); if (!current()) return;
         const selection = runtime.selection.getSnapshot(), revision = doc.rev, owner = session.owner;
         const roots = selectedRoots(doc, selection.selected).filter(node => node.kind !== 'opaque' && !isLocked(doc, node) && !hasOpaqueDescendant(doc, node.id));
-        // An individual sticky uses neighbour controls, not resize handles.
         if (!roots.length || (roots.length === 1 && roots[0].kind === 'sticky')) return;
         const active = () => !signal.aborted && turn === generation && current() && session.owner === owner && doc.rev === revision
             && runtime.selection.getSnapshot() === selection;
@@ -127,9 +113,6 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
     };
     const stopSelection = runtime.selection.subscribe(refresh), stopSession = session.subscribe(refresh);
     refresh();
-    // The nodes live as long as their svg: a frame moves their coordinates, it does not build new elements.
-    // A frame's positions go to one scratch array, and each attribute is written only when its number changed: a frame that
-    // moves nothing touches no DOM node (by reading: the old frame re-set every attribute and the outline string each time).
     const drawn = new Float64Array(PROJECTED);
     const hitPositions = new Float64Array(PROJECTED);
     const draw = (shape: OrientedBox, view: ViewState, moving: Vec2 | 'hidden' | null) => {
@@ -152,7 +135,6 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
         }
         const nodes = handleNodes ??= buildHandleNodes(svg, handles.length);
         const last = nodes.last;
-        // The handles grow for a finger or a pen, the size the catalogue uses for a coarse pointer (I§4.5).
         if (nodes.coarse !== pointerIsCoarse()) {
             nodes.coarse = !nodes.coarse;
             nodes.rotate.setAttribute('r', String(handleRadius(3)));
@@ -164,12 +146,10 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
             if (last[2 * i] !== x) { last[2 * i] = x; nodes.circles[i].setAttribute('cx', String(x)); if (!(i & 1)) outline = true; }
             if (last[2 * i + 1] !== y) { last[2 * i + 1] = y; nodes.circles[i].setAttribute('cy', String(y)); if (!(i & 1)) outline = true; }
         }
-        // The outline is the four corners (handles 0, 2, 4, 6), so its string is rebuilt only when one of them moved.
         if (outline) nodes.path.setAttribute('points', `${drawn[0]},${drawn[1]} ${drawn[4]},${drawn[5]} ${drawn[8]},${drawn[9]} ${drawn[12]},${drawn[13]}`);
         const gripX = drawn[16], gripY = drawn[17];
         if (last[16] !== gripX) { last[16] = gripX; nodes.rotate.setAttribute('cx', String(gripX)); }
         if (last[17] !== gripY) { last[17] = gripY; nodes.rotate.setAttribute('cy', String(gripY)); }
-        // The stem runs from the top-right corner (handle 2) to the grip.
         const x1 = drawn[4], y1 = drawn[5];
         if (last[18] !== x1) { last[18] = x1; nodes.stem.setAttribute('x1', String(x1)); }
         if (last[19] !== y1) { last[19] = y1; nodes.stem.setAttribute('y1', String(y1)); }
@@ -188,7 +168,6 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
         hit(surface: Vec2, coarse = false, time?: number): SelectionHandleHit | null {
             const camera = presented.at(time);
             if (!current() || !box || !camera || !options.camera || !Number.isFinite(surface.x) || !Number.isFinite(surface.y)) return null;
-            // Default, calibration cut by owner: resize precedes the outward rotation hotspot.
             projectInto(box, { ...options.camera(), camera }, hitPositions);
             const radius = coarse ? 14 : 6;
             for (let i = 0; i < handles.length; i++) if (Math.hypot(surface.x - hitPositions[2 * i], surface.y - hitPositions[2 * i + 1]) <= radius)
@@ -197,17 +176,12 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
                 return { kind: 'rotate', centre: point(box, box.width / 2, box.height / 2), orientation: box.rotation };
             return null;
         },
-        /** `moving`: a translation preview moves the box by its offset, so it follows the drag; `'hidden'` (a transform that
-         * is not a plain translation) hides the box while the preview shows the shape elsewhere. */
-        // Audit only: the time each frame's handle write takes, and the DOM nodes it builds.
         write: (frame: ScheduledFrame, moving: Vec2 | 'hidden' | null = null) => auditTimed('select-handles', () => {
             auditCount('select-handles', 'frame');
             if (!current() || !box) { svg?.remove(); svg = undefined; presented.clear(); return; }
             presented.present(frame.timestamp, { ...frame.view.camera });
             draw(box, frame.view, moving);
         }),
-        /** A move that no presented frame followed (the board stalled under the large seed): the same nodes, written with the
-         * live view. It does not present history, so a hit test still uses the camera the board actually showed. */
         writeLive: (view: ViewState, moving: Vec2 | 'hidden' | null = null) => auditTimed('select-handles', () => {
             auditCount('select-handles', 'live');
             if (!current() || !box) return;

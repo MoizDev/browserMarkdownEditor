@@ -30,9 +30,6 @@ interface Borrow {
     active: boolean;
 }
 
-/** Pool storage stays charged while idle (design:284). Every borrow has fresh public handles:
- * releasing a lease can never leave a stale public handle authorizing a later borrow's pixels.
- */
 export class Webgl2TargetPool {
     readonly #backend: PoolBackend;
     readonly #entries = new Set<Entry>();
@@ -103,7 +100,6 @@ export class Webgl2TargetPool {
         return true;
     }
 
-    /** An independently owned target/clip can outlive the borrow that supplied its texture. */
     retainDependency(handle: TextureHandle): (() => void) | undefined {
         const borrow = this.#handles.get(handle);
         if (!borrow) return undefined;
@@ -116,7 +112,6 @@ export class Webgl2TargetPool {
         };
     }
 
-    /** Pin accounting spans encode-before-submit as well as submitted fences (design:298). */
     touch(handle: Handle, frame: object): void {
         const borrow = this.#handles.get(handle);
         if (!borrow) return;
@@ -148,7 +143,7 @@ export class Webgl2TargetPool {
     }
 
     clear(): void {
-        this.trimIdle(); // Pressure always relinquishes idle storage before a live working set.
+        this.trimIdle();
         for (const entry of this.#entries) {
             if (entry.held) this.release(entry.held.lease);
             this.#backend.destroy(entry.storage);

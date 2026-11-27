@@ -18,12 +18,9 @@ export interface NativeLoadReply extends Omit<NativeReadResult, 'draft'> {
     readonly savedView?: SavedView;
 }
 
-/** Parse and graph repair share the worker-local sample store. Only immutable
- * encoded sample records cross the worker boundary; leases stay in that store. */
 export async function nativeLoad(payload: unknown, context: WorkerContext): Promise<NativeLoadReply> {
     const request = validateNativeRequest(payload), samples = new SampleStore(), owner = {};
     const leases: SampleLease[] = [], wires = new Map<SampleRef, LoadSampleWire>();
-    // Exact decoded sample bytes from the store, plus the wire text (UTF-16) kept for repair.
     let wireBytes = 0;
     const cooperate = () => { reportBoardMemory(context, owner, samples.byteLength + wireBytes); return context.slice(); };
     try {
@@ -75,7 +72,6 @@ export async function nativeLoad(payload: unknown, context: WorkerContext): Prom
         while (prefixes.has(String(namespace))) {
             if ((namespace++ & 255) === 0) { context.signal.throwIfAborted(); await context.slice(); }
         }
-        // A source-free namespace gives the synchronous repair allocator O(1) per id.
         const prefix = `repair-${namespace}-`;
         let repaired: LoadRepairResult;
         try {
@@ -87,9 +83,6 @@ export async function nativeLoad(payload: unknown, context: WorkerContext): Prom
                     return wire;
                 },
                 rootPlacement() {
-                    // The native `b` is an untrusted cold-rendering hint, not
-                    // an authoritative world bound for page membership. Keep
-                    // source bytes intact if exact geometry is unavailable.
                     throw new Error('Exact orphan bounds are unavailable for paged repair');
                 },
                 cooperate, signal: context.signal,

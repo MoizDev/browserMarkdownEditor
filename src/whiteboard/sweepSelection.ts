@@ -4,8 +4,6 @@ import type { Vec2 } from './geom/path';
 import { SpatialPickJob, sweptSelectionCursor } from './pick';
 import type { SweepSelectionServices } from './sweepSelection.types';
 
-// Each real segment gets the shared scene's conservative world-space AABB;
-// shape coverage and every ancestor clip are resolved by the narrow-phase service.
 export function beginSweptSelection(services: SweepSelectionServices, from: Vec2, to: Vec2, topOnly: boolean) {
     const state = services.selection.getSnapshot(), transform = services.worldToSurface;
     if (![from.x, from.y, to.x, to.y, services.radiusCss, ...transform].every(Number.isFinite) || services.radiusCss < 0) throw new RangeError('Invalid swept selection');

@@ -8,9 +8,6 @@ interface BoundLayer {
     readonly compositor: CompositorLayer;
 }
 
-/** Definitions are immutable attachment identities. The lifecycle owns all layers after publication;
- * a failed construction only disposes new, unpublished layers, never an existing session's layer.
- */
 export class PaneLayerSet {
     private bindings: readonly BoundLayer[] = [];
 
@@ -23,9 +20,6 @@ export class PaneLayerSet {
         return this.bindings.find(binding => binding.layer === layer)?.definition;
     }
 
-    /** Returns the replacement without ending any published layer's life. The caller hands
-     * removed layers to PaneLifecycle.setLayers, the only release/dispose route.
-     */
     replace(definitions: readonly PlatformLayerDefinition[]): void {
         const ids = new Set<string>();
         for (const definition of definitions) {

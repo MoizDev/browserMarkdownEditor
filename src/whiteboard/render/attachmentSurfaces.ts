@@ -9,9 +9,6 @@ import type { Node } from '../model/nodes';
 import type { BoardVectorGeometry } from './vectorGeometry';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-/** The contour approximates the actual filled coverage, not its AABB. The
- * bound is in node-local units and must travel with any boundary-certification
- * decision; existing vector providers own their own contour precision. */
 export type BoardAttachmentSurface = FigureAttachmentSurface & { readonly boundaryErrorWorld: number };
 export class AttachmentBoundaryUncertified extends Error {
     constructor(readonly boundaryErrorWorld: number, readonly toleranceWorld: number) {
@@ -25,7 +22,6 @@ export interface BoardAttachmentSurfaceOptions {
     readonly signal: AbortSignal;
     readonly cooperate?: () => Promise<void>;
     readonly deviceScale?: number;
-    /** Maximum admitted contour error, in node-local units; default is the canonical 0.01. */
     readonly toleranceWorld?: number;
 }
 const MAX_COMMANDS = 65_536;
@@ -45,9 +41,6 @@ function union(a: Rect | null, b: Readonly<{ x: number; y: number; w: number; h:
     return { x, y, width: Math.max(a.x + a.width, right) - x, height: Math.max(a.y + a.height, bottom) - y };
 }
 
-/** One actual provider path segment becomes the same round-cap/round-join
- * coverage used by ink. Unioning those capsules is precisely the Canvas stroke
- * of the flattened centreline, including disconnected dash and dot subpaths. */
 function segment(a: Vec2, b: Vec2, c1: Vec2, c2: Vec2, straight: boolean): { samples: SampleSequence; geometry: CurveGeometry; dot: boolean } {
     const values = [a.x, a.y, b.x, b.y, c1.x, c1.y, c2.x, c2.y];
     if (!values.every(Number.isFinite)) throw new RangeError('Invalid polyline attachment path');
@@ -133,7 +126,6 @@ function* attachmentSurface(node: Readonly<Node>, options: BoardAttachmentSurfac
                 if (due()) { yield; reset(); }
             }
         }
-        // Anchor semantics are the real provider's un-stroked logical box.
         if (outline.length) bounds = vector.boxLocal;
     }
     signal.throwIfAborted();
@@ -153,7 +145,6 @@ export async function prepareBoardAttachmentSurface(node: Readonly<Node>, option
     } finally { job.return(undefined as never); }
 }
 
-/** The same certified contour path, drained synchronously for capture. */
 export function prepareBoardAttachmentSurfaceNow(node: Readonly<Node>, options: Omit<BoardAttachmentSurfaceOptions, 'cooperate'>): BoardAttachmentSurface | null {
     const job = attachmentSurface(node, options);
     try {

@@ -12,8 +12,6 @@ export interface SpatialCursor {
     resume(budget: Readonly<{ deadline: number; maxVisits: number }>, visit: (ref: SpatialRef) => void): SpatialQueryStatus;
     cancel(): void;
 }
-// The scene owns the only index; provisional candidates may be narrowed progressively,
-// but they cannot be committed until the whole stamped traversal completes.
 export class SceneCursorAdapter implements SpatialCursor {
     private readonly query: SpatialQuery;
     private readonly sceneEpoch: number;
@@ -51,27 +49,20 @@ export class SceneCursorAdapter implements SpatialCursor {
 }
 export interface CandidateHit {
     readonly id: NodeId;
-    /** Larger rank is painted later; never a spatial slot number. */
     readonly rank: number;
     readonly result: NarrowResult;
 }
 export interface NarrowWork {
-    /** null means more work remains; false hits must not be published as misses early. */
     step(budget: Readonly<{ deadline: number; maxVisits: number }>): CandidateHit | null;
     cancel(): void;
 }
 export interface PickServices {
-    /** The query's session, revision, camera and font stamp still match. */
     isCurrent(): boolean;
-    /** Validate slot generation, sheet, frame clips and visibility before starting narrow phase. */
     begin(ref: SpatialRef): NarrowWork | null;
-    /** Higher priority chrome/part precedes body before paint rank. */
     partPriority(part: NarrowResult['part']): number;
 }
 export interface PickOutcome { readonly status: SpatialQueryStatus; readonly hits: readonly CandidateHit[] }
 
-// A top-only sweep cannot expose a provisional winner: a later candidate may
-// paint above it. Non-top-only sweeps can highlight each certified hit as it arrives.
 export function sweptSelectionCursor(job: SpatialPickJob, topOnly: boolean) {
     return {
         step(budget: Readonly<{ deadline: number; maxVisits: number }>) {
@@ -83,8 +74,6 @@ export function sweptSelectionCursor(job: SpatialPickJob, topOnly: boolean) {
     };
 }
 
-// A query owns the scene cursor lease until completion/cancellation. It never turns a
-// partial traversal into a miss, and a superseded hover can release all its work.
 export class SpatialPickJob {
     private readonly pending: (NarrowWork | null)[] = [];
     private readonly winners = new Map<NodeId, CandidateHit>();

@@ -27,7 +27,6 @@ function background(root: HTMLElement): readonly [number, number, number, number
     return [channels[0] / 255, channels[1] / 255, channels[2] / 255, 1];
 }
 
-/** The PDF viewer is the source of truth; these copies die with this view, not the document. */
 export function createPdfPreview(options: PreviewOptions): PdfPreview {
     if (nextView === Number.MAX_SAFE_INTEGER) throw new RangeError('Preview view serial exhausted');
     const viewLease = ++nextView;
@@ -96,8 +95,6 @@ export function createPdfPreview(options: PreviewOptions): PdfPreview {
             },
             onError(error) { conceal(); console.error('PDF platform preview failed:', error); },
             onNotice(message) {
-                // GPU cache pressure can fall back to CPU without losing the preview. Only an
-                // actually denied visible CPU floor makes this fallback notice appropriate.
                 if (message === 'cpu-floor-denied' && !pressureNotified) {
                     pressureNotified = true;
                     options.onNotice('PDF platform preview could not fit in memory; showing the classic view.');

@@ -1,5 +1,3 @@
-/* Shared asset is embedded in the opaque bootstrap. All publisher rules are scoped
-   below data-section; reader chrome and notices cannot be selected by book CSS. */
 html:has(>body>#surface),body:has(>#surface){margin:0;width:100%;height:100%;overflow:hidden;color-scheme:light dark}
 #surface{--reader-size:18px;--reader-leading:1.6;--reader-measure:65ch;--reader-margin:24px;width:100%;height:100%;box-sizing:border-box;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;font:var(--reader-size)/var(--reader-leading) Georgia,'Times New Roman',serif;background:#202124;color:#e8e6e0;padding:var(--reader-margin);outline:none;overflow-anchor:none}
 #surface[data-theme=light]{color-scheme:light;background:#fff;color:#242424}
@@ -22,5 +20,4 @@ html:has(>body>#surface),body:has(>#surface){margin:0;width:100%;height:100%;ove
 #notice{position:fixed;bottom:8px;inset-inline:12px;z-index:2147483647;pointer-events:none;font:12px/1.4 system-ui;background:#292b30ed;color:#eee;border-radius:6px;padding:6px 10px;max-height:3.5em;overflow:hidden}
 #notice:empty{display:none}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
-/* Keep selected publisher text readable over both light pages and dark prose. */
 #surface ::selection{background:#b6d3ff;color:#142237;text-shadow:none}

@@ -1,7 +1,6 @@
 const BYTE_LIMIT = 256 * 1024 * 1024;
 const DEPTH_LIMIT = 128;
 
-// SEC-W1: bound the expanded UTF-8 input and nesting before JSON.parse or record allocation.
 export function preflightLegacyJson(text: string): void {
     let bytes = 0, depth = 0, inString = false, escaped = false;
     for (let i = 0; i < text.length; i++) {

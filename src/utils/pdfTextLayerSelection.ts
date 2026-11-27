@@ -1,4 +1,3 @@
-/** One select-all keyboard route shared by the classic and tiled surfaces. */
 export function bindPdfSelectAll(root: HTMLElement, select: () => boolean | void): () => void {
     const onKey = (event: KeyboardEvent) => {
         if (event.defaultPrevented || (!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'a') return;
@@ -17,9 +16,6 @@ interface TextPoint {
 
 const distance = (value: number, min: number, max: number) => Math.max(min - value, 0, value - max);
 
-/** Empty margins have no browser caret: absolutely positioned spans leave DOM
- *  order unrelated to the line beside the pointer. Prefer that line, then the
- *  nearest span on it; do not alter native drags that start on a glyph. */
 function nearestEnd(layer: Element, x: number, y: number): TextPoint | undefined {
     let best: Element | undefined;
     let dy = Infinity;
@@ -42,8 +38,6 @@ function nearestEnd(layer: Element, x: number, y: number): TextPoint | undefined
     if (!first) return;
     let last = first;
     while (walker.nextNode()) last = walker.currentNode as Text;
-    // Endpoint glyph boxes also handle RTL and /Rotate; the logical first end
-    // need not be at the visual left of the span.
     const range = document.createRange();
     range.setStart(first, 0);
     range.setEnd(first, Math.min(1, first.length));
@@ -93,8 +87,6 @@ interface PdfTextSelectionOptions {
     selectionChanged?(): void;
 }
 
-/** One delegated binding per viewer rather than a listener retained by each
- *  page: text-layer windowing/replacement needs no separate teardown path. */
 export function bindPdfTextLayerSelection(root: HTMLElement, options: PdfTextSelectionOptions = {}): () => void {
     let drag: { id: number; layer: Element; anchor: TextPoint } | undefined;
     let copying: AbortController | undefined;

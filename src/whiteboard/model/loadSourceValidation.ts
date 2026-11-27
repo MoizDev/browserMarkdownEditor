@@ -1,8 +1,6 @@
 import type { ReadPosition, ReadSourceRecord, UnmappedRecord } from '../format/readTypes';
 import { FORMAT_LIMITS, RECORD_ORDER } from '../format/schema';
 
-// Provenance: native read position and bounds contracts, FORMAT_LIMITS, and the
-// serializer's original-byte authority. Independent admission checks, no third-party source.
 function fields(value: unknown, required: readonly string[], optional: readonly string[] = []): value is Record<string, unknown> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     for (const key of Reflect.ownKeys(value)) {

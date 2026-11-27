@@ -16,8 +16,6 @@ export interface GroupFocusOptions {
     readonly error: (error: unknown) => void;
 }
 
-/** Enter a selected group only after the real point query proves both the
- * outer group and its child. Selection scope changes never create history. */
 export function enterGroupAtPoint(options: GroupFocusOptions): boolean {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const before = runtime.selection.getSnapshot(), group = before.active ? doc.nodes.get(before.active) : undefined;
@@ -59,7 +57,6 @@ export function enterGroupAtPoint(options: GroupFocusOptions): boolean {
 export interface LeaveGroupOptions {
     readonly runtime: BoardRuntime;
     readonly point: Vec2;
-    /** Surface px per world unit, so the probe reaches what the point query's 8 px margin reaches. */
     readonly zoom: () => number;
     readonly current: () => boolean;
     readonly hold: () => () => void;
@@ -67,9 +64,6 @@ export interface LeaveGroupOptions {
     readonly error: (error: unknown) => void;
 }
 
-/** A press on empty canvas outside the focused group's bounds leaves its focus layer (catalogue S§4.6, S§22). The bounds test is
- * the scene's broad phase: any indexed node under the point whose ancestry reaches the group keeps the focus. A press inside
- * the group's bounds keeps it, so empty space between a group's children still works. */
 export function leaveGroupAtPoint(options: LeaveGroupOptions): void {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const before = runtime.selection.getSnapshot();

@@ -9,7 +9,6 @@ import type { PdfHighlightRects } from './textHighlight';
 export interface PdfFindStart { page: number; y: number }
 export interface PdfTiledFindHost {
     pageRect(page: number): Readonly<Rect> | undefined;
-    /** Fallback for a host without the animated, revision-guarded path. */
     reveal(page: number, box: Readonly<Rect>): void;
     approximate?(hit: PdfFindHit, signal: AbortSignal): Promise<Rect | null>;
     beginReveal?(page: number, box: Readonly<Rect>): number | null;
@@ -21,8 +20,6 @@ const abort = () => new DOMException('PDF highlight operation cancelled', 'Abort
 const task = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 const sameHit = (a: PdfFindHit, b: PdfFindHit | undefined) => !!b && a.page === b.page && a.from === b.from && a.to === b.to;
 
-/** Keeps search independent of the viewport; only its on-screen geometry is
- * requested and painted. The retained reader owns the actual D7 index. */
 export class PdfTiledFindHighlights {
     private hits: readonly PdfFindHit[] = [];
     private current: PdfFindHit | undefined;
@@ -56,8 +53,6 @@ export class PdfTiledFindHighlights {
         return !rect || rect.y + rect.height >= start.y;
     }
     async reveal(hit: PdfFindHit, signal: AbortSignal): Promise<void> {
-        // Start exact geometry concurrently: a cold page can already be queued
-        // by find, and the pool promotes this select request to priority 0.
         const exact = this.firstRect(hit, signal).then(rect => ({ rect }), error => ({ error }));
         const approx = await this.host.approximate?.(hit, signal).catch(() => null);
         if (signal.aborted || this.disposed || !this.visible) throw abort();

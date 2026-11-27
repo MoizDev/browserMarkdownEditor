@@ -1,6 +1,3 @@
-// D4-G1: a real warm-module first open versus a new byte-identical document.
-// No app imports/hooks. Timestamps precede native getFile and follow native blit;
-// pixel readback/hashing happens afterwards and is never the timestamp being timed.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -77,8 +74,6 @@ try {
                     seen.set(element, row); window.openWitness.fallbacks.push(row);
                 }
                 for (const element of document.querySelectorAll('.pdf-pane.pdf-pane-message')) if (seen.has(element)) seen.get(element).stillPresent = true;
-                // Removed roots cannot be rediscovered in the document; the
-                // separate observer records their own retained DOM references.
             }).observe(document, { childList: true, subtree: true });
             new MutationObserver(records => {
                 for (const record of records) for (const removed of record.removedNodes) if (removed instanceof Element) {
@@ -95,7 +90,6 @@ try {
             const note = await (await vault.getFileHandle('note.md', { create: true })).createWritable(); await note.write('# Warm module witness\n'); await note.close();
         }, [...fixture.bytes]);
         await page.getByRole('button', { name: 'Open Vault', exact: true }).click();
-        // Wait for the actual idle prefetch, not an app import from the run.
         const deadline = Date.now() + 15000;
         while (!parsed.length && Date.now() < deadline) await page.waitForTimeout(25);
         const prefetched = await binding.check();

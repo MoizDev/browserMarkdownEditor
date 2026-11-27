@@ -35,8 +35,6 @@ function sameToken(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
         a.session === b.session && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
 }
-/** A device's slabs count toward a route's GPU bytes only while that device is the host's current one at its generation. After a
- * loss or a generation change the old device's slabs are not reported, and none are until they are leased again. */
 function isCurrent(host: LayerHost, device: GfxDevice): boolean {
     return device === host.device() && device.generation === host.generation;
 }
@@ -48,7 +46,6 @@ function union(a: RectI | null, b: RectI): RectI {
 
 /** Immutable uploaded slabs are never overwritten while a submitted frame can still read them. */
 export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown) => void) {
-    // A refused reservation does not poll (needsFrame() is false while denied): it waits for a real capacity change.
     const awaitCapacity = (): void => {
         const wake = () => host.invalidate('analytic-batch-capacity');
         host.allocator.cpu.whenAvailable?.(wake); host.allocator.gpu.whenAvailable?.(wake);
@@ -70,8 +67,6 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
         live.delete(batch); host.allocator.cpu.release(owned.lease); host.allocator.cpu.release(owned.mapLease);
         for (const slab of batch.slabs) batch.device.destroy(slab.buffer);
     };
-    // Read from the slabs' own leases, never from a counter: the device returns a slab's lease when its buffer is destroyed,
-    // so the bytes reported are exactly the bytes still leased through this host on the current device and generation.
     const gpuHeld = (): number => {
         let bytes = 0;
         for (const batch of live.keys()) if (isCurrent(host, batch.device)) for (const slab of batch.slabs) bytes += slab.lease.bytes;
@@ -79,8 +74,6 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
         if (pending && isCurrent(host, pending.device)) for (const slab of pending.slabs) bytes += slab.lease.bytes;
         return bytes;
     };
-    // The CPU leases this route holds: each live batch's index and bookkeeping, and the building batch's in-flight leases.
-    // A lease is reported while it is held, so a release takes it out of the figure at the same moment it is returned.
     const cpuHeld = (): number => {
         let bytes = 0;
         for (const owned of live.values()) bytes += owned.lease.bytes + owned.mapLease.bytes;
@@ -234,22 +227,14 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
     };
 }
 
-// The run route (gpu-h5): a run of analytic capsules is packed once, uploaded in slabs, and drawn as one instanced draw
-// per slab. It is the route behind inkRouteFor's 'ink-analytic'; the batch above stays only for the running adapter.
-
 const NO_TEXTURES: readonly never[] = [];
-/** Slabs are bounded so one upload stays inside a frame's allowance; a run larger than a slab takes several. */
 const RUN_SLAB_BYTES = 256 * 1024;
 const RUN_STRIDE = ANALYTIC_INK_RUN_STRIDE;
-/** One uploaded slab, of one colour group. Its vertex slice is built once, at admission, so a draw builds only the command. */
 interface AnalyticSlab {
     readonly buffer: BufferHandle; readonly count: number; readonly bytes: number; readonly lease: ByteLease; readonly bounds: RectI;
     readonly vertices: readonly BufferSlice[]; readonly group: number;
 }
-/** Consecutive items of one colour, in item order: a draw's colour is one uniform, so a colour change starts a group. The
- * colour is read from the group's first item at each draw (a run holds its items), and written into `uniforms` in place. */
 interface ColourGroup { readonly items: readonly PaintInkItem[]; readonly uniforms: Float32Array }
-/** A run admitted for one view. Its slabs are immutable GPU buffers, drawn in item order, one colour group at a time. */
 export class AnalyticInkRun implements PreparedRun {
     readonly route = 'ink-analytic' as const;
     readonly blend = 'over' as const;
@@ -257,12 +242,8 @@ export class AnalyticInkRun implements PreparedRun {
         readonly instances: number) {}
 }
 
-/** Admits runs of analytic capsules, one view at a time. Packing is the single-item function's (analyticInkPaint), so the
- * run's pixels are the single item's pixels; only the upload and the draw are batched. */
 export function createAnalyticInkRuns(host: LayerHost, audit: string) {
     let device: GfxDevice | null = null, pipeline: PipelineHandle | null = null, pending = false, failed = false, incarnation = 0;
-    // One packing scratch, reused across admissions: writeBuffer copies its bytes before it returns. It is a CPU lease like
-    // any other: the governor requires every byte a route reports to be reserved, so the scratch reports exactly its lease.
     const FLOATS = RUN_STRIDE / 4;
     let staging = new Float32Array(0), stagingLease: ByteLease | null = null;
     const growStaging = (instances: number): boolean => {
@@ -277,7 +258,6 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
         return true;
     };
     const live = new Set<AnalyticInkRun>();
-    // The slabs' own leases, for the current device and generation only (see isCurrent).
     const gpuHeld = (): number => {
         let bytes = 0;
         for (const run of live) if (isCurrent(host, run.device)) for (const slab of run.slabs) bytes += slab.lease.bytes;
@@ -322,8 +302,6 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
             if (failed) return { status: 'unsupported', why: 'analytic-pipeline' };
             if (!ensurePipeline(current)) return { status: 'deferred' };
             if (current.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
-            // Phase one packs every drawn instance's geometry into the scratch and groups consecutive items of one colour, in
-            // item order: the groups change the uniform between draws, never the order the items composite in.
             const rects: RectI[] = [], groupOf: number[] = [], groupItems: PaintInkItem[][] = [], groupKeys: number[][] = [];
             for (const item of items) {
                 const paint = analyticInkPaint(item, view);
@@ -340,7 +318,6 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
             }
             if (!rects.length) return { status: 'empty' };
             const groups: ColourGroup[] = groupItems.map(items => ({ items, uniforms: Float32Array.of(width(view), height(view), 0, 0, 0, 0, 0, 0) }));
-            // Phase two uploads one slab at a time, never across a colour group; any refusal retires the slabs already made.
             const perSlab = Math.floor(RUN_SLAB_BYTES / RUN_STRIDE);
             const created: AnalyticSlab[] = [];
             const rollback = (): void => {
@@ -383,9 +360,7 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
             let drawn = -1;
             for (const slab of run.slabs) {
                 const group = run.groups[slab.group];
-                // The colour is the group's current colour, read from its first item and premultiplied in place: no allocation.
                 if (slab.group !== drawn) { drawn = slab.group; writeColour(group); }
-                // The uniform slice is per frame, so one is taken per draw; the empty texture list is shared.
                 const bindings = { uniforms: [{ binding: 0, slice: host.uniforms(group.uniforms) }], textures: NO_TEXTURES };
                 pass.draw({ pipeline: ready, bindings, vertices: slab.vertices, first: 0, count: 4, instances: slab.count, scissor: slab.bounds });
             }
@@ -401,7 +376,6 @@ function height(view: ViewState): number { return Math.round(view.viewport.heigh
 function sameColour(key: readonly number[], colour: readonly number[]): boolean {
     return key[0] === colour[0] && key[1] === colour[1] && key[2] === colour[2] && key[3] === colour[3];
 }
-/** Writes a group's premultiplied colour (the packing's own convention: rgb·α, α) into its uniforms, in place. */
 function writeColour(group: ColourGroup): void {
     const colour = group.items[0].material.color, alpha = colour[3], u = group.uniforms;
     u[4] = colour[0] * alpha; u[5] = colour[1] * alpha; u[6] = colour[2] * alpha; u[7] = alpha;

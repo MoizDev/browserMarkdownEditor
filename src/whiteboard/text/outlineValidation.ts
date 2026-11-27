@@ -7,7 +7,6 @@ const color = (value: unknown): boolean => Array.isArray(value) && value.length 
 const rectangle = (value: unknown): boolean => object(value) && finite(value.x) && finite(value.y)
     && finite(value.w) && value.w >= 0 && finite(value.h) && value.h >= 0;
 
-/** The worker never treats a malformed display list or a different face generation as drawable text. */
 export async function validOutlineRequest(value: unknown, context: WorkerContext): Promise<boolean> {
     context.signal.throwIfAborted();
     if (context.cancelled) throw new DOMException('Text export cancelled', 'AbortError');

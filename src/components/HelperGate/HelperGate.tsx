@@ -1,15 +1,3 @@
-// The screens that stand between a feature and VaultAgent: the first-time
-// guide, and one screen per way the connection can be missing. Short on purpose
-// — each says what is wrong and offers the one or two buttons that fix it.
-//
-// Two lazy chunks need them (the agent panel and the terminal dock), and
-// VaultAgent is the same helper for both, so the screens live here once, taking
-// the copy that differs. `requirement` is what the feature needs from the
-// helper: the chat needs one at or above MIN_HELPER_VERSION, the terminal one
-// at or above TERMINAL_VERSION. Callers render this only when `gatePasses` (gate.ts) is
-// false, and keep their own scroll wrapper (the agent's `.agent-setup`, the
-// dock's `.terminal-gate`).
-
 import type { ReactNode } from 'react';
 import { HELPER_NAME, HELPER_PORTS, MIN_HELPER_VERSION, TERMINAL_VERSION } from '../../../shared/vaultAgentProtocol';
 import { hasConnectedBefore, type BridgeState } from '../../utils/agentBridge';
@@ -86,17 +74,12 @@ export interface HelperGateProps extends PlatformProps {
     bridge: BridgeState;
     onConnect: () => void;
     onUpdate: () => void;
-    /** The first-time guide's title ("Set up the AI agent"). */
     title: string;
-    /** Its lede, under the title. */
     lede: ReactNode;
-    /** The feature, mid-sentence: "the AI agent", "the terminal". */
     noun: string;
-    /** A guide step of the feature's own, before "Install" (the agent's logins). */
     preface?: ReactNode;
 }
 
-/** The updating screen's one line, by the stage the helper reports. */
 function updateLede(bridge: Extract<BridgeState, { status: 'updating' }>): string {
     const name = bridge.target ? `${HELPER_NAME} ${bridge.target}` : HELPER_NAME;
     switch (bridge.phase) {
@@ -117,8 +100,6 @@ function progressPercent(bridge: Extract<BridgeState, { status: 'updating' }>): 
     return Math.min(100, Math.floor((received / total) * 100));
 }
 
-/** A slim bar under the lede while downloading; it slides, not fills, until
- *  the helper knows the size. */
 function UpdateProgress({ percent }: { percent: number | null }) {
     return (
         <div
@@ -167,10 +148,6 @@ export function HelperGate({
         );
     }
 
-    // Connected, but to a helper too old for this feature: the chat's floor is
-    // MIN_HELPER_VERSION (such a helper is connected only so it can be updated,
-    // or uninstalled from the ⋯ menu); the terminal's is TERMINAL_VERSION, and
-    // a helper between the two still chats fine.
     if (bridge.status === 'connected' && (bridge.helper.outdated || (forTerminal && !bridge.helper.terminal))) {
         const { helper, update } = bridge;
         const heading = forTerminal ? `Update ${HELPER_NAME} to use the terminal` : `Update ${HELPER_NAME}`;
@@ -278,8 +255,6 @@ export function HelperGate({
                         <div className="agent-actions">{retry}</div>
                     </Screen>
                 );
-            // Only a helper on an older PROTOCOL is refused outright now; one that
-            // is merely below MIN_HELPER_VERSION connects (the screen above).
             case 'outdated':
                 return (
                     <Screen title={`Update ${HELPER_NAME}`}>
@@ -322,9 +297,6 @@ export function HelperGate({
         }
     }
 
-    // idle, but this browser has used the helper before: the reload of a
-    // public page whose permission Chrome would not report as granted (so no
-    // auto-connect) must not look like a first run all over again.
     if (hasConnectedBefore()) {
         return (
             <Screen title={`Connect to ${HELPER_NAME}`}>
@@ -336,7 +308,6 @@ export function HelperGate({
         );
     }
 
-    // idle: the first-time guide.
     return (
         <Screen title={title}>
             <p className="agent-lede">{lede}</p>

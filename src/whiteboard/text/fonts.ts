@@ -9,7 +9,6 @@ export interface FontMetrics {
 }
 export interface FontDescriptor { readonly key: FontKey; readonly familyName: string; readonly fallback: string; readonly weight: number; readonly style: 'normal' | 'italic'; readonly file: string; readonly url: string; readonly metrics: FontMetrics }
 
-// Vite resolves each literal to a same-origin asset URL; constructing a URL does not fetch it.
 const urls: Record<string, string> = {
     'Shantell_Sans-Informal_Regular.woff2': new URL('./fonts/Shantell_Sans-Informal_Regular.woff2', import.meta.url).href,
     'Shantell_Sans-Informal_Bold.woff2': new URL('./fonts/Shantell_Sans-Informal_Bold.woff2', import.meta.url).href,
@@ -45,7 +44,6 @@ export function fontDescriptor(key: FontKey): FontDescriptor {
     return { key, familyName: family.name, fallback: family.fallback, weight, style, file: name, url: urls[name], metrics: (fontMetrics as Record<string, FontMetrics>)[name] };
 }
 
-/** Unicode cmap coverage; presentation sequences remain conservative because cmap alone cannot prove shaping. */
 export function fontSupports(key: FontKey, text: string): boolean {
     const ranges = (fontCoverage as Record<string, number[]>)[fontDescriptor(key).file];
     for (const character of text) {
@@ -63,13 +61,11 @@ export function fontSupports(key: FontKey, text: string): boolean {
     return true;
 }
 
-/** A fallback paint must remain fallback even if the alias subsequently loads. */
 export function fontCss(face: FontDescriptor, loaded = true): string {
     return `${face.style} ${face.weight} 64px ${loaded ? `"${face.familyName}", ` : ''}${face.fallback}`;
 }
 
 type Listener = (epoch: number, key: FontKey) => void;
-/** One instance per document or worker FontFaceSet. Loading starts only on ensure(). */
 export class BoardFonts {
     private readonly loads = new Map<string, Promise<boolean>>();
     private readonly loaded = new Set<string>();
@@ -79,7 +75,6 @@ export class BoardFonts {
     get epoch(): number { return this.currentEpoch; }
     isLoaded(key: FontKey): boolean { return this.loaded.has(fontDescriptor(key).url); }
     subscribe(listener: Listener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-    /** Wait for the actual face; export workers must not substitute a timeout stand-in. */
     load(key: FontKey): Promise<boolean> {
         const descriptor = fontDescriptor(key);
         let load = this.loads.get(descriptor.url);

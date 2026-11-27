@@ -2,8 +2,6 @@ import { EditorView, WidgetType } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { countEditorWidget } from './editorPerf';
 
-// Same lucide outline style as components/icons.tsx, but as plain strings —
-// widgets build raw DOM, not React.
 const SVG_ATTRS =
     'viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
@@ -14,11 +12,6 @@ const CHECK_ICON = `<svg ${SVG_ATTRS}><polyline points="20 6 9 17 4 12"/></svg>`
 
 const COPIED_FEEDBACK_MS = 1200;
 
-/**
- * The "copy code" affordance in a fenced block's top-right corner. Anchored to
- * the block's first (fence) row, which the live preview keeps as the panel's
- * top padding, so the button rides the top of the panel in every mode.
- */
 export class CopyCodeWidget extends WidgetType {
     constructor() {
         super();
@@ -34,15 +27,8 @@ export class CopyCodeWidget extends WidgetType {
         btn.dataset.tooltip = 'Copy code';
         btn.setAttribute('aria-label', 'Copy code');
         btn.innerHTML = COPY_ICON;
-        // Never a tab stop, like every other widget button (headingFold,
-        // tableWidget, imageWidget): after a tab click the note's scroller
-        // holds the keyboard (#35), and in Reading mode Tab went to the first of
-        // these in the DOM — often in the margin drawn ABOVE the screen, so the
-        // view jumped 1–2 screens to it (measured: scrollTop 18139 → 17523) and
-        // Space then pressed Copy instead of scrolling.
         btn.tabIndex = -1;
 
-        // A click must copy, not relocate the caret into the code block.
         btn.onmousedown = (e) => e.preventDefault();
         btn.onclick = () => {
             let pos: number;
@@ -75,7 +61,6 @@ export class CopyCodeWidget extends WidgetType {
         return btn;
     }
 
-    /** Let the button's own DOM handlers run instead of the editor's. */
     override ignoreEvent(): boolean {
         return true;
     }

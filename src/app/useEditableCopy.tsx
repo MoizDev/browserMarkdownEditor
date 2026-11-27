@@ -19,11 +19,6 @@ import { startsAsConvertedBoard } from '../utils/conversionRestore';
 import { newTabId } from './documentIds';
 import { describeReadError } from './readErrors';
 
-/**
- * "Make an editable copy" of a drawing or notebook from the old app (utils/oldBoards.ts): the offer when a person opens
- * one, the tree row's request, and App's half of the copy itself — the new file beside the original, opened in the
- * original's place. The board's pane runs the request, because the copy is made from the board it holds in memory.
- */
 export interface UseEditableCopyDeps {
   ask: Ask;
   tell: Tell;
@@ -50,9 +45,6 @@ export function useEditableCopy(deps: UseEditableCopyDeps) {
     setTabs, setLayout, handleFileClick, releaseTab, seedDocumentBuffer, editableCopyRef, oldBoardOpenedRef,
   } = deps;
 
-  // A person opened an old board: say what it is and offer the copy, once, as it opens. Only an open a person made
-  // reaches here (useDocumentOpener): a restored session or the agent opens old boards with no question, and the pane's
-  // bar offers the same copy at any time. Declining is not remembered: the next open asks again.
   const offer = useCallback(async (id: string, name: string) => {
     const noun = /\.notebook$/i.test(name) ? 'notebook' : 'drawing';
     const confirmed = await ask({
@@ -67,7 +59,6 @@ export function useEditableCopy(deps: UseEditableCopyDeps) {
       </>,
     });
     if (!confirmed) return;
-    // Still the document that was asked about: the person may have closed it, or the vault moved on, meanwhile.
     if (!tabsRef.current.some(tab => tab.id === id)) return;
     requestEditableCopy(id);
   }, [ask, tabsRef]);
@@ -76,8 +67,6 @@ export function useEditableCopy(deps: UseEditableCopyDeps) {
     return () => { oldBoardOpenedRef.current = null; };
   }, [offer, oldBoardOpenedRef]);
 
-  // The tree row's request: an open document is brought to the front, so its pane (which holds the board) is mounted
-  // and runs the copy; a closed one is opened first, without the question the row has already answered.
   useEffect(() => registerEditableCopyOpener(node => void (async () => {
     const tab = tabsRef.current.find(item => item.file.path === node.path);
     if (!tab) {
@@ -90,10 +79,6 @@ export function useEditableCopy(deps: UseEditableCopyDeps) {
     requestEditableCopy(tab.id);
   })()), [handleFileClick, setLayout, tabsRef]);
 
-  // The tree row's question, "is this an old board?": an open document's admission knows; a closed file is told by its
-  // first bytes, where a native board names its format (canvasFormat.ts reads the envelope from its first 256 characters).
-  // A board an earlier version converted in place names what it was made from in its header, which starts in the first
-  // few hundred characters (after the fixed fence line); 1024 holds it.
   useEffect(() => registerBoardRowPeek(async node => {
     if (node.kind !== 'file' || !isCanvasFile(node.name) || isNativeDrawingFile(node.name)) return 'other';
     const open = tabsRef.current.find(tab => tab.file.path === node.path);
@@ -112,7 +97,6 @@ export function useEditableCopy(deps: UseEditableCopyDeps) {
     const vaultCurrent = () => getVaultActivation() === activation && rootHandleRef.current === root;
     let written: Awaited<ReturnType<typeof writeBoardCopy>>;
     try {
-      // Only the vault has to stay put: a copy the person asked for is finished even if they close the tab meanwhile.
       written = await writeBoardCopy({ root, parent: file.parentHandle!, owner: file.handle as FileSystemFileHandle, signal,
         isCurrent: vaultCurrent, names: editableCopyNames(name, identity.kind), bytes: files => copy.source.build(files, signal), media: copy.source.media });
     } catch (error) {
@@ -124,16 +108,10 @@ export function useEditableCopy(deps: UseEditableCopyDeps) {
       throw error;
     }
     if (!vaultCurrent()) return;
-    // The copy opens where the person was looking: a drawing's camera is in the copy's own view record (built by its pane),
-    // a notebook's page and place are carried as the page it was left on (canvasViewState.ts). A drawing given the
-    // original's remembered position instead opened with its strokes drawn at the wrong scale and no text or picture until
-    // the pane next resized (measured from the pane's button; the cause is below this layer and is reported).
     if (identity.kind === 'notebook') copyCanvasViewPos(file.path, written.path);
     const node: FileTreeNode = { kind: 'file', name: written.name, path: written.path, handle: written.handle, parentHandle: file.parentHandle! };
     const id = newTabId();
     if (copy.notice) handOffCopyNotice(id, copy.notice);
-    // Opened as the opener opens a board (useDocumentOpener), from the bytes just written rather than a second read: a
-    // notebook is a text document whose buffer is its text, a `.drawing` is read by its pane; both baselines are the write's.
     const representation = representationFor(written.name);
     const text = representation.bufferKind === 'text' ? await written.bytes.text() : '';
     if (!vaultCurrent()) return;
@@ -143,8 +121,6 @@ export function useEditableCopy(deps: UseEditableCopyDeps) {
     const live = tabsRef.current.find(tab => tab.id === original.id && tab.file.path === file.path);
     const focused = !!live && (copy.focus || focusedPath(layoutRef.current) === file.path);
     if (live) {
-      // In ONE commit, the copy takes the original's place (its column, its index in the strip, its focus) and the original's
-      // document goes as a closed one does, with nothing to save; its file stays where it is.
       releaseTab(file.path);
       setTabs(previous => [...previous.filter(tab => tab.id !== original.id), opened]);
       setLayout(layout => {

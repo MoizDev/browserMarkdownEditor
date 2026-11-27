@@ -1,16 +1,3 @@
-// A small, read-only PDF object reader for the rotation writer: enough of the file
-// syntax to follow the cross-reference chain (tables, streams, hybrids, object
-// streams) and read the page tree, and nothing else. Worker-only: it parses
-// untrusted bytes, so it runs where the rest of the writer does.
-//
-// WHY ITS OWN READER, when pdf-lib is already in the writer: pdf-lib reads a file
-// front to back and re-serializes values through its own model (latin1 strings,
-// renumbered refs on save), while an incremental update must copy a page
-// dictionary EXACTLY and address it by its existing object number. Reading only
-// the xref chain and the page objects also keeps the cost independent of how much
-// image data the file holds — the old route decoded every stream (measured: ~4.3s
-// of JS Flate on a 62-page, 5.3MB scan).
-
 export class PdfSyntaxError extends Error {
     constructor(message: string) { super(message); this.name = 'PdfSyntaxError'; }
 }
@@ -35,7 +22,6 @@ const latin1 = (bytes: Uint8Array, from: number, to: number) => {
     return text;
 };
 
-/** Skips white space and comments. */
 export function skipSpace(bytes: Uint8Array, pos: number): number {
     while (pos < bytes.length) {
         const byte = bytes[pos];
@@ -55,7 +41,6 @@ function token(bytes: Uint8Array, pos: number): { text: string; end: number } {
 const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)$/;
 const INTEGER = /^\d+$/;
 
-/** Parses one direct value (refs included) starting at `pos`. */
 export function parseValue(bytes: Uint8Array, start: number, depth = 0): { value: PdfValue; end: number } {
     if (depth > MAX_DEPTH) throw new PdfSyntaxError('PDF value nesting exceeds its limit');
     const pos = skipSpace(bytes, start);
@@ -103,7 +88,6 @@ export function parseValue(bytes: Uint8Array, start: number, depth = 0): { value
     const { text, end } = token(bytes, pos);
     if (!text) throw new PdfSyntaxError('Unexpected PDF delimiter');
     if (NUMBER.test(text)) {
-        // `n g R` is a reference only when both parts are unsigned integers.
         if (INTEGER.test(text)) {
             const second = token(bytes, skipSpace(bytes, end));
             if (INTEGER.test(second.text)) {
@@ -142,7 +126,6 @@ function literalString(bytes: Uint8Array, pos: number): { value: PdfValue; end: 
     throw new PdfSyntaxError('Unterminated PDF string');
 }
 
-/** `n g obj`, returning the position after `obj`. */
 export function parseObjectHeader(bytes: Uint8Array, start: number): { num: number; gen: number; end: number } {
     const pos = skipSpace(bytes, start);
     const a = token(bytes, pos), b = token(bytes, skipSpace(bytes, a.end)), c = token(bytes, skipSpace(bytes, b.end));
@@ -155,7 +138,6 @@ export function keywordAt(bytes: Uint8Array, start: number, word: string): numbe
     return text === word ? end : -1;
 }
 
-/** Start of stream data after the `stream` keyword (CRLF or LF; a bare CR is tolerated). */
 export function streamDataStart(bytes: Uint8Array, afterDict: number): number {
     const end = keywordAt(bytes, afterDict, 'stream');
     if (end < 0) return -1;
@@ -206,7 +188,6 @@ function unpredict(data: Uint8Array, params: PdfDictValue | undefined): Uint8Arr
     return out;
 }
 
-/** Decodes a stream this reader is allowed to need: none or FlateDecode, with PNG predictors. */
 export async function decodeStream(dict: PdfDictValue, data: Uint8Array): Promise<Uint8Array> {
     const filter = dictGet(dict, 'Filter'), params = dictGet(dict, 'DecodeParms');
     const filters = filter === undefined ? [] : filter.kind === 'array' ? filter.items : [filter];
@@ -223,7 +204,6 @@ export interface PdfXrefSection {
     readonly trailer: PdfDictValue;
 }
 
-/** The byte offset after the last `startxref` keyword in [0, limit). */
 export function readStartXref(bytes: Uint8Array, limit = bytes.length): number {
     const window = Math.max(0, limit - 2048);
     const tail = latin1(bytes, window, limit), at = tail.lastIndexOf('startxref');
@@ -237,7 +217,6 @@ export function readStartXref(bytes: Uint8Array, limit = bytes.length): number {
 export interface ReadSectionResult extends PdfXrefSection {
     readonly entries: Map<number, XrefEntry>;
     readonly hybrid?: Map<number, XrefEntry>;
-    /** Just past the trailer dictionary, or past the xref stream's `endobj`. */
     readonly end: number;
 }
 
@@ -305,7 +284,6 @@ function readTableSection(bytes: Uint8Array, offset: number): { entries: Map<num
     }
 }
 
-/** One cross-reference section at `offset`, table or stream; a hybrid table carries its /XRefStm entries. */
 export async function readXrefSection(bytes: Uint8Array, offset: number): Promise<ReadSectionResult> {
     if (keywordAt(bytes, offset, 'xref') >= 0) {
         const { entries, trailer, end } = readTableSection(bytes, offset);
@@ -317,7 +295,6 @@ export async function readXrefSection(bytes: Uint8Array, offset: number): Promis
     return { kind: 'stream', offset, trailer: dict, entries, end };
 }
 
-/** The file's objects as its cross-reference chain defines them: newest section first. */
 export class PdfObjectReader {
     readonly entries = new Map<number, XrefEntry>();
     private readonly objectStreams = new Map<number, Promise<Map<number, PdfValue>>>();
@@ -340,7 +317,6 @@ export class PdfObjectReader {
         return reader;
     }
 
-    /** Where an object's own bytes are, when it is not inside an object stream. */
     location(num: number): { offset: number; gen: number } | undefined {
         const entry = this.entries.get(num);
         return entry?.type === 1 ? { offset: entry.offset, gen: entry.gen } : undefined;
@@ -404,7 +380,6 @@ export class PdfObjectReader {
     }
 }
 
-/** Equality of two parsed values, ignoring how they were spelled (numbers by value). */
 export function sameValue(a: PdfValue, b: PdfValue): boolean {
     if (a.kind !== b.kind) return false;
     switch (a.kind) {
@@ -435,7 +410,6 @@ function serializeName(name: string): string {
     return out;
 }
 
-/** PDF syntax for a parsed value: numbers keep their spelling, strings become hex (byte-exact). */
 export function serializeValue(value: PdfValue): string {
     switch (value.kind) {
         case 'number': return value.raw;

@@ -14,7 +14,6 @@ function validate(value: Dyadic): void {
 }
 function bitLength(value: bigint): number { return value.toString(2).length; }
 
-/** Smallest binary64 interval enclosing the exact quotient of two dyadics. */
 export function dyadicRatioInterval(a: Dyadic, b: Dyadic): Interval {
     validate(a); validate(b);
     if (b.n === 0n) throw new RangeError('Dyadic division by zero');
@@ -23,7 +22,6 @@ export function dyadicRatioInterval(a: Dyadic, b: Dyadic): Interval {
     const n = a.n < 0n ? -a.n : a.n, d = b.n < 0n ? -b.n : b.n;
     const exponent = a.e - b.e;
     let log = bitLength(n) - bitLength(d);
-    // The bit-length difference is either floor(log2(n/d)) or one above it.
     if (log >= 0 ? n < (d << BigInt(log)) : (n << BigInt(-log)) < d) log--;
     const k = log + exponent;
     let low: number, high: number;
@@ -34,10 +32,6 @@ export function dyadicRatioInterval(a: Dyadic, b: Dyadic): Interval {
         const numerator = shift >= 0 ? n << BigInt(shift) : n;
         const denominator = shift < 0 ? d << BigInt(-shift) : d;
         const mantissa = numerator / denominator, remainder = numerator % denominator;
-        // Integer division gives the adjacent lower grid point. The mantissa
-        // has at most 53 bits, and multiplying by 2^q is exact even for a
-        // subnormal: q is never below -1074. A remainder means the next
-        // binary64 value is the least representable upper bound.
         low = Number(mantissa) * 2 ** q;
         high = remainder === 0n ? low : nextUp(low);
     }

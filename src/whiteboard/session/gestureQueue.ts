@@ -8,18 +8,10 @@ export interface SessionGestureQueueOptions {
 }
 export interface SessionGestureQueue {
     readonly isGestureActive: boolean;
-    /** How many gesture holds are open. A caller that holds one of its own can tell its hold apart from a foreign gesture. */
     readonly gestureHolds: number;
-    /** A gesture still in the person's hands (a contact down, an IME composition), as opposed to one only settling. */
     readonly isInputGestureActive: boolean;
-    /** Admission/readiness and external I/O finish before enqueue. Task is synchronous. */
     enqueueAfterGesture<T>(signal: AbortSignal, task: () => T): Promise<T>;
-    /** Pointer gesture/IME start. Release on EVERY end/cancel/flush path, idempotently. A `settling` hold is work the
-     * person has already finished (an erase or a box after pointer-up, a commit awaiting its frame): it orders queued
-     * edits and commands after it exactly like any hold, but does not refuse the person's next press. Take it BEFORE
-     * releasing the gesture's own hold, so the queue never drains in between. */
     beginGesture(phase?: GesturePhase): () => void;
-    /** Called when isGestureActive changes: commands disabled during a gesture re-read their state at its start and end. */
     subscribeGesture(listener: () => void): () => void;
     dispose(): void;
 }
@@ -32,9 +24,6 @@ interface Pending {
     cancel(error: unknown): void;
 }
 
-// C7.2/WB-D17: one session-owned FIFO shared by input and agent callers. Stop
-// cancels while held; owner/read-only/cancellation are checked AGAIN just before
-// the synchronous task. A microtask keeps edits outside apply's publication.
 export function createSessionGestureQueue(options: SessionGestureQueueOptions): SessionGestureQueue {
     const owner = Object.freeze({ documentId: options.owner.documentId, session: options.owner.session });
     let first: Pending | null = null, last: Pending | null = null;
@@ -51,8 +40,6 @@ export function createSessionGestureQueue(options: SessionGestureQueueOptions): 
             queueMicrotask(drain);
         }
     };
-    // An aborted request must leave the FIFO immediately: a long gesture can
-    // otherwise retain every cancelled agent/paste promise until pointer-up.
     function unlink(item: Pending): void {
         if (!item.linked) return;
         if (item.previous) item.previous.next = item.next;
@@ -148,8 +135,6 @@ export class SessionMutationRefused extends Error {
 }
 const uncancelled = new AbortController().signal;
 
-// Preserve the viewer's class-shaped port while sharing ONE implementation.
-// Ownership is mandatory: readiness alone cannot recognize a replaced session.
 export class GestureMutationQueue implements SessionGestureQueue {
     private readonly queue: SessionGestureQueue;
     constructor(readState: () => SessionMutationState, ownership: Pick<SessionGestureQueueOptions, 'owner' | 'isCurrent'>) {
@@ -160,7 +145,7 @@ export class GestureMutationQueue implements SessionGestureQueue {
                 if (current.state !== 'ready') throw new SessionMutationRefused('NOT_READY', `Document is ${current.state}`);
                 return ownership.isCurrent(owner);
             },
-            isReadOnly: () => false, // Checked with readiness above, in the same admission guard.
+            isReadOnly: () => false,
         });
     }
     get isGestureActive(): boolean { return this.queue.isGestureActive; }

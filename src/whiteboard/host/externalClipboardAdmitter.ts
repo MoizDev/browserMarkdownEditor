@@ -22,18 +22,11 @@ import { acquireNativeBoard } from './nativeAcquisition';
 import { encodeExternalNativeSource } from './nativeSourceBuilder';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: external clipboard source semantics composed from the native source builder,
-// C5 admission, and the canonical attachment surface of the target node; no third-party source.
-
 export interface ExternalClipboardAdmitterOptions {
-    /** The render owner token the copying board runtime was created with. */
     readonly token: RenderToken;
-    /** Host's maximum CSS-px/world-unit scale, as the encoder and legacy preparation require. */
     readonly zMax: number;
     readonly memory: MemoryAllocator;
-    /** Reads one media entry's bytes from the copying host for native sources. */
     readBlob(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
-    /** App alone resolves relative legacy resources; absent means relative resources are refused. */
     readAsset?(src: string, signal: AbortSignal): Promise<Blob | null>;
     isCurrent(identity: BoardJobIdentity): boolean;
     cooperate?(): Promise<void>;
@@ -50,9 +43,6 @@ function clipboardContext(options: ExternalClipboardAdmitterOptions, context: Jo
         ...(options.cooperate ? { cooperate: options.cooperate } : {}) };
 }
 
-/** Converted nodes are encoded as one native file and then admitted through the same C5 path as
- * any native clipboard, so nothing bypasses the real acquisition. Their media blobs are the
- * converter's own inspected blobs, read once through the source. */
 async function admitConvertedNodes(source: { sheet: SheetId; nodes: readonly Node[]; media: readonly MediaEntry[];
     blobs: ReadonlyMap<MediaId, Blob>; samples: SampleStore },
     options: ExternalClipboardAdmitterOptions, context: JobContext, identity: BoardJobIdentity): Promise<ExternalClipboardAdmission> {
@@ -62,8 +52,6 @@ async function admitConvertedNodes(source: { sheet: SheetId; nodes: readonly Nod
         source.blobs.get(entry.id) ?? options.readBlob(entry, signal)));
 }
 
-/** Legacy content is admitted through the real legacy conversion, whose native result is then
- * measured like any other admission. Its native probe supplies the actual report legacy scanning needs. */
 async function admitLegacyEnvelope(content: Blob, options: ExternalClipboardAdmitterOptions, context: JobContext, identity: BoardJobIdentity)
     : Promise<ExternalClipboardAdmission> {
     const cooperate = options.cooperate ?? yieldToHost;
@@ -79,13 +67,10 @@ async function admitLegacyEnvelope(content: Blob, options: ExternalClipboardAdmi
         legacy.dispose();
         throw new Error('Legacy clipboard content could not be converted without loss');
     }
-    // Owned legacy media are the blobs the conversion verified; no other source can supply them.
     return admitLoadedClipboard({ load: legacy.native.load, samples: legacy.native.samples, report: legacy.native.report, dispose: legacy.dispose },
         clipboardContext(options, context, identity, async entry => legacy.media.get(entry.id) ?? null));
 }
 
-/** Pure canonical attachment: an Excalidraw fixed point is a normalized anchor on the target's logical box,
- * otherwise the endpoint is taken in that box's local space. Both use the connector surface convention. */
 function anchorOf(request: ExcalidrawBindingRequest, box: { x: number; y: number; width: number; height: number }, inverseMatrix: Affine)
     : { anchor: { x: number; y: number }; exact: boolean; snap: Attachment['snap'] } {
     if (request.fixedPoint) return { anchor: { x: request.fixedPoint[0], y: request.fixedPoint[1] }, exact: true, snap: 'none' };
@@ -116,7 +101,6 @@ export function createExternalClipboardAdmitter(options: ExternalClipboardAdmitt
         async resolveBinding(request, context) {
             context.signal.throwIfAborted();
             const doc = context.actualDraftDoc;
-            // The target is read from the draft document itself, never from a caller's copy.
             const target = doc.nodes.get(request.targetId);
             if (!target) throw new Error('Excalidraw binding target is not in the draft document');
             const services = createBoardRenderServices({ doc, samples: new SampleStore(), media: new MediaStore(), token: options.token });

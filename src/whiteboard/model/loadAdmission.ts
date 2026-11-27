@@ -9,17 +9,12 @@ import { yieldToHost } from '../../platform/yieldToHost';
 declare const loadBrand: unique symbol;
 export interface AdmittedLoadToken { readonly kind: 'admitted-board-load'; readonly [loadBrand]: true }
 export interface BoardLoadAdmission {
-    /** Must run inside the authority's current content job. Original opened bytes
-     * are an owned Blob, never a disk File that can change across these awaits. */
     prepare(projection: LoadProjection, baseline: Blob, context: JobContext): Promise<AdmittedLoadToken>;
     take(token: AdmittedLoadToken, context: JobContext): RehydratedLoad;
     discard(token: AdmittedLoadToken): void;
     dispose(): void;
 }
 
-/** Only this issuer can authorize a load. A worker marker, cloned token or token
- * from another issuer cannot install a session, and abandoned admissions release
- * every receiving-store creator lease rather than leaving samples resident. */
 export function createBoardLoadAdmission(authority: JobAuthority, ports: {
     readonly samples: SampleStoreReader;
     admit(pts: string, header: PointInspectionHeader): SampleLease;

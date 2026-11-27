@@ -9,7 +9,6 @@ function midpoint(a: Dyadic, b: Dyadic): Dyadic {
 function middle(a: ExactCurvePoint, b: ExactCurvePoint): ExactCurvePoint {
     return { x: midpoint(a.x, b.x), y: midpoint(a.y, b.y) };
 }
-/** Exact dyadic de Casteljau subdivision, paired with the interval hull job. */
 export function splitExactCurve(points: ExactCurve): readonly [ExactCurve, ExactCurve] {
     if (points.length === 2) {
         const m = middle(points[0], points[1]); return [[points[0], m], [m, points[1]]];

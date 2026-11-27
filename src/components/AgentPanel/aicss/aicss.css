@@ -2,19 +2,8 @@
    AICSS components, adapted (MIT, © 2026 AICSS — see LICENSE-aicss;
    https://www.aicss.dev). Sources: @aicss/react 0.1.3 and the free
    registry items file-diff / reasoning-effort.
-
-   What changed, everywhere: each component's `:global(:root)`,
-   `:global([data-theme=…])` and `prefers-color-scheme` token blocks are
-   deleted. Those assume the OPPOSITE of this app (no data-theme = light,
-   and the OS decides), and they would have written tokens onto the whole
-   page. The tokens (--tre-*, --orb-*, --tr-*, --st-*, --cb-*, --fd-*,
-   --ss-*) are defined once on the panel root instead (AgentPanel.css),
-   mapped to the app's own variables for both themes and a custom accent.
-   CSS-module class names became plain `aic-*` classes (the app uses no CSS
-   modules), and "Inter" became the app's UI font.
    ============================================================= */
 
-/* ── ThinkingState: label-shine, a brightness valley sweeping the text ── */
 .aic-shimmer {
   font-size: 13px;
   line-height: 18px;
@@ -40,7 +29,6 @@
   .aic-shimmer { animation: none; -webkit-text-fill-color: var(--tre-shine); color: var(--tre-shine); background: none; }
 }
 
-/* ── ThinkingReasoning ── */
 .aic-tr {
   display: flex;
   flex-direction: column;
@@ -77,7 +65,6 @@
 .aic-tr-chevron {
   color: var(--tre-chevron);
   transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
-  /* base path is an up caret; collapsed summary points down */
   transform: rotate(180deg);
 }
 .aic-tr-header[aria-expanded="true"] .aic-tr-chevron { transform: rotate(0deg); }
@@ -120,7 +107,6 @@
   to { opacity: 1; }
 }
 
-/* ── TextResponse / StreamingText: prose and the streaming caret ── */
 .aic-prose {
   max-width: 100%;
   font-size: 14px;
@@ -146,12 +132,10 @@
   vertical-align: text-bottom;
   animation: aic-caret-blink 1s step-end infinite;
 }
-/* solid while streaming, blink only once idle (matches the live component) */
 .aic-caret.is-steady { animation: none; opacity: 1; }
 @keyframes aic-caret-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .aic-caret { animation: none; } }
 
-/* ── CodeBlock ── */
 .aic-cb { width: 100%; max-width: 100%; border-radius: 12px; background: var(--cb-bg); box-shadow: var(--cb-shadow); padding: 12px 16px 16px; overflow: hidden; }
 .aic-cb-head { display: flex; align-items: center; gap: 8px; margin: -12px -16px 0; padding: 10px 12px 10px 16px; background: transparent; border-bottom: 0.5px solid var(--cb-ring); }
 .aic-cb-file { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
@@ -169,7 +153,6 @@
 .aic-cb-ln { user-select: none; text-align: right; padding: 0 7px; color: var(--cb-muted); font-size: 11px; }
 .aic-cb-code { white-space: pre; padding: 0 12px 0 8px; color: var(--cb-fg); font-family: inherit; }
 
-/* ── FileDiff ── */
 .aic-diff { border-radius: 12px; background: var(--fd-bg); box-shadow: var(--fd-shadow); padding: 12px 16px 16px; overflow: hidden; font-family: var(--font-monospace); }
 .aic-diff-head {
   display: flex; align-items: center; gap: 8px;
@@ -189,8 +172,6 @@
   scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb-bg) transparent;
 }
 .aic-diff-lines { position: relative; width: max-content; min-width: 100%; }
-/* full-height gutter divider at the line-number edge (32px + 32px). Lives on
-   the inner track so it stays aligned while the body scrolls. */
 .aic-diff-lines::before { content: ""; position: absolute; top: 0; bottom: 0; left: 64px; width: 0.5px; background: var(--fd-ring); z-index: 1; pointer-events: none; }
 .aic-diff-row {
   position: relative;
@@ -202,7 +183,6 @@
 .aic-diff-row code { white-space: pre; padding: 0 12px 0 8px; color: var(--fd-muted); font-family: inherit; }
 .aic-diff-row.ctx code { color: var(--fd-ctx); }
 .aic-diff-row.gap code { color: var(--fd-muted); font-style: italic; }
-/* left accent bar: solid green for additions, red hatch for deletions */
 .aic-diff-row.add::before, .aic-diff-row.del::before {
   content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 3px;
 }
@@ -222,7 +202,6 @@
 .aic-diff-row code .num { color: var(--fd-num); }
 .aic-diff-row code .cm { color: var(--fd-cm); }
 
-/* ── ReasoningEffort ── */
 .aic-re {
   position: relative;
   width: 224px;
@@ -311,11 +290,6 @@
   outline-offset: 3px;
 }
 
-/* ── Orb (Lattice + Lens families) ──
-   The geometry is authored at a 28px stage and scaled with --orb-k.
-   Per-segment easings inside @keyframes are literals: a timing function
-   inside a keyframe block is read by the animation engine, not resolved
-   against the element, so a var() there would not resolve. */
 .aic-orb {
   --orb-ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
   --orb-ease-out: cubic-bezier(0.17, 1, 0.32, 1);
@@ -327,15 +301,12 @@
   color: var(--orb-fg, #1a1a1a);
 }
 
-/* The inline pill form - same component, wrapped. */
 .aic-orb[data-pill] {
   gap: 7px;
   height: 30px;
   padding: 0 11px 0 5px;
   border-radius: 999px;
   background: var(--orb-pill-bg, #ffffff);
-  /* A hairline ring rather than a border, so it can't affect layout, plus
-     a tight contact shadow and a wider ambient one. */
   box-shadow: var(--orb-pill-shadow, 0 0 0 0.5px rgba(0, 0, 0, 0.08),
     0 1px 2px rgba(0, 0, 0, 0.05), 0 2px 4px rgba(0, 0, 0, 0.02));
 }
@@ -359,8 +330,6 @@
   contain: strict;
 }
 
-/* --- Lattice: discrete dots on a fixed 3×3 grid ------------------- */
-
 .aic-orb-lattice {
   position: absolute;
   left: 0;
@@ -368,12 +337,7 @@
   width: 28px;
   height: 28px;
   transform-origin: 0 0;
-  /* Three 3px dots on a 6px pitch measure 15px, so the grid is offset to sit
-     centred on the 28px stage. It deliberately does not fill the stage: that
-     is what keeps its visual weight level with the Lens circles. */
   transform: scale(var(--orb-k, 1)) translate(6.5px, 6.5px);
-  /* Resting ink of an unlit cell - the grid stays legible between beats.
-     --orb-dim is for cells sitting a choreography out entirely. */
   --orb-rest: var(--orb-rest-ink, 0.14);
   --orb-dim: var(--orb-dim-ink, 0.07);
 }
@@ -387,10 +351,6 @@
   opacity: var(--orb-rest);
 }
 
-/* One wave shape drives all three sweeps. What separates them is the pair of
-   duration and per-cell stagger: the stagger sets how fast the wavefront
-   travels, the duration how many cells it holds lit at once - which is to
-   say, how wide the band reads. */
 .aic-orb-lattice[data-variant="S1"] .aic-orb-cell {
   animation: aic-orb-wave 1.7s var(--orb-ease-in-out) infinite both;
 }
@@ -407,8 +367,6 @@
   animation: aic-orb-comet 1.7s var(--orb-ease-smooth) infinite both;
 }
 
-/* Interior cells sit out `orbit` and drop back, so the ring reads as a
-   ring and the travelling head has something to stand out against. */
 .aic-orb-lattice[data-variant="S3"] .aic-orb-cell[data-still] {
   animation: none;
   opacity: var(--orb-dim);
@@ -423,9 +381,6 @@
   opacity: var(--orb-dim);
 }
 
-/* Swells and subsides on the same symmetric curve, so there is no flash and
-   no hard edge - the cell rises out of its resting ink and sinks back into
-   it. The long tail after 56% is the gap between beats. */
 @keyframes aic-orb-wave {
   0% {
     opacity: var(--orb-rest);
@@ -447,14 +402,10 @@
   }
 }
 
-/* Starts lit and decays, so staggered ring cells form a head and tail.
-   The decay spans ~3.5 of the 8 ring positions - enough to read as a comet. */
 @keyframes aic-orb-comet {
   0% {
     opacity: 1;
     transform: scale(1.2);
-    /* Linear, so the cells behind the head form an even gradient instead
-       of collapsing to rest within the first two. */
     animation-timing-function: linear;
   }
   45% {
@@ -466,8 +417,6 @@
     transform: scale(1);
   }
 }
-
-/* --- Lens: three circles at depth, blur reads as distance --------- */
 
 .aic-orb-lens {
   position: absolute;
@@ -485,23 +434,11 @@
   top: 50%;
   width: var(--orb-d, 7px);
   height: var(--orb-d, 7px);
-  /* Pulled back by its own half-size, so --orb-d is the only knob a variant
-     has to touch to resize the cast and it stays centred on the stage. */
   margin: calc(var(--orb-d, 7px) / -2) 0 0 calc(var(--orb-d, 7px) / -2);
   border-radius: 50%;
   background: currentColor;
 }
 
-/* focus - attention travels the cast: each circle pulls into focus in turn.
-   Four circles on the corners of a square, one size for all of them, so the
-   only thing separating them is which one is sharp.
-
-   A second longer than the three-circle version it grew out of: the square
-   has four stations to visit and each one keeps the same unhurried second.
-
-   The delays count down rather than up because a more negative delay seeds a
-   circle further into its cycle: -3s of a 4s cycle runs three quarters ahead,
-   which is what sends focus round the square clockwise. */
 .aic-orb-lens[data-variant="B1"] .aic-orb-shape {
   --orb-d: 6px;
   animation: aic-orb-focus 4s var(--orb-ease-smooth) infinite both;
@@ -531,9 +468,6 @@
   animation-delay: -1s;
 }
 
-/* Opacity gradient around the square: active = 1.0, next neighbour = 0.30,
-   diagonal = 0.10, far = 0.05. Two circles are always clearly visible, the
-   rest are ghost hints. */
 @keyframes aic-orb-focus {
   0%,
   100% {
@@ -554,21 +488,18 @@
     transform: translate(var(--orb-ox), var(--orb-oy)) scale(1);
     animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   }
-  /* Next neighbour - one quarter away: clearly visible */
   38% {
     opacity: 0.3;
     filter: blur(1.2px);
     transform: translate(var(--orb-ox), var(--orb-oy)) scale(1.06);
     animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   }
-  /* Diagonal - half a cycle away: ghost */
   58% {
     opacity: 0.1;
     filter: blur(1.8px);
     transform: translate(var(--orb-ox), var(--orb-oy)) scale(1.1);
     animation-timing-function: linear;
   }
-  /* Far neighbour - three quarters away: barely there */
   82% {
     opacity: 0.05;
     filter: blur(2px);
@@ -576,14 +507,10 @@
   }
 }
 
-/* drift - the cast circles the stage on one track, sharp at the front and
-   blurred away at the back, so the orb reads as looking around. Uniform
-   size: the depth cue is doing the work, a size ladder would fight it. */
 .aic-orb-lens[data-variant="B2"] .aic-orb-shape {
   animation: aic-orb-revolve 3.3s linear infinite both;
 }
 
-/* Evenly spaced around the track, so one is always at the front. */
 .aic-orb-lens[data-variant="B2"] .aic-orb-shape-a {
   animation-delay: 0s;
 }
@@ -596,8 +523,6 @@
   animation-delay: -2.2s;
 }
 
-/* rotate() then translateY() walks a circle. Linear all the way: an eased
-   rotation on a circular path reads as a wobble, not as travel. */
 @keyframes aic-orb-revolve {
   0% {
     opacity: 1;
@@ -626,10 +551,6 @@
   }
 }
 
-/* bloom - shapes emanate from the centre, blurring out as they grow.
-   Linear keeps the total ink even; on a front-loaded curve the shapes
-   jump to their large, blurred end state and the orb alternates between
-   a heavy blot and an empty haze. */
 .aic-orb-lens[data-variant="B3"] .aic-orb-shape {
   animation: aic-orb-bloom 4.2s linear infinite both;
 }
@@ -646,12 +567,6 @@
   animation-delay: -2.8s;
 }
 
-/* Each ripple dies at 62% and waits out the rest, so the three overlapping
-   blooms leave gaps. Without the gap the aggregate is a constant haze and
-   the outward motion stops reading at all. Sharp circle appears, holds
-   briefly, then dissolves outward - blur only kicks in once opacity starts
-   dropping, so the circle stays crisp while it's visible and the blur reads
-   as the ripple dissipating. */
 @keyframes aic-orb-bloom {
   0% {
     opacity: 0;
@@ -688,10 +603,6 @@
   }
 }
 
-/* converge - a single circle traces an equilateral triangle (top → bottom-right
-   → bottom-left → top) with handoff-style easing: full size and sharp at each
-   vertex, smaller and slightly blurred in transit.  orbB breathes at the
-   centroid as a subtle depth cue; orbC is hidden. */
 .aic-orb-lens[data-variant="B4"] .aic-orb-shape-a {
   animation: aic-orb-converge 3.6s linear infinite both;
 }
@@ -754,15 +665,10 @@
   }
 }
 
-/* handoff - the cast crosses the focal plane one after another, always left
-   to right, like work being passed on. The shorthand curve is only a
-   fallback; every segment below sets its own. */
 .aic-orb-lens[data-variant="B5"] .aic-orb-shape {
   animation: aic-orb-handoff 2.8s linear infinite both;
 }
 
-/* Half a cycle apart, so one is always at the focal plane while the other is
-   invisible at an end and the loop point cannot be seen. */
 .aic-orb-lens[data-variant="B5"] .aic-orb-shape-a {
   animation-delay: 0s;
 }
@@ -771,16 +677,11 @@
   animation-delay: -1.4s;
 }
 
-/* The third holds the centre and breathes - a soft depth cue behind the
-   traffic rather than another traveller. */
 .aic-orb-lens[data-variant="B5"] .aic-orb-shape-b {
   animation-name: aic-orb-breathe;
   animation-duration: 3.6s;
 }
 
-/* Enters small from the left, reaches standard size at the focal plane, then
-   shrinks and fades out to the right. At the dwell (centre) the circle is
-   exactly 1× - no pulsing, no bounce, just a clean handoff. */
 @keyframes aic-orb-handoff {
   0% {
     opacity: 0;
@@ -851,9 +752,6 @@
   }
 }
 
-/* Not in the original: a still orb (connected and idle). The lattice rests
-   at its unlit ink with the centre lit — the reduced-motion frame, on purpose,
-   so "idle" and "reduced motion" read the same. */
 .aic-orb.is-still .aic-orb-cell,
 .aic-orb.is-still .aic-orb-shape {
   animation: none;

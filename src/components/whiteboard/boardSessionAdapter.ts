@@ -1,8 +1,6 @@
 import type { ContentSource, SourceOwner } from '../../utils/documentBuffers';
 import type { SessionAdapter } from '../../utils/documentSessions';
 
-/** Structural boundary keeps the lazy host independent of engine construction. The App's
- * session store owns this adapter and all panes receive the same underlying board object. */
 export interface BoardSessionPort extends SessionAdapter {
     readonly owner: SourceOwner;
     readonly isReadOnly: boolean;
@@ -12,18 +10,12 @@ export interface BoardSessionPort extends SessionAdapter {
 export interface HostedBoardAdapter<S extends BoardSessionPort> extends SessionAdapter {
     readonly owner: SourceOwner;
     readonly board: S;
-    /** Called only after the real editing view has installed its required services. */
     activateEditing?(): void;
-    /** What an old board's import left out or repaired. Held with the session, not the pane, so it is shown once:
-     * a pane remounted by a tab switch does not bring back a notice the person put away. */
     readonly importNotice?: { readonly text: string; isDismissed(): boolean; dismiss(): void };
-    /** The board came from an old-format file: shown read-only, never written, copied on request (utils/oldBoards.ts). */
     readonly oldBoard?: import('../../types/nativeCanvas').NativeOldBoard;
     dispose(): void | Promise<void>;
 }
 
-/** Called inside sessions.ensure/replace, with that store's freshly allocated owner. The
- * liveness callback is App-owned and resolves identity, not a path captured by a pane. */
 export function createBoardSessionAdapter<S extends BoardSessionPort>(
     owner: SourceOwner, board: S, isLiveOwner: (owner: SourceOwner) => boolean, disposeBoard?: () => void | Promise<void>,
 ): HostedBoardAdapter<S> {

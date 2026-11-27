@@ -13,7 +13,6 @@ const pathFor = i => `Folder-${String(i % 20).padStart(2, '0')}/Note-${String(i)
 const image = checkerPng().toString('base64');
 files.push({ path: 'Every construct.md', encoding: 'utf8', content: allConstructs });
 files.push({ path: 'Welcome.md', encoding: 'utf8', content: '# Welcome\n\nBME-VAULT-v1\n\n[[Every construct]]\n' });
-// N means N Markdown notes including the two named witnesses, not N plus helpers.
 for (let i = 0; i < count - 2; i++) {
     const next = (i + 1) % (count - 2);
     const target = Math.floor(random() * (count - 2));

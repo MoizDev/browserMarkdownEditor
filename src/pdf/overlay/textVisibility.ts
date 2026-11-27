@@ -3,16 +3,12 @@ import type { PdfTextInputBinding } from './textInput';
 import type { PdfTextKeyboardBinding } from './textKeyboard';
 
 export interface PdfTextVisibilityHost {
-    /** Includes the find scan and its 60-second hidden-index timer. */
     setReaderVisible(visible: boolean): void;
-    /** Remove mirrored page text, preserving the page landmark owner. */
     clearMirrorPages(): void;
-    /** Release overlay GPU resources and zero its canvas synchronously. */
     releaseGpu(reason: 'hidden'): void;
     rebuildVisible(): void;
 }
 
-/** One per mounted pane; agent reads use their own signals, never this one. */
 export class PdfTextVisibility {
     private visible = true;
     private disposed = false;

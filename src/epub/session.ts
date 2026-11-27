@@ -72,7 +72,6 @@ export async function createEpubSession(snapshot:ReadOnlyFileSnapshot,identity:R
    abort?.throwIfAborted();lifetime.signal.throwIfAborted();if(generation!==searchGeneration)throw new DOMException('Search superseded','AbortError');
    try{const value=await bridge.call<{hits:FindHit[];truncated:boolean}>('find',{query,queryId,index},abort);if(generation!==searchGeneration)throw new DOMException('Search superseded','AbortError');hits.push(...value.hits.slice(0,500-hits.length));truncated||=value.truncated||hits.length===500}catch(error){if(abort?.aborted||generation!==searchGeneration)throw error;unavailableSections.push(index)}
    yield {queryId,hits:[...hits],done:index===info.spine.length-1,sectionsDone:index+1,sectionsTotal:info.spine.length,truncated,unavailableSections:[...unavailableSections]} satisfies FindBatch;
-   // Keep scanning for honest section coverage after display cap; don't retain more hits.
   }}finally{cancel();abort?.removeEventListener('abort',cancel)}
  },dispose};
  return session;

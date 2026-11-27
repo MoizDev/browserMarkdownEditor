@@ -6,8 +6,6 @@ import type { RegionQuery } from '../geom/types';
 import type { InkCoverage } from './outline';
 import { ConvexDistance, INK_PICK_TOLERANCE_DEVICE_PX, type InkPickDecision, type InkPickResult } from './pick';
 
-// Provenance: ink coverage enclosures, nonzero contour winding and GJK support
-// contracts; independent resumable region query, no third-party source.
 type Primitive = { ax: number; ay: number; r0: number; bx: number; by: number; r1: number; centre: Vec2 };
 export class InkRegionPickJob {
     private readonly matrix: Affine;

@@ -20,7 +20,6 @@ export interface EpubPaneProps {
  onReaderCommand(token:ReaderToken,command:ReaderHostCommand):void;
  onFocusPane(path:string):void;onRetryRead(path:string):Promise<boolean>;
  registerKeyboardTarget(path:string,take:()=>void):()=>void;onNotify(message:string):void;
- /** Integration binds the shared browser preference store; no source file is changed. */
  onReaderSelection?(token:ReaderToken,selection:CanonicalSelection|null):void;
  onReaderVisibleText?(token:ReaderToken,text:string):void;
  onReaderAdapter?(token:ReaderToken,adapter:ReaderAdapter|null):void;
@@ -43,7 +42,6 @@ function bookErrorMessage(error:unknown):string {
 
 function EpubPane(props:EpubPaneProps){
  const {identity,snapshot}=props,host=useRef<HTMLDivElement>(null),pane=useRef<HTMLDivElement>(null),latest=useRef(props),adapter=useRef<ReaderAdapter|null>(null),sessionRef=useRef<Awaited<ReturnType<typeof openEpubSession>>|null>(null),version=useRef(''),searchAbort=useRef<AbortController|null>(null),opener=useRef<HTMLElement|null>(null);
- // The reader's code is gone from the server (a newer version replaced this one): Retry cannot fetch it, Reload can.
  const [replaced,setReplaced]=useState<unknown>(null);
  const [status,setStatus]=useState<ReaderStatus>({phase:'loading'}),[metadata,setMetadata]=useState<EpubMetadata|null>(null),[caps,setCaps]=useState<ReaderCapabilities|null>(null),[panel,setPanel]=useState<Panel>(null),[query,setQuery]=useState(''),[results,setResults]=useState<FindBatch|null>(null),[searching,setSearching]=useState(false),[section,setSection]=useState(0),[canReturn,setCanReturn]=useState(false),[external,setExternal]=useState<string|null>(null),[flow,setFlow]=useState(props.initialRecord?.requestedLayout??'scroll'),[localPrefs,setLocalPrefs]=useState<ReaderPreferences>(DEFAULT_PREFERENCES);
  useEffect(()=>{latest.current=props});

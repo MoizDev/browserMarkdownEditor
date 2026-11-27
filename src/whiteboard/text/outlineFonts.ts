@@ -1,6 +1,5 @@
 import { fontDescriptor, type FontKey } from './fonts';
 
-// Original desktop faces, loaded only by the export worker; screen text stays WOFF2/Canvas.
 const urls: Readonly<Record<string, string>> = {
     'Shantell_Sans-Informal_Regular.woff2': new URL('./outlineFonts/Shantell_Sans-Informal_Regular.otf', import.meta.url).href,
     'Shantell_Sans-Informal_Bold.woff2': new URL('./outlineFonts/Shantell_Sans-Informal_Bold.otf', import.meta.url).href,

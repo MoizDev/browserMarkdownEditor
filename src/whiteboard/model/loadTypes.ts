@@ -6,12 +6,10 @@ import type { JsonObject } from './json';
 import type { NodeRecord } from './nodes';
 import type { SampleLease, SampleRef, SampleStoreReader } from './samples';
 
-/** Ordered, unindexed records: duplicate ids are still present and file order is significant. */
 export interface LoadRepairDraft {
     readonly input: BoardDocInput;
     readonly sources: readonly ReadSourceRecord[];
     readonly unmapped: readonly UnmappedRecord[];
-    /** Original lines whose identity disappeared; never prime them as live records. */
     readonly removedSources?: readonly ReadSourceRecord[];
     readonly savedView?: SavedView;
 }
@@ -19,7 +17,6 @@ export interface LoadRepairOptions {
     readonly samples: SampleStoreReader;
     readonly newId: () => string;
     readonly sampleWire: (ref: SampleRef) => LoadSampleWire;
-    /** Reparent as a sheet root; paged hosts map the stored world centre to physical page. */
     readonly rootPlacement: (node: NodeRecord, sheetId: string, sourceOrdinal: number) => { readonly page: number; readonly x: number; readonly y: number };
     readonly cooperate?: () => Promise<void>;
     readonly signal?: AbortSignal;
@@ -34,8 +31,6 @@ export interface LoadSampleWire {
     readonly pts: string;
     readonly header: PointInspectionHeader;
 }
-/** Inert worker result: maps are entry pairs, records are ordered, and sample handles are temporary.
- * Raw lexemes remain strings. It carries no model instance, lease, filesystem handle or authority. */
 export interface LoadProjection {
     readonly version: 1;
     readonly kind: BoardKind;
@@ -59,7 +54,6 @@ export interface LoadRepairResult {
     readonly repairs: readonly LoadRepairNotice[];
     readonly issues: readonly ReadIssue[];
 }
-/** Main-side re-admission owns creator leases until the session has retained them or refuses. */
 export interface RehydratedLoad {
     readonly input: BoardDocInput;
     readonly doc: BoardDoc;

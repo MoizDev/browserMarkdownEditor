@@ -39,8 +39,6 @@ export function lowerCurvePairDistance(a: CertifiedCurve['points'], b: Certified
     const sum = add(square(dx), square(dy)); return sqrtInterval({ lo: Math.max(0, sum.lo), hi: sum.hi }).lo;
 }
 
-/** Certified swept-capsule/path intersection. Pair subdivision is cooperative;
- * uncertain boundaries and exhausted limits are never converted into misses. */
 export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query: Sweep, options: PathPickOptions,
     limits: SweptPathLimits = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): SweptPathResult; cancel(): void } {
     const matrix = query.localToSurface, maxDepth = limits.maxDepth ?? 64, maxNodes = limits.maxNodes ?? 262144, maxWork = limits.maxWork ?? 2000000;

@@ -6,7 +6,6 @@ export function intersects(a: Readonly<Rect>, b: Readonly<Rect>): boolean {
     return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 }
 
-/** Rectangle union, not its bounding box: a missing tile is still a hole (design §6.3:646). */
 export function covers(target: Readonly<Rect>, boxes: readonly Readonly<Rect>[]): boolean {
     const cuts = [target.x, target.x + target.width];
     for (const box of boxes) {
@@ -27,7 +26,6 @@ export function covers(target: Readonly<Rect>, boxes: readonly Readonly<Rect>[])
     return true;
 }
 
-/** A mirror is sharp only where exact copies cover every visible page rectangle. */
 export function pdfMirrorCoverage(stack: Readonly<PageStack>, view: MirrorView,
     drawn: readonly BorrowedMirror<PdfMirrorPixels>[]): LayerCoverage {
     const { camera, viewport } = view.view;

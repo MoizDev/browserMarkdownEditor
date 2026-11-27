@@ -20,8 +20,6 @@ export interface PolylineHandleOptions {
     readonly onFinishUp?: () => void;
     readonly onCommit?: () => void;
     readonly snap?: { readonly zoom: () => number; readonly alwaysSnap: () => boolean; readonly guides: (guides: readonly BoardSnapGuide[]) => void };
-    /** Shift constrains the point to 15° from its neighbouring vertex. The Shift-click that extends a line turns this off:
-     * its point is where the pointer is, and Shift there only chose to extend. */
     readonly angleSnap?: boolean;
     readonly current: () => boolean;
     readonly hold: () => () => void;
@@ -36,7 +34,6 @@ export interface PolylineHandleOptions {
     readonly cooperate?: () => Promise<void>;
 }
 
-/** The point at its own distance from the neighbouring vertex, on the nearest 15° ray; null when there is no neighbour to measure from. */
 function angleFromNeighbour(runtime: BoardRuntime, id: NodeId, index: number, point: Readonly<{ x: number; y: number }>): { x: number; y: number } | null {
     const doc = runtime.session.doc, node = doc.nodes.get(id);
     if (!node || node.kind !== 'polyline') return null;
@@ -50,7 +47,6 @@ function angleFromNeighbour(runtime: BoardRuntime, id: NodeId, index: number, po
     return { x: anchor.x + length * Math.cos(angle), y: anchor.y + length * Math.sin(angle) };
 }
 
-/** Direct endpoint editing preserves an attachment unless the user explicitly detaches it. */
 export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, options: PolylineHandleOptions): GestureOwner {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), release = options.hold(), pointerIds = new Set([first.pointerId]);
@@ -75,8 +71,6 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
         try {
             let point = raw, guides: readonly BoardSnapGuide[] = [];
             const active = () => current() && !request.signal.aborted && turn === sequence;
-            // A vertex snaps to points (other shapes' corners and centres, the polyline's other vertices), never to edges, and
-            // not while the pointer moves fast. The grid applies unless Cmd/Ctrl is held.
             const objects = !!options.snap && options.snap.alwaysSnap() !== detach && pace.speed() < SNAP_MAX_SPEED, grid = !!options.snap && !detach;
             if (options.snap && (objects || grid)) {
                 const snapped = await snapBoardBounds({ runtime, bounds: { x: raw.x, y: raw.y, width: 0, height: 0 }, selected: [options.id],
@@ -140,8 +134,6 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
     };
 }
 
-/** The edited polyline's other vertices in world space. The vertices either side of the handle are skipped: a vertex never
- * snaps onto the segment it is already joined by. */
 function otherVertices(doc: BoardDoc, id: NodeId, index: number): Vec2[] {
     const node = doc.nodes.get(id);
     if (!node || node.kind !== 'polyline') return [];

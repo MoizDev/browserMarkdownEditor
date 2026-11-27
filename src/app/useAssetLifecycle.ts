@@ -19,12 +19,6 @@ import { retryMissingAssets } from '../editor/imageWidget';
 import { tracksAssets } from './tracksAssets';
 import type { AssetOutcome, IndexGraphRef, ReconcileJob } from './types';
 
-/**
- * The asset lifecycle: a note's `.Assets` pictures are kept in step with the
- * note's saved text — referenced ones stay, a reference that came back reclaims
- * its picture from `.Garbage`, and one nothing references any more is retired.
- * Reconciles run one at a time, in save order, per the queue below.
- */
 export interface UseAssetLifecycleDeps {
   rootHandle: FileSystemContextValue['rootHandle'];
   fileTree: FileSystemContextValue['fileTree'];
@@ -46,16 +40,6 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
     tabs, tabsRef, documentBuffers, documentSessions, indexGraphRef,
   } = deps;
 
-  // ── Asset lifecycle ─────────────────────────────────────────────────────
-  // An asset belongs to the notes that embed it: paste a picture and it is
-  // written into the `.Assets` beside the note, and when the last reference to
-  // it goes away it is retired into that same folder's `.Garbage`.
-  //
-  // What each open document referred to as of its last write, so a save can
-  // tell an embed that has just been DELETED from one that was never there.
-  // Seeded when a tab opens (below), because otherwise the first edit after
-  // opening a note — the likeliest one to remove a picture — would have
-  // nothing to compare against.
   const assetRefsRef = useRef<Map<string, { saved: Set<string>; references: Set<string> }>>(new Map());
   const boardBaselinesRef = useRef(new BoardSaveBaselines());
 
@@ -64,8 +48,6 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
     else if (!file.isHelp && isCanvasFile(file.name)) boardBaselinesRef.current.seed(file.path, content);
   }, []);
 
-  /** Follow a note to its new path (rename/move), so the next save there still
-   *  has something to diff against. */
   const moveAssetRefs = useCallback((from: string, to: string) => {
     boardBaselinesRef.current.move(from, to);
     const refs = assetRefsRef.current.get(from);
@@ -73,18 +55,6 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
     assetRefsRef.current.delete(from);
     assetRefsRef.current.set(to, refs);
   }, []);
-
-  /**
-   * Bring a folder's `.Assets` back in step with the note that was just saved.
-   *
-   * Driven by the SAVED text rather than by keystrokes: until a removal has
-   * reached the disk it isn't one, the save debounce doubles as an undo grace
-   * period, and one regex pass per second beats one per character typed.
-   *
-   * Both sets are handed in rather than derived here, because the baseline can
-   * only be read (and handed over) SYNCHRONOUSLY at the point of the save — see
-   * flushTab.
-   */
 
   const assetActivationsRef = useRef(new WeakMap<FileSystemDirectoryHandle, number>());
   const assetProofTreeRef = useRef(fileTree);
@@ -100,8 +70,6 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
       assetOwnerActivationRef.current = getVaultActivation();
     }
     if (rootHandle) assetActivationsRef.current.set(rootHandle, getVaultActivation());
-    // The ordinary tree mirror is passive; a proof needs the committed tree
-    // before an in-flight file read can resume, not a render later.
     assetProofTreeRef.current = fileTree;
     assetReferenceRevisionRef.current++;
   }, [rootHandle, fileTree, getVaultActivation]);
@@ -170,13 +138,6 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
         if (!diff.ok) { block(); return 'kept'; }
         ({ before, after } = diff);
       }
-      // A reference that came BACK — undo, or the same embed pasted into a
-      // sibling note — reclaims its asset from the folder's `.Garbage`. Almost
-      // always a no-op (the asset is right where it should be), and cheap.
-      //
-      // The editor showed the reclaimed embed the instant it was typed, i.e.
-      // a second before the file it wants came back, so it is holding an
-      // "Image not found" it has no reason to re-check on its own.
       let reclaimed = false;
       for (const name of new Set([...after].filter(name => !before.has(name)).concat([...(job.restore ?? [])]))) {
         if (!attached()) return 'skipped-detached';
@@ -202,7 +163,6 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
       const proofContents = new Map(proofTabs.map(tab => {
         if (!canReadTabText(tab)) return [tab.file.path, undefined] as const;
         if (isCanvasFile(tab.file.name)) {
-          // Native sources need the engine's media proof, not a flattened build job.
           if (tab.representation.nativeCanvasKind) return [tab.file.path, undefined] as const;
           const data = documentBuffers.snapshotForDocument(tab.id)?.data;
           return [tab.file.path, typeof data === 'string' ? data : undefined] as const;
@@ -214,8 +174,6 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
         const adapter = documentSessions.get(tab.id)?.adapter;
         return [tab.id, adapter?.mediaReferenceIssues?.()?.length ? undefined : adapter?.mediaReferences?.()] as const;
       }));
-      // Dirty-only save acknowledgements do not change a reference proof.
-      // Opening/closing a tab or changing its readable buffer does.
       const proofCurrent = () => attached() && assetReferenceRevisionRef.current === revision
         && tabsRef.current.length === proofTabs.length && tabsRef.current.every((tab, i) => {
           const old = proofTabs[i];
@@ -240,8 +198,6 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
         ...candidates.filter(f => parentVaultPath(f.path) === folder),
         ...candidates.filter(f => parentVaultPath(f.path) !== folder),
       ];
-      // The saved note may have replaced an embed with a plain link; its
-      // newer unsaved buffer also counts, but must not erase that disk proof.
       const notes = [async () => ownFile ? await readFile(ownFile.handle).catch(() => null) : null, async () => ownText, ...neighbours.map(note => async () => {
         const open = proofTabs.find(t => t.file.path === note.path);
         if (open) {
@@ -342,26 +298,9 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
     }
   }, [assetNamesIn, handleIO, readFile, retireAsset, restoreAsset, getVaultActivation, documentBuffers, documentSessions, indexGraphRef, tabsRef]);
 
-  // Read through a ref to keep the captured IO callback current: it
-  // keeps flushTab — and every timer and listener downstream of it — stable.
   const reconcileAssetsRef = useRef(reconcileAssets);
   useEffect(() => { reconcileAssetsRef.current = reconcileAssets; }, [reconcileAssets]);
 
-  /**
-   * Reconciles run ONE AT A TIME, in the order their saves happened.
-   *
-   * A single pass can take a while — it may read a whole subtree — and the
-   * saves that start them are only a second apart, so they overlap easily. Left
-   * to race, the classic sequence loses a picture: remove an embed (save A
-   * begins a long scan), undo (save B restores the asset at once), then A's
-   * retire lands on top and the note is pointing at a file in `.Garbage`.
-   * Ordering them makes B's restore the last word, which is what it is.
-   *
-   * Serialization alone is not ownership: each job captures its vault
-   * activation before IO, and validates it and its reference proof before
-   * moving an asset. A queued job from another activation is skipped. Like
-   * context/recentVaults.ts, the chain cannot be poisoned by a failed pass.
-   */
   const reconcileQueueRef = useRef<Promise<void>>(Promise.resolve());
   const queueReconcile = useCallback((job: ReconcileJob) => {
     reconcileQueueRef.current = reconcileQueueRef.current.then(async () => {
@@ -382,7 +321,6 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
     });
   }, []);
 
-  // I4 can call this same entry point when a folder's index lists turn fresh.
   const requeueAssetFolder = useCallback((folder: string) => {
     const backlog = assetBacklogRef.current;
     if (!backlog.schedule(folder)) return;
@@ -392,8 +330,6 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
   }, []);
   requeueAssetFolderRef.current = requeueAssetFolder;
   const requeueAssetsAffected = useCallback((path: string) => {
-    // Wakeups can arrive while a proof is still running and not blocked yet.
-    // Its revision check both invalidates that proof and preserves the wakeup.
     assetReferenceRevisionRef.current++;
     for (const folder of assetBacklogRef.current.affected(path)) requeueAssetFolder(folder);
   }, [requeueAssetFolder]);
@@ -412,7 +348,6 @@ export function useAssetLifecycle(deps: UseAssetLifecycleDeps) {
     }
   }, [tabs, requeueAssetsAffected]);
 
-  // The index's media listings turned fresh: wake every folder the backlog holds.
   const requeueBackloggedAssets = useCallback(() => {
     for (const folder of assetBacklogRef.current.all()) requeueAssetFolderRef.current(folder);
   }, []);

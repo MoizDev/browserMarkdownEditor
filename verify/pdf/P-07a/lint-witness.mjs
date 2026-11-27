@@ -3,8 +3,6 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { scratchDir } from '../../lib/paths.mjs';
 
-// This is the static gate's deliberately violating source, not an app-module
-// invocation. The rule must reject every regex syntax even with a literal query.
 const source = "void /linear/u;\nvoid new RegExp('linear');\nvoid RegExp('linear');\n";
 const eslint = new ESLint();
 const observations = [];

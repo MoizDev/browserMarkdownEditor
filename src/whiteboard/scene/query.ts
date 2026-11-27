@@ -10,10 +10,8 @@ export type QueryRequest =
 export interface SpatialQuerySource {
     readonly index: HybridIndex;
     readonly unbounded?: ReadonlySet<number>;
-    /** Includes semantic/layout publication changes even when the document revision is unchanged. */
     epoch(): number;
     accepts(slot: number): boolean;
-    /** Current conservative selectable/ink envelope, chosen by the source. Writes min/max. */
     bounds(slot: number, out: Float64Array): boolean;
     rank(slot: number): number;
 }
@@ -44,8 +42,6 @@ export class QueryBuffer {
     get byteLength(): number { return this.slots.byteLength + this.generations.byteLength + this.ranks.byteLength; }
 }
 
-// Heap contains both trees, so nearest/strip walks share one conservative lower-bound frontier.
-// Ties are NOT pruned: the narrow phase can still prefer a higher paint-order candidate.
 class Frontier {
     nodes = new Uint32Array(32);
     dynamic = new Uint8Array(32);

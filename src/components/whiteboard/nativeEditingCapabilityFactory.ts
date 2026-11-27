@@ -7,7 +7,6 @@ import { convertMediaCard } from '../../whiteboard/media/cards';
 import { EMBED_PROVIDER_NAMES, resolveEmbedCandidate } from '../../whiteboard/media/embed';
 import { isCancellation } from '../../platform/workers/envelope';
 
-/** One view borrows the document's actual media pipeline; no new job queue or asset store. */
 export function createNativeEditingCapabilities(context: NativeEditingCapabilityContext): NativeEditingCapabilities {
     const { runtime, host, identity, clipboard } = context;
     const lifetime = new AbortController(), signal = AbortSignal.any([context.signal, lifetime.signal]);

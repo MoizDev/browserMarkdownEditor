@@ -1,7 +1,6 @@
 import type { Affine } from '../../platform/types';
 import type { InkCoverage } from './outline';
 
-// R-13/WB-D24, ink.md §6.2: CSS distances, not world radii or device pixels.
 export const INK_FINE_MARGIN_CSS = 4;
 export const INK_COARSE_MARGIN_CSS = 8;
 export const INK_CENTRELINE_FLOOR_CSS = 8;
@@ -24,9 +23,6 @@ function maxScale(m: Affine): number {
     return norm * Math.sqrt((a * a + b * b + c * c + d * d + Math.hypot(a * a + b * b - c * c - d * d, 2 * (a * c + b * d))) / 2);
 }
 
-// Distance by support-plane lower bounds and an inscribed simplex upper bound. Mathematical
-// reference: Gilbert/Johnson/Keerthi, IEEE J. Robotics and Automation 4(2), 193–203 (1988), §III.
-// Our 2D simplex reduction and analytic swept-disc support are derived here, no library code.
 export class ConvexDistance {
     lower = 0;
     upper = Infinity;
@@ -100,8 +96,6 @@ export class ConvexDistance {
                     this.lower = 0; this.upper = numeric; this.inside = true; return;
                 }
             }
-            // Closest point on a triangle outside the origin is on one of its three edges.
-            // Retain only that edge (or vertex), so the next iteration has at most three supports.
             let best = Infinity, bestA = 0, bestB = 0, bestT = 0, cx = 0, cy = 0;
             const edges = count === 2 ? 1 : 3;
             for (let edge = 0; edge < edges; edge++) {
@@ -119,14 +113,6 @@ export class ConvexDistance {
         }
         // No convergence is not a miss. Bounds remain available and the caller refines/retries.
     }
-    /** The origin lies on (or within the bound of) the segment simplex s0–s1. The search direction (1, 0) makes that
-     * happen whenever the shapes are mirror-symmetric about it: the second support lands exactly opposite the first and
-     * the triangle test never runs. Measured: an eraser sample exactly on a stroke's end point (a radius-1 disc against
-     * a radius-8 capsule ending at its centre) answered "no witness", and one such stroke rejected the whole erase with
-     * "Ink region intersection is numerically ambiguous". The set is convex, so the origin is strictly inside it when
-     * the supports along BOTH normals of the segment reach past the origin and the origin is strictly inside the two
-     * triangles they make with the segment, the shared edge included. A support that does not reach past it is a real
-     * tangency (the whole set lies on one side), and that alone stays inconclusive. */
     private straddle(margin: number): void {
         const s = this.simplex, x0 = s[0], y0 = s[1], x1 = s[2], y1 = s[3], ex = x1 - x0, ey = y1 - y0;
         if (Math.hypot(ex, ey) <= margin) return;
@@ -135,12 +121,9 @@ export class ConvexDistance {
         this.support(ey, -ex);
         const qx = this.supportPoint[0], qy = this.supportPoint[1];
         if (![px, py, qx, qy].every(Number.isFinite)) throw new RangeError('Ink pick support overflows');
-        // cross(e, point - s0): positive on the side of the first normal.
         if (ex * (py - y0) - ey * (px - x0) <= margin || ex * (qy - y0) - ey * (qx - x0) >= -margin) return;
         const side = ex * -y0 - ey * -x0;
-        // Triangle (s0, s1, p) is counter-clockwise: the origin is left of s1→p and p→s0.
         const plus = (px - x1) * -y1 - (py - y1) * -x1 > margin && (x0 - px) * -py - (y0 - py) * -px > margin;
-        // Triangle (s1, s0, q) is counter-clockwise: the origin is left of s0→q and q→s1.
         const minus = (qx - x0) * -y0 - (qy - y0) * -x0 > margin && (x1 - qx) * -qy - (y1 - qy) * -qx > margin;
         if (side > margin ? plus : side < -margin ? minus : plus && minus) { this.lower = 0; this.inside = true; }
     }
@@ -216,9 +199,6 @@ export class InkPickJob {
             const possible = this.distance.lower - error <= threshold;
             if (possible) this.possible = true;
             if (this.rectangle && possible) {
-                // Paired centre/radius enclosures give an INNER swept-disc set too. This supplies
-                // a robust witness even for a zero-area marquee; no inverse scalar CSS radius is
-                // used, and the contracted primitive is still transformed forward by its support.
                 const worldError = c.centreErrorWorld + c.radiusErrorWorld + c.dashPhaseErrorWorld;
                 if (Math.max(r0, r1) > worldError) {
                     const from = r0 < worldError ? (worldError - r0) / (r1 - r0) : 0;
@@ -230,8 +210,6 @@ export class InkPickJob {
                     this.distance.run(x0, y0, inner0, x1, y1, inner1, this.hx, this.hy);
                     if (this.distance.inside) { this.finish('hit'); return 'complete'; }
                 }
-                // Eroding the query, NOT inflating paint, supplies an intersection witness robust
-                // to the canonical coverage error. A narrow/tangent query stays explicitly uncertain.
                 const erosion = error + 2 * this.tolerance;
                 if (this.hx >= erosion && this.hy >= erosion) {
                     this.distance.run(ax, ay, r0, bx, by, r1, this.hx - erosion, this.hy - erosion);

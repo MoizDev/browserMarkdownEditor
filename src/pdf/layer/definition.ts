@@ -4,9 +4,6 @@ import { PdfTileLayer } from './tileLayer';
 import type { PdfLayerMirror, PdfTileProducer } from './tileLayer';
 import type { PdfVersionBridge } from './versionBridge';
 
-/** The definition is stable for one view lease; the platform owns its layer's
- * final GPU release/dispose. The pane may cancel view work without closing the
- * App-owned document session or its mirror store. */
 export function pdfPageLayerDefinition(options: {
     producer: PdfTileProducer;
     demand(view: ViewState): Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>;
@@ -30,6 +27,5 @@ export function pdfPageLayerDefinition(options: {
         critical: (layer, view) => asTileLayer(layer).critical(view),
         coverage: (layer, frame, backend) => asTileLayer(layer).coverage(frame.view, backend !== 'canvas2d'),
     };
-    // Pages painted at least once at the current source, in world units: the ink board may claim them opaque.
     return { definition, current: () => current, drawnPageRects: () => current?.drawnPageRects() ?? [] };
 }

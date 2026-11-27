@@ -2,7 +2,6 @@ import { SECURITY_LIMITS } from './limits';
 export { createImportAdmission } from './validatedImport';
 export type { ImportAdmission, ImportData, ImportValidation, ProjectionLimits, ValidatedImport } from './validatedImport';
 
-/** No path or vault handle crosses a decoder boundary. */
 export interface ContentJob {
     readonly session: string;
     readonly vaultEpoch: number;
@@ -12,26 +11,17 @@ export interface ContentJob {
 export interface JobContext {
     readonly job: ContentJob;
     readonly signal: AbortSignal;
-    /** Call after each await and synchronously immediately before committing a transaction. */
     assertCurrent(): void;
 }
 export interface JobOptions { readonly signal?: AbortSignal; readonly deadlineMs: number; }
 export interface JobAuthority {
     run<T>(work: (context: JobContext) => Promise<T>, options: JobOptions): Promise<T>;
     isCurrent(job: ContentJob): boolean;
-    /** Accept only this authority's actual running context, never a queued or reconstructed job. */
     assertContext(context: JobContext): void;
-    /** A vault switch/reload revokes all outstanding requests, including same-path requests. */
     replace(vaultEpoch: number, generation: number): void;
-    /** Await actual settlement/finally of all work queued before this call, not its abort reply.
-     * Dispose/revoke first when retiring an owner. Worker retirement remains the broker's contract. */
     drain(): Promise<void>;
     dispose(): void;
 }
-/** Runs `elapsed` once the page has been visible for `ms` in total. A hidden tab clamps timers (to 1 s and more) and stops
- * animation frames, so a board opened or restored in a background tab made slow progress and a wall-clock deadline failed it
- * for good: "Content job deadline elapsed", still shown once the tab came forward (emulated hidden tab, an old board of 150
- * strokes). Time the page cannot run does not count; with no document (a worker) it is a plain timer. Returns the cancel. */
 function visibleDeadline(ms: number, elapsed: () => void): () => void {
     const doc = typeof document === 'undefined' ? null : document;
     let left = ms, startedAt = 0, timer: ReturnType<typeof setTimeout> | undefined;
@@ -49,8 +39,6 @@ function visibleDeadline(ms: number, elapsed: () => void): () => void {
 function validCounter(value: number): boolean { return Number.isSafeInteger(value) && value >= 0; }
 function cancelled(reason: string): DOMException { return new DOMException(reason, 'AbortError'); }
 
-/** Session scope, not pane scope. Work must honor cancellation; keeping its promise in the tail
- * prevents a slow old job and its successor from mutating the session concurrently. */
 export function createJobAuthority(session: string, vaultEpoch: number, generation: number): JobAuthority {
     if (!session || session.length > 256 || !validCounter(vaultEpoch) || !validCounter(generation)) {
         throw new RangeError('Invalid session identity');
@@ -115,8 +103,6 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
                 controller.signal.removeEventListener('abort', replyAbort);
                 outstanding.delete(job.request);
             });
-            // A deadline settles the caller promptly but does not allow a later mutation to pass
-            // a still-running uncooperative job. Its slot remains occupied until it actually ends.
             tail = settled.then(() => {}, () => {});
             return Promise.race([settled, abortReply]);
         },

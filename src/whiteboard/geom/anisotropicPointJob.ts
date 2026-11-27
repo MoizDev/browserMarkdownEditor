@@ -30,8 +30,6 @@ function initialCurve(exact: ExactCurve): CertifiedCurve {
     return { points: exact.map(mapped) as unknown as CertifiedCurve['points'], depth: 0 };
 }
 
-/** Certified point versus an affine-transformed circular stroke and CSS disk.
- * A dyadic local-disk witness proves hits; interval hulls prove misses. */
 export function createAnisotropicPointJob(curve: ExactCurve, matrix: Affine, localRadius: number, point: Vec2, marginCss: number,
     limits: AnisotropicPointLimits = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): AnisotropicPointResult; cancel(): void } {
     const maxDepth = limits.maxDepth ?? 32, maxNodes = limits.maxNodes ?? 262144, maxWork = limits.maxWork ?? 2000000;

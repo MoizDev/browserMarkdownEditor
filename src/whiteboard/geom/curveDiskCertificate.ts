@@ -17,8 +17,6 @@ export function bernsteinPower(values: readonly Dyadic[], origin: Dyadic): Dyadi
         add(dyadicSubtract(times(values[1], 3n), values[0]), dyadicSubtract(values[3], times(values[2], 3n)))];
 }
 
-/** Exact curve/closed-disk intersection. The degree-six distance polynomial
- * is nonpositive somewhere iff an endpoint is nonpositive or it has a real root. */
 export function createCurveDiskCertificate(curve: Curve, centre: ExactCurvePoint, radius: number | Dyadic,
     limits: CurveDiskLimits = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): CurveDiskResult; cancel(): void } {
     const maxBits = limits.maxBits ?? 16384, maxWork = limits.maxWork ?? 1000000;

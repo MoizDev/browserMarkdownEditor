@@ -14,9 +14,6 @@ export type PlatformMirrorOptions<T extends object> = Omit<MirrorSetOptions<T>, 
 
 const mirrorsSlot = Symbol('platform session mirrors');
 
-/** Call only from the lazy engine/session chunk. The core retains an opaque keyed slot and runs
- * its disposer after the session closing barrier or replacement, never on a pane's React cleanup.
- */
 export function createPlatformMirrors<T extends object>(options: PlatformMirrorOptions<T>): MirrorSet<T> {
     const existing = options.session.getSlot<MirrorSet<T>>(mirrorsSlot);
     if (existing) {

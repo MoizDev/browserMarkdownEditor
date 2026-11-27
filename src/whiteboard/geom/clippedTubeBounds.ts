@@ -44,7 +44,6 @@ function squareUpper(value: number): number { return multiply(interval(value), i
 function distanceUpper(x: number, y: number): number {
     return sqrtInterval(add(interval(squareUpper(x)), interval(squareUpper(y)))).hi;
 }
-/** A float centre plus a certified radius containing the exact dyadic point. */
 function locate(p: Control): { centre: Vec2; error: number } {
     const centre = { x: p.x.value, y: p.y.value };
     const dx = equalExact(p.x) ? 0 : Math.max(Math.abs(subtract(p.x.range, interval(centre.x)).lo), Math.abs(subtract(p.x.range, interval(centre.x)).hi));
@@ -70,7 +69,6 @@ function supportDifference(line: ExactLine, a: Vec2, b: Vec2, winding: number): 
     return (value < 0n ? -1 : value > 0n ? 1 : 0) * winding;
 }
 
-/** A depth-first certified union of clipped outer balls and actual inner discs. */
 export function createClippedTubeBoundsJob(curve: TubeCurve, radius: number | readonly [number, number], clip: ClippedTubeClip, tolerance: number,
     limits: ClippedTubeLimits = {}): { step(budget: ClippedTubeBudget): ClippedTubeStep } {
     const points = 'p0' in curve ? [curve.p0, curve.p1, curve.p2, curve.p3] : curve;
@@ -99,8 +97,6 @@ export function createClippedTubeBoundsJob(curve: TubeCurve, radius: number | re
         ? uncertainty('Cubic tube tolerance is below the numeric budget') : outerPolygon.length === 0 && innerPolygon.length === 0
             ? { status: 'empty' } : undefined;
     let outer: Box | null = null;
-    // Each entry bounds an actual inner extremum on the inside, not merely the
-    // outward edge of the circle job's numerical enclosure.
     let innerMinX = Infinity, innerMinY = Infinity, innerMaxX = -Infinity, innerMaxY = -Infinity;
     type Pending = { readonly kind: 'outer' | 'inner' | 'validateOuter' | 'validateInner'; readonly job: ReturnType<typeof createCircleClipBoundsJob>;
         readonly centre: Vec2; readonly radius: number; readonly retried: boolean };
@@ -159,9 +155,6 @@ export function createClippedTubeBoundsJob(curve: TubeCurve, radius: number | re
                 }
                 if (kind === 'outer') {
                     if (progress.result.status === 'empty') { node = undefined; parts = undefined; continue; }
-                    // A tangent of an APPROXIMATING ball is not a tangent of the
-                    // real curve. Keep a certified control-hull upper enclosure
-                    // and refine; only the final witness gap authorizes bounds.
                     const axis = controlBox(node!);
                     currentOuter = axis && (progress.result.status === 'bounded' ? intersect(axis, progress.result.bounds) : axis);
                     if (!currentOuter) { node = undefined; parts = undefined; continue; }
@@ -252,8 +245,6 @@ export function createClippedTubeBoundsJob(curve: TubeCurve, radius: number | re
                 const actual = locate(p);
                 const r = sample === 1 ? node.radii[0] : sample === 2
                     ? add(multiply(node.radii[0], interval(0.5)), multiply(node.radii[1], interval(0.5))) : node.radii[1];
-                // Shrinking by centre uncertainty makes this disc a subset of
-                // the real disc; a nonrepresentable radius-zero sample is skipped.
                 const radius = Math.max(0, r.lo);
                 const innerRadius = actual.error === 0 ? radius : nextDown(radius - actual.error);
                 if (innerPolygon.length && (radius === 0 || actual.error > radius || innerRadius < 0 || !Number.isFinite(innerRadius))) {
@@ -277,7 +268,6 @@ export function createClippedTubeBoundsJob(curve: TubeCurve, radius: number | re
     } };
 }
 
-/** Synchronous convenience; interactive callers must drive the resumable job. */
 export function clippedTubeBounds(curve: TubeCurve, radius: number | readonly [number, number], clip: ClippedTubeClip, tolerance: number,
     limits?: ClippedTubeLimits): ClippedTubeResult {
     const job = createClippedTubeBoundsJob(curve, radius, clip, tolerance, limits);

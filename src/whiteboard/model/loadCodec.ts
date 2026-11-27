@@ -32,9 +32,6 @@ function* mapEntries(source: readonly unknown[]): Generator<readonly [string, un
     }
 }
 
-/** One wire dialect for native/import projections. Raw lexemes are strings; only
- * explicitly tagged maps become Maps. Traversal is iterative even within a huge
- * rich-text record, and never materializes all keys or invokes a source getter. */
 export async function transformLoadData(value: unknown, direction: 'encode' | 'decode',
     cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<unknown> {
     const ancestors = new WeakSet<object>(), stack: Frame[] = [];
@@ -51,7 +48,6 @@ export async function transformLoadData(value: unknown, direction: 'encode' | 'd
         if (!input || typeof input !== 'object' || ancestors.has(input)) throw new TypeError('Load data must be an acyclic inert value');
         const array = Array.isArray(input), map = input instanceof Map, prototype = Object.getPrototypeOf(input);
         if (map ? direction !== 'encode' : array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) throw new TypeError('Unsupported load data object');
-        // Reject hostile container sizes before constructing the receiving projection.
         if ((array && (input as unknown[]).length > SECURITY_LIMITS.records) || (map && (input as Map<unknown, unknown>).size > SECURITY_LIMITS.records)) {
             throw new RangeError('Load projection container exceeds its record budget');
         }

@@ -20,7 +20,6 @@ export interface MediaRasterSource {
 }
 export interface MediaResidencyHost {
     readonly memory: MemoryAllocator;
-    /** Local session bytes only, previously admitted and hash-verified; never fetch a URL. */
     source(id: MediaId, signal: AbortSignal): Promise<MediaRasterSource | null>;
     identity(token: RenderToken): BoardJobIdentity;
     isCurrent(token: RenderToken, identity: BoardJobIdentity): boolean;
@@ -101,7 +100,6 @@ export class MediaResidency implements PaintImageProvider {
         });
     }
 
-    /** Called from visibility planning, not from paint. Near keys get the coarser mip. */
     setDemand(visible: ReadonlySet<string>, near: ReadonlySet<string>): void {
         this.wanted = new Set([...visible, ...near]);
         this.near = new Set(near);
@@ -118,9 +116,7 @@ export class MediaResidency implements PaintImageProvider {
         this.visible = visible;
         if (!visible) {
             for (const job of this.pending.values()) job.controller.abort();
-            // Termination is synchronous even when the replacement worker starts later.
             if (this.active) void this.worker.recycle('pane hidden').catch(() => undefined);
-            // A cancelled frame may still own decoder scratch until its promise actually settles.
             for (const [key, entry] of this.cache) this.drop(key, entry);
         }
     }
@@ -140,7 +136,6 @@ export class MediaResidency implements PaintImageProvider {
         if (entry.closed) return;
         entry.retired = true;
         if (this.cache.get(key) === entry) this.cache.delete(key);
-        // An in-flight capture owns its image lease even after the pane becomes hidden.
         if (entry.refs) return;
         entry.closed = true;
         entry.bitmap.close();
@@ -185,8 +180,6 @@ export class MediaResidency implements PaintImageProvider {
 
     private async decode(job: Pending): Promise<Cached> {
         const signal = job.controller.signal;
-        // Demand prunes work that is no longer drawn (setDemand aborts it); it does not gate a decode that an acquire
-        // just asked for. A paint acquires its tiles before the frame that names them has been drawn, so gating here would starve it.
         const current = () => !signal.aborted && this.visible && !this.disposed && this.host.isCurrent(job.token, job.identity);
         const source = await this.host.source(parseMediaTileKey(job.key).id, signal);
         if (!current()) throw new DOMException('Stale media request', 'AbortError');
@@ -258,7 +251,6 @@ export class MediaResidency implements PaintImageProvider {
             } catch (error) {
                 job.workerRequest = undefined;
                 if (!current()) {
-                    // A cancelled native decode may still hold scratch in the shared worker.
                     if (this.visible && !this.disposed) await this.worker.recycle('media raster cancelled').catch(() => undefined);
                     throw error;
                 }

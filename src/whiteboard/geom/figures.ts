@@ -3,7 +3,6 @@ import type { FigureShape } from '../model/styles';
 import { arcToCubics } from './path';
 import type { PathOp, Vec2 } from './path';
 
-// geometry.md §3, F-FIG-001: these are independent unit-box authoring recipes.
 const P = (x: number, y: number): Vec2 => ({ x, y });
 
 function polygon(points: readonly Vec2[]): readonly PathOp[] {
@@ -37,8 +36,6 @@ export interface CreationFitProfile {
     readonly xInset: number; readonly yInset: number;
 }
 
-// FIG/creation-whiteboard.json, Star/Cloud/Heart drag: requested 120×80 divided by stored box;
-// origin offsets locate that requested rectangle inside the stored box. Clicks use separate defaults.
 export const CREATION_FIT: Readonly<Partial<Record<FigureShape, CreationFitProfile>>> = {
     star: { xScale: 120 / 120.28574477856256, yScale: 80 / 80.72700079076078,
         xInset: .1428723892813 / 120.28574477856256, yInset: 0 },
@@ -48,13 +45,11 @@ export const CREATION_FIT: Readonly<Partial<Record<FigureShape, CreationFitProfi
         xInset: 0, yInset: .4468887492151 / 80.44688874921506 },
 };
 
-/** Fit a tight requested box without conflating it with the persisted logical box. */
 export function fitFigureCreation(shape: FigureShape, requested: Rect): Rect {
     const { x, y, width: w, height: h } = requested;
     if (![x, y, w, h].every(Number.isFinite) || w < 0 || h < 0) throw new RangeError('Invalid requested figure box');
     const profile = CREATION_FIT[shape];
     const width = Math.max(1, w / (profile?.xScale ?? 1));
-    // The one-unit floor is the stored height itself (F-FIG-005): dividing it by a fit scale would store 1/yScale.
     const height = h <= 1 ? 1 : Math.max(1, h / (profile?.yScale ?? 1));
     return { x: x - width * (profile?.xInset ?? 0), y: y - height * (profile?.yInset ?? 0), width, height };
 }
@@ -68,7 +63,6 @@ export function figureClickBox(shape: FigureShape, at: Vec2): Rect {
     return { x: at.x - width / 2, y: at.y - height / 2, width, height };
 }
 
-/** The one-world-unit seed fixes the centre of Alt-created figures across all camera zooms. */
 export function figureDragBox(shape: FigureShape, down: Vec2, pointer: Vec2, modifiers: FigureCreationModifiers): Rect {
     if (![down.x, down.y, pointer.x, pointer.y].every(Number.isFinite)) throw new RangeError('Invalid figure gesture');
     const dx = pointer.x - down.x, dy = pointer.y - down.y;
@@ -98,7 +92,6 @@ export function figureSemanticBounds(shape: FigureShape, width: number, height: 
         width: width * xScale, height: height * yScale };
 }
 
-/** The polygonal forms; curved forms require their analytic outlines. */
 export function polygonFigure(shape: FigureShape): readonly (readonly PathOp[])[] | null {
     let points: readonly Vec2[];
     switch (shape) {
@@ -128,7 +121,6 @@ export function polygonFigure(shape: FigureShape): readonly (readonly PathOp[])[
     return [outer];
 }
 
-/** Parametric contours stay analytic until a consumer asks for bounded flattening. */
 export type CurvedFigure =
     | Readonly<{ kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number }>
     | Readonly<{ kind: 'stadium'; width: number; height: number; radius: number }>
@@ -165,7 +157,6 @@ function heart(width: number, height: number): readonly PathOp[] {
         ({ op: 'C', c1: normalized(c1), c2: normalized(c2), p: normalized(p) })), { op: 'Z' }];
 }
 
-// The first upper lobe's maximum is bracketed away from the central y-axis minimum.
 function cloudYExtent(): number {
     const slope = (t: number): number => Math.cos(t) * (1 + .08 * Math.cos(10 * t)) - .8 * Math.sin(t) * Math.sin(10 * t);
     let lo = 2 * Math.PI / 5, hi = Math.PI / 2 - Math.PI / 100;
@@ -217,7 +208,6 @@ export interface FigureOutline {
     readonly marks: readonly (readonly PathOp[])[];
 }
 
-/** One semantic outline shared by paint, selection, attachments and export. */
 export function figureOutline(shape: FigureShape, width: number, height: number,
     flipX: boolean, flipY: boolean): FigureOutline {
     if (!Number.isFinite(width) || !Number.isFinite(height) || width < 0 || height < 0) throw new RangeError('Invalid figure box');
@@ -241,7 +231,6 @@ export function figureOutline(shape: FigureShape, width: number, height: number,
     return { primary: { kind: 'stadium', width, height, radius: Math.min(width, height) / 2 }, marks: [] };
 }
 
-// Ellipse and capsule arcs remain analytic in FigureContour; this emits bounded paint paths.
 export function* ellipseArcPath(cx: number, cy: number, rx: number, ry: number, start: number,
     sweep: number, tolerance: number, maxPieces: number, move = true): Generator<PathOp> {
     if (![cx, cy, rx, ry, start, sweep, tolerance].every(Number.isFinite) || rx < 0 || ry < 0
@@ -299,13 +288,11 @@ export function cloudPoint(cloud: Extract<CurvedFigure, { kind: 'cloud' }>, thet
         cloud.height * (r * Math.sin(theta) / cloud.yExtent + 1) / 2);
 }
 
-/** Hermite cubics with an explicit fourth-derivative error bound, emitted lazily. */
 export function* cloudPath(cloud: Extract<CurvedFigure, { kind: 'cloud' }>, tolerance: number,
     maxPieces: number): Generator<PathOp> {
     if (!Number.isFinite(tolerance) || tolerance <= 0 || !Number.isSafeInteger(maxPieces) || maxPieces < 1) {
         throw new RangeError('Invalid cloud realization budget');
     }
-    // Product-to-sum gives frequencies 1, 9 and 11; this bounds both fourth derivatives.
     const fourth = 1 + .04 * (11 ** 4 + 9 ** 4);
     const scale = Math.SQRT2 * Math.max(cloud.width / (2 * 1.08), cloud.height / (2 * cloud.yExtent));
     const step = scale === 0 ? 2 * Math.PI : (384 * tolerance / (fourth * scale)) ** .25;

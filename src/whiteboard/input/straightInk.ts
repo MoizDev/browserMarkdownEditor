@@ -3,7 +3,6 @@ import type { SampleBuilder, SampleSequence } from '../ink/samples';
 
 interface Endpoint { readonly x: number; readonly y: number; readonly pressure: number | undefined }
 
-/** A straight run's direction snaps to 15-degree steps while Shift is held; its length is kept. */
 const ANGLE_STEP = Math.PI / 12;
 export function snapStraightEnd(anchor: { readonly x: number; readonly y: number }, end: { readonly x: number; readonly y: number }, enabled: boolean): { x: number; y: number } {
     const dx = end.x - anchor.x, dy = end.y - anchor.y, length = Math.hypot(dx, dy);
@@ -12,12 +11,9 @@ export function snapStraightEnd(anchor: { readonly x: number; readonly y: number
     return { x: anchor.x + Math.cos(angle) * length, y: anchor.y + Math.sin(angle) * length };
 }
 
-/** A Shift run is one replaceable real segment, not a polyline through all
- * pointer samples. The immutable prefix stays in the canonical curve builder. */
 export class StraightInkBuilder {
     private pending: Endpoint | null = null;
     private hasAnchor = false;
-    // The last freehand point: where the current straight run starts.
     private anchorX = 0;
     private anchorY = 0;
     constructor(private readonly builder: LocalCurveBuilder) {}
@@ -31,7 +27,6 @@ export class StraightInkBuilder {
         }
         this.flush(); this.builder.append(x, y, pressure, 'freehand'); this.anchorX = x; this.anchorY = y;
     }
-    /** A key-up without another pointer move still seals the last straight endpoint. */
     flush(): boolean {
         const endpoint = this.pending;
         if (!endpoint) return false;
@@ -50,8 +45,6 @@ export class StraightInkBuilder {
             pressure: (i: number) => i === count - 1 ? endpoint.pressure : prefix.pressure(i),
             segmentKind: (i: number) => i === count - 2 ? 'straight' as const : prefix.segmentKind(i),
         });
-        // A newly extended final span may alter the preceding freehand control;
-        // keep the original builder's entire uncertified tail replaceable.
         const finalizedSpanCount = Math.min(base.finalizedSpanCount, Math.max(0, count - 4));
         return Object.freeze({ ...base, samples, finalizedSpanCount,
             replaceableTail: materializeCurveRange(samples, { firstSpan: finalizedSpanCount,

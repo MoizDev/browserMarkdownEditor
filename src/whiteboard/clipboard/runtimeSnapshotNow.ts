@@ -51,12 +51,10 @@ function releaseAll(leases: readonly ClipboardLease[]): void {
     if (failure) throw failure;
 }
 
-/** Synchronous copy captures the current revision and builds a detached selected-subtree document. */
 export function createBoardCopySnapshotNow(options: BoardCopySnapshotOptions): BoardCopySnapshotNowResult {
     const { runtime } = options, session = runtime.session, live = session.doc, owner = session.owner;
     const state = runtime.selection.getSnapshot(), selection = [...new Set(options.selection ?? state.selected)], revision = live.rev;
     const signal = options.signal ?? new AbortController().signal, fontEpoch = runtime.render.text.fonts.epoch, paintBinding = runtime.paintBinding;
-    // Synchronous capture reads the current document directly; no Scene/AABB cache can lag a just-made selection.
     const held: ClipboardLease[] = [];
     let output: CopySnapshot | undefined, transferred = false, released = false;
     const check = () => {
@@ -208,7 +206,6 @@ export function createBoardCopySnapshotNow(options: BoardCopySnapshotOptions): B
         const snapshotValue = output;
         let cutReceipt: BoardCutReceipt | null = null, cutFailure: unknown;
         try {
-            // Only collapsing groups can propagate delete geometry into siblings and ancestors.
             const affected = new Set<NodeId>(), removed = new Set<NodeId>(), groupQueue: NodeId[] = [];
             for (const root of selectedRoots(live, selection)) if (!isLocked(live, root)) {
                 affected.add(root.id); const stack = [root];

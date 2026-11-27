@@ -1,16 +1,3 @@
-// The editor-side contracts of the AI agent panel ("VaultAgent"):
-//
-//   App ──AgentHost──▶ AgentPanel ──▶ agentBridge (WebSocket to the helper)
-//                                          │ tool.call
-//                                          ▼
-//                     vaultAgentTools.executeTool(name, args, VaultToolHost)
-//
-// Both hosts are built ONCE (utils/agentHost.ts, from App's live state, in the
-// panel's lazy chunk), as objects stable for the app's life (their
-// methods read refs), so nothing downstream re-renders or re-subscribes when
-// App's state changes. The wire protocol with the helper is
-// shared/vaultAgentProtocol.ts; what each pane reports is utils/viewRegistry.ts.
-
 import type { AgentId, CanvasOp, MirrorFile } from '../../shared/vaultAgentProtocol';
 import type { ChatTree } from '../utils/chatTree';
 import type { EditorMode, FileTreeNode, TabLayout, Theme } from './index';
@@ -18,35 +5,23 @@ import type { CanvasApplyResult, CanvasShapePage, CanvasShapeQuery, DrawingViewI
 import type { AgentHostDeps } from '../utils/agentHost';
 import type { NativeClosedCanvasPicture, NativePdfPicture } from '../utils/nativeCanvasAgentRead';
 
-/* ───────────────────────── the vault's chat index (.VaultAgent/chats.json) ───────────────────────── */
-
-/** One chat started from the panel. Only this index lives in the vault; the
- *  conversation itself is the CLI's own session, in its own store. */
 export interface ChatMeta {
-    /** Ours (random UUID), stable for the chat's life — the React key. */
     id: string;
     agent: AgentId;
-    /** The CLI's session/thread id; null until the first run reports one. */
     sessionId: string | null;
     title: string;
-    /** The model/effort for the NEXT message (per chat). null = CLI default. */
     model: string | null;
     effort: string | null;
     createdAt: number;
     updatedAt: number;
-    /** SHA-256 of the last canvas/PDF image sent, so an unchanged view is not
-     *  re-sent — even after a reload. */
     lastImageHash?: string | null;
 }
 
 export interface ChatIndex {
     version: 1;
     chats: ChatMeta[];
-    /** Unknown keys a newer build wrote, carried through untouched. */
     [key: string]: unknown;
 }
-
-/* ───────────────────────── what App tells the context builder ───────────────────────── */
 
 export type AgentDocKind = 'epub' | 'markdown' | 'text' | 'pdf' | 'drawing' | 'notebook' | 'image' | 'help' | 'other';
 
@@ -56,12 +31,9 @@ export interface AgentTabInfo {
     kind: AgentDocKind;
     mode: EditorMode;
     dirty: boolean;
-    /** The tab could not be read (OpenTab.readError) — its content is not the file's. */
     unreadable: boolean;
 }
 
-/** Where a tab with NO mounted view was left — from the same localStorage records
- *  its pane restores from. Pages are 1-based. */
 export type RememberedPosition =
     | { kind: 'epub'; locator: import('./reading').EpubLocator; flow: import('./reading').ReaderFlow }
     | { kind: 'markdown'; line: number }
@@ -71,20 +43,13 @@ export type RememberedPosition =
 
 export interface AgentWorkspaceSnapshot {
     vaultName: string;
-    /** What the editor's main area shows; 'graph' means no document is mounted. */
     mainView: 'editor' | 'graph';
     layout: TabLayout;
     tabs: AgentTabInfo[];
-    /** Focused pane's active tab, or null. */
     focusedPath: string | null;
-    /** Stored position for a tab that is not on screen. */
     remembered(path: string): RememberedPosition | null;
-    /** An open native drawing read from its own session, for a tab with no mounted pane. null = not open
-     *  natively; a failure rejects and the caller names it. The signal bounds the work, which then stops. */
     nativeView?(path: string, signal: AbortSignal): Promise<NativeCanvasView | null>;
 }
-
-/* ───────────────────────── VaultToolHost — the agent's hands, implemented by App ───────────────────────── */
 
 export interface VaultDirEntry {
     name: string;
@@ -103,21 +68,12 @@ export interface ClosedPdfAgentAccess {
         signal: AbortSignal): Promise<{ pageCount: number; png: Blob | null; emphasis?: ClosedPdfEmphasis }>;
 }
 
-/**
- * Every path is vault-relative and ALREADY normalized and validated by the
- * executor (vaultAgentTools.normalizeAgentPath): no leading '/', no '.', '..',
- * '\\', NUL or empty segment. The host may assume it.
- */
-/** A native canvas's view as the agent reads it: the recorded viewport, or the whole sheet when never viewed.
- * `capture` pictures the view, or one page (1-based) of a paged board. */
 export interface NativeCanvasView {
     readonly info: DrawingViewInfo | NotebookViewInfo | PdfViewInfo;
     readonly wholeSheet: boolean;
-    /** `region`, in board units (a page's own units when `page` is given), crops the picture to that rectangle. */
     capture(maxSide: number, signal?: AbortSignal, page?: number, region?: AgentRegion): Promise<Blob>;
 }
 
-/** A rectangle the agent asked to see, in board units; width and height are finite and positive. */
 export interface AgentRegion { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
 
 export interface VaultToolHost {
@@ -125,60 +81,30 @@ export interface VaultToolHost {
      *  The executor captures it when a run starts and refuses once it changes. */
     vaultToken(): object | null;
     searchAgent(config: { query: string; regex: boolean; caseSensitive: boolean; scope: string; maxResults: number }, signal?: AbortSignal): Promise<import('../utils/agentMatcher/types').MatchAnswer>;
-    /** The file tree as the sidebar has it (root hidden folders excluded). */
     getFileTree(): FileTreeNode[];
-    /** Direct children of a vault folder, straight from disk, hidden ones
-     *  included (`.claude`, `.Assets`, …). '' = root. null = no such folder. */
     listDir(path: string): Promise<VaultDirEntry[] | null>;
     entryKind(path: string): Promise<'file' | 'directory' | null>;
-    /** An open tab's live text (unsaved edits included), or undefined when the
-     *  path has no readable open tab. Synchronous: search overlays it. */
     openBuffer(path: string): string | undefined;
-    /** The open tab's live text, else the file on disk (CRLF normalized). null =
-     *  missing, a folder, or unreadable. */
     readText(path: string): Promise<string | null>;
     readBytes(path: string): Promise<Uint8Array | null>;
-    /** App-owned tiled engine access, or null when the classic viewer is selected. */
     closedPdfAgent?(): ClosedPdfAgentAccess | null;
-    /** Session-owned live read or C5-admitted closed read; null means not a new board. */
     canvasShapePage?(path: string, query: CanvasShapeQuery,
         guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<CanvasShapePage | null>;
-    /** Actual session mutation; null selects a genuinely different loaded representation. */
     canvasApplyNative?(path: string, ops: CanvasOp[],
         guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<CanvasApplyResult | null>;
-    /** An OPEN native drawing read from its session with no mounted pane. null = not open natively (a closed
-     *  drawing opens through openCanvasForAgent); an open board's failure throws and never falls back to a view. */
     nativeCanvasView?(path: string, guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<NativeCanvasView | null>;
-    /** A CLOSED admitted native ink PDF's whole-sheet picture. null = not a native ink board (plain, notebook or
-     *  ordinary PDFs keep their closed text/view routes); a claimed board that fails admission throws. */
     nativePdfPicture?(path: string, maxSide: number, guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<NativePdfPicture | null>;
-    /** A closed native drawing or notebook pictured from its own bytes (one page of a notebook when `page` is given). */
     nativeClosedPicture?(path: string, page: number | undefined, maxSide: number,
         guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<NativeClosedCanvasPicture | null>;
-    /**
-     * Apply `changes` (offsets into `expected`) to a text file. Refused as
-     * 'stale' unless the current text (readText) still equals `expected`. Lands
-     * in the live editor when the file is on screen (one undoable transaction),
-     * else in the tab's cached EditorState, else on disk through the normal save
-     * tail. Works in reading mode too (a tool, not a keystroke).
-     */
     applyTextChanges(path: string, expected: string, changes: TextChange[]): Promise<HostResult>;
     /** Create a NEW file; 'taken' if a file OR folder has the name; never truncates. */
     createFile(path: string, content: string): Promise<HostResult>;
     mkdir(path: string): Promise<HostResult>;
-    /** Rename/move (tabs follow). 'taken' if the target name is used. */
     move(from: string, to: string): Promise<HostResult>;
-    /** Move to the folder's `.Garbage`, without the confirm dialog. */
     trash(path: string): Promise<HostResult>;
-    /** The reporter (with `canvas`) of a drawing / notebook / PDF. Opens it
-     *  beside the user's focused pane without taking focus when it is not on
-     *  screen, switches a PDF to annotate, and waits for it to mount. */
     openCanvasForAgent(path: string): Promise<ViewReporter | null>;
-    /** Rechecked at commit as a reload may revoke a canvas's write authority. */
     canvasWritable(path: string): boolean;
 }
-
-/* ───────────────────────── change cards ───────────────────────── */
 
 export interface DiffLine {
     type: 'context' | 'add' | 'del' | 'gap';
@@ -187,15 +113,12 @@ export interface DiffLine {
     newLine?: number;
 }
 
-/** What a mutating tool call did, for the panel's change card. */
 export type AgentChange =
     | { kind: 'edit'; path: string; added: number; removed: number; diff: DiffLine[] }
     | { kind: 'create'; path: string; folder: boolean; diff: DiffLine[] }
     | { kind: 'move'; from: string; to: string }
     | { kind: 'trash'; path: string }
     | { kind: 'canvas'; path: string; created: number; updated: number; deleted: number; summary: string };
-
-/* ───────────────────────── AgentHost — what App hands the panel ───────────────────────── */
 
 export interface ConfirmRequest {
     title: string;
@@ -204,45 +127,25 @@ export interface ConfirmRequest {
     danger?: boolean;
 }
 
-/** Stable for the app's life; every method reads the CURRENT vault. */
 export interface AgentHost {
     toolHost: VaultToolHost;
-    /** The workspace right now, or null with no vault open. */
     workspace(): AgentWorkspaceSnapshot | null;
-    /** The vault's permanent agent id (`.VaultAgent/vault.json`), created on
-     *  first call. null with no vault, or if it could not be written. */
     ensureVaultUuid(): Promise<string | null>;
     readChatIndex(): Promise<ChatIndex>;
-    /** One chat's message tree, from `.VaultAgent/chats/<id>.json`. An unknown
-     *  chat, or an unreadable file, reads as an empty tree — the CLI's own
-     *  history is the fallback (utils/chatTree.ts). */
     readChatTree(chatId: string): Promise<ChatTree>;
-    /** Replace that file. Serialized per chat, like the index. */
     writeChatTree(chatId: string, tree: ChatTree): Promise<void>;
-    /** Drop it, when the chat itself is deleted. */
     deleteChatTree(chatId: string): Promise<void>;
-    /** Serialized read-modify-write: re-reads the file, applies `update`, writes. */
     updateChatIndex(update: (index: ChatIndex) => ChatIndex): Promise<ChatIndex>;
-    /** The vault's CLAUDE.md, AGENTS.md, .claude/skills/**, .agents/skills/**. */
     collectMirrorFiles(): Promise<MirrorFile[]>;
-    /** The app's own confirm dialog (never a native one). */
     ask(request: ConfirmRequest): Promise<boolean>;
-    /** The app's own one-button notice (App.notify) — a refused clipboard. */
     notify(message: string): void;
-    /** Open/focus a vault file in the editor (change cards' "Open"). */
     openFile(path: string): void;
 }
 
 export interface AgentPanelProps {
-    /** The open vault, or null. `key` is the browser's vault id; changes on a switch. */
     vault: { key: string; name: string } | null;
     theme: Theme;
-    /** App's live state for the hosts, read at call time. Stable for the app's
-     *  life; the panel chunk builds the hosts from it (utils/agentHost.ts is
-     *  kept out of the main bundle that way). */
     getHostDeps: () => AgentHostDeps;
-    /** The reader opened the panel (vs. it being restored open with the
-     *  page): read at mount, to hand the keyboard to the composer. */
     takeFocus: boolean;
     onClose: () => void;
 }

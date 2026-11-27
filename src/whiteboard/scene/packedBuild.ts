@@ -6,7 +6,7 @@ export interface PackedSnapshot {
     readonly generations: Uint32Array;
     readonly versions: Uint32Array;
     readonly bounds: Float64Array;
-    readonly revision: number; // Captured HybridIndex.epoch, not document rev.
+    readonly revision: number;
 }
 export interface PackedTreeData extends PackedSnapshot {
     readonly count: number;
@@ -28,8 +28,6 @@ function hilbert(x: number, y: number): number {
     return result >>> 0;
 }
 
-// Same bulk packing as index.ts, but every scan, heap sift and fanout16 union yields a work
-// boundary. No native whole-array sort hides inside a worker's otherwise cooperative slice.
 export class PackedBuildJob {
     private input: PackedSnapshot | undefined;
     private readonly n: number;

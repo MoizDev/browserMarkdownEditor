@@ -6,13 +6,10 @@ export interface KeyServices {
     setSelection(selection: EditSelection): void;
     replace(change: TextChange): void;
     adjacent(offset: number, direction: -1 | 1): number;
-    // Visual movement is supplied by the caret index built from the renderer's
-    // TextPaint, not by a second text layout in the input layer.
     move(offset: number, direction: 'left' | 'right' | 'up' | 'down' | 'line-start' | 'line-end' | 'word-left' | 'word-right'): number;
     collapse(selection: EditSelection, direction: 'left' | 'right'): number;
     command(command: string): void;
     inList(): boolean;
-    /** A note's directional neighbour (Tab, Shift+Tab, Mod+Enter, Shift+Mod+Enter); false where the flow does not apply. */
     neighbour(direction: 'left' | 'right' | 'up' | 'down'): boolean;
     undoTransformation(): boolean;
 }
@@ -38,7 +35,6 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
         return true;
     }
     if (mod && !event.altKey && ['b', 'i', 'u', 'e', 'k', 'h', 's', 'z'].includes(lower)) {
-        // The link key is Mod+Shift+K, the one row the shortcuts dialog lists; plain Mod+K is not a text key.
         const command = lower === 'b' ? 'bold' : lower === 'i' ? 'italic' : lower === 'u' ? 'underline'
             : lower === 'e' ? 'code' : lower === 'k' && event.shiftKey ? 'link' : lower === 'h' && event.shiftKey ? 'highlight'
             : lower === 's' && event.shiftKey ? 'strike' : lower === 'z' ? event.shiftKey ? 'redo' : 'undo' : null;
@@ -57,7 +53,6 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
     if (mod && event.key === 'Enter' && !event.altKey && services.neighbour(event.shiftKey ? 'up' : 'down')) {
         consume(event); return true;
     }
-    // Cmd/Ctrl+K finishes the edit and opens the command palette; plain K is not a text key, so it never types.
     if (mod && !event.altKey && !event.shiftKey && lower === 'k') {
         consume(event); services.command('palette'); return true;
     }
@@ -67,7 +62,6 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
     if (event.key === 'Tab' && services.inList()) {
         consume(event); services.command(event.shiftKey ? 'outdent' : 'indent'); return true;
     }
-    // Tab stays in the editor: outside a list and outside a note's neighbour flow it types a tab character.
     if (event.key === 'Tab' && !mod && !event.altKey) {
         consume(event); services.command(event.shiftKey ? 'untab' : 'tab'); return true;
     }

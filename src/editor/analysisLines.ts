@@ -3,7 +3,6 @@ import type { ChangeDesc, Text } from '@codemirror/state';
 export interface LineMatch {
     from: number;
     to: number;
-    /** The captures are retained because filtered matches still consume their source. */
     groups: readonly string[];
 }
 
@@ -77,7 +76,6 @@ export function scanAllLines(doc: Text): LineScans {
     return scan(doc, [{ from: 0, to: doc.length }]);
 }
 
-/** Rescan only changed logical lines, mapping retained matches in one pass. */
 export function updateLineScans(previous: LineScans, changes: ChangeDesc, oldDoc: Text, newDoc: Text): LineScans {
     if (changes.empty) return previous;
     const [oldWindows, newWindows] = changedWindows(changes, oldDoc, newDoc);

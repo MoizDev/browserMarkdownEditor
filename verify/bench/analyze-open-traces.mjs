@@ -1,4 +1,3 @@
-// Offline analysis of real-browser evidence, not a code test or a new timing run.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';

@@ -1,5 +1,4 @@
 .pdf-capabilities { position: relative; display: inline-flex; }
-/* Opens upward from the controls bar, so the page is only covered when asked. */
 .pdf-capabilities-notice {
   position: absolute;
   z-index: 12;

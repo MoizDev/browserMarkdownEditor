@@ -1,4 +1,3 @@
-// Current-build PDF-D10 reproduction: an outside-edited, main-built legacy PDF.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';

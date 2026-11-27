@@ -1,18 +1,3 @@
-// Claude Code adapter: one `claude -p` process per message, stream-json both ways.
-//
-// The CLI runs with its full default tools in `bypassPermissions` mode — the
-// user's decision; nobody could answer a permission prompt in `-p` anyway. The
-// vault is still reached only through our MCP server, which the prompt insists
-// on. What stays excluded, by stable single switches only (never a list of
-// names tracked per CLI version): the user's, project and plugin MCP servers
-// (`--strict-mcp-config`), the user's hooks (`disableAllHooks`), and the user's
-// plugins (disabled by the ids their own settings.json enables).
-//
-// Verified against claude 2.1.289 with a local fake Anthropic endpoint and an
-// isolated CLAUDE_CONFIG_DIR: the model was offered 21 built-in tools plus our
-// mcp__vault__* ones; Bash and a Read outside the cwd ran with no prompt; a
-// user hook and a user plugin's skill/agent were gone.
-
 import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -31,21 +16,17 @@ import {
 
 const IS_WIN = process.platform === 'win32';
 
-/** Claude Code's own name for our tools: `mcp__vault__vault_read`. */
 const OWN_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
 
 export interface ClaudeArgsInput {
     mcpBaseUrl: string;
     sessionId: string | null;
-    /** Minted by us for a new chat, so the panel learns the id before Claude says it. */
     newSessionId: string;
     model: string | null;
     effort: string | null;
-    /** Plugin ids the user's own settings.json enables (`userClaudePlugins`). */
     userPlugins: readonly string[];
 }
 
-/** argv after the binary. Pure; the adapter tests assert on it. */
 export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
     const mcpConfig = {
         mcpServers: {
@@ -55,39 +36,23 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
                 // travels in the child's environment instead of its argv.
                 url: `${input.mcpBaseUrl}\${${MCP_TOKEN_ENV}}`,
                 headers: { Authorization: `Bearer \${${MCP_TOKEN_ENV}}` },
-                // Never defer our tools behind ToolSearch.
                 alwaysLoad: true,
             },
         },
     };
     const settings = {
-        // Hooks are the user's own automation (shell commands in their or a
-        // plugin's settings), kept out of panel runs by this one switch.
-        // Verified: a SessionStart/UserPromptSubmit hook in user settings runs
-        // without this and does not run with it.
         disableAllHooks: true,
-        // Plugins have no single off switch: `--safe-mode` also drops our vault
-        // MCP tools and `enabledPlugins: {}` disables nothing (both verified).
-        // Naming each of the user's own plugins false does it, because this flag
-        // layer outranks user settings (verified: the plugin's skill and agent
-        // were gone). The ids come from the user's config, not from us.
         ...(input.userPlugins.length ? { enabledPlugins: Object.fromEntries(input.userPlugins.map(id => [id, false])) } : {}),
     };
     return [
         '-p',
         '--input-format', 'stream-json',
         '--output-format', 'stream-json',
-        '--verbose',                      // required by stream-json output
-        '--include-partial-messages',     // token-level deltas
-        // Never ask: there is nobody to answer a permission prompt in -p mode.
+        '--verbose',
+        '--include-partial-messages',
         '--permission-mode', 'bypassPermissions',
-        // Only our server: the user's ~/.claude.json, project .mcp.json and plugin
-        // MCP servers are not loaded (verified: a user-level server was not contacted).
         '--strict-mcp-config',
-        // `--mcp-config` is variadic; it is followed by `--settings`, a flag, so it
-        // cannot swallow the next argument (verified).
         '--mcp-config', JSON.stringify(mcpConfig),
-        // Per-invocation settings layer — nothing is written to ~/.claude/settings.json.
         '--settings', JSON.stringify(settings),
         '--append-system-prompt', VAULT_AGENT_PROMPT,
         ...(input.model ? ['--model', input.model] : []),
@@ -100,15 +65,11 @@ export function buildClaudeArgs(input: ClaudeArgsInput): string[] {
 export function claudeEnv(bin: FoundBinary, token: string): Record<string, string> {
     return agentEnv(bin.pathDirs, {
         [MCP_TOKEN_ENV]: token,
-        // Belt and braces with alwaysLoad: keep MCP tools in the prompt, not behind search.
         ENABLE_TOOL_SEARCH: 'false',
-        // Our own tool timeout (TOOL_CALL_TIMEOUT_MS) must fire first and come back as
-        // an MCP isError the model can read, not as Claude's transport timeout.
         MCP_TOOL_TIMEOUT: String(TOOL_CALL_TIMEOUT_MS + 30_000),
     });
 }
 
-/** The stream-json user message: images first (Anthropic's recommendation), then text. */
 export function claudeUserMessage(text: string, images: RunImage[]): string {
     const content = [
         ...images.map(i => ({ type: 'image', source: { type: 'base64', media_type: i.mimeType, data: i.data } })),
@@ -116,8 +77,6 @@ export function claudeUserMessage(text: string, images: RunImage[]): string {
     ];
     return JSON.stringify({ type: 'user', message: { role: 'user', content } });
 }
-
-/* ───────────────────────── stream parsing ───────────────────────── */
 
 export interface ClaudeResult {
     subtype: string;
@@ -133,7 +92,6 @@ function blockText(content: unknown): string {
     return content.map(c => (c && typeof c === 'object' && (c as { type?: string }).type === 'text' ? String((c as { text?: unknown }).text ?? '') : '')).join('');
 }
 
-/** Turns stdout lines into AgentEvents. Pure; fed by the run and by the fixture tests. */
 export class ClaudeStreamParser {
     result: ClaudeResult | null = null;
     sessionId: string | null = null;
@@ -157,8 +115,6 @@ export class ClaudeStreamParser {
             return;
         }
         if (!msg || typeof msg !== 'object') return;
-        // Sub-agent traffic (the Agent/Task tool's inner calls) carries a parent
-        // id; only the outer call shows.
         if (msg.parent_tool_use_id) return;
         switch (msg.type) {
             case 'system':
@@ -178,7 +134,6 @@ export class ClaudeStreamParser {
                 if (!Array.isArray(content)) return;
                 for (const block of content) {
                     if (block?.type !== 'tool_use' || typeof block.id !== 'string' || typeof block.name !== 'string') continue;
-                    // Our own tools reach the panel as `tool.call`; never twice.
                     if (block.name.startsWith(OWN_TOOL_PREFIX)) continue;
                     this.openTools.set(block.id, block.name);
                     this.emit({ type: 'tool', callId: block.id, name: block.name, input: block.input, status: 'running' });
@@ -224,17 +179,12 @@ export function claudeOutcome(p: ClaudeResult | null, cancelled: boolean, exitCo
     if (p && p.subtype === 'success' && !p.isError) return { kind: 'done', status: 'ok', sessionId: p.sessionId, usage: p.usage };
     const text = `${p?.text ?? ''}\n${stderrTail}`;
     if (LOGIN_HINT.test(text)) return { kind: 'error', reason: 'logged-out', message: 'Claude Code is not logged in. Run `claude` in a terminal and log in, then try again.' };
-    // Claude Code refuses never-ask mode under root (outside its own sandbox)
-    // and exits 1 with only this on stderr (in 2.1.289's binary).
     if (/cannot be used with root\/sudo/i.test(text)) return { kind: 'error', reason: 'crashed', message: 'Claude Code will not run without permission prompts as root. Run VaultAgent as your own user, not as root.' };
     if (/no conversation found/i.test(text)) return { kind: 'error', reason: 'bad-request', message: 'This chat’s Claude Code session is not on this computer.' };
     const detail = p?.text?.trim() ? truncate(p.text.trim(), 500) : `Claude Code exited${exitCode === null ? '' : ` with code ${exitCode}`}.`;
     return { kind: 'error', reason: 'crashed', message: detail };
 }
 
-/* ───────────────────────── history (the CLI's own transcript) ───────────────────────── */
-
-/** Claude files transcripts under `projects/<cwd with every non-alphanumeric replaced by '-'>/`. */
 export function encodeProjectDir(cwd: string): string {
     return cwd.replace(/[^a-zA-Z0-9]/g, '-');
 }
@@ -248,9 +198,6 @@ export function claudeProjectsDir(): string {
     return join(claudeConfigDir(), 'projects');
 }
 
-/** The plugin ids in the user's settings.json `enabledPlugins` (true or false
- *  alike — naming one false again is harmless). Tolerant: anything unreadable
- *  is `[]`. Pure; the caller reads the file and never writes it. */
 export function userClaudePlugins(settingsJson: string): string[] {
     try {
         const plugins = (JSON.parse(settingsJson) as Foreign)?.enabledPlugins;
@@ -271,7 +218,6 @@ function readUserClaudePlugins(): string[] {
 
 const INTERRUPTED = /^\[Request interrupted by user/;
 
-/** Normalizes one transcript to history items. `cwd` is returned so callers can check ownership. */
 export function parseClaudeTranscript(text: string): { items: HistoryItem[]; cwd: string | null } {
     const items: HistoryItem[] = [];
     const tools = new Map<string, Extract<HistoryItem, { kind: 'tool' }>>();
@@ -327,12 +273,10 @@ export function parseClaudeTranscript(text: string): { items: HistoryItem[]; cwd
     return { items, cwd };
 }
 
-/** The transcript for `sessionId` that was recorded in `cwd`, or null. */
 export function findClaudeTranscript(projectsDir: string, cwd: string, sessionId: string): string | null {
     if (!isUuid(sessionId)) return null;
     const direct = join(projectsDir, encodeProjectDir(cwd), `${sessionId}.jsonl`);
     if (existsSync(direct)) return direct;
-    // Very long cwds are hashed by Claude; fall back to a scan, ownership checked by the caller.
     let dirs: string[] = [];
     try {
         dirs = readdirSync(projectsDir);
@@ -346,10 +290,7 @@ export function findClaudeTranscript(projectsDir: string, cwd: string, sessionId
     return null;
 }
 
-/* ───────────────────────── models ───────────────────────── */
-
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
-/** Used when the CLI's `initialize` answer is missing or not the shape we know. */
 export const CLAUDE_FALLBACK_MODELS: ModelInfo[] = [
     { id: 'default', label: 'Default (recommended)', efforts: CLAUDE_EFFORTS, defaultEffort: 'high', images: true, isDefault: true },
     { id: 'opus', label: 'Opus', efforts: CLAUDE_EFFORTS, defaultEffort: 'high', images: true },
@@ -357,7 +298,6 @@ export const CLAUDE_FALLBACK_MODELS: ModelInfo[] = [
     { id: 'haiku', label: 'Haiku', efforts: [], defaultEffort: null, images: true },
 ];
 
-/** Maps the `models` array of the stream-json `initialize` control response. */
 export function mapClaudeModels(models: unknown): ModelInfo[] | null {
     if (!Array.isArray(models) || !models.length) return null;
     const out: ModelInfo[] = [];
@@ -370,7 +310,6 @@ export function mapClaudeModels(models: unknown): ModelInfo[] | null {
             id: m.value,
             label: typeof m.displayName === 'string' ? m.displayName : m.value,
             efforts,
-            // Claude's default when --effort is absent (observed: output_config.effort "high").
             defaultEffort: efforts.includes('high') ? 'high' : null,
             images: true,
             ...(m.value === 'default' ? { isDefault: true } : {}),
@@ -379,10 +318,7 @@ export function mapClaudeModels(models: unknown): ModelInfo[] | null {
     return out;
 }
 
-/* ───────────────────────── adapter ───────────────────────── */
-
 async function queryModels(bin: FoundBinary, cwd: string): Promise<ModelInfo[] | null> {
-    // A throwaway print-mode session: no tools, no MCP, no hooks, not persisted.
     const cmd = [...bin.command, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
         '--tools', '', '--strict-mcp-config', '--settings', JSON.stringify({ disableAllHooks: true }), '--no-session-persistence'];
     const proc = Bun.spawn(cmd, { cwd, env: agentEnv(bin.pathDirs), stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', windowsHide: true });
@@ -471,8 +407,6 @@ export function createClaudeAdapter(opts: { sessionsRoot: string }): AgentAdapte
             });
             const parser = new ClaudeStreamParser(ctx.emit);
             parser.announceSession(ctx.sessionId ?? newSessionId);
-            // stdin stays open: closing it is how a stream-json session is told to end,
-            // and an open stdin is how we send the graceful interrupt.
             proc.stdin.write(`${claudeUserMessage(ctx.text, ctx.images)}\n`);
             proc.stdin.flush();
 
@@ -500,9 +434,6 @@ export function createClaudeAdapter(opts: { sessionsRoot: string }): AgentAdapte
                 cancel() {
                     if (cancelled) return;
                     cancelled = true;
-                    // Verified: an `interrupt` control request ends the turn within
-                    // milliseconds with result/error_during_execution and keeps the
-                    // transcript consistent; signals are the fallback.
                     try {
                         proc.stdin.write(`${JSON.stringify({ type: 'control_request', request_id: `bme-int-${ctx.runId}`, request: { subtype: 'interrupt' } })}\n`);
                         proc.stdin.flush();
@@ -517,7 +448,6 @@ export function createClaudeAdapter(opts: { sessionsRoot: string }): AgentAdapte
             const file = findClaudeTranscript(claudeProjectsDir(), cwd, sessionId);
             if (!file) return { found: false, items: [] };
             const parsed = parseClaudeTranscript(readFileSync(file, 'utf8'));
-            // Only sessions recorded in this vault's folder belong to this vault.
             if (!parsed.cwd || resolve(parsed.cwd) !== resolve(cwd)) return { found: false, items: [] };
             return { found: true, items: parsed.items } satisfies SessionHistory;
         },
@@ -528,7 +458,6 @@ export function createClaudeAdapter(opts: { sessionsRoot: string }): AgentAdapte
             const parsed = parseClaudeTranscript(readFileSync(file, 'utf8'));
             if (!parsed.cwd || resolve(parsed.cwd) !== resolve(cwd)) return false;
             unlinkSync(file);
-            // Sub-agent transcripts and spilled tool results live beside it.
             const sibling = file.replace(/\.jsonl$/, '');
             try {
                 if (statSync(sibling).isDirectory()) rmSync(sibling, { recursive: true, force: true });

@@ -33,9 +33,6 @@ export const LEGACY_CLIPBOARD_OUTPUT_LIMIT = 33_554_432;
 const ENVELOPE_LIMIT = SECURITY_LIMITS.clipboardHtmlBytes;
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
-// The dictionary stores only lengths, not decoded strings. A literal and an
-// extension add at most two entries per output unit; input bits provide a second
-// bound. A single allocation avoids transient doubling at the worst case.
 async function predictedLength(encoded: string, context: WorkerContext): Promise<number> {
     if (!encoded.length || encoded.length > LEGACY_CLIPBOARD_INPUT_LIMIT || encoded.length % 4 !== 0) throw new RangeError('Invalid legacy compressed length');
     let end = encoded.length;

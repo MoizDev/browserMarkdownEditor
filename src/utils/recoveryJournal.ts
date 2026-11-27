@@ -3,7 +3,6 @@ import { requestPersistentStorage } from './storagePersistence';
 
 export type RecoveryCopy = string | Uint8Array | Blob | { kind: 'recipe'; payload: unknown };
 
-/** Payloads are owned and versioned by the document adapter, not interpreted by the store. */
 export interface RecoveryEntry {
     vaultId: string;
     journalId: string;
@@ -13,11 +12,8 @@ export interface RecoveryEntry {
     revision: number;
     updatedAt: number;
     payload: unknown;
-    /** Self-contained file or recipe: missing baselines can only be saved aside. */
     copy: RecoveryCopy;
-    /** Vault-relative media references travel with a folder move. */
     mediaRefs: string[];
-    /** Set once a newer window's journal for this path has been observed. */
     copyOnly?: boolean;
 }
 
@@ -51,34 +47,17 @@ function done(tx: IDBTransaction): Promise<void> {
     });
 }
 
-// Asked once per page load, and a refusal is not announced: Chrome grants this from engagement, never a prompt,
-// so on a fresh origin it is refused and the user has nothing to do about it (measured: production, fresh origin,
-// the status line said 'Recovery storage may be evicted by the browser.' at the first edit of every page load).
-// Settings → Vault is where the state is reported, worded for a reader.
 let persistence: Promise<unknown> | undefined;
 function requestDurability(): void {
     persistence ??= requestPersistentStorage();
 }
 
-/** A journal id is independent of both the transient document id and the file's bytes. */
 export function newJournalId(): string { return crypto.randomUUID(); }
 
-/** What this page last learned of each record it wrote: the newest revision stored, and whether another window had
- *  marked it copy-only. Only a write made while the page is leaving relies on it (`markLeaving`). */
 const known = new Map<string, { revision: number; copyOnly: boolean }>();
 const knownKey = (vaultId: string, journalId: string) => JSON.stringify([vaultId, journalId]);
 let leaving = false;
 
-/**
- * The page is being left (beforeunload; pagehide): until the current task ends, a journal write is put and committed
- * at once, with no read first. Measured in the app, reloaded 0 ms after a stroke on a drawing, notebook or PDF: the
- * write began 3 ms after beforeunload, but its read-then-put transaction had neither answered nor committed when
- * pagehide came 30-40 ms later, and Chrome dropped it — the stroke was lost with nothing to recover (2 of 3 runs, and
- * 7 of 9 with an immediate put but no commit). Committed at once it landed in 9 of 9, though the page was gone before
- * the transaction reported complete. The read's two jobs come from what this page already knows instead: a record is
- * never put over a newer revision, and one another window marked copy-only stays so — unless that mark was made
- * after this page's last ordinary write, a fraction of a second earlier, which is the one thing this path can lose.
- */
 export function markLeaving(): void {
     leaving = true;
     setTimeout(() => { leaving = false; });
@@ -138,7 +117,6 @@ export async function listRecovery(vaultId: string): Promise<RecoveryEntry[]> {
     return request.result as RecoveryEntry[];
 }
 
-/** Mark older windows before an offer can be discarded, so they cannot become in-place offers later. */
 export async function markRecoveryCopies(vaultId: string, ids: readonly string[]): Promise<void> {
     if (!ids.length) return;
     const db = await open();
@@ -173,7 +151,6 @@ export async function discardRecovery(vaultId: string, journalId: string, revisi
     await finished;
 }
 
-/** The vault's forget operation, not a recent-list trimming pass, is the authority to erase. */
 export async function forgetRecoveryVault(vaultId: string): Promise<void> {
     const db = await open();
     const tx = db.transaction('entries', 'readwrite');

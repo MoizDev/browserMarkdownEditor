@@ -9,8 +9,6 @@ import type { NarrowResult, PointQuery, RegionQuery } from './types';
 export interface VectorNarrowPart {
     readonly part: NarrowResult['part'];
     readonly paths: readonly (readonly PathOp[])[];
-    /** The same lines before a dash pattern cut them into pieces, where that differs: a query that takes a dashed line whole
-     * (the eraser's, viewer/regionQuery.ts `paintedFigure`) reads these. */
     readonly solid?: readonly (readonly PathOp[])[];
     readonly options: PathPickOptions;
 }
@@ -22,22 +20,15 @@ export type VectorNarrowResult =
 const descriptors = new WeakMap<object, VectorNarrowDescriptor>();
 const PENDING: VectorNarrowResult = Object.freeze({ status: 'pending' });
 
-/** Registration is keyed by the exact immutable provider, never by a node id or live cache slot. */
 export function registerVectorNarrow(owner: object, descriptor: VectorNarrowDescriptor): void {
     if (!descriptors.has(owner)) descriptors.set(owner, descriptor);
 }
 export function vectorNarrowDescriptor(owner: object): VectorNarrowDescriptor | undefined { return descriptors.get(owner); }
 
-/** The parts of a kind that answers its own questions (a text, a note, a frame, a picture, a line) rather than through the
- * jobs here. One question it cannot answer itself: a region cut off by the frame the item sits in, which is asked of these
- * parts (geom/clippedVectorRegionJob.ts). Kept apart from the descriptors above so that registering them changes no other
- * answer: a point query, and a region no frame cuts, still go to the provider's own `point` and `region`. */
 const clippable = new WeakMap<object, VectorNarrowDescriptor>();
 export function registerClippedNarrow<T extends object>(owner: T, descriptor: VectorNarrowDescriptor): T { clippable.set(owner, descriptor); return owner; }
 export function clippedNarrowDescriptor(owner: object): VectorNarrowDescriptor | undefined { return descriptors.get(owner) ?? clippable.get(owner); }
 
-/** Higher-priority label/title parts precede body parts; an uncertain higher
- * part cannot be demoted to a lower-priority confirmed hit. */
 export function createVectorPointJob(descriptor: VectorNarrowDescriptor, query: PointQuery): {
     step(budget: { readonly deadline: number; readonly maxWork: number }): VectorNarrowResult; cancel(): void;
 } {
@@ -81,7 +72,6 @@ export function createVectorPointJob(descriptor: VectorNarrowDescriptor, query: 
     };
 }
 
-/** Each constituent must be contained; any constituent can establish overlap. */
 export function createVectorRegionJob(descriptor: VectorNarrowDescriptor, query: RegionQuery): {
     step(budget: { readonly deadline: number; readonly maxWork: number }): VectorNarrowResult; cancel(): void;
 } {

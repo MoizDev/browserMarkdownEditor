@@ -1,38 +1,11 @@
-// The app's own tooltip: an Obsidian-style dark bubble with a pointer, drawn for
-// any element carrying `data-tooltip="…"` (and, optionally,
-// `data-tooltip-position="top|bottom|left|right"`, default bottom).
-//
-// A DOM controller, not a React component, on purpose: the CodeMirror widgets in
-// src/editor/ (heading fold, image, table, copy-code) and pdf.js's link overlays
-// are React-free and outlive the panes that made them, so the only contract they
-// can honour is "set an attribute". One delegated listener on `document` serves
-// every one of them, and every React control, for the app's whole life — no
-// per-element listener, no provider, no re-render. Installed once from main.tsx,
-// outside React, which also keeps StrictMode's double effects away from it.
-//
-// Why not the native `title`: Chromium's is an OS-styled box that appears after
-// ~1.5s, cannot be themed and draws no pointer; and hijacking `title` at runtime
-// would hide which elements have one. eslint.config.ts bans `title` outright.
-//
-// Disabled `<button>`s need nothing special — measured in headless Chromium 1.63:
-// `pointerover`/`pointerout` fire on a disabled button and on a child inside one,
-// so a disabled control's tooltip (the reason it cannot act) still shows.
-
 import { getContextMenu } from './contextMenu';
 import { getBoardPreferences } from './boardPreferences';
 
 const SHOW_DELAY_MS = 400;
-// Sliding from one control to the next along a toolbar shows the next bubble at
-// once, the way Obsidian's does, instead of making the reader wait again.
 const WARM_MS = 300;
-// Enhanced board tooltips (the board's accessibility preference): the bubble stays up this long after the pointer leaves
-// its target, so the pointer can cross the gap onto it and read it there.
 const ENHANCED_LEAVE_GRACE_MS = 300;
-// Bubble body to target edge; the arrow sits inside this gap.
 const GAP_PX = 8;
-// Nearest the bubble may come to a viewport edge.
 const MARGIN_PX = 8;
-// Nearest the arrow's centre may come to a bubble corner: 4px radius + 5px half-arrow.
 const ARROW_INSET_PX = 10;
 
 type Side = 'top' | 'bottom' | 'left' | 'right';
@@ -41,25 +14,16 @@ const OPPOSITE: Record<Side, Side> = { top: 'bottom', bottom: 'top', left: 'righ
 
 let installed = false;
 let bubble: HTMLDivElement | null = null;
-// The element being hovered that owns a tooltip — pending, shown, or dismissed.
 let target: Element | null = null;
 let shown = false;
-// A click, key, scroll… dismissed the bubble: it stays down until the pointer
-// leaves the target, as the native tooltip does, instead of popping back up
-// under a pointer that has only moved across a child of the same button.
 let dismissed = false;
 let showTimer = 0;
 let hiddenAt = -Infinity;
 let observer: MutationObserver | null = null;
-// Enhanced accessibility mode shows descriptions at once and keeps them hoverable, so a pointer can move onto one.
 function enhanced(): boolean {
     return getBoardPreferences().enhancedA11yMode;
 }
 let leaveTimer = 0;
-// Where the pointer last was, and whether the target arrived under it without the pointer moving. Chromium sends
-// pointerover to whatever appears under a resting pointer (a panel opening, a pane mounting), so without this a
-// tooltip showed for a control the person never moved onto (measured: a drawing opened by keyboard under a parked
-// pointer showed "Hide colours and pen width" over its pen panel). Such a target waits for the pointer to move.
 let lastX = NaN, lastY = NaN, waitingForMove = false;
 
 function tooltipText(el: Element): string {
@@ -73,7 +37,6 @@ function ensureBubble(): HTMLDivElement {
     bubble.className = 'tooltip';
     bubble.setAttribute('role', 'tooltip');
     bubble.style.display = 'none';
-    // Leaving a hoverable description closes it, as leaving its target does otherwise.
     bubble.addEventListener('pointerleave', () => { if (enhanced()) leave(); });
     document.body.appendChild(bubble);
     return bubble;
@@ -81,8 +44,6 @@ function ensureBubble(): HTMLDivElement {
 
 function place(el: Element, box: HTMLDivElement): void {
     const t = el.getBoundingClientRect();
-    // Measure at the origin: a fixed box left near the right edge by its last
-    // target shrinks-to-fit into what remains and would wrap a short label.
     box.style.left = '0px';
     box.style.top = '0px';
     const { width: w, height: h } = box.getBoundingClientRect();
@@ -105,12 +66,8 @@ function place(el: Element, box: HTMLDivElement): void {
     let left: number;
     let top: number;
     if (side === 'top' || side === 'bottom') {
-        // Clamped too, for a target so tall that neither side fits: an
-        // overlapping bubble still beats one cut off by the window.
         top = clamp(side === 'bottom' ? t.bottom + GAP_PX : t.top - GAP_PX - h, MARGIN_PX, vh - MARGIN_PX - h);
         left = clamp(t.left + t.width / 2 - w / 2, MARGIN_PX, vw - MARGIN_PX - w);
-        // Clamping moved the bubble, not the arrow: it keeps pointing at the
-        // target's centre, stopping short of the rounded corner.
         box.style.setProperty('--tooltip-arrow-x', `${clamp(t.left + t.width / 2 - left, ARROW_INSET_PX, w - ARROW_INSET_PX)}px`);
         box.style.removeProperty('--tooltip-arrow-y');
     } else {
@@ -129,26 +86,14 @@ function show(): void {
     showTimer = 0;
     const el = target;
     if (!el) return;
-    // Read at show time, not hover time: the attribute may have gone, or the
-    // element been unmounted, during the delay.
     const text = el.isConnected ? tooltipText(el) : '';
     if (!text) { reset(); return; }
-    // No bubble on a trigger whose menu is open: it would land on the menu's
-    // first rows (a bottom bubble sits 8px under the button, the menu 4px),
-    // over the very thing the user is reading. The pointer only has to wander
-    // back onto the button for that. A MENU trigger only (`aria-haspopup`):
-    // plain disclosures — a heading's fold arrow, the canvas style panel —
-    // carry `aria-expanded="true"` too, and their tooltips must still show.
-    // That covers the explorer's dropdowns and the vault switcher; the anchor
-    // test covers the shared menu's other raisers (the tab strip's ⌄, a
-    // pane's ⋯, the table grips).
     const menuOpenHere = (el.hasAttribute('aria-haspopup') && el.getAttribute('aria-expanded') === 'true')
         || getContextMenu()?.anchor === el;
     if (menuOpenHere) return;
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) { reset(); return; }
     const box = ensureBubble();
-    // Enhanced board tooltips take the pointer so it can move onto them; every other bubble stays click-through.
     box.style.pointerEvents = promptFor(el) ? 'auto' : '';
     // textContent ONLY. File names, paths and pdf.js link titles are untrusted
     // text, and AGENTS.md allows exactly two note-text → innerHTML sinks
@@ -161,8 +106,6 @@ function show(): void {
     watch(el);
 }
 
-// While a bubble is up, a target that disappears (a row unmounted under a still
-// pointer fires no pointerout) or loses its text must take the bubble with it.
 function watch(el: Element): void {
     observer ??= new MutationObserver(() => {
         if (!shown || !target) return;
@@ -185,7 +128,6 @@ function hideBubble(): void {
     shown = false;
 }
 
-// Pointer left the target: the next hover within WARM_MS shows at once.
 function leave(): void {
     if (shown) hiddenAt = performance.now();
     hideBubble();
@@ -194,7 +136,6 @@ function leave(): void {
     waitingForMove = false;
 }
 
-// Forget the target outright, and do not warm the next hover.
 function reset(): void {
     hideBubble();
     target = null;
@@ -202,14 +143,12 @@ function reset(): void {
     waitingForMove = false;
 }
 
-// A click, key, wheel, scroll or drag: down, and kept down until the pointer leaves.
 function dismiss(): void {
     if (!target) return;
     hideBubble();
     dismissed = true;
 }
 
-/** Enhanced accessibility mode (a board preference, F-A11Y-004): board tooltips show at once and stay hoverable. */
 export function setEnhancedBoardTooltips(on: boolean): void {
     if (!on) cancelLeave();
 }
@@ -226,7 +165,6 @@ function onPointerOver(e: PointerEvent): void {
     if (e.pointerType === 'touch') return;
     const resting = e.clientX === lastX && e.clientY === lastY;
     lastX = e.clientX; lastY = e.clientY;
-    // The pointer is on the bubble or back on its target: an enhanced bubble that was leaving stays up.
     if (e.target instanceof Node && bubble?.contains(e.target)) { cancelLeave(); return; }
     const el = e.target instanceof Element ? e.target.closest('[data-tooltip]') : null;
     if (el === target) { cancelLeave(); return; }

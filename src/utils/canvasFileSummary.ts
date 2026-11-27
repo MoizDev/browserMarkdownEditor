@@ -1,32 +1,13 @@
-// What is on a `.tldraw` drawing or a `.notebook` that is NOT open — read
-// straight out of the file's JSON, for the agent's vault_read / canvas_shapes.
-//
-// Deliberately without tldraw: this runs on the agent panel's path, and the
-// tldraw chunk is only for panes that draw. A snapshot is plain records, so the
-// few facts the agent needs (type, position, size, text, style, arrow ends) are
-// read off them directly. An open canvas is never read this way — its live
-// reporter (viewRegistry `canvas.shapes()`) answers from the editor instead,
-// with tldraw's own geometry.
-//
-// Coordinates follow the live reporters' convention (see VAULT_TOOLS'
-// canvas_shapes): drawings in canvas units; notebooks page-relative, x/y in
-// points from the top-left of `page` — pages stacked by paper.ts's
-// `pageLayout`, the same function NotebookPane lays them out with.
-
 import { normalizePaper, pageLayout, paperPageSize, type NotebookPaper, type PageBox } from './paper';
 import type { ShapeSummary } from './viewRegistry';
 
-/** A shape as read from a file: sizes the file cannot tell without tldraw's
- *  geometry (a text box's height, a group's extent) are unknown. */
 export interface FileShape extends ShapeSummary {
     sizeUnknown?: boolean;
 }
 
 export interface CanvasFileSummary {
     kind: 'drawing' | 'notebook';
-    /** tldraw pages (a drawing may hold several; a notebook holds one). */
     pages: Array<{ name: string; shapes: FileShape[] }>;
-    /** Notebooks only. */
     paper?: NotebookPaper;
 }
 
@@ -36,13 +17,10 @@ const isRec = (v: unknown): v is Rec => !!v && typeof v === 'object' && !Array.i
 const num = (v: unknown, fallback = 0): number => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
-/** Locked page backdrops the notebook and the PDF annotator lay under the ink
- *  (NotebookPane's `notebook-page-N`, PdfAnnotateCanvas's `pdf-page-N`). */
 export function isBackdropShapeId(id: string): boolean {
     return id.startsWith('shape:notebook-page-') || id.startsWith('shape:pdf-page-');
 }
 
-/** Plain text of tldraw's rich text (a TipTap document), paragraphs on lines. */
 export function richTextToPlain(doc: unknown): string {
     const out: string[] = [];
     const walk = (node: unknown) => {
@@ -56,12 +34,6 @@ export function richTextToPlain(doc: unknown): string {
     walk(doc);
     return out.join('').replace(/\n+$/, '');
 }
-
-/* ── draw/highlight paths: tldraw's b64 delta encoding ─────────────────────
- * A segment's `path` is base64 of: the first point as Float32s (x, y[, z]),
- * then each later point as Float16 DELTAS — 3 per point, or 2 when the segment
- * says `dim: 2`. Mirrors @tldraw/tlschema's b64Vecs.decodePoints; only the
- * bounds are wanted here. Older files carry a `points` array instead. */
 
 function float16(bits: number): number {
     const sign = bits & 0x8000 ? -1 : 1;
@@ -110,13 +82,12 @@ function boundsOf(points: Array<{ x: number; y: number }>): { x: number; y: numb
     return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 }
 
-/** The shape's extent relative to its own origin, where the file can say. */
 function localBounds(type: string, props: Rec): { x: number; y: number; w: number; h: number } | null {
     const scale = num(props.scale, 1);
     switch (type) {
         case 'geo':
             return { x: 0, y: 0, w: num(props.w) * scale, h: (num(props.h) + num(props.growY)) * scale };
-        case 'note': // tldraw's NOTE_SIZE is 200
+        case 'note':
             return { x: 0, y: 0, w: 200 * scale, h: (200 + num(props.growY)) * scale };
         case 'draw':
         case 'highlight': {
@@ -143,18 +114,11 @@ function localBounds(type: string, props: Rec): { x: number; y: number; w: numbe
     }
 }
 
-/** Page index (0-based) holding canvas y — the first page whose bottom is below
- *  it, so a gap between pages counts as the page after it (pagedCanvas.pageAt,
- *  which cannot be imported here: it pulls in tldraw). */
 export function pageIndexAt(boxes: readonly PageBox[], y: number): number {
     for (let i = 0; i < boxes.length; i++) if (boxes[i].y + boxes[i].height > y) return i;
     return Math.max(0, boxes.length - 1);
 }
 
-/**
- * Read a closed drawing or notebook. `text` is the file (or its tab's buffer).
- * Never throws: an unparseable file is reported, not guessed at.
- */
 export function summarizeCanvasFile(kind: 'drawing' | 'notebook', text: string): CanvasFileSummary | { error: string } {
     let root: Rec = {};
     if (text.trim()) {
@@ -166,8 +130,6 @@ export function summarizeCanvasFile(kind: 'drawing' | 'notebook', text: string):
             return { error: 'the file is not valid JSON, so its shapes cannot be read' };
         }
     }
-    // A TLEditorSnapshot keeps the store one level down, in `document`; an
-    // older TLStoreSnapshot has it at the top (DrawingPane accepts both).
     const doc = isRec(root.document) ? root.document : root;
     const store = isRec(doc.store) ? doc.store : {};
     const records = Object.values(store).filter(isRec);
@@ -178,7 +140,6 @@ export function summarizeCanvasFile(kind: 'drawing' | 'notebook', text: string):
     const shapesById = new Map<string, Rec>();
     for (const r of records) if (r.typeName === 'shape' && typeof r.id === 'string') shapesById.set(r.id, r);
 
-    // Arrow ends bound to shapes live in separate binding records.
     const arrowEnds = new Map<string, { start?: string; end?: string }>();
     for (const r of records) {
         if (r.typeName !== 'binding' || r.type !== 'arrow' || typeof r.fromId !== 'string' || typeof r.toId !== 'string') continue;
@@ -189,7 +150,6 @@ export function summarizeCanvasFile(kind: 'drawing' | 'notebook', text: string):
         arrowEnds.set(r.fromId, ends);
     }
 
-    /** Absolute origin: a grouped/framed shape's x/y are its parent's space. */
     const originOf = (shape: Rec, depth = 0): { x: number; y: number; page: string } => {
         const parentId = str(shape.parentId) ?? '';
         const parent = shapesById.get(parentId);
@@ -254,14 +214,11 @@ export function summarizeCanvasFile(kind: 'drawing' | 'notebook', text: string):
 
 const round = (n: number) => String(Math.round(n * 10) / 10);
 
-/** Short one-line text for shape labels: newlines shown, long text cut. */
 function quote(text: string, max = 200): string {
     const cut = text.length > max ? `${text.slice(0, max)}…` : text;
     return JSON.stringify(cut);
 }
 
-/** One shape as a line the agent can read and act on (its id is what
- *  canvas_apply's update/delete and arrow `shapeId` take). */
 export function formatShape(s: ShapeSummary & { sizeUnknown?: boolean }, textMax = 200): string {
     const parts = [s.id, s.geo ? `${s.type}(${s.geo})` : s.type];
     if (s.page !== undefined) parts.push(`page ${s.page}`);

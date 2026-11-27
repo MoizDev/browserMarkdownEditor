@@ -13,8 +13,6 @@ function midpoint(a: number, b: number): Dyadic {
 }
 function exactMiddle(a: Vec2, b: Vec2): ExactPoint { return { x: midpoint(a.x, b.x), y: midpoint(a.y, b.y), w: { n: 1n, e: 0 } }; }
 
-/** Filled target and ancestor-frame containment; boundary stays inside only
- * after an independent exact boundary certificate proves it. */
 export function* connectorSurfaceContains(surface: AttachmentSurface, point: Vec2, maxPieces: number,
     exact?: ExactPoint): Generator<void, boolean> {
     if (![point.x, point.y].every(Number.isFinite) || !Number.isSafeInteger(maxPieces) || maxPieces < 1) throw new RangeError('Invalid connector surface point');
@@ -28,8 +26,6 @@ export function* connectorSurfaceContains(surface: AttachmentSurface, point: Vec
         }
         if (status === 'outside') return false;
         if (status === 'uncertain') {
-            // The boundary job accepts ordinary dyadic points; a midpoint whose
-            // rounded value differs cannot use it as an exact witness.
             if (exact) throw new RangeError('Connector midpoint lies on an uncertified contour boundary');
             const boundary = createCubicBoundaryJob([contour.outline], point, contour.localToWorld, { maxCommands: maxPieces });
             try {
@@ -46,8 +42,6 @@ export function* connectorSurfaceContains(surface: AttachmentSurface, point: Vec
     return true;
 }
 
-/** Terminal-connected interior intervals along an orthogonal route. Every
- * segment is resolved against actual clipped contour geometry, not its AABB. */
 export function* connectorSurfaceIntervals(surface: AttachmentSurface, points: readonly Vec2[], error: number,
     maxPieces: number): Generator<void, { readonly parts: readonly ConnectorInsideInterval[]; readonly length: number }> {
     if (!points.length || !Number.isFinite(error) || error <= 0 || !Number.isSafeInteger(maxPieces) || maxPieces < 1)

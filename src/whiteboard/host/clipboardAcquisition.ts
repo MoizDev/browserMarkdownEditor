@@ -17,19 +17,15 @@ import { acquireNativeBoard, type NativeBoardAcquisition } from './nativeAcquisi
 import { inspectPdfVisualModel } from './pdfVisualPreflight';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: private clipboard source admission, C5 rehydration and immutable
-// media identity contracts; independent host composition, no third-party source.
 export interface BoardClipboardAcquisition {
     readonly payload: BoardPayload;
     readonly load: RehydratedLoad;
     readonly samples: SampleStore;
     readonly inline: readonly Readonly<{ id: MediaId; blob: Blob }>[];
-    /** Exact in-window copy data for bindings outside the native source container. */
     readonly externalBindings?: ReadonlyMap<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>;
     readonly cachedSamples?: ReadonlyMap<NodeId, SampleRef>;
     readonly report: NativeLoadReply;
     readonly originalSourceKind: BoardPayload['from']['kind'];
-    /** Resolves once the owned acquisition has retired; its builds may still read the admitted sources. */
     dispose(): void | Promise<void>;
 }
 export interface BoardClipboardAcquisitionOptions {
@@ -38,9 +34,7 @@ export interface BoardClipboardAcquisitionOptions {
     isCurrent(identity: BoardJobIdentity): boolean;
     readonly signal?: AbortSignal;
     cooperate?(): Promise<void>;
-    /** Must be the exact result of ClipboardCopy.match for these actual clipboard strings. */
     readonly cache?: Readonly<{ match: CachedClipboard; encoded: string; plain: string }>;
-    /** Actual same-session snapshot owned by the duplicate command, never an external payload. */
     readonly duplicateSnapshot?: CopySnapshot;
 }
 function snapshot(payload: BoardPayload): BoardPayload {
@@ -66,7 +60,6 @@ function sameMarker(marker: BoardPayload, value: BoardPayload): boolean {
         && marker.from.kind === value.from.kind && marker.bounds.x === value.bounds.x && marker.bounds.y === value.bounds.y
         && marker.bounds.w === value.bounds.w && marker.bounds.h === value.bounds.h;
 }
-/** Decoder/cache data is copied before the first await; its owner may then release its lease. */
 export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOptions): Promise<BoardClipboardAcquisition> {
     options.signal?.throwIfAborted();
     if (!validBoardIdentity(options.identity) || !options.decoded || typeof options.decoded.cacheOnly !== 'boolean'
@@ -122,11 +115,8 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
 }
 
 export interface CopiedBoardClipboardOptions extends Omit<BoardClipboardAcquisitionOptions, 'decoded' | 'cache'> {
-    /** Exact copied source bytes retained by the caller, not destination-path lookups. */
     readonly media?: ReadonlyMap<MediaId, Blob>;
 }
-/** In-session duplicate uses its real native source directly, including cache-only copies.
- * It does not manufacture a decoder reply or round-trip through OS clipboard limits. */
 export async function acquireCopiedBoardClipboard(copy: CopySnapshot, options: CopiedBoardClipboardOptions): Promise<BoardClipboardAcquisition> {
     options.signal?.throwIfAborted();
     if (!validBoardIdentity(options.identity) || !copy || !Array.isArray(copy.media)) throw new TypeError('Invalid copied board source');
@@ -142,8 +132,6 @@ export async function acquireCopiedBoardClipboard(copy: CopySnapshot, options: C
     }
     const externalBindings = new Map<NodeId, Readonly<{ start?: Attachment; end?: Attachment }>>(), cachedSamples = new Map<NodeId, SampleRef>();
     await copiedSidecars(copy, externalBindings, cachedSamples, options);
-    // Each Blob still undergoes the same hash and actual downstream media inspection.
-    // The browser envelope's 32 MiB inline cap is not an in-session source-data cap.
     return acquireClipboardSource(source, Object.freeze(inline), options, externalBindings, cachedSamples);
 }
 

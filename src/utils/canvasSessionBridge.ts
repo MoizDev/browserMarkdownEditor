@@ -1,11 +1,8 @@
 import type { ContentSource, SourceOwner } from './documentBuffers';
 import type { DocumentSessionStore, SessionAdapter } from './documentSessions';
 
-/** The identity belongs to App even before an editable canvas host is ready. */
 export interface CanvasSessionBridge extends SessionAdapter {
-    /** StrictMode and additional panes attach to the same engine session. */
     attach<A extends SessionAdapter>(create: (owner: SourceOwner) => A, commit?: (adapter: A, owner: SourceOwner) => void): A;
-    /** Rejected provisional engines retire before another preparation or owner release. */
     settled(): Promise<void>;
     peek<A extends SessionAdapter>(): A | undefined;
     dispose(): Promise<void>;
@@ -17,7 +14,6 @@ export type AttachCanvasSession = <A extends SessionAdapter>(
     commit?: (adapter: A, owner: SourceOwner) => void,
 ) => A;
 
-/** Attach only through App's already-created entry, never from a parallel pane-owned store. */
 export function attachCanvasSession<A extends SessionAdapter>(
     sessions: DocumentSessionStore,
     documentId: string,
@@ -38,12 +34,6 @@ export function attachCanvasSession<A extends SessionAdapter>(
     });
 }
 
-/**
- * A PDF reader may need a document identity before Annotate is opened. This
- * adapter upgrades that one identity in place; it never creates a parallel
- * document or changes the session serial and its resource slots.
- */
-/** How long a recovery waits for the document's editor to open (a PDF switched from Original to Annotate for it). */
 const RECOVER_READY_MS = 20_000;
 
 export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => ContentSource): CanvasSessionBridge {
@@ -93,8 +83,6 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
                 const detach = next.onChange(source => {
                     if (committed) emit(source); else stagedSource = source;
                 });
-                // A synchronous first report can cause App to release the
-                // entry before onChange returns its cleanup.
                 if (disposed) { detach(); throw new Error('Canvas session was released during attachment'); }
                 unsubscribe = detach;
                 const detachPending = next.onPending?.(() => { if (committed) emitPending(); });
@@ -103,8 +91,6 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
                     unsubscribePending = detachPending;
                 }
                 if (disposed) throw new Error('Canvas session was released during attachment');
-                // A cold dirty source may change during C5 preparation. Peek is provisional
-                // here so App can authorize its exact checkpoint; failed CAS keeps coldSource.
                 commit?.(next, owner);
                 committed = true;
             } catch (error) {
@@ -119,8 +105,6 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
                 if (dispose) retire(dispose);
                 throw error;
             }
-            // Once the buffer accepted this engine, a notification failure must not
-            // roll it back and leave the retained source pointing at a disposed runtime.
             if (stagedSource !== undefined) emit(stagedSource);
             emitPending();
             return next;
@@ -150,7 +134,6 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
             try { detachPending?.(); } catch (error) { detachError = error; }
             try { detach?.(); } catch (error) { detachError ??= error; }
             releaseWork = Promise.resolve().then(async () => {
-                // A detach error wins over a dispose error, as a throw in `finally` would make it.
                 let disposeFailed = false;
                 let disposeError: unknown;
                 try { await dispose?.(); } catch (error) { disposeFailed = true; disposeError = error; }
@@ -166,11 +149,6 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
         mediaReferenceIssues() { return adapter?.mediaReferenceIssues?.(); },
         journalDelta() { return adapter?.journalDelta?.(); },
         async recover(payload) {
-            // A PDF reopened in Original has no editor yet: Recover opens Annotate (recoveryActions.ts) and waits here
-            // until it can take the changes — attached, and its editing view open (a board stays read-only until then).
-            // Thrown at once, it answered "Canvas session is not ready for recovery"; taken at attach, "PDF annotation
-            // tools are unavailable in this view"; either way nothing was written. A person who opened Annotate first
-            // and then chose Recover had it work (measured).
             const ready = () => !!adapter?.recover && (adapter.canRecover?.() ?? true);
             for (const until = Date.now() + RECOVER_READY_MS; !ready() && !disposed && Date.now() < until;) await new Promise(resolve => setTimeout(resolve, 100));
             if (!adapter?.recover) throw new Error('The document’s editor did not open in time. Open it for editing, then choose Recover again.');
@@ -187,8 +165,6 @@ export function createCanvasSessionBridge(owner: SourceOwner, coldSource: () => 
             return () => {
                 listeners.delete(listener);
                 if (listeners.size) return;
-                // The store detaches before releasing its slots; a late engine
-                // callback must not report into the next session at this path.
                 disposed = true;
                 const detach = unsubscribe, detachPending = unsubscribePending;
                 unsubscribe = undefined;

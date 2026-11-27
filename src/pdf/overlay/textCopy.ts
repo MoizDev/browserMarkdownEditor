@@ -8,9 +8,7 @@ export interface PdfTextCopyHost {
     selection(): PdfSelection | null;
     pageCount(): number;
     cachedText(page: number): string | undefined;
-    /** Active copy is priority 1, not background indexing. */
     text(page: number, signal: AbortSignal): Promise<string>;
-    /** Rechecked before publication, including immediately before a queued clipboard write. */
     isCurrent(): boolean;
     fontEpoch(): number;
     notice(message: string): void;
@@ -19,13 +17,10 @@ export interface PdfTextCopyHost {
 export interface PdfTextCopyBinding {
     copy(): Promise<void>;
     copyQuote(filename: string, path: string): Promise<void>;
-    /** Call on selection, docKey or visibility change. */
-    /** Returns true when an in-flight gather was cancelled. */
     cancel(): boolean;
     dispose(): void;
 }
 const yieldTask = () => new Promise<void>(resolve => setTimeout(resolve, 0));
-// Clipboard writes are app-global, so two PDF panes cannot race completion.
 let latestCopy = 0, writes = 0, writeTail: Promise<void> = Promise.resolve();
 function writeLatest(text: string, ticket: number, valid: () => boolean): Promise<boolean | undefined> {
     writes++;
@@ -44,7 +39,6 @@ function sameSelection(a: PdfSelection, b: PdfSelection | null): boolean {
 }
 function snapshot(value: PdfSelection): PdfSelection { return { ...value, anchor: { ...value.anchor }, focus: { ...value.focus } }; }
 
-/** Extends the tiled pane's copy event; it installs no competing Select All handler. */
 export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): PdfTextCopyBinding {
     let pending: AbortController | null = null, disposed = false, localEpoch = 0;
     const cancel = (silent = false) => {
@@ -83,7 +77,6 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
                 if (units > MAX_COPY_UTF16_UNITS) { host.notice(COPY_TOO_LARGE); return; }
                 if (separator) { parts.push(separator); normalizedUnits++; }
                 previousEndsInLF = to > from && text[to - 1] === '\n';
-                // Clipboard normalization is code-point local; never split a surrogate pair.
                 for (let offset = from; offset < to;) {
                     let end = Math.min(to, offset + 4096);
                     if (end < to && /[\uD800-\uDBFF]/u.test(text[end - 1]) && /[\uDC00-\uDFFF]/u.test(text[end])) end--;
@@ -134,8 +127,6 @@ export function bindPdfTextCopy(element: HTMLElement, host: PdfTextCopyHost): Pd
         const fontEpoch = host.fontEpoch(), selection = snapshot(current), state = initial(selection), result = copySelection(selection, state.count, state.pages), ticket = ++latestCopy;
         if (result.kind === 'ready' && event.clipboardData) {
             cancel(true); event.clipboardData.setData('text/plain', result.text);
-            // A delayed restore must not write after a vault switch or a new
-            // selection, even if an earlier clipboard request was already live.
             const epoch = localEpoch;
             if (writes) void writeLatest(result.text, ticket, () => !disposed && epoch === localEpoch && host.isCurrent() &&
                 host.fontEpoch() === fontEpoch && sameSelection(selection, host.selection()));

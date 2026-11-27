@@ -6,10 +6,6 @@ import type { PathOp } from './path';
 import { polylineMatrix, type AttachedPolyline } from './polylinePoints';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Surface and dependency helpers for attached polylines. The end-point arithmetic
-// lives once, in geom/polylinePoints.ts (polylinePointSteps / drainPolylinePoints);
-// this module only names what a resolution depends on and how to drive its steps.
-
 export function attachedPolylineTargets(node: Readonly<Node>): readonly NodeId[] {
     if (node.kind !== 'polyline') return [];
     const line = node as AttachedPolyline;
@@ -22,7 +18,6 @@ function frameOutline(w: number, h: number): readonly PathOp[] {
     return [{ op: 'M', p: { x: 0, y: 0 } }, { op: 'L', p: { x: w, y: 0 } },
         { op: 'L', p: { x: w, y: h } }, { op: 'L', p: { x: 0, y: h } }, { op: 'Z' }];
 }
-/** Frame clips around a target, outermost first, in the staged document's world. */
 export function polylineSurfaceClips(doc: BoardDoc, node: Readonly<Node>): AttachmentSurface['clips'] {
     const result: AttachmentSurface['clips'][number][] = [];
     let parent = doc.nodes.get(node.parent as NodeId);
@@ -32,13 +27,11 @@ export function polylineSurfaceClips(doc: BoardDoc, node: Readonly<Node>): Attac
     }
     return result.reverse();
 }
-/** The renderer's actual attachment surface for one target, in the staged document's world. */
 export function polylineSurface(doc: BoardDoc, target: Readonly<Node>, attachments: Pick<AttachmentSurface, 'outline' | 'logicalBox'>, revision: number,
     clips: AttachmentSurface['clips']): AttachmentSurface {
     return { target: target.id, outline: attachments.outline, logicalBox: attachments.logicalBox,
         localToWorld: polylineMatrix(doc, target.id), clips, revision };
 }
-/** Drives the shared steps to completion. `cooperate` runs between bounded batches of crossing pieces. */
 export async function settlePolylineSteps<T>(steps: Generator<void, T, void>, signal: AbortSignal,
     cooperate: () => Promise<void> = yieldToHost): Promise<T> {
     let count = 0, started = performance.now();

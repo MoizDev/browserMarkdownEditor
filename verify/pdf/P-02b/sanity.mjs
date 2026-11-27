@@ -1,6 +1,3 @@
-// Sanity: one real-app run, light + dark. No mutant, identity,
-// eval-guard or fault-matrix proof. The worker close exercises the user-facing
-// no-progress/explicit-Retry path; no app internals are imported or invoked.
 import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';

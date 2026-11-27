@@ -99,11 +99,6 @@ async function checkDevSource(prepared) {
     return check;
 }
 
-/** Preparation: build once and freeze the build's identity in `<scratch>/prepared.json`. Kept a
- * separate phase from serving so a run measures the build it names, never one rebuilt under it,
- * and so many runs can share one build. `scratch` defaults to `scratchDir('app', mode)`.
- * @param {{root?: string, scratch?: string, mode?: 'dev'|'production'|'benchmark', manifest?: boolean, sourcemap?: boolean}} options
- */
 export async function prepareApp({ root = sourceRoot, scratch, mode = 'production', manifest = false, sourcemap = false }) {
     scratch ??= join(scratchRoot, 'app', mode);
     if (!['dev', 'production', 'benchmark'].includes(mode)) throw new Error(`Unknown build mode: ${mode}`);
@@ -117,8 +112,6 @@ export async function prepareApp({ root = sourceRoot, scratch, mode = 'productio
     const repository = mutant?.sourceRoot ?? root;
     if (mode !== 'dev') await command([process.execPath, join(root, 'node_modules/vite/bin/vite.js'), 'build', '--config', config, '--mode', mode], root);
     else {
-        // The dev plugin regenerates this served source at startup. Freeze its
-        // deterministic output now too, rather than omit ignored generated code.
         await command([process.execPath, join(root, 'src/epub/build-frame.mjs')], root);
     }
     const devSource = mode === 'dev' ? await devSourceSnapshot(root) : undefined;
@@ -133,12 +126,6 @@ export async function prepareApp({ root = sourceRoot, scratch, mode = 'productio
     return prepared;
 }
 
-/** Serve the prepared real app on 127.0.0.1:`port`, strictly: a taken port fails rather than
- * moving, so a run can never talk to someone else's server. Pass `build: false` to serve what
- * `prepareApp` froze (the normal split); `build: true` prepares first. Call `stop()` in a finally.
- * @param {{root?: string, scratch?: string, port: number,
- *   mode?: 'dev'|'production'|'benchmark', build?: boolean}} options
- */
 export async function serveApp({ root = sourceRoot, scratch, port, mode = 'production', build = true }) {
     scratch ??= join(scratchRoot, 'app', mode);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('serveApp needs a port you chose (1024–65535)');
@@ -182,17 +169,12 @@ async function copyForMutation({ root = sourceRoot, scratch = join(scratchRoot, 
     }
     const ownModules = await realpath(join(root, 'node_modules'));
     if (ownModules !== join(root, 'node_modules')) throw new Error('Mutant dependencies must be this worktree’s own install, not a shared symlink');
-    // An APFS clone on macOS (3.4 s measured), a plain copy elsewhere; never a shared mutable install.
     if (process.platform === 'darwin') await command(['/bin/cp', '-c', '-R', ownModules, join(target, 'node_modules')], root);
     else await cp(ownModules, join(target, 'node_modules'), { recursive: true, verbatimSymlinks: true });
     if (await realpath(join(target, 'node_modules')) === ownModules) throw new Error('Mutant dependencies must be an isolated clone');
     return { root: target, sourceRoot: root };
 }
 
-/** V-01a's anchored mutant; only scratch changes.
- * @param {{root?: string, scratch?: string}} options
- * @returns {Promise<string>} Scratch source root, with its exact patch manifest.
- */
 export async function withSaveSkipped(options) {
     const copy = await copyForMutation(options, 'save-skipped');
     const target = copy.root, root = copy.sourceRoot;
@@ -207,10 +189,6 @@ export async function withSaveSkipped(options) {
     return target;
 }
 
-/** The source change is deliberately deferred until AFTER dev preparation.
- * @param {{root?: string, scratch?: string, file?: 'src/App.tsx'|'index.html'|'vite.config.ts'}} options
- * @returns {Promise<string>} Scratch source root; the run applies its declared append.
- */
 export async function withDevSourceDrift(options) {
     const file = options.file ?? 'src/App.tsx';
     if (!['src/App.tsx', 'index.html', 'vite.config.ts'].includes(file)) throw new Error('Dev drift control supports only src/App.tsx, index.html or vite.config.ts');

@@ -19,8 +19,6 @@ type Polygon = Extract<RegionQuery, { kind: 'polygon' }>;
 const PENDING: ClippedPolygonResult = Object.freeze({ status: 'pending' });
 const IDENTITY: Affine = [1, 0, 0, 1, 0, 0];
 
-/** Certified convex-polygon versus clipped stroke. A witness is required for
- * both intersection and nonempty containment; unresolved boundaries stay uncertain. */
 export function createClippedPolygonPathJob(paths: readonly (readonly PathOp[])[], query: Polygon, options: {
     readonly strokeRadiusLocal: number;
     readonly frames: readonly PointClipContour[];

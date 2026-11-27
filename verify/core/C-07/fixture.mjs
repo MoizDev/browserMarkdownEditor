@@ -24,7 +24,6 @@ export async function until(predicate, label, ms = 10000) {
     assert.fail(label);
 }
 
-/** Only real app gestures and public benchmark readings live here. No imported app executor. */
 export async function openFixture({ id, rules = [], install, cancel = 'after-tool', clock = false } = {}) {
     const events = [];
     const errors = [];
@@ -61,7 +60,6 @@ export async function openFixture({ id, rules = [], install, cancel = 'after-too
     page.on('console', message => {
         if (message.type() === 'error') {
             const entry = { text: message.text(), location: message.location() };
-            // Fonts are explicitly blocked; retain those diagnostics separately, never hide app errors.
             if (!events.some(e => e.type === 'blocked-external' && e.url === entry.location.url)) consoleErrors.push(entry);
         }
         if (message.text().startsWith('BME_CORE_LIFECYCLE:')) lifecycle.push({ event: message.text().split(':')[1], at: Date.now() });

@@ -12,9 +12,7 @@ export interface BoardNavigationHostOptions {
     readonly platform: () => Pick<PlatformPane, 'startFling' | 'animateZoom' | 'animatePan' | 'cancelMotion'> | null;
     readonly visible: () => boolean;
     readonly current: () => boolean;
-    /** Persist/notify the latest camera once when the shared scheduler consumes input. */
     readonly changed: () => void;
-    /** Called synchronously only for navigation input, before coalesced camera persistence. */
     readonly onUserNavigation?: () => void;
     readonly invalidate: () => void;
     readonly onError: (error: unknown) => void;
@@ -45,8 +43,6 @@ function sameToken(a: FrameToken, b: FrameToken): boolean {
         && a.session === b.session && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
 }
 
-/** Camera mutations are immediate. Persistence and notifications are coalesced by
- * the platform's existing input phase, never another animation loop. */
 export function createBoardNavigationHost(options: BoardNavigationHostOptions): BoardNavigationHost {
     let enabled = true, disposed = false, cancelling = false, contact = false, generation = 0;
     let binding: { surface: HTMLElement; overlay: HTMLElement; generation: number } | null = null;

@@ -25,8 +25,6 @@ try {
     report.browser = browser.version();
     assert.equal(report.browser, '157.0.8103.39'); assert.equal(report.driver, '1.63.0');
     async function followDrawnSourceEdge(name) {
-        // Start from source, not the duplicate: either possible graph target
-        // then requires a real tab transition before its identity is read.
         await openFile(page, 'source.md');
         const drawing = await graph(page);
         await page.locator('.graph-canvas-wrap canvas').screenshot({ path: `${out}/${name}.png` });
@@ -82,8 +80,6 @@ try {
     report.aliasSaveWitness = await saveText(page, 'source.md', '# Source\n\n[[Note.md]] [[Note#Heading]] [[Note|alias]]\n');
     await page.keyboard.press('Meta+e');
     await phase('aliases-suffix-heading', initialPath, initialMarker);
-    // The graph trip above unmounted the editor, so the following click uses
-    // the cached EditorState. Rename the first duplicate through the real UI.
     await openFile(page, 'a/Note.md');
     const first = page.locator('.tree-item[data-path="a/Note.md"]');
     await first.hover();

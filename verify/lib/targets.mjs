@@ -56,16 +56,7 @@ async function connect(debuggingPort) {
     };
 }
 
-/** Functional-only CDP observer. Owns no app entry.
- * Part1 counts every dedicated worker; iframe targets are recorded/resumed but
- * explicitly DEFERRED, never described as counted. No timed run may install it.
- * @param {import('playwright').Page} page
- * @param {{debuggingPort: number, vaultName: string, report?: {data: object},
- *   fault?: {skipRecursiveAutoAttach?: boolean, skipWorkerUrl?: string,
- *     noAutoAttach?: boolean, resumeOnly?: boolean, evaluateControl?: 'trivial'|'location'|'name'}}} options
- */
 export async function instrumentTargets(page, { debuggingPort, vaultName, report, fault = {} }) {
-    // Pausing workers changes timings. The bench lock marks its process (and children) as timed.
     if (process.env.BME_TIMED_RUN) throw harnessFault('Paused-target instrumentation is forbidden in a timed bench run');
     if (!Number.isInteger(debuggingPort) || debuggingPort < 1024 || debuggingPort > 65535) throw harnessFault('A debuggingPort you chose (1024–65535) is required');
     const pageProbe = await page.context().newCDPSession(page);
@@ -148,8 +139,6 @@ export async function instrumentTargets(page, { debuggingPort, vaultName, report
                 entry.controlException = result.exceptionDetails?.text;
                 return;
             }
-            // TargetInfo supplies the same URL without touching WorkerLocation;
-            // measured on CfT157, that pre-start native getter crashes the renderer.
             if (!entry.url) {
                 const current = await transport.send('Target.getTargetInfo', { targetId: info.targetId });
                 entry.url = current.targetInfo.url;
@@ -223,8 +212,6 @@ export async function instrumentTargets(page, { debuggingPort, vaultName, report
     const api = {
         async check() {
             if (stopped) throw harnessFault('Target observer was already stopped');
-            // Browser-owned discovery is independent of recursive attachment. A
-            // worker missed by a child session therefore cannot disappear silently.
             const current = await transport.send('Target.getTargets');
             for (const info of current.targetInfos) announce(info, 'getTargets');
             const deadline = performance.now() + 2000;

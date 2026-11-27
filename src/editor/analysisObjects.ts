@@ -9,7 +9,6 @@ interface Tail { end: number; inspected: number; width: number | null }
 export interface ObjectScans {
     embeds: EmbedMatch[];
     tables: ObjectMatch[];
-    /** All name terminators, including those belonging to rejected attempts. */
     terminators: number[];
     tails: Map<number, Tail>;
 }
@@ -56,9 +55,6 @@ function charAt(doc: Text, pos: number): string {
     return pos < doc.length ? doc.sliceString(pos, pos + 1) : '';
 }
 
-// A terminator's tail is shared by every opener reaching it. Cache even failed
-// attempts: a stray opener followed by a long whitespace tail is not re-read on
-// every unrelated keystroke. `inspected` includes the character that failed.
 function readTail(doc: Text, at: number): Tail {
     if (charAt(doc, at) === ']') {
         return { end: charAt(doc, at + 1) === ']' ? at + 2 : -1,
@@ -114,9 +110,6 @@ function embedsFor(doc: Text, openers: readonly number[], terms: readonly number
 
 interface RegexLine { from: number; to: number; text: string }
 
-// Regex ^/m also sees U+2028 and U+2029, unlike CodeMirror's line model.
-// Cache each CM line's separators: repeatedly slicing a single long CM line
-// with thousands of regex lines would otherwise make a region walk quadratic.
 function regexLines(doc: Text): (pos: number) => RegexLine {
     const cache = new Map<number, { text: string; separators: number[] }>();
     return position => {
@@ -229,8 +222,6 @@ export function updateObjects(previous: ObjectScans, oldDoc: Text, doc: Text, ch
         const opener = openers[lowerBound(openers, boundary)];
         if (opener !== undefined && opener <= c.toB) affected = Math.min(affected, opener);
     }
-    // A removed opener or terminator can invalidate an old match even when no
-    // corresponding opener remains in the new text.
     for (const match of previous.embeds) {
         if (touched(match.from, match.to, edits, true)) affected = Math.min(affected, changes.mapPos(match.from, -1));
     }

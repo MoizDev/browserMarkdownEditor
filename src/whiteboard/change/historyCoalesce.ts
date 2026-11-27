@@ -2,7 +2,6 @@ import type { NodeId } from '../model/ids';
 import { spliceRichText, type RichFragment } from '../text/richText';
 import type { Op } from './ops';
 
-/** Each inverse is paired with its forward op, including native-token restoration. */
 export interface HistoryOperation { readonly forward: Op; readonly inverse: readonly Op[] }
 function key(op: Op): string | null {
     switch (op.t) {
@@ -36,7 +35,6 @@ function mergeSplices(first: HistoryOperation, last: HistoryOperation): HistoryO
     } catch { return; }
 }
 
-/** One instance per segment between history savepoints. */
 export class OperationCoalescer {
     private readonly slots = new Map<string, number>();
     constructor(private readonly entries: HistoryOperation[], private readonly start: number) {}
@@ -65,7 +63,6 @@ export function operationOwner(op: Op): NodeId | undefined {
     if (op.t === 'ext' && op.target === 'node') return op.id as NodeId | undefined;
     return undefined;
 }
-/** Check references in both directions before removing any caller-owned history. */
 export function mentionsNode(operation: HistoryOperation, id: NodeId): boolean {
     const pending: unknown[] = [operation.forward, ...operation.inverse], seen = new Set<object>();
     while (pending.length) {
@@ -80,7 +77,6 @@ export function mentionsNode(operation: HistoryOperation, id: NodeId): boolean {
     return false;
 }
 
-/** Remove a created-and-deleted node only if no surviving operation refers to it. */
 export function cancelTransientNodes(entries: readonly HistoryOperation[]): HistoryOperation[] {
     const created = new Set<NodeId>(), deleted = new Set<NodeId>();
     for (const { forward } of entries) {

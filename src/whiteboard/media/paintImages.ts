@@ -7,11 +7,8 @@ import { inspectMedia } from './inspect';
 import type { InspectedMedia } from './ingest';
 import { MediaStore } from './store';
 
-// Provenance: media inspection, isolated SVG and paint-lease contracts; independent
-// sharing/lifetime adapter with an explicit safe full-frame decoder boundary.
 export interface SafeFullFrameLease {
     readonly bitmap: ImageBitmap;
-    /** Decoder-owned reservation attributable to the shared backing. */
     readonly cpuBytes: number;
     release(): void;
 }
@@ -22,9 +19,6 @@ export interface BoardPaintImageOptions {
     readBlob(id: MediaId, signal: AbortSignal): Promise<Blob>;
     identity(token: RenderToken): BoardJobIdentity;
     isCurrent(token: RenderToken, identity: BoardJobIdentity): boolean;
-    /** Receives hash-verified inspected bytes. SVG MUST use the network-denied
-     * isolated SVG profile; video MUST use a safe poster decoder. It owns its
-     * allocations and keeps the bitmap alive until the returned lease releases. */
     decodeFullFrame(blob: Blob, info: InspectedMedia, identity: BoardJobIdentity, signal: AbortSignal): Promise<SafeFullFrameLease>;
 }
 type Job = {

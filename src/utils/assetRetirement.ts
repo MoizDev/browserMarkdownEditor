@@ -4,7 +4,6 @@ export type MediaRefs = { ok: true; names: string[] } | { ok: false; reason: 'un
 export type MediaSource = Uint8Array | ReadableStream<Uint8Array>;
 export type MediaReader = (source: MediaSource, assetNames: ReadonlySet<string>) => Promise<MediaRefs>;
 
-/** The board host can substitute its session's media names for serialized bytes. */
 export type BoardMedia = { names: readonly string[] } | { source: MediaSource };
 
 export async function resolveBoardMedia(media: BoardMedia, names: ReadonlySet<string>, read: MediaReader): Promise<MediaRefs> {
@@ -24,7 +23,6 @@ export async function boardMediaDiff(before: BoardMedia, after: BoardMedia, name
 
 interface BoardBaseline { text: string }
 
-/** Shared records survive a tab closing while its already-queued write finishes. */
 export class BoardSaveBaselines {
     private readonly paths = new Map<string, BoardBaseline>();
     seed(path: string, text: string): void { this.paths.set(path, { text }); }
@@ -42,7 +40,6 @@ export class BoardSaveBaselines {
     clear(): void { this.paths.clear(); }
 }
 
-/** One event-driven retry per folder, without discarding distinct blocked saves. */
 export class RetirementBacklog<Job> {
     private readonly folders = new Map<string, Set<Job>>();
     private readonly scheduled = new Set<string>();
@@ -79,9 +76,7 @@ export function mediaChanges(before: ReadonlySet<string>, after: ReadonlySet<str
 }
 
 export interface RetirementCandidates {
-    /** A note dropped an embed. These retain the pre-existing note-side semantics. */
     note: ReadonlySet<string>;
-    /** A board dropped a media reference. Hash names additionally require byte verification. */
     board: ReadonlySet<string>;
 }
 
@@ -90,17 +85,14 @@ export interface RetirementProof {
     notes: Iterable<() => Promise<string | ReadableStream<Uint8Array> | null>>;
     boards: Iterable<() => Promise<MediaRefs>>;
     current(): boolean;
-    /** null means the candidate could not be read or hashed. */
     hash(name: string): Promise<string | null>;
 }
 
 export interface RetirementDecision {
     retire: Set<string>;
-    /** Referenced or unknown candidates retry after a relevant change. */
     blocked: RetirementCandidates;
 }
 
-/** Board JSON can be enormous and is also subject to the legacy wiki-link keep rule. */
 async function linkedNames(source: string | ReadableStream<Uint8Array>, candidates: ReadonlySet<string>): Promise<Set<string> | null> {
     const found = new Set<string>();
     if (typeof source === 'string') {

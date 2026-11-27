@@ -2,12 +2,6 @@ import type { Rect } from '../../platform/types';
 import type { Vec2 } from './path';
 import { styleGeometryMetrics } from './styleMetrics';
 
-// Provenance: geometry §8.5 RV-51 generic candidate and hard-admission rules;
-// independently derived orthogonal routes, no third-party router/source.
-
-/** The straight leg an elbow leaves a bound edge along: the tip gap a bound end keeps (6 × width), the arrowhead, and a shaft as
- * long as that gap, so the head does not sit on the turn. Measured at width 2: a leg of 6 × width plus the head put the head's base
- * on the corner. */
 export function elbowLeg(width: number): number {
     return 12 * width + styleGeometryMetrics.openArrow(width).length;
 }
@@ -16,10 +10,7 @@ export interface ElbowRequest {
     readonly start: Vec2;
     readonly end: Vec2;
     readonly mid: number;
-    /** Already expanded union of terminal targets, including the caller's margin. */
     readonly escape: Readonly<Rect>;
-    /** Both directions point outward from their terminal into the connector path, along a world axis. A terminal on a bound
-     * edge is reached perpendicular to that edge: the route leaves or arrives along the direction for `leg` units. */
     readonly startDirection?: Vec2;
     readonly endDirection?: Vec2;
     readonly leg?: number;
@@ -53,8 +44,6 @@ function stepFrom(from: Vec2, direction: Vec2, distance: number): Vec2 {
     const length = Math.hypot(direction.x, direction.y);
     return { x: from.x + direction.x / length * distance, y: from.y + direction.y / length * distance };
 }
-/** A perpendicular leg must be a full leg long: a shorter last segment puts the arrowhead on the corner, where it points along the
- * turn instead of into the edge. Measured: a 12-unit leg at width 2 drew the head pointing down beside a left edge it was meant to enter. */
 function legMatches(direction: Vec2 | undefined, from: Vec2, toward: Vec2 | undefined, leg: number | undefined): boolean {
     if (!direction) return true;
     return directionMatches(direction, from, toward) && Math.hypot(toward!.x - from.x, toward!.y - from.y) >= leg! - 1e-9;
@@ -63,14 +52,12 @@ function directionMatches(direction: Vec2 | undefined, from: Vec2, toward: Vec2 
     if (!direction) return true;
     if (!toward) return false;
     const dx = toward.x - from.x, dy = toward.y - from.y;
-    // No normalization: zero tangents cannot prove a valid exit.
     if ((direction.x === 0 && direction.y === 0) || (dx === 0 && dy === 0)) return false;
     const cross = direction.x * dy - direction.y * dx, dot = direction.x * dx + direction.y * dy;
     return Number.isFinite(cross) && Number.isFinite(dot) && dot > 0
         && Math.abs(cross) <= 1e-12 * Math.hypot(direction.x, direction.y) * Math.hypot(dx, dy);
 }
 
-/** No least-bad fallback: terminal and target checks admit before any ranking. */
 export function* routeElbowSteps(request: ElbowStepRequest): Generator<void, ElbowRoute> {
     const { start, end, mid, escape } = request;
     if (!finitePoint(start) || !finitePoint(end) || !Number.isFinite(mid) || mid < 0 || mid > 1
@@ -92,16 +79,12 @@ export function* routeElbowSteps(request: ElbowStepRequest): Generator<void, Elb
         [start, { x: startSide, y: start.y }, { x: startSide, y: escapeY },
             { x: endSide, y: escapeY }, { x: endSide, y: end.y }, end],
     ];
-    // Both ways around the terminal union must be admitted before ranking;
-    // the geometrically shorter side can be forbidden by a port or target.
     for (const a of [left, right]) for (const b of [left, right]) for (const outside of [top, bottom])
         candidates.push([start, { x: a, y: start.y }, { x: a, y: outside },
             { x: b, y: outside }, { x: b, y: end.y }, end]);
     for (const a of [top, bottom]) for (const b of [top, bottom]) for (const outside of [left, right])
         candidates.push([start, { x: start.x, y: a }, { x: outside, y: a },
             { x: outside, y: b }, { x: end.x, y: b }, end]);
-    // A perpendicular leg is only reachable through the ports `leg` units out from each bound edge, so the routes that
-    // approach a bound edge from outside are built from those ports and the lines of their union with the escape.
     if (request.startDirection !== undefined || request.endDirection !== undefined) {
         const leg = request.leg!;
         const exits = request.startDirection ? [start, stepFrom(start, request.startDirection, leg)] : [start];
@@ -136,7 +119,6 @@ export function* routeElbowSteps(request: ElbowStepRequest): Generator<void, Elb
     return { status: 'ready', points: best.points, length: best.length };
 }
 
-// A synchronous validator is one step of the generator-shaped request routeElbowSteps takes.
 function* completed<T>(value: T): Generator<void, T> { yield; return value; }
 
 export function routeElbow(request: ElbowRequest): ElbowRoute {

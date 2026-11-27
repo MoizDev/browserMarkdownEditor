@@ -20,7 +20,6 @@ async function inspectPdfRoleRaw(bytes: Uint8Array, generation: string): Promise
         const has = (entry: Entry, name: string) => entry.keys.length
             ? entry.keys.some(value => value.decodeText() === name)
             : entry.names.has(name);
-        // Filespec /Desc is the sole marker authority for both PDF engines.
         const marker = (entry: Entry, name: string, role: string, format: string) => {
             const prefix = `local-vault-pdf/v1;role=${role};format=${format}`;
             return entry.keys.length <= 1 && has(entry, name) && prefix.length <= 256 &&
@@ -50,8 +49,6 @@ async function inspectPdfRoleRaw(bytes: Uint8Array, generation: string): Promise
                 const params = f.dict.lookup(key('Params'));
                 const declared = params instanceof PDFDict ? params.lookup(key('Size')) : undefined;
                 if (declared instanceof PDFNumber && declared.asNumber() > limit) return failure('limit', `${limit} bytes`);
-                // Read at most limit+1 even when /Size lies. Stream decoding is
-                // isolated here; a bad filter cannot become an absent source.
                 return boundedAttachmentBytes(f, limit);
             } catch (error) {
                 return error instanceof Error && error.message.includes('size limit') ? failure('limit', `${limit} bytes`) : failure('corrupt');
@@ -96,7 +93,6 @@ async function inspectPdfRoleRaw(bytes: Uint8Array, generation: string): Promise
                 entry.description.startsWith(PDF_APP_MARKER_NAMESPACE))) return unreadable(ORIGINAL_ATTACHMENT, 'corrupt', undefined, originals[0].id);
         } catch { return unreadable(ORIGINAL_ATTACHMENT, 'corrupt', undefined, originals[0].id); }
         const mark = await checkPdfWriteMark(bytes);
-        // A board-bound v2 mark is not authority for a legacy-only snapshot.
         const writeMark = mark.kind === 'verified' && mark.writeId
             ? { kind: 'foreign' as const, reason: 'unsupported' as const } : mark;
         return { kind: 'annotated', generation, alreadyAnnotated: true, original, snapshot, notebookSource: null, writeMark };
@@ -105,7 +101,6 @@ async function inspectPdfRoleRaw(bytes: Uint8Array, generation: string): Promise
     }
 }
 
-/** Both the visible outer and embedded pristine bytes must independently pass. */
 export async function inspectPdfRole(bytes: Uint8Array, generation: string): Promise<PdfRole & { writeSafety: PdfWriteSafety }> {
     const outer = await inspectPdfBytesWriteSafety(bytes), role = await inspectPdfRoleRaw(bytes, generation);
     const pristine = role.kind === 'annotated' ? await inspectPdfBytesWriteSafety(role.original) : outer;

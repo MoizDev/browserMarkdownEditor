@@ -1,5 +1,4 @@
 /** First-party frame mechanics only. HTML must be a generated, fixed bootstrap, never user content.
- * The caller owns the profile CSP, bootstrap identity and every message/protocol validation.
  */
 export type ContainedFrameFailure = 'navigation' | 'handoff' | 'messageerror';
 
@@ -13,14 +12,12 @@ export interface ContainedFrameOptions {
     readonly ariaLabel?: string;
     readonly hidden?: boolean;
     readonly credentialless?: boolean;
-    /** A fixed first-party profile may deny additional features; never document attributes. */
     readonly permissionPolicy?: string;
 }
 
 export interface ContainedFrame {
     readonly frame: HTMLIFrameElement;
     readonly port: MessagePort;
-    /** Installs the generated srcdoc and transfers exactly one private port on its first load. */
     mount(container: HTMLElement): void;
     dispose(): void;
 }

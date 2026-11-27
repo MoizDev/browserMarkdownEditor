@@ -13,13 +13,7 @@ import { hasOldBoardName, startsAsOldBoard } from '../utils/oldBoards';
 import type { UseRecoveryActionsDeps } from './useRecoveryActions';
 import { loadChunk } from '../platform/chunkLoad';
 
-/**
- * The recovery surface's three actions: compare a journal entry with the file,
- * apply it, or save it as a copy. Only an unrecovered entry reaches them, so they
- * load with the first one (useRecoveryActions), never at startup.
- */
 export interface RecoveryActionsDeps extends UseRecoveryActionsDeps {
-  /** The hook's own wrapper, so a recover re-inspects exactly as before. */
   inspectRecovery: (entry: RecoveryEntry) => Promise<RecoveryInspection>;
 }
 
@@ -47,8 +41,6 @@ export async function inspectRecovery(deps: Pick<RecoveryActionsDeps,
     try {
       const version = await snapshot.fingerprint();
       if (!current()) return 'unavailable';
-      // A drawing or notebook that is still in the old app's format (the edits were made by an earlier build that would
-      // have converted it on save) is never written: its recovered changes can only be kept as a copy (utils/oldBoards.ts).
       if (startsAsOldBoard(await snapshot.blob.slice(0, 512).text(), entry.path)) return 'copy';
       if (!current()) return 'unavailable';
       const copy = await materializeRecoveryCopy(entry, new AbortController().signal);
@@ -95,8 +87,6 @@ export async function recoverEntry(deps: Pick<RecoveryActionsDeps,
   const live = current();
   if (!live || hasUnsaved(live)) throw new Error('The document changed while recovery was being prepared.');
   const adapter = recoveryAdapter(tab.id);
-  // A PDF's ink is recovered into its Annotate session, which a PDF reopened in Original does not have yet (after a
-  // browser reload it reopens there): open Annotate, and the recovery waits for it (utils/canvasSessionBridge.ts).
   if (adapter?.recover && live.representation.loadedKind === 'pdf' && live.mode !== 'edit') changeTabMode(live.file.path, 'edit');
   if (adapter?.recover) {
     await adapter.recover(typeof entry.payload === 'string' ? { kind: 'markdown', text: entry.payload } : entry.payload);
@@ -138,14 +128,10 @@ export async function saveRecoveryCopy(deps: Pick<RecoveryActionsDeps,
     if (!asset.id || ids.has(asset.id)) throw new Error('Invalid or duplicate recovery media.');
     ids.add(asset.id);
   }
-  // A board's recovered changes are this app's format: beside an old drawing they are a `.drawing`, never a second
-  // `.tldraw` that the old app would try to read (utils/oldBoards.ts).
   const copyPath = entry.kind === 'drawing' && hasOldBoardName(entry.path) ? entry.path.replace(/\.(tldraw|tldr)$/i, '.drawing') : entry.path;
   let copy = await writeConflictCopy(copyPath, copyData, root);
   check();
   if (assets.length) {
-    // The generated file is the asset-write owner, never the missing original.
-    // A crash mid-restore leaves both a readable capsule and a preserved copy.
     const { handle, parentHandle } = await resolveVaultFile(root, copy);
     check();
     const files = new Map<string, string>();
@@ -168,8 +154,6 @@ export async function saveRecoveryCopy(deps: Pick<RecoveryActionsDeps,
         try {
           const expected = await snapshot.fingerprint();
           check();
-          // Someone may have opened/edited the copy during media IO. Only
-          // our original bytes authorize the filename-remapping write.
           const latest = tabsRef.current.find(tab => tab.file.path === copy);
           if (expected.hash === hash && (!latest || !hasUnsaved(latest))) {
             written = (await writeFileVersioned(handle, data, expected)).status === 'written';

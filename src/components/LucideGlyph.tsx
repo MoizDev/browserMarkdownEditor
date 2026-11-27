@@ -1,8 +1,6 @@
 import { createElement } from 'react';
 import type { IconNode } from '../utils/entryStyle';
 
-/** Lucide's own drawing contract. Every icon is authored on a 24x24 grid with
- *  these stroke settings; the node data carries only the geometry. */
 const LUCIDE_DEFAULTS = {
     viewBox: '0 0 24 24',
     fill: 'none',
@@ -12,7 +10,6 @@ const LUCIDE_DEFAULTS = {
     strokeLinejoin: 'round',
 } as const;
 
-/** Attributes are `stroke-width` in the data and `strokeWidth` in React. */
 function reactAttrs(attrs: Record<string, string | number>): Record<string, string | number> {
     const out: Record<string, string | number> = {};
     for (const [key, value] of Object.entries(attrs)) {
@@ -21,14 +18,6 @@ function reactAttrs(attrs: Record<string, string | number>): Record<string, stri
     return out;
 }
 
-/**
- * One Lucide icon, drawn from its node data rather than from the library.
- *
- * The data comes from wherever the caller has it — the picker has just loaded
- * the whole set, while a file-tree row reads it out of `.folders.json`. That is
- * the point: the tree renders its icons with the icon library nowhere in the
- * bundle. See utils/lucideIcons.ts.
- */
 export default function LucideGlyph({ nodes, size = 14 }: { nodes: IconNode[]; size?: number }) {
     return (
         <svg width={size} height={size} {...LUCIDE_DEFAULTS} aria-hidden="true">

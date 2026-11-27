@@ -18,7 +18,6 @@ export interface ActiveIndexGraph {
     regrant(): Promise<void>;
 }
 
-/** The owner is an activation, not a directory object or a mounted pane. */
 export function useIndexGraph(options: {
     root: FileSystemDirectoryHandle | null;
     vaultId: string | null;
@@ -81,8 +80,6 @@ export function useIndexGraph(options: {
                     if (!live || getActivation() !== activation) return;
                     const progress = status as IndexProgress;
                     const now = performance.now();
-                    // A sweep reports every eight files; avoid rerendering the
-                    // whole workspace over a thousand times in a 10k-note vault.
                     if (progress.phase !== 'idle' && progress.done !== 0 && now - lastStatusAt < 250) return;
                     lastStatusAt = now;
                     onStatus?.(progress);
@@ -120,7 +117,6 @@ export function useIndexGraph(options: {
             return starting;
         };
         startRef.current = start;
-        // The ref is never reassigned, so this is the same Map the cleanup should clear.
         const moves = pendingMoves.current;
         return () => {
             live = false;
@@ -140,7 +136,6 @@ export function useIndexGraph(options: {
         if (!root || !autoStart) return;
         let second = 0;
         let cancelIdle = () => {};
-        // Two frames let the restored pane paint before even fetching the worker chunk.
         const first = requestAnimationFrame(() => {
             second = requestAnimationFrame(() => {
                 cancelIdle = onIdle(() => { void startRef.current?.().catch(() => {}); });

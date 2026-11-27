@@ -7,8 +7,6 @@ import type { BoardJobIdentity } from '../workers/protocol';
 import type { MediaRasterGeometry } from './mips';
 import { svgFrameFactory } from './svgFrameHost';
 
-// SEC-W2 supplies the opaque sandbox, fixed bootstrap, chunked channel and
-// exact-hash CSP. Separate profiles prevent XML parsing from gaining blob loads.
 export interface SvgContainedFrame {
     request(operation: 'header' | 'probe' | 'raster' | 'full-frame', blob: Blob, signal: AbortSignal,
         size?: { readonly width: number; readonly height: number; readonly raster?: MediaRasterGeometry }): Promise<unknown>;
@@ -50,8 +48,6 @@ export function createSvgAdmissionProfile(frames: SvgFrameFactory, identity: Boa
 }
 
 let fullFrameJob = 0;
-/** Full intrinsic SVG decoding remains inside the CSP-contained image profile.
- * The caller holds output, decoded-input and temporary-canvas reservations. */
 export function createIsolatedFullFrameSvgDecoder(isCurrent: (identity: BoardJobIdentity) => boolean):
     (blob: Blob, info: InspectedMedia, identity: BoardJobIdentity, signal: AbortSignal) => Promise<ImageBitmap> {
     return async (blob, info, identity, signal) => {

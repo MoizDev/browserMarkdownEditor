@@ -1,5 +1,3 @@
-// Static lint gate: run the proposed I-3 rule on the five real old files, then
-// on a sixth value caller. No app module is imported or executed.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';

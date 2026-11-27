@@ -2,8 +2,6 @@ import { PDF_COPY_RESTRICTED, PDF_COPY_UNKNOWN, PDF_ENCRYPTED_READ_ONLY, PDF_PRI
 import { useEffect, useRef, useState } from 'react';
 import './PdfCapabilitiesNotice.css';
 
-/** Persistent disclosure: a blank XFA page must not look like a clean rendering. Collapsed to its
- * control so it never covers the page unasked; a click opens it, Escape or an outside click closes it. */
 export default function PdfCapabilitiesNotice({ capabilities, nativeFontPolicy = false }: { capabilities: PdfCapabilities; nativeFontPolicy?: boolean }) {
     const messages: string[] = [];
     if (nativeFontPolicy) messages.push('When non-embedded fonts are substituted, this reader uses bundled Noto faces where supported. Ambiguous Chinese uses Simplified Chinese (SC); a known character set takes precedence over a conflicting language hint.');

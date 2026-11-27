@@ -1,18 +1,3 @@
-# VaultAgent (the agent helper) — build, smoke-test and publish the installers.
-#
-# Push a tag `vaultagent-v1.2.3` to release. "Run workflow" builds and smoke-tests
-# the same way (version 0.0.0-ci.<run>) but publishes nothing.
-#
-# Allowed origins: https://notes.moizhashmi.com is baked into every build. The
-# optional repository variable VAULTAGENT_ALLOWED_ORIGINS adds more (comma-
-# separated, e.g. a staging site); unset is fine.
-#
-# Asset names are the app's download links (RELEASE_ASSETS in
-# shared/vaultAgentProtocol.ts) — renaming one here breaks "Download installer".
-# Installed helpers update themselves from vaultagent-release.json and the raw
-# per-OS binaries beside it (UPDATE_ASSET_NAMES in helper/src/update.ts):
-# renaming or dropping one of those breaks the panel's "Update" for that OS.
-
 name: VaultAgent release
 
 on:
@@ -28,7 +13,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Keep in step with the `bun` devDependency in package.json.
   BUN_VERSION: 1.4.2
   VAULTAGENT_ALLOWED_ORIGINS: ${{ vars.VAULTAGENT_ALLOWED_ORIGINS }}
 
@@ -58,18 +42,12 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Install dependencies
-        # The helper bundles npm packages since the terminal (@xterm/headless and its
-        # addons: the reattach mirror), so a bare checkout cannot compile it.
-        # The lockfile pins them; no install scripts are needed (or run).
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Compile (arm64 + x64)
         run: |
           bun helper/scripts/build.ts --target bun-darwin-arm64 --version "$VERSION" --outfile out/vaultagent-darwin-arm64
           bun helper/scripts/build.ts --target bun-darwin-x64 --version "$VERSION" --outfile out/vaultagent-darwin-x64
       - name: Check the frozen PTY host (never rebuilt here)
-        # helper/ptyhost/vaultagent-pty is built once, by hand, with build.sh and committed;
-        # every helper embeds those exact bytes so its cdhash, and with it each user's macOS
-        # privacy grants for the terminal, stays the same across releases. CI only checks the pin.
         run: |
           set -euo pipefail
           want="$(sed -n 's/.*"sha256": *"\([0-9a-f]*\)".*/\1/p' helper/ptyhost/PINNED.json)"
@@ -102,7 +80,6 @@ jobs:
           done
           test "$(dist/vaultagent-macos-arm64 --version)" = "$VERSION"
       - name: Self-update, end to end (real launchd)
-        # A runner may have no GUI session for the LaunchAgent: the script warns and passes then.
         run: bun helper/scripts/update-smoke.ts
         env:
           CI: 'true'
@@ -126,9 +103,6 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Install dependencies
-        # The helper bundles npm packages since the terminal (@xterm/headless and its
-        # addons: the reattach mirror), so a bare checkout cannot compile it.
-        # The lockfile pins them; no install scripts are needed (or run).
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Compile (x64)
         run: bun helper/scripts/build.ts --target bun-windows-x64 --version "$env:VERSION" --outfile out/vaultagent.exe
@@ -169,7 +143,6 @@ jobs:
           if (Get-Process vaultagent -ErrorAction SilentlyContinue) { throw "uninstall left vaultagent.exe running" }
           exit 0
       - name: Self-update, end to end (real logon task)
-        # A runner may have no interactive session for the task: the script warns and passes then.
         run: bun helper/scripts/update-smoke.ts
         env:
           CI: 'true'
@@ -203,9 +176,6 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Install dependencies
-        # The helper bundles npm packages since the terminal (@xterm/headless and its
-        # addons: the reattach mirror), so a bare checkout cannot compile it.
-        # The lockfile pins them; no install scripts are needed (or run).
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Compile
         run: bun helper/scripts/build.ts --target "bun-linux-${{ matrix.arch }}" --version "$VERSION" --outfile "dist/$ASSET"
@@ -254,7 +224,6 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      # The manifest is written by a repo script (the same validation installed helpers apply).
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:

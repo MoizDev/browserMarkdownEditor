@@ -9,13 +9,10 @@ export type Direction = 'left' | 'right' | 'up' | 'down';
 export interface NavigationCandidate { readonly id: NodeId; readonly centre: Vec2; readonly rank: number }
 export interface NavigationServices {
     readonly source: SpatialQuerySource;
-    /** Resolve presented/clipped, layout-ready geometry; never return a paper backdrop. */
     candidate(slot: number, generation: number): NavigationCandidate | null;
     reveal(id: NodeId): void;
 }
 
-// The spatial strip supplies an admissible lower bound on centre distance. No
-// fixed candidate cap is safe when many nodes overlap the same coordinate.
 export class DirectionalSelection {
     private readonly query: SpatialQuery;
     private readonly before: ReturnType<SelectionState['getSnapshot']>;

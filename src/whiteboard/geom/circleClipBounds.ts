@@ -10,7 +10,6 @@ export type CircleClipResult =
     | { readonly status: 'uncertain'; readonly reason: string };
 export type CircleClipStep = { readonly done: false } | { readonly done: true; readonly result: CircleClipResult };
 
-// Each exact intersection vertex can contribute four outward box corners.
 const MAX_VERTICES = 131072;
 const validated = new WeakMap<readonly Vec2[], { readonly polygon: readonly Vec2[]; readonly winding: number }>();
 type PointInterval = { x: Interval; y: Interval };
@@ -22,7 +21,6 @@ const square = (a: Interval): Interval => {
 };
 const cross = (a: PointInterval, b: PointInterval, c: PointInterval): Interval =>
     subtract(multiply(subtract(b.x, a.x), subtract(c.y, a.y)), multiply(subtract(b.y, a.y), subtract(c.x, a.x)));
-// Exact edge predicates operate on binary64 dyadics, never rounded differences.
 function edge(a: Vec2, b: Vec2) {
     return { x: dyadicSubtract(dyadic(b.x), dyadic(a.x)), y: dyadicSubtract(dyadic(b.y), dyadic(a.y)) };
 }
@@ -64,8 +62,6 @@ function* calculate(circle: ClipCircle, polygon: readonly Vec2[], errorWorld: nu
             if (a && !b) fromUpper++; else if (!a && b) toUpper++;
             previous = next; yield;
         }
-        // Uniform signed turns alone also accept stars. Their tangent direction
-        // winds more than once; exactly one revolution certifies a simple convex loop.
         if (!winding || (winding > 0 ? fromUpper : toUpper) !== 1) throw new RangeError('Clip polygon must make one convex revolution');
         remember(winding);
     }
@@ -126,7 +122,6 @@ function* calculate(circle: ClipCircle, polygon: readonly Vec2[], errorWorld: nu
     return { status: 'bounded', bounds: [minX, minY, maxX, maxY], errorWorld: error };
 }
 
-/** Resumable even during convexity validation; one step spends at most maxWork iterations. */
 export function createCircleClipBoundsJob(circle: ClipCircle, clipPolygon: readonly Vec2[], errorWorld: number): { step(maxWork: number): CircleClipStep } {
     if (clipPolygon.length > MAX_VERTICES) throw new RangeError('Clip polygon exceeds ancestry limit');
     const c = { centre: { ...circle.centre }, radius: circle.radius }, polygon = clipPolygon.map(p => ({ ...p }));
@@ -144,7 +139,6 @@ export function createCircleClipBoundsJob(circle: ClipCircle, clipPolygon: reado
     } };
 }
 
-/** Synchronous convenience for already bounded callers; interactive work should use the job. */
 export function circleClipBounds(circle: ClipCircle, clipPolygon: readonly Vec2[], errorWorld: number): CircleClipResult {
     const job = createCircleClipBoundsJob(circle, clipPolygon, errorWorld);
     for (;;) { const step = job.step(1024); if (step.done) return step.result; }

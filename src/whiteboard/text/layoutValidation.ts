@@ -39,7 +39,6 @@ function face(value: unknown): value is Face {
         && nonnegative(value.size) && finite(value.ascent) && finite(value.descent) && finite(value.xHeight);
 }
 
-/** Reject malformed work before font loading or canvas allocation in the shared worker. */
 export function validLayoutRequest(value: unknown): value is TextLayoutRequest {
     if (!record(value) || typeof value.revision !== 'string' || value.revision.length > 1024
         || !index(value.fontEpoch, Number.MAX_SAFE_INTEGER) || (value.width !== null && !nonnegative(value.width))
@@ -111,7 +110,6 @@ function sameFace(a: Face, b: Face): boolean {
     return a.key.family === b.key.family && a.key.bold === b.key.bold && a.key.italic === b.key.italic
         && a.loaded === b.loaded && a.css === b.css && a.size === b.size && a.ascent === b.ascent && a.descent === b.descent && a.xHeight === b.xHeight;
 }
-/** Face-table indices and font epochs are worker-local; their resolved visual values must agree. */
 export function sameLayoutProduct(a: ValidLayoutProduct, b: ValidLayoutProduct): boolean {
     const x = a.paint, y = b.paint, am = a.measurement, bm = b.measurement;
     if (!sameBox(x.box, y.box) || !sameRect(x.ink, y.ink) || !samePaintRects(x.backgrounds, y.backgrounds)

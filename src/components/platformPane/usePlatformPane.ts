@@ -10,19 +10,12 @@ export interface UsePlatformPaneOptions<T extends object> {
     readonly isFocused: boolean;
     readonly vaultEpoch: number;
     readonly documentId: string;
-    /** A session-owned source may outlive outer document byte swaps. */
     readonly sourceToken?: RenderToken;
     readonly layers: readonly PlatformLayerDefinition[];
-    /** Input borrows the attached pane for scheduler motion, never a second camera loop. */
     readonly onPane?: (pane: PlatformPane | null) => void;
-    /** App/session-owned services and callbacks must remain stable for the document session. */
     readonly services: Omit<PlatformPaneOptions<T>, 'documentToken' | 'initialVisible' | 'initialFocused' | 'layers'>;
 }
 
-/**
- * Only a live App session may attach. The lazy import keeps the platform out of Markdown-only
- * startup; cleanup cancels an unresolved import and disposes an attached pane (design §16.1 PL2).
- */
 export function usePlatformPane<T extends object>(options: UsePlatformPaneOptions<T>): RefObject<PlatformPane | null> {
     const { host, isVisible, isFocused, vaultEpoch, documentId, layers, services, sourceToken } = options;
     const sourceDocument = sourceToken?.documentId, sourceSession = sourceToken?.session;
@@ -86,7 +79,6 @@ export function usePlatformPane<T extends object>(options: UsePlatformPaneOption
             cancelled = true;
             if (pane.current === owned) {
                 pane.current = null;
-                // Cancel captured contacts/motion while their platform is still alive.
                 try { onPane.current?.(null); } catch (error) { services.onError(error); }
             }
             owned?.dispose();

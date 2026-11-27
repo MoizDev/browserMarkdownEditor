@@ -3,20 +3,12 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { PaintImageItem } from './paintStream';
 
-/** The one image sampling profile. GPU: a linear sampler on the full backing texture, drawn onto
- * the destination grown by its gutter, so every sample has real neighbour texels. CPU reference:
- * drawImage with smoothing enabled at 'low' quality, which is bilinear without mip levels. A
- * sample's footprint is the set of texels with POSITIVE bilinear weight; nothing else contributes. */
 export const IMAGE_SAMPLING_PROFILE = Object.freeze({ kernel: 'bilinear', mips: 'none', quality: 'low' } as const);
 
-/** The one retained-tile quad, shared by the GPU draw, the CPU reference draw and the facts. A dense tile is a
- * TILE_SIZE texture whose EDGE square sits inside a GUTTER of real neighbour texels; the whole texture is drawn
- * onto that square grown by the gutter. Any other picture takes the crop path and has no quad to classify. */
 export const TILE_EDGE = 512, TILE_GUTTER = 2, TILE_SIZE = TILE_EDGE + 2 * TILE_GUTTER;
 export const TILE_CROP: Readonly<Rect> = Object.freeze({ x: TILE_GUTTER, y: TILE_GUTTER, width: TILE_EDGE, height: TILE_EDGE });
 const IDENTITY_AFFINE = [1, 0, 0, 1, 0, 0] as const;
 
-/** Item-level shape of a gutter-quad tile: normal blend, full opacity, not inverted or clipped, identity local transform. */
 export function isGutterQuadTile(item: PaintImageItem): boolean {
     const { rect, sourceRect: src } = item;
     return item.retainedTile === true && item.blend === 'normal' && item.opacity === 1 && !item.inverted && item.clips.length === 0
@@ -25,32 +17,25 @@ export function isGutterQuadTile(item: PaintImageItem): boolean {
         && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width > 0 && rect.width === rect.height;
 }
 
-/** Whether the draw takes the quad for this exact backing: the item has the quad shape and the bitmap is a full tile. */
 export function isGutterQuadDraw(item: PaintImageItem, image: CanvasImageSource): boolean {
     return isGutterQuadTile(item) && typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap
         && image.width === TILE_SIZE && image.height === TILE_SIZE;
 }
 
-/** Device pixels, half-open: a pixel belongs when its centre lies inside. */
 export interface DeviceRect { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number }
 
-/** Alpha of a backing bitmap, read back once from the exact accepted source. */
 export interface AlphaPlane { readonly width: number; readonly height: number; readonly alpha: Uint8Array }
 
 export interface FootprintInput {
     readonly plane: AlphaPlane;
-    /** Texels of the backing that the quad maps onto (the full texture, or a crop). */
     readonly window: Readonly<Rect>;
-    /** Device rectangle that receives `window`, exactly as the draw places it. */
     readonly quad: DeviceRect;
-    /** Optional device restriction, e.g. the live embed's clipped region; pixels outside are ignored. */
     readonly within?: DeviceRect;
     readonly maxRuns: number;
 }
 
 export type FootprintFacts =
     | { readonly status: 'translucent' }
-    /** Opaque pixels as runs of (x, y, width, 1) in device pixels, flattened four numbers per run. */
     | { readonly status: 'opaque'; readonly runs: Int32Array }
     | { readonly status: 'unavailable'; readonly reason: string };
 
@@ -58,10 +43,6 @@ const MAX_PIXELS = 4 * 1024 * 1024;
 
 const clampTexel = (index: number, size: number) => index < 0 ? 0 : index >= size ? size - 1 : index;
 
-/** Classifies every device pixel the quad covers by its real positive-weight texel footprint:
- * all footprint texels 255 → opaque; all 0 → nothing; any other mix → translucent. The result is
- * the exact alpha of the sampled backing, not a bounding box, and it is decided on the same
- * mapping the GPU draw uses, so CPU and GPU agree on which texels a pixel reads. */
 export function classifyImageFootprint(input: FootprintInput): FootprintFacts {
     const { plane, window, quad, within, maxRuns } = input;
     if (!Number.isSafeInteger(maxRuns) || maxRuns < 0) throw new RangeError('Invalid footprint run bound');
@@ -111,8 +92,6 @@ export function classifyImageFootprint(input: FootprintInput): FootprintFacts {
     return { status: 'opaque', runs: Int32Array.from(runs) };
 }
 
-/** Device rectangle of a textured draw whose crop leaves a symmetric gutter inside the texture. The
- * draw grows `dest` by the gutter scaled to device size, as the production GPU quad does. */
 export function texturedQuad(dest: Readonly<Rect>, textureSize: number, crop: Readonly<Rect>): DeviceRect {
     const gutter = crop.x;
     if (crop.y !== gutter || crop.width !== crop.height || crop.x + crop.width + gutter !== textureSize || gutter < 0
@@ -121,9 +100,6 @@ export function texturedQuad(dest: Readonly<Rect>, textureSize: number, crop: Re
     return { x0: dest.x - apron, y0: dest.y - apron, x1: dest.x + dest.width + apron, y1: dest.y + dest.height + apron };
 }
 
-/** Reads the exact alpha of a source bitmap through a 2D canvas. The bytes are charged to the CPU
- * allocator before they exist; the caller owns the returned lease and releases it with its holds. A
- * denied reservation returns null (facts stay unavailable). */
 export function readAlphaPlane(source: CanvasImageSource, width: number, height: number,
     allocator: MemoryAllocator): { plane: AlphaPlane; lease: ByteLease } | null {
     if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) throw new RangeError('Invalid alpha plane size');

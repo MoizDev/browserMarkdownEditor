@@ -1,5 +1,3 @@
-// Compose a PDF's shape layer as displayed, leaving the canvas surround alone.
-// CSS filters are not included in an exported bitmap, so apply them once here.
 export async function composePdfCapture(blob: Blob, inverted: boolean, background: string): Promise<Blob | null> {
     const bitmap = await createImageBitmap(blob);
     const canvas = document.createElement('canvas');

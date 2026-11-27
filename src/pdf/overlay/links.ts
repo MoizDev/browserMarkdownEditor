@@ -3,9 +3,6 @@ import type { PdfPageLink, PdfLinkTarget } from '../pdfLinkModel';
 
 interface LinkNode { element: HTMLAnchorElement | HTMLButtonElement; page: number; bounds: Rect }
 
-/** Native links sit in the pane's overlay, above PDF pixels. The engine has
- * already mapped every polygon into the rotated page frame; never reinterpret
- * PDF user coordinates or merge separate QuadPoints into one hit box. */
 export class PdfLinkOverlay {
     private readonly pages = new Map<number, LinkNode[]>();
     private selecting = false;

@@ -28,7 +28,6 @@ function point(v: unknown, field: string): Point {
     return { x: num(p.x, `${field}.x`), y: num(p.y, `${field}.y`) };
 }
 function url(v: unknown): string | null { const s = str(v, 'URL'); return s || null; }
-// The caller supplies the rich reader once TX-2 is available; no plain-text flattening is allowed.
 export function readLabelledShape(shape: LegacyShape, base: NodeBase, rich: RichTextReader,
     ends?: { readonly start: ConnectorEnd; readonly end: ConnectorEnd }): Node | null {
     const p = shape.props;
@@ -48,11 +47,6 @@ export function readLabelledShape(shape: LegacyShape, base: NodeBase, rich: Rich
             align: pick(p.textAlign, V_ALIGNS, 'alignment'), autoSize: bool(p.autoSize, 'auto-size'),
             w: num(p.w, 'width'), scale: num(p.scale, 'scale') };
         case 'note': {
-            // The old file's `fontSizeAdjustment` is the old app's own measured label size, 0 until it measured one, not a
-            // scale: read as `fit` (a multiplier, null for none), 0 hid the note's text and made every print and PDF export of
-            // the board fail ("Text raster geometry is out of range"). This app shrinks a note's text to fit by itself
-            // (geom/providers.ts stickyLabelRequest, overflow 'shrink'), so the note keeps no adjustment of its own; the
-            // value is still checked, as every field the reader knows is.
             num(p.fontSizeAdjustment, 'font adjustment');
             return { ...base, kind: 'sticky', text: rich(p.richText, shape.id),
                 color: pick(p.color, SWATCHES, 'colour'), labelColor: pick(p.labelColor, SWATCHES, 'label colour'),

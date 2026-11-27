@@ -1,27 +1,3 @@
-// Self-update, end to end, on the REAL service manager (launchd / systemd / Task
-// Scheduler) — what the release workflow runs on each OS, and a local check:
-//
-//   CI=true bun helper/scripts/update-smoke.ts [--port 47890]
-//   bun helper/scripts/update-smoke.ts --replace-installed [--port 47890]
-//
-// 1. Builds two helpers from source, 0.0.1 and 0.0.2, whose releases base is a
-//    fake release server this script serves on 127.0.0.1:<port>.
-// 2. Installs 0.0.1 for real (login registration included) and talks to it over
-//    the panel's WebSocket, as the panel would.
-// 3. A bad checksum, then a binary that does not start: each `helper.update` must
-//    fail with the old helper still answering on the same socket and its binary
-//    unchanged. Then the good release: the helper must come back as 0.0.2 under
-//    its service manager, with no leftovers.
-//    On macOS it also checks the PTY host (helper/ptyhost): installed and loaded
-//    by the helper itself, and — after the update — still loaded and BYTE-IDENTICAL.
-//    That is the invariant behind "terminal privacy grants survive a VaultAgent
-//    update" (a grant is keyed to the host's cdhash), expressed as a check CI can run.
-// 4. Uninstalls.
-//
-// It REPLACES whatever VaultAgent is installed for this user — hence the guard.
-// Without a session the service manager can start the helper in (a CI runner with
-// no GUI login), it warns and passes on macOS and Windows; on Linux it fails.
-
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -75,7 +51,6 @@ async function helperAt(version: string): Promise<{ port: number; version: strin
     return h && h.version === version ? h : null;
 }
 
-/** macOS: is the PTY host's LaunchAgent loaded in this user's GUI domain? */
 const ptyHostLoaded = () => Bun.spawnSync(['/bin/launchctl', 'print', `gui/${process.getuid?.() ?? 0}/${PTYHOST_LABEL}`]).exitCode === 0;
 
 function leftovers(): string[] {
@@ -86,7 +61,6 @@ function leftovers(): string[] {
     }
 }
 
-/** The panel's side of the socket: requests with reqIds, and every message seen. */
 class Panel {
     private ws: WebSocket;
     private seq = 0;
@@ -108,7 +82,6 @@ class Panel {
 
     static open(port: number): Promise<Panel> {
         return new Promise((res, rej) => {
-            // Bun's WebSocket takes headers: the helper only upgrades for an allowed Origin.
             const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Origin: PRODUCTION_ORIGIN } } as unknown as string[]);
             ws.onopen = () => res(new Panel(ws));
             ws.onerror = () => rej(new Error('ws error'));
@@ -153,7 +126,6 @@ async function main(): Promise<void> {
     const oldBin = build(OLD);
     const newBin = build(NEW);
 
-    // The fake release: the good asset, and one that is not a working program.
     const goodDir = join(releaseDir, 'good');
     const brokenDir = join(releaseDir, 'broken');
     mkdirSync(goodDir, { recursive: true });
@@ -176,8 +148,6 @@ async function main(): Promise<void> {
 
     const inst = Bun.spawnSync([oldBin, 'install'], { stdout: 'inherit', stderr: 'inherit' });
     installed = true;
-    // The same no-session policy as below: there, registering (launchctl bootstrap into
-    // gui/<uid>, the logon task) is itself what fails.
     if (inst.exitCode !== 0 && platform !== 'linux') {
         console.log(`::warning::install could not register the helper on this runner (no ${windows ? 'interactive' : 'GUI'} session?) — self-update not exercised`);
         return;
@@ -194,7 +164,6 @@ async function main(): Promise<void> {
     }
     check(`installed ${OLD} answers /health`, true);
     const installedSha = await sha(layout.binary);
-    // The helper installs and loads the PTY host at its start, so allow it a moment after /health.
     const pinnedHost = platform === 'macos' ? (JSON.parse(await Bun.file(join(helperDir, 'ptyhost', 'PINNED.json')).text()) as { sha256: string }).sha256 : '';
     let hostBefore = '';
     if (platform === 'macos') {
@@ -250,7 +219,6 @@ try {
     check('update smoke', false, String(e));
 } finally {
     if (installed && existsSync(layout.binary)) {
-        // Uninstall with a copy: on Windows the installed .exe cannot delete its own folder while it runs.
         const copy = join(scratch, `uninstaller${windows ? '.exe' : ''}`);
         copyFileSync(layout.binary, copy);
         const u = Bun.spawnSync([copy, 'uninstall'], { stdout: 'inherit', stderr: 'inherit' });

@@ -67,7 +67,6 @@ const GLYPHS: Readonly<Record<string, ReactNode>> = {
     'figure:hexagon': <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />,
     'figure:oval': <rect x="2" y="7" width="20" height="10" rx="5" />,
     'figure:rhombus': <path d="M7 5h14l-4 14H3z" />,
-    // The style panel's shape picker offers the types the bar leaves out; drawn on the same grid and stroke.
     'figure:rhombus-2': <path d="M3 5h14l4 14H7z" />,
     'figure:pentagon': <path d="M12 3 21 9.5 17.5 20h-11L3 9.5z" />,
     'figure:octagon': <path d="M8 3h8l5 5v8l-5 5H8l-5-5V8z" />,
@@ -111,12 +110,10 @@ const GLYPHS: Readonly<Record<string, ReactNode>> = {
     </>,
 };
 
-/** The glyph key for a tool: the figure's own key for `figure` choices, the id otherwise. */
 function toolGlyphKey(id: string, figure?: string): string {
     return id === 'figure' ? `figure:${figure ?? 'rectangle'}` : id;
 }
 
-/** A tool's icon at the bar's size: 20px, a 1.5 stroke, in `currentColor`. */
 export function ToolIcon({ id, figure }: { readonly id: string; readonly figure?: string }) {
     return <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}
         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
@@ -124,7 +121,6 @@ export function ToolIcon({ id, figure }: { readonly id: string; readonly figure?
     </svg>;
 }
 
-/** The chevron that opens the rest of the tools. */
 export function MoreToolIcon() {
     return <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}
         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
@@ -132,7 +128,6 @@ export function MoreToolIcon() {
     </svg>;
 }
 
-/** The tool lock's padlock: closed while the selected tool stays chosen after one use. */
 export function LockIcon({ locked }: { readonly locked: boolean }) {
     return <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}
         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">

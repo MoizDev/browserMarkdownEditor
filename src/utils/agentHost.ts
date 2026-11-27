@@ -2,18 +2,6 @@ import { readReaderViewState } from './readerViewState';
 import { routeEngines } from './engineRouting';
 import { canReadTabText,canUpdateTabContent } from './documentReading';
 import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
-// App's side of the AI agent panel: the two host objects the panel and the
-// tool executor are handed (types/vaultAgent.ts), built ONCE for the app's life.
-//
-// Every method reads the CURRENT App through `getDeps()` (refs App refreshes
-// after each commit), so the objects themselves never change identity — the
-// panel is lazy, subscribes a WebSocket and holds long-running runs, and a host
-// that changed with App's state would restart all of that on every keystroke.
-//
-// The vault tools never reach the disk except through here, and everything here goes
-// through the same App handlers the reader's own gestures use: an edit lands in
-// the open editor (undoable), a new note refuses a taken name instead of
-// truncating it, a move carries its tabs, a deletion goes to `.Garbage`.
 
 import { isolateHistory } from '@codemirror/commands';
 import type { MarkdownSessionHost } from '../editor/markdownSession.types';
@@ -41,12 +29,9 @@ import {
 import { emptyTree, parseTree, serializeTree, type ChatTree } from './chatTree';
 import { loadChunk } from '../platform/chunkLoad';
 
-/** How long `openCanvasForAgent` waits for a canvas to mount and register. */
 const CANVAS_MOUNT_TIMEOUT_MS = 15_000;
-/** A mounted board registers a live reporter; a reporter without one is not a board. */
 const hasLiveBoard = (reporter: ViewReporter) => !!reporter.live;
 
-/** What the hosts need from App, re-read on every call. */
 export interface AgentHostDeps {
     vaultId: string | null;
     handleIO: import('../types').VaultHandleIO;
@@ -59,7 +44,6 @@ export interface AgentHostDeps {
     tabs: OpenTab[];
     layout: TabLayout;
     mainView: MainView;
-    /** App-owned Markdown sessions, including lazily created viewless sessions. */
     markdownSessions: MarkdownSessionHost;
     readFile(handle: FileSystemFileHandle): Promise<string>;
     readFileVersioned: import('../types').FileSystemContextValue['readFileVersioned'];
@@ -70,47 +54,33 @@ export interface AgentHostDeps {
     createFile(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemFileHandle>;
     createFolder(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemDirectoryHandle>;
     nameTaken: import('../types').FileSystemContextValue['nameTaken'];
-    /** App-owned immutable closed source; projection and format classification stay in the consumer. */
     acquireClosedCanvasSource?: (path: string, handle: FileSystemFileHandle, kind: 'drawing' | 'notebook' | 'pdf-ink',
         guard: { readonly signal: AbortSignal; isCurrent(): boolean }) => Promise<import('./closedCanvasSource').ClosedCanvasSourceLease>;
-    /** One embedded picture of a closed board, read from the board's own folder (its `.Assets`), never from a tab. */
     readClosedCanvasMedia?: (path: string, handle: FileSystemFileHandle, entry: import('../whiteboard/model/media').MediaEntry,
         signal: AbortSignal) => Promise<Blob | null>;
-    /** Resolve or acquire the open tab's one canonical runtime, without attaching a view. */
     ensureNativeAgentRuntime?: (path: string, signal: AbortSignal) => Promise<{
         readonly identity: import('../types/nativeCanvas').NativeCanvasIdentity;
         readonly runtime: import('../whiteboard/host/runtime').BoardRuntime;
         isCurrent(): boolean;
         canWrite(): boolean;
-        /** Named refusal for the facade's write block; null only when canWrite() holds. */
         writeBlockReason(): string | null;
         activateEditing(): void;
         readMedia(entry: import('../whiteboard/model/media').MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     }>;
-    /** Offscreen, session-owned native-board projection; never reads through a mounted view. */
     canvasShapePage?: VaultToolHost['canvasShapePage'];
-    /** The App-lifetime, path-explicit readable buffer accessor. */
     contentOf(path: string): string | undefined;
     snapshotOf(path: string): import('./documentBuffers').PinnedBufferSnapshot | undefined;
-    /** Everything a save does after its write, for a file written with no tab
-     *  open: file time, asset reconcile, graph, search epoch. */
     afterWrite(file: ActiveFile, before: string, after: string, version?: import('./diskVersion').DiskStat): void;
     renameEntry(node: FileTreeNode, newName: string): Promise<boolean>;
     moveEntry(node: FileTreeNode, target: FileSystemDirectoryHandle, targetPath: string): Promise<boolean>;
-    /** Confirm-free trash (App.trashEntry). */
     trashEntry(node: FileTreeNode): Promise<'ok' | 'busy' | 'failed'>;
-    /** Add a tab for `node` without focusing it; resolves false on a failed read. */
     addTabQuietly(node: FileTreeNode, mode: EditorMode): Promise<boolean>;
     setTabMode(path: string, mode: EditorMode): void;
-    /** Show `path` beside the reader without moving the focus (tabPanes.openInSidePane),
-     *  switching the main view back to the editor if the graph is up. */
     showBeside(path: string): void;
     openFile(path: string): void;
     ask(request: ConfirmRequest): Promise<boolean>;
     notify(message: string): void;
 }
-
-/* ── Paths ── every path reaching here is already normalized by the executor. */
 
 function splitPath(path: string): string[] {
     return path ? path.split('/') : [];
@@ -144,7 +114,6 @@ function docKind(tab: OpenTab): AgentDocKind {
     return isTextFile(name) ? 'text' : 'other';
 }
 
-/** Same key and shape DocumentPane writes (its SCROLL_ANCHORS_KEY). */
 const SCROLL_ANCHORS_KEY = 'fileScrollAnchors';
 
 function lineAt(text: string, pos: number): number {
@@ -176,7 +145,6 @@ function rememberedPosition(deps: AgentHostDeps, path: string): RememberedPositi
     return isScrollAnchor(anchor) && text !== undefined ? { kind: 'markdown', line: lineAt(text, anchor.pos) } : null;
 }
 
-/** Live readable text, or undefined when the loaded representation has no text authority. */
 function liveText(deps: AgentHostDeps, path: string): string | undefined {
     const tab = openTabAt(deps, path);
     if (!tab || !canReadTabText(tab)) return undefined;
@@ -204,7 +172,6 @@ function validChanges(text: string, changes: TextChange[]): boolean {
     return true;
 }
 
-/** Serializes each vault file's read-modify-write, in call order. */
 function queue() {
     let tail: Promise<unknown> = Promise.resolve();
     return <T>(work: () => Promise<T>): Promise<T> => {
@@ -231,7 +198,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         catch { return null; }
     };
     const serializeIndex = queue();
-    /** One write queue per chat transcript (see writeChatTree). */
     const treeQueues = new Map<string, ReturnType<typeof queue>>();
 
     const toolHost: VaultToolHost = {
@@ -251,7 +217,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         },
         async nativeCanvasView(path, guard) {
             const deps = getDeps();
-            // A closed canvas has no session to read; only an OPEN, admitted native canvas is read here.
             const tab = deps.root ? openTabAt(deps, path) : undefined;
             if (!deps.root || !tab) return null;
             const kind = tab.representation.nativeCanvasKind;
@@ -263,7 +228,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
             guard.signal?.throwIfAborted();
             if (!current()) throw new DOMException('Canvas view source changed', 'AbortError');
-            // A mounted board that has a viewport answers from its own live camera, inversion and frame.
             const live = getView(path)?.live;
             if (live?.measured()) {
                 const base = guard.signal ?? new AbortController().signal;
@@ -276,7 +240,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                         ? live.renderPage(page, maxSide, withSignal(captureSignal))
                         : live.capture(maxSide, withSignal(captureSignal)) };
             }
-            // A PDF's stored page is what a never-viewed ink board shows; it is the same record the classic reader keeps.
             const stored = isPdfFile(path) ? readPdfViewPos(path) : undefined;
             const { readNativeCanvasView } = await loadChunk(() => import('./nativeCanvasAgentRead'));
             return readNativeCanvasView({ deps, path, storedPage: stored ? stored.page + 1 : undefined,
@@ -284,7 +247,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         },
         async nativeClosedPicture(path, page, maxSide, guard) {
             const deps = getDeps();
-            // Only a CLOSED native drawing or notebook is pictured here; an open canvas is read through its session.
             if (!deps.root || openTabAt(deps, path) || !(isNativeDrawingFile(path) || isNotebookFile(path))) return null;
             const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
             const found = await fileAt(deps.root, path);
@@ -299,10 +261,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (!deps.root || !isPdfFile(path)) return null;
             const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
             const tab = openTabAt(deps, path);
-            // An OPEN PDF is read through nativeCanvasView (its last real view), never pictured here: a mounted or
-            // classic open PDF keeps its own route.
             if (tab) return null;
-            // A CLOSED PDF is pictured from its admitted source, never by opening a tab.
             const found = await fileAt(deps.root, path);
             guard.signal?.throwIfAborted();
             if (!found || !current()) return null;
@@ -381,8 +340,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const deps = getDeps();
             if (!deps.root) return { ok: false, reason: 'error', message: 'No vault is open.' };
             if (isNativeDrawingFile(path)) return { ok: false, reason: 'invalid', message: 'Native .drawing whiteboards are changed with canvas_apply, not as text.' };
-            // A canvas on screen is a live board session, which would
-            // re-serialize over any text edit at its next change.
             if (isCanvasFile(path) || isPdfFile(path) || isEpubFile(path)) {
                 return { ok: false, reason: 'invalid', message: isEpubFile(path) ? 'EPUB is read-only; its source cannot be edited.' : 'Drawings, notebooks and PDFs are changed with canvas_apply, not as text.' };
             }
@@ -394,18 +351,13 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 const view = getView(path);
                 if (view?.applyTextChanges && view.getText) {
                     if (view.getText() !== expected) return { ok: false, reason: 'stale' };
-                    // The pane's own update listener carries it into the save
-                    // funnel, exactly like typing.
                     try {
                         return view.applyTextChanges(changes) ? { ok: true } : { ok: false, reason: 'error', message: 'The editor closed mid-edit.' };
                     } catch {
-                        // CodeMirror's RangeError: ranges that no longer fit the text.
                         return { ok: false, reason: 'stale' };
                     }
                 }
                 if (deps.contentOf(path) !== expected) return { ok: false, reason: 'stale' };
-                // The session owns both the undo history and the report to the save funnel,
-                // including when this is the first edit before a pane has ever mounted.
                 try {
                     return await deps.markdownSessions.dispatch(tab.id, {
                         changes, userEvent: 'input.agent', annotations: isolateHistory.of('full'),
@@ -415,7 +367,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 }
             }
 
-            // Closed: straight to disk, then the same tail a save runs.
             const found = await fileAt(deps.root, path);
             if (!found) return { ok: false, reason: 'missing' };
             let read: Awaited<ReturnType<AgentHostDeps['readFileVersioned']>>;
@@ -555,7 +506,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (isEpubFile(path) || open?.representation?.loadedKind === 'epub' || open?.readError) return null;
             const pdf = isPdfFile(path);
             if (!pdf && !isCanvasFile(path)) return null;
-            // A legacy text canvas whose text the editor refuses is never mounted: no pane would ever register for it.
             if (!pdf && !isNativeDrawingFile(path)) {
                 const captured = open ? deps.snapshotOf(path) : undefined;
                 try {
@@ -572,8 +522,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                     if (reason) throw new Error(reason);
                 } finally { captured?.release(); }
             }
-            // The board mounts through its own native session (App's acquisition; an old-format board mounts read-only).
-            // Its live reporter, registered by the mounted lease, is the only thing waited for.
             const now = getView(path);
             if (now?.live) return now;
 
@@ -585,7 +533,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             } else if (tab.readError) {
                 return null;
             } else if (pdf && tab.mode !== 'edit') {
-                // A PDF is drawn on in annotate mode, which is its tab's 'edit'.
                 deps.setTabMode(path, 'edit');
             }
             deps.showBeside(path);
@@ -611,9 +558,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         await writeFile(await io.fileIn(dir, name, true), text);
     };
 
-    /** `.VaultAgent/chats/<chatId>.json`. The id is ours (a UUID) and never a
-     *  user string, so there is no path to escape with — but it is checked
-     *  anyway, because this writes inside the user's vault. */
     const chatTreeFile = async (root: FileSystemDirectoryHandle, chatId: string, create: boolean) => {
         if (!/^[0-9a-f-]{36}$/i.test(chatId)) return null;
         const io = getDeps().handleIO;
@@ -628,7 +572,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const file = await io.file(await io.fileIn(dir, name));
             if (file.size > MAX_MIRROR_FILE_BYTES) return null;
             const text = await file.text();
-            // Text only: a NUL is as good a binary sniff as any here.
             return text.includes('\u0000') ? null : text.replace(/\r\n?/g, '\n');
         } catch {
             return null;
@@ -656,7 +599,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 tabs,
                 focusedPath: focusedPathOf(deps.layout),
                 remembered: path => rememberedPosition(getDeps(), path),
-                // The same native read the tools use, guarded to this vault for its whole duration.
                 nativeView: (path, signal) => {
                     const root = deps.root;
                     return toolHost.nativeCanvasView
@@ -669,9 +611,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         ensureVaultUuid() {
             const root = getDeps().root;
             if (!root) return Promise.resolve(null);
-            // The SAME context minting the terminal uses, whose serialization
-            // is shared: two callers minting
-            // for one vault would split it in two, and StrictMode runs both.
             return getDeps().ensureVaultId(root, getDeps().writeFile);
         },
 
@@ -684,9 +623,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         updateChatIndex(update) {
             const root = getDeps().root;
             if (!root) return Promise.resolve(emptyChatIndex());
-            // Re-read under the queue, so two windows on one vault merge per chat
-            // (each update edits the chats it means to) rather than the later one
-            // putting back the whole list it read at startup.
             return serializeIndex(async () => {
                 const current = parseChatIndex(await readVaultAgentFile(root, CHAT_INDEX_FILE));
                 const next = update(current);
@@ -705,8 +641,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 const handle = await chatTreeFile(root, chatId, false);
                 return handle ? parseTree(await (await getDeps().handleIO.file(handle)).text()) : emptyTree();
             } catch {
-                // No folder, no file, or unreadable: an empty tree, and the CLI's
-                // own history takes over (chatStore.loadHistory).
                 return emptyTree();
             }
         },
@@ -714,17 +648,12 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         writeChatTree(chatId: string, tree: ChatTree): Promise<void> {
             const root = getDeps().root;
             if (!root) return Promise.resolve();
-            // Per chat, not one queue for all of them: two chats writing at once
-            // touch different files, and a long transcript must not hold up the
-            // chat the user is actually typing in.
             const serialize = (treeQueues.get(chatId) ?? treeQueues.set(chatId, queue()).get(chatId))!;
             return serialize(async () => {
-                if (getDeps().root !== root) return;   // a vault switch mid-write
+                if (getDeps().root !== root) return;
                 const handle = await chatTreeFile(root, chatId, true);
                 if (handle) await getDeps().writeFile(handle, serializeTree(tree));
             }).catch(err => {
-                // A transcript that cannot be written is not worth losing the
-                // reply over: the chat still works, it just will not come back.
                 console.error('Could not write the chat transcript:', err);
             });
         },

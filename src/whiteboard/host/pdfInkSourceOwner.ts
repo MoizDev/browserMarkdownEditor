@@ -5,7 +5,6 @@ import type { PdfRuntimeInkSource } from '../../pdf/session/legacyInkAcquisition
 import { isConvertedPdfInkSource } from '../../pdf/session/convertedInkBrand';
 
 export interface PdfInkSourceOwnerOptions {
-    /** Checks the App document/session owner and target byte generation, not pane visibility. */
     currentOwner(token: RenderToken): boolean;
     onError(error: unknown): void;
 }
@@ -25,7 +24,6 @@ function sameGeometry(a: Readonly<PageGeometry>, b: Readonly<PageGeometry>): boo
         a.toUserSpace.every((value, index) => value === b.toUserSpace[index]);
 }
 
-/** Takes ownership only of accepted sources. A rejected replacement stays with its caller. */
 export function createPdfInkSourceOwner(initial: PdfRuntimeInkSource, options: PdfInkSourceOwnerOptions) {
     type Entry = { source: PdfRuntimeInkSource; refs: number };
     const seen = new WeakSet<PdfRuntimeInkSource>();
@@ -55,7 +53,6 @@ export function createPdfInkSourceOwner(initial: PdfRuntimeInkSource, options: P
             let released = false;
             return { source: entry.source, release() { if (!released) { released = true; drop(entry); } } };
         },
-        /** Caller must complete the actual rebind verification before transferring next. */
         replace(next: PdfInkAcquisition, verifiedToken: RenderToken): void {
             const old = current;
             if (disposed || !old || !valid(next) || seen.has(next) || !sameToken(next.source.token, verifiedToken) ||
@@ -78,7 +75,6 @@ export function createPdfInkSourceOwner(initial: PdfRuntimeInkSource, options: P
             const old = current; current = undefined;
             if (old) drop(old);
         },
-        /** Waits for releases queued so far; outstanding captured leases must first be released. */
         async drain(): Promise<void> {
             await tail;
             if (failures.length) throw new AggregateError([...failures], 'PDF ink source release failed');

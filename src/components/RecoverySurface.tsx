@@ -14,7 +14,6 @@ interface Props {
     journal: ReturnType<typeof createRecoveryJournal>;
 }
 
-/** The scan is bounded by the number of journals, not the size of the vault. */
 export default function RecoverySurface({ vaultId, activePath, inspect, recover, saveCopy, status, journal }: Props) {
     const [entries, setEntries] = useState<Array<{ entry: RecoveryEntry; result: RecoveryInspection }>>([]);
     const [applied, setApplied] = useState<Set<string>>(() => new Set());

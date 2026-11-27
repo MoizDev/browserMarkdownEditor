@@ -9,8 +9,6 @@ export type ExactConvexIntersectionResult = Readonly<{ status: 'pending' | 'empt
 interface Vertex { readonly point: ExactPoint; readonly incoming: ExactLine }
 const PENDING: ExactConvexIntersectionResult = Object.freeze({ status: 'pending' });
 
-/** Convex clipping retains homogeneous intersection vertices and original
- * support lines. No intermediate rational point is rounded to a float. */
 export function createExactConvexIntersectionJob(operands: readonly ExactConvexOperand[], options: {
     readonly maxVertices?: number; readonly maxWork?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): ExactConvexIntersectionResult; cancel(): void } {

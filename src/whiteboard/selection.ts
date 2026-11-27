@@ -10,7 +10,6 @@ export interface SelectionSnapshot {
     readonly active: NodeId | null;
 }
 
-// Selection is session state, not a document operation or a separate undo step.
 export class SelectionState {
     private snapshot: SelectionSnapshot;
     private selectedIds = new Set<NodeId>();
@@ -55,7 +54,6 @@ export class SelectionState {
     }
 }
 
-// Reject locked ancestors before promoting an unentered group; frames do not promote children.
 export function selectableAtFocus(doc: BoardDoc, id: NodeId, focus: ParentId, sheet: SheetId, includeLocked = false): NodeId | null {
     if (sheetOf(doc, id) !== sheet) return null;
     let node = doc.nodes.get(id), candidate = node?.id ?? null, reached = false;
@@ -74,7 +72,6 @@ export function selectAllAtFocus(doc: BoardDoc, sheet: SheetId, focus: ParentId)
     return childrenOf(doc, focus).filter(node => selectableAtFocus(doc, node.id, focus, sheet) === node.id).map(node => node.id);
 }
 
-// Return false at either end so the input router can leave ordinary Tab navigation alone.
 export function selectNext(doc: BoardDoc, selection: SelectionState, direction: 1 | -1, reveal: (id: NodeId) => void): boolean {
     const state = selection.getSnapshot(), siblings = childrenOf(doc, state.focus);
     const active = state.active ? doc.nodes.get(state.active) : undefined;

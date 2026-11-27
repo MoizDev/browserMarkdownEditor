@@ -1,29 +1,13 @@
-// The line diff behind the agent panel's change cards: what one vault_edit /
-// vault_write / vault_create did to a file, as a compact unified diff.
-//
-// Myers' O((N+M)·D) algorithm on the lines left after trimming the common head
-// and tail — an agent edit is nearly always a few lines in a long note, so the
-// trim alone usually leaves almost nothing to compare. Past MAX_EDIT_DISTANCE
-// the middle is shown as "all of it went, all of this came" instead: correct,
-// just less minimal, and it keeps a whole-file rewrite of a 20k-line file from
-// costing seconds and an O(D²) trace on the main thread.
-
 import type { DiffLine } from '../types/vaultAgent';
 
-/** Lines of unchanged text kept around each change. */
 const CONTEXT = 3;
-/** Rows a card may carry; a card is for reading, the file is the record. */
 const MAX_ROWS = 400;
-/** A single row's text; a minified line is not worth 200 KB of card. */
 const MAX_ROW_CHARS = 400;
-/** Past this many inserted+deleted lines, stop looking for the minimal diff.
- *  The trace is ~D² ints, so 1000 ≈ 4 MB at worst. */
 const MAX_EDIT_DISTANCE = 1000;
 
 type Op = { type: 'context' | 'add' | 'del'; text: string; oldLine?: number; newLine?: number };
 
 export interface LineDiff {
-    /** Hunks with CONTEXT lines around each change, `gap` rows between them. */
     diff: DiffLine[];
     added: number;
     removed: number;
@@ -33,8 +17,6 @@ function splitLines(text: string): string[] {
     return text === '' ? [] : text.split('\n');
 }
 
-/** Myers' shortest edit script, as the sequence of kept/added/deleted lines
- *  (`a`, `b` are interned line ids). null when it would exceed `maxD`. */
 function myers(a: Int32Array, b: Int32Array, maxD: number): Array<'=' | '+' | '-'> | null {
     const n = a.length;
     const m = b.length;
@@ -43,7 +25,6 @@ function myers(a: Int32Array, b: Int32Array, maxD: number): Array<'=' | '+' | '-
     const v = new Int32Array(2 * max + 3);
     const trace: Int32Array[] = [];
     for (let d = 0; d <= Math.min(max, maxD); d++) {
-        // The state BEFORE round d, for k in [-d, d] — all backtracking reads.
         trace.push(v.slice(offset - d, offset + d + 1));
         for (let k = -d; k <= d; k += 2) {
             let x = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1])
@@ -80,7 +61,6 @@ function clip(text: string): string {
     return text.length > MAX_ROW_CHARS ? `${text.slice(0, MAX_ROW_CHARS)}… (${text.length - MAX_ROW_CHARS} more chars)` : text;
 }
 
-/** Every line of `before` → `after`, as context/add/del rows with line numbers. */
 function fullScript(before: string, after: string): Op[] {
     const a = splitLines(before);
     const b = splitLines(after);
@@ -117,7 +97,6 @@ function fullScript(before: string, after: string): Op[] {
     return ops;
 }
 
-/** The compact diff from `before` to `after`. */
 export function lineDiff(before: string, after: string): LineDiff {
     const ops = fullScript(before, after);
     let added = 0;
@@ -127,8 +106,6 @@ export function lineDiff(before: string, after: string): LineDiff {
         else if (op.type === 'del') removed++;
     }
 
-    // Keep each change plus CONTEXT lines either side; everything else folds
-    // into one `gap` row per run.
     const keep = new Uint8Array(ops.length);
     ops.forEach((op, idx) => {
         if (op.type === 'context') return;
@@ -154,13 +131,9 @@ export function lineDiff(before: string, after: string): LineDiff {
         if (op.type !== 'context') shownChanges++;
         diff.push({ ...op, text: clip(op.text) });
     }
-    // A trailing run of unchanged lines is not worth a row after the last hunk,
-    // but a leading one is (it says where the hunk sits); only mid gaps and the
-    // head get rows, so drop the tail.
     return { diff, added, removed };
 }
 
-/** A new file, as a card: every line added (capped like any diff). */
 export function creationDiff(text: string): LineDiff {
     return lineDiff('', text);
 }

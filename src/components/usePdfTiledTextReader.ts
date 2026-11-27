@@ -5,7 +5,6 @@ import { pdfPoolTextSource } from '../pdf/text/poolSource';
 import { retainPdfTextReaderVisibility, sessionPdfTextReader } from '../pdf/text/sessionReader';
 import type { PdfTextReader } from '../utils/pdfReadingText';
 
-/** A Text surface borrows the same session reader/index as Original. */
 export function usePdfTiledTextReader(session: PdfTiledDocumentSession | null, document: PdfPoolDocument | null,
     initialPage: number, isVisible: boolean): PdfTextReader | undefined {
     const latest = useRef({ initialPage, isVisible });

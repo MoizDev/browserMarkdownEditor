@@ -26,19 +26,14 @@ import { relativeLegacyAssetSource } from '../import/records/media';
 import { hashMedia, hashMediaBytes } from '../media/sha256';
 import { SECURITY_LIMITS } from '../security/limits';
 
-// Provenance: the independent legacy mapping, actual canonical font/geometry,
-// native encoders and C5 repair. This worker creates bytes, never a session authority.
 export interface LegacyPrepareRequest {
     readonly bytes: Blob;
     readonly kind: BoardKind;
     readonly host: HostBlock;
     readonly token: RenderToken;
     readonly zMax: number;
-    /** Actual host inspections from the scan's copied bytes; each is rebound by SHA below. */
     readonly media: readonly InspectedMedia[];
-    /** Actual App-resolved copied bytes, bound to original source order and URI. */
     readonly relativeAssets?: readonly { readonly sourceOrdinal: number; readonly src: string; readonly blob: Blob }[];
-    /** The key this load's scan kept its text under, in this same worker (legacyScan.ts). */
     readonly keep?: string;
 }
 export interface LegacyPrepareReply {
@@ -50,8 +45,6 @@ export interface LegacyPrepareReply {
     readonly savedView?: SavedView;
     readonly conversionPending: true;
 }
-// FontFaceSet is worker-owned. Recreating its registry for each import would
-// register another copy of every loaded face on every conversion.
 let workerFonts: BoardFonts | undefined;
 function take<T>(result: WriteResult<T>): T {
     if (!result.ok) throw new Error(`Legacy native source refused: ${result.error.reason}`);
@@ -120,8 +113,6 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
                 pages: request.host.pages.map(page => ({ w: page[0], h: page[1] })) } } : {}),
             async resolveAsset(asset, sourceOrdinal) {
                 check();
-                // None sent: the host could not read that picture's file (legacyAcquisition.ts), and the importer leaves
-                // the picture out. One sent for a different source is a host fault, never a picture to show.
                 const resolved = relativeAssets.get(sourceOrdinal);
                 if (!resolved) return null;
                 if (relativeLegacyAssetSource(asset) !== resolved.src) throw new Error('Legacy relative media is not bound to this source record');
@@ -134,8 +125,6 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
             },
             repairRoot(node) {
                 if (request.kind === 'whiteboard') return { page: -1, x: node.x, y: node.y };
-                // Paged roots were assigned by the actual pre-page geometry hook.
-                // An unresolved invalid ancestor has no invented page-zero geometry.
                 throw new Error('Legacy orphan requires authoritative source geometry');
             },
             async admit(input, store, root, report) {
@@ -151,11 +140,6 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
         const doc = imported.board.doc;
         rendered = createBoardRenderServices({ doc, samples, media, fonts, token: request.token, cooperate: tick });
         const ids = Array.from(doc.nodes.keys());
-        // Each node's geometry is realized as its bounds are read and then left to the renderer's byte-bounded idle cache
-        // (a connector prepares its own targets): only the four numbers of each box outlive it. Pinned for the whole board
-        // first, every stroke's exact coverage was held at once only to be reduced to those boxes, and realized again for
-        // them past that cache, since a pin serves change geometry, not a pick (measured, 10,060 strokes in a 5 MB file:
-        // 373 MB of typed arrays and 180 MB of heap in this worker at that moment; the import now peaks at ~100 MB).
         const renderer = rendered;
         const bounds = await createBoardEncoderBounds({ doc, sources: [], local: () => undefined,
             realize: async (node, signal) => (await renderer.prepareForPick(node, signal, doc)).bounds,
@@ -182,9 +166,6 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
         const bytes = take(await lines.assembleAsync(lines.integrity(), doc.preserved.end, { signal: context.signal, cooperate: tick })).blob;
         check();
         const stack = boardPageStack(doc.host), nextFrames = stack?.rects.map(rect => ({ x: rect.x, y: rect.y, w: rect.width, h: rect.height })) ?? [];
-        // The pictures are not sent back: their entries are in the native bytes, and the host keeps the blobs it inspected.
-        // Sent, each entry's `ext` (Maps of the tldraw asset's other props, present on every picture OLD saved) failed the
-        // reply's plain-data check, so every old board holding a picture failed to open ("forbidden platform object").
         return { status: 'prepared', bytes, report: imported.report, previousFrames, nextFrames,
             ...(imported.savedView ? { savedView: imported.savedView } : {}), conversionPending: true };
     } finally {

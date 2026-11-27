@@ -34,7 +34,6 @@ function appendRun(doc: Document, parent: Element, text: string, marks: Marks): 
     });
 }
 
-/** Serializes only the selected projection; all user content enters as DOM text. */
 export function textClipboardRendition(value: RichText, from: number, to: number): TextClipboardRendition {
     const fragment = sliceRichText(value, from, to);
     const doc = document.implementation.createHTMLDocument('');

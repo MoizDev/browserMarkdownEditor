@@ -15,12 +15,7 @@ export interface PdfInkRebindOptions {
     readonly sources: ReturnType<typeof createPdfInkSourceOwner>;
     readonly rebind: typeof rebindPdfInkSource;
     onError(error: unknown): void;
-    /** Must revoke authoritative write policy while preserving the live session and undo. */
     onReadOnly(reason: string): void;
-    /**
-     * Adopts the verified source as the paint token of future pins on the live runtime. It runs after the
-     * source owner accepted the replacement and before `ready` is published; a throw fails closed to read-only.
-     */
     adoptPaint(witness: PaintSourceWitness, isCurrent: () => boolean): void;
 }
 
@@ -28,15 +23,9 @@ export type PdfInkWrittenContext = ReturnType<ReturnType<typeof createPdfInkBuil
 
 export interface PdfInkRebindSnapshot {
     readonly source: PdfRuntimeInkSource;
-    /** Actual admitted source token. Existing frames retain their original token until a new view presents this source. */
     readonly token: RenderToken;
     readonly status: 'ready' | 'rebinding' | 'read-only' | 'failed';
     readonly reason?: string;
-    /**
-     * This owner has written bytes newer than what its generation names: a save kept the generation because the live
-     * board already paints them (`afterWritten`). Any other reader of that generation (Original, Text) still shows the
-     * older bytes until App advances the generation and `adoptWritten` follows it.
-     */
     readonly writtenAhead?: true;
 }
 
@@ -46,7 +35,6 @@ const sameToken = (a: RenderToken, b: RenderToken) => a.documentId === b.documen
     a.vaultEpoch === b.vaultEpoch && a.bytesGeneration === b.bytesGeneration;
 const stale = () => new DOMException('PDF rebind is no longer current', 'AbortError');
 
-/** The owner retains resources; this store only publishes the inspected backdrop version. */
 export function createPdfInkRebind(options: PdfInkRebindOptions) {
     const { host, documentId, admittedIdentity, initialSource, sources } = options;
     if (admittedIdentity.kind !== 'pdfInk' || admittedIdentity.documentId !== documentId ||
@@ -55,7 +43,6 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
     }
     let snapshot: PdfInkRebindSnapshot = Object.freeze({ source: initialSource, token: initialSource.source.token, status: 'ready' });
     let disposed = false, serial = 0, tail: Promise<void> = Promise.resolve(), pending: AbortController | undefined;
-    // The newest write whose generation was kept (see writtenAhead): what adoptWritten rebinds to.
     let ahead: PdfInkWrittenContext | undefined;
     const failures: unknown[] = [], listeners = new Set<() => void>();
     const report = (error: unknown) => { failures.push(error); try { options.onError(error); } catch { /* drain retains the original error. */ } };
@@ -75,9 +62,7 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
         publish({ source: snapshot.source, token: snapshot.token, status: 'failed', reason });
         try { options.onReadOnly(reason); } catch (failure) { report(failure); }
     };
-    /** Rebinds to the bytes `context` wrote, now named by the outer generation `target`. */
     const rebindTo = (attempt: number, target: NativeCanvasIdentity, context: PdfInkWrittenContext): Promise<void> => {
-        // Any rebind supersedes a kept write: it inspects the file as it now is, and accepts only this owner's newest write id.
         ahead = undefined;
         publish({ source: snapshot.source, token: snapshot.token, status: 'rebinding' });
         const job = tail.then(async () => {
@@ -144,9 +129,6 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
                     context.source.token.bytesGeneration > outer.bytesGeneration ||
                     context.source.pristineFingerprint !== initialSource.source.pristineFingerprint) throw stale();
                 target = { ...outer };
-                // The app keeps the generation for this pane's own save (useSaveFunnel): the live source already
-                // paints those bytes, so there is nothing to rebind and the board stays live. The write is remembered:
-                // the generation still names the older bytes, which is what Original would go on showing.
                 if (outer.bytesGeneration === snapshot.token.bytesGeneration && snapshot.status === 'ready') {
                     ahead = context;
                     if (!snapshot.writtenAhead) publish({ ...snapshot, writtenAhead: true });
@@ -159,11 +141,6 @@ export function createPdfInkRebind(options: PdfInkRebindOptions) {
             }
             return rebindTo(attempt, target, context);
         },
-        /**
-         * Follows App advancing the generation over this owner's own kept write (PdfPane asks when it shows Original):
-         * the same rebind an outside save gets, run while no board is on screen, so its cover drops no press. A no-op
-         * unless a write is ahead and the outer generation has moved past this source's.
-         */
         adoptWritten(): Promise<void> {
             const context = ahead, outer = host.outerIdentity(documentId);
             if (!context || !outer || !liveOwner() || snapshot.status !== 'ready' || outer.kind !== 'pdfInk' ||

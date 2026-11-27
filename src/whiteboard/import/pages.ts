@@ -2,7 +2,6 @@ import type { Sheet } from '../model/doc';
 import type { Node } from '../model/nodes';
 import { backdropRole, type LegacyShape } from './records/common';
 
-// IMP-3, E-IMP-7/9: legacy rectangles come from the saved backdrop, not a new PDF layout.
 export interface LegacyPageRect { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
 export interface DisplayPage { readonly w: number; readonly h: number }
 export interface LegacyPageMapping { readonly rect: LegacyPageRect; readonly scale: number }
@@ -86,7 +85,6 @@ export function locateLegacyPage(pages: readonly LegacyPageMapping[], x: number,
     readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd: boolean;
 } {
     if (!pages.length || ![x, y, centreY].every(Number.isFinite)) throw new Error('Invalid page position');
-    // A gap belongs to the following page; outlying coordinates stay relative to the nearest page.
     let page = pages.findIndex(({ rect }) => centreY < rect.y + rect.h);
     if (page < 0) page = pages.length - 1;
     const { rect, scale } = pages[page];

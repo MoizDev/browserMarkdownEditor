@@ -6,7 +6,6 @@ export interface LinkRange { readonly from: number; readonly to: number; readonl
 interface Links { readonly ranges: LinkRange[]; bytes: number }
 const cache = new WeakIdentityLru<Block, Links>(4 * 1024 * 1024, 128);
 
-/** Cached ranges contain only offsets and URL strings, never the source block. */
 export function linkRangeAtBlock(block: Block, offset: number): LinkRange | null {
     const index = runIndex(block);
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > index.length) throw new RangeError('Invalid link offset');

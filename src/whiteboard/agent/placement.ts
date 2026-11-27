@@ -9,7 +9,6 @@ import type { UpdateOp } from './update';
 
 export interface LocalBox { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
 export interface PlacementContext extends CreateContext {
-    /** Exact unrotated placement box (not stroke ink), recomputed for a candidate and staged doc. */
     localBox(node: Node): LocalBox;
 }
 interface Transform { readonly x: number; readonly y: number; readonly angle: number }
@@ -51,8 +50,6 @@ function rootPage(context: PlacementContext, node: Node): number {
 }
 function center(box: LocalBox): Point { return { x: box.x + box.w / 2, y: box.y + box.h / 2 }; }
 
-/** The unrotated rectangle whose axis-aligned bounds are `width` × `height` at world `angle`, or null when no
- * positive rectangle has them (F-AGENT-004: w/h request the bounds, not the unrotated box). */
 function localForBounds(width: number, height: number, angle: number): { readonly w: number; readonly h: number } | null {
     const c = Math.abs(Math.cos(angle)), s = Math.abs(Math.sin(angle)), det = c * c - s * s;
     if (Math.abs(det) < 1e-9) return null;
@@ -60,8 +57,6 @@ function localForBounds(width: number, height: number, angle: number): { readonl
     return w > 0 && h > 0 && Number.isFinite(w) && Number.isFinite(h) ? { w, h } : null;
 }
 
-// C8: x/y and w/h describe the unrotated rectangle; rotation is absolute about
-// its centre. Exact local boxes come from the same projection as canvas_shapes.
 export function planAgentPlacement(node: Node, op: UpdateOp, context: PlacementContext): { readonly ops: readonly NodeSetOp[]; readonly notes: readonly string[] } {
     const oldPage = rootPage(context, node), root = isSheetParent(context.doc, node.parent);
     if (context.doc.kind !== 'whiteboard' && op.page !== undefined && !root && op.page - 1 !== oldPage) throw new AgentOpRefused('move the parent to change a nested shape’s page');
@@ -116,7 +111,6 @@ export function planAgentPlacement(node: Node, op: UpdateOp, context: PlacementC
                 { t: 'set', id: node.id, key: 'end', value: end }, { t: 'set', id: node.id, key: 'bend', value: bend });
         } else {
             if (!isBox(node)) throw new AgentOpRefused('this shape cannot be resized by the agent');
-            // A rectangle's w/h are its axis-aligned bounds after the rotation this op leaves it at.
             const rectangular = node.kind !== 'figure' || node.shape === 'rectangle';
             const angleAfter = op.rotation !== undefined ? (op.rotation % 360) * Math.PI / 180
                 : parentTransform(context, node, target.page).angle + node.rotation;
@@ -144,7 +138,6 @@ export function planAgentPlacement(node: Node, op: UpdateOp, context: PlacementC
     const rotation = op.rotation === undefined ? node.rotation : normalize((op.rotation % 360) * Math.PI / 180 - parent.angle);
     if (op.rotation !== undefined) ops.push({ t: 'set', id: node.id, key: 'rotation', value: rotation });
     const raw = { x: op.x ?? oldX, y: op.y ?? oldY };
-    // Clamp the whole laid-out box, not its corner, so a moved shape cannot hang off its page.
     const desired = op.x !== undefined || op.y !== undefined || op.page !== undefined ? target.clamp(raw, newBox) : raw;
     const changeX = op.x !== undefined || op.page !== undefined, changeY = op.y !== undefined || op.page !== undefined;
     if ((!changeX || desired.x === raw.x) && (!changeY || desired.y === raw.y)) target.notes.length = 0;

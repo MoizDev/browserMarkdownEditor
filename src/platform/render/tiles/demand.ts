@@ -10,7 +10,6 @@ export interface TileDemand {
     readonly key: TileKey;
     readonly class: TileDemandClass;
     readonly distanceToViewportCentre: number;
-    /** Lower is preferred: the producer can bias equal-distance work toward travel. */
     readonly travelBias: number;
     readonly enqueuedAt: number;
     readonly visibleSince: number | null;
@@ -36,7 +35,6 @@ function validateDemand(demand: TileDemand, now: number): void {
 function compare(a: TileDemand, b: TileDemand, now: number): number {
     const aged = (demand: TileDemand) => demand.class !== 'prefetch' && demand.visibleSince !== null &&
         now - demand.visibleSince >= POLICY.demandAgePromotionMs;
-    // Vr-lead §5.7 ruling: age promotes within a class only; sharpening never jumps a hole.
     return priority(a.class) - priority(b.class) || Number(aged(b)) - Number(aged(a)) ||
         a.distanceToViewportCentre - b.distanceToViewportCentre || a.travelBias - b.travelBias ||
         a.enqueuedAt - b.enqueuedAt || stable(tileDemandId(a), tileDemandId(b));
@@ -55,9 +53,6 @@ function unique(demands: readonly TileDemand[], now: number): Map<string, TileDe
 
 interface Turn { paneId: string; used: number }
 
-/** One decision per dispatch, not a precomputed drain order (§5.7:571–573).
- * The host supplies only queued entries and revalidates eligibility again after every completion.
- */
 export class TileDemandOrder {
     private readonly turns = new Map<TileDemandClass, Turn>();
 
@@ -93,11 +88,9 @@ export interface ReconciledTileDemand {
     readonly queued: readonly TileDemand[];
     readonly retainedRunning: readonly TileDemand[];
     readonly cancelQueued: readonly TileDemand[];
-    /** Best effort only; the host still owns each eventual reply/transfer until it closes/adopts it. */
     readonly cancelRunning: readonly TileDemand[];
 }
 
-/** Equal keys survive camera epochs and rename; source/content changes are different keys. */
 export function reconcileTileDemand(queued: readonly TileDemand[], running: readonly TileDemand[],
     desired: readonly TileDemand[], now: number, stillUseful: (running: TileDemand) => boolean): ReconciledTileDemand {
     const oldQueued = unique(queued, now);
@@ -116,7 +109,6 @@ export function reconcileTileDemand(queued: readonly TileDemand[], running: read
     const cancelRunning: TileDemand[] = [];
     for (const [id, demand] of oldRunning) {
         if (wanted.has(id)) continue;
-        // The consumer revalidates content/source and useful stand-in regions, not camera epoch.
         if (stillUseful(demand)) retainedRunning.push(demand);
         else cancelRunning.push(demand);
     }
@@ -131,7 +123,6 @@ export interface TileMotionObservation {
     readonly now: number;
     readonly x: number;
     readonly y: number;
-    /** Camera zoom * renderDpr; a pinch can change scale without moving the camera origin. */
     readonly scale: number;
     readonly phase: 'idle' | 'pan' | 'pinch' | 'fling' | 'end';
 }
@@ -141,15 +132,12 @@ export interface TileMotionDecision {
     readonly requestExact: boolean;
     readonly velocity: Readonly<{ x: number; y: number }>;
     readonly direction: Readonly<{ x: number; y: number }>;
-    /** Cancel queued speculation now, even when the next pinch-level demand set is coalesced. */
     readonly reversed: boolean;
-    /** Scheduler-owned wakeup; this module never creates a timer or a frame loop. */
     readonly wakeAt: number | null;
 }
 
 interface MotionSample { x: number; y: number; now: number }
 
-/** Observe the shared frame's actual camera; don't build a second input sampler (§5.7:573–575). */
 export class TileMotionDemand {
     private samples: MotionSample[] = [];
     private lastFrame = -1;
@@ -205,7 +193,6 @@ export class TileMotionDemand {
     }
 }
 
-/** Velocity is world units/second, matching the supplied world viewport (§5.7:573). */
 export function tilePrefetchRegion(viewport: Readonly<Rect>, velocity: Readonly<{ x: number; y: number }>,
     lowCoverage = false, direction: Readonly<{ x: number; y: number }> = velocity): Rect {
     validateTileRect(viewport);
@@ -227,7 +214,6 @@ export function tilePrefetchRegion(viewport: Readonly<Rect>, velocity: Readonly<
     return region;
 }
 
-/** Host owns the real deadline/healthy-worker retry; merely awaiting a reply is not frame work. */
 export function tileWatchdogAction(startedAt: number, now: number, failures: number,
     timeoutMs: number = POLICY.tileWatchdogMs): 'waiting' | 'retry' | 'failed' {
     if (![startedAt, now, timeoutMs].every(Number.isFinite) || now < startedAt || timeoutMs <= 0 ||

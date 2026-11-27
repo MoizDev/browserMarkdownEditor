@@ -4,8 +4,6 @@ import type { PdfSelection } from './selection';
 export const MAX_COPY_UTF16_UNITS = 16 * 1024 * 1024 / 2;
 export const COPY_TOO_LARGE = 'Selection too large to copy (over 16 MiB of text); use Read extracted text.';
 
-/** Clipboard-only compatibility folding. Canonical text and find offsets are
- * never changed; untouched mathematical and compatibility characters stay so. */
 export function normalizeForClipboard(text: string): string {
     let out = '';
     for (const ch of text) {
@@ -24,7 +22,6 @@ export type CopyResult =
     | { kind: 'missing'; pages: number[] }
     | { kind: 'too-large'; message: string };
 
-/** Pure synchronous gather; the host requests missing pages, then calls again. */
 export function copySelection(selection: PdfSelection, pageCount: number, pages: ReadonlyMap<number, string>): CopyResult {
     if (!Number.isSafeInteger(pageCount) || pageCount < 0) return { kind: 'missing', pages: [] };
     if (!pageCount) return { kind: 'ready', text: '' };
@@ -48,8 +45,6 @@ export function copySelection(selection: PdfSelection, pageCount: number, pages:
     const text = normalizeForClipboard(chunks.join(''));
     return text.length > MAX_COPY_UTF16_UNITS ? { kind: 'too-large', message: COPY_TOO_LARGE } : { kind: 'ready', text };
 }
-/** Cached-only agent report; an uncached gap is explicit rather than silently
- * pretending that the following page was adjacent. */
 export function cachedSelectionText(selection: PdfSelection, pageCount: number, pages: ReadonlyMap<number, string>, limit = 20_000): { text: string; incomplete: boolean } {
     if (!Number.isSafeInteger(pageCount) || pageCount <= 0) return { text: '', incomplete: false };
     const range = selectionRange(selection);

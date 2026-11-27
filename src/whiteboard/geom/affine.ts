@@ -20,7 +20,6 @@ export function singularValues(m: Affine): readonly [number, number] {
     const smallest = Math.abs(a * d - b * c) * scale / ((sum + difference) / 2);
     return [largest, smallest];
 }
-// Refuse poorly conditioned inverses; callers use forward geometry instead.
 export function inverse(m: Affine, maxCondition: number): Affine | null {
     if (!(maxCondition >= 1) || !Number.isFinite(maxCondition)) throw new RangeError('Invalid conditioning limit');
     const [largest, smallest] = singularValues(m);

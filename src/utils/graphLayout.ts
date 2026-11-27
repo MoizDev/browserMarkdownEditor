@@ -1,10 +1,4 @@
-// Doubles and the original a<b update order are intentional: small vaults keep
-// today's trajectories, not just a visually similar force law.
 export const GRAPH_EXACT_LIMIT = 600;
-// Unqualified design reading: all5000 nodes over steps1–10, nine geometries.
-// |F_bh-F_exact| / sum_j|f_ij| avoids ill-conditioned cancelling net forces:
-// theta0.7 p95=1.47–1.75%;0.9=2.54–3.26%. Core selected0.7, retaining600 exact.
-// Node26 CPU was ~8ms/5000 at0.7, not a Chromium-worker time claim.
 export const GRAPH_THETA = 0.7;
 const REPULSION = 16000;
 const MIN_D2 = 100;
@@ -47,8 +41,6 @@ function spreadBits(value: number): number {
     return (value | (value << 1)) & 0x55555555;
 }
 
-/** Rebuilt in retained storage; depth-limited buckets also handle all-coincident
- *  inputs without infinite subdivision. Child order and bucket order are fixed. */
 export class RepulsionTree {
     private capacity = 0;
     private used = 0;
@@ -66,7 +58,6 @@ export class RepulsionTree {
     private codes = new Uint32Array(0);
     private radix = new Uint32Array(256);
     private pointCount = -1;
-    // A depth-first quadtree walk has at most 1+3*depth pending siblings.
     private stack = new Int32Array(1 + 3 * MAX_DEPTH);
 
     private cell(left: number, top: number, width: number): number {
@@ -89,9 +80,6 @@ export class RepulsionTree {
         return c;
     }
 
-    // Reuse the partition only while every body still belongs to its leaf.
-    // Centres are nevertheless recomputed every step: stale mass would change
-    // the force and could make a containing cell look like a distant one.
     private refresh(x: Float64Array, y: Float64Array): boolean {
         if (x.length !== this.pointCount || !this.used) return false;
         for (let c = 0; c < this.used; c++) {
@@ -140,8 +128,6 @@ export class RepulsionTree {
             this.codes[i] = (spreadBits(px) | (spreadBits(py) << 1)) >>> 0;
             this.order[i] = i;
         }
-        // Stable four-byte radix order groups nearby bodies without allocating
-        // or changing their public indices (the coincidence rule uses those).
         let order = this.order, scratch = this.orderScratch;
         for (let shift = 0; shift < 32; shift += 8) {
             this.radix.fill(0);
@@ -204,8 +190,6 @@ export class RepulsionTree {
                         if (i === j) continue;
                         let dx = x[i] - x[j], dy = y[i] - y[j];
                         let d2 = dx * dx + dy * dy;
-                        // The array-index fallback sets the magnitude too. For
-                        // indices20 apart it is 16000/401, not 16000/100.
                         if (d2 < 0.01) { dx = i - j; dy = i < j ? 1 : -1; d2 = dx * dx + 1; }
                         const dist = Math.sqrt(d2);
                         const force = (REPULSION / Math.max(d2, MIN_D2)) * alpha;
@@ -218,8 +202,6 @@ export class RepulsionTree {
                 const w = this.width[c];
                 const bx = Math.max(this.left[c] - x[i], 0, x[i] - (this.left[c] + w));
                 const by = Math.max(this.top[c] - y[i], 0, y[i] - (this.top[c] + w));
-                // A containing cell always opens. So does a cell touching the
-                // near-coincidence zone: its COM must not hide pair fallbacks.
                 if (bx * bx + by * by >= 0.01 && w * w < theta2 * d2) {
                     const dist = Math.sqrt(d2);
                     const force = (REPULSION * this.count[c] / Math.max(d2, MIN_D2)) * alpha;
@@ -232,7 +214,6 @@ export class RepulsionTree {
     }
 }
 
-/** Plain data/math shared by the main-thread host and the layout worker. */
 export class GraphLayout implements LayoutPoints {
     ids: readonly string[] = [];
     index = new Map<string, number>();

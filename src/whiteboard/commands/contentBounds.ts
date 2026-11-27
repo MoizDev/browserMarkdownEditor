@@ -12,15 +12,10 @@ import { acquireBoardGeometryScope } from './geometryScope';
 export interface ContentRect { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
 export interface ContentBoundsOptions {
     readonly signal?: AbortSignal;
-    /** Throws when the caller's view of the board has moved on; every await re-checks it. */
     readonly fence: () => void;
     readonly cooperate: () => Promise<void>;
 }
 
-/** The fit target for a set of roots: each root's exact ink box, cached first.
- * The scene's cached exact bounds answer every root they can; only a root the cache cannot answer exactly is realised
- * through the scene (which then caches it), and a root the scene still cannot bound is measured by the geometry scope.
- * Zoom to fit, Back to content, Zoom to selection and the View menu all read this one function, so they cannot diverge. */
 export async function contentBounds(runtime: BoardRuntime, ids: readonly NodeId[], options: ContentBoundsOptions): Promise<ContentRect | null> {
     if (!ids.length) return null;
     const scene = runtime.scene ?? await runtime.ready;
@@ -36,7 +31,6 @@ export async function contentBounds(runtime: BoardRuntime, ids: readonly NodeId[
         if ((i & 255) === 255) await options.cooperate();
     }
     const unresolved: NodeId[] = [];
-    // One publication for every miss (ensureExactBoundsMany): one per node restarted the viewer's paint per node.
     options.fence();
     const exact = misses.length ? await scene.ensureExactBoundsMany(misses, options.signal) : null;
     options.fence();
@@ -57,15 +51,12 @@ export async function contentBounds(runtime: BoardRuntime, ids: readonly NodeId[
     return x0 === Infinity ? null : { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
 }
 
-/** The clearance a fit leaves around its target, in CSS px: a paper sheet keeps its gutters, a board keeps 64px per side
- * (at most 14% of an axis on a narrow view). */
 export function fitEdges(doc: BoardDoc, view: Viewport, paper: boolean): ViewportInsets {
     if (paper) return { ...boardCameraInsets(doc) };
     const edge = Math.min(64, view.width * .14), vertical = Math.min(64, view.height * .14);
     return { left: edge, right: edge, top: vertical, bottom: vertical };
 }
 
-/** The largest zoom at which `box` fits inside the view minus `edges`; a zero-size target is not zoomed past 1. */
 export function fitZoom(box: ContentRect, view: Viewport, edges: ViewportInsets): number {
     const width = Math.max(1, view.width - edges.left - edges.right), height = Math.max(1, view.height - edges.top - edges.bottom);
     const zx = box.width > 0 ? width / box.width : Infinity, zy = box.height > 0 ? height / box.height : Infinity;
@@ -73,20 +64,17 @@ export function fitZoom(box: ContentRect, view: Viewport, edges: ViewportInsets)
     return Number.isFinite(target) && target > 0 ? target : 1;
 }
 
-/** The camera that centres `box` in the area the edges leave, at zoom `z`. */
 export function centredCamera(box: ContentRect, z: number, view: Viewport, edges: ViewportInsets): Camera {
     const sx = (edges.left + view.width - edges.right) / 2, sy = (edges.top + view.height - edges.bottom) / 2;
     return { x: box.x + box.width / 2 - sx / z, y: box.y + box.height / 2 - sy / z, z };
 }
 
-/** The fit a target gets, for every route: natural (1:1, no clearance) or the largest zoom that fits with the clearance. */
 export function fitTarget(doc: BoardDoc, view: Viewport, box: ContentRect, options: { readonly paper: boolean; readonly natural: boolean }): { readonly z: number; readonly edges: ViewportInsets } {
     if (options.natural) return { z: 1, edges: { left: 0, right: 0, top: 0, bottom: 0 } };
     const edges = fitEdges(doc, view, options.paper);
     return { z: fitZoom(box, view, edges), edges };
 }
 
-/** The union of a paper sheet's page stack, or null when it has none. */
 export function pageStackBounds(doc: BoardDoc): ContentRect | null {
     const stack = boardPageStack(doc.host);
     if (!stack?.rects.length) return null;

@@ -13,11 +13,8 @@ import type { DocumentSessionStore } from '../utils/documentSessions';
 import type { NativePolicy } from './types';
 import { loadChunk } from '../platform/chunkLoad';
 
-// The per-process counter behind the closed PDF agent's document identities (see
-// closedPdfAccess): a module-level sequence, so it never repeats within a page load.
 let closedPdfAgentSeq = 0;
 
-/** The App-scope values `useAgentCanvasAccess` reads, named as App names them. */
 export interface UseAgentCanvasAccessDeps {
   rootHandle: FileSystemContextValue['rootHandle'];
   rootHandleRef: React.RefObject<FileSystemDirectoryHandle | null>;
@@ -109,7 +106,6 @@ export function useAgentCanvasAccess(deps: UseAgentCanvasAccessDeps) {
       verifyVaultFileIdentity, bufferPathIdsRef, rootHandleRef, tabsRef,
     ]);
 
-  /** A closed board's embedded picture, read from its own folder's `.Assets` (the same reader recovery uses). */
   const readClosedAgentCanvasMedia = useCallback<NonNullable<AgentHostDeps['readClosedCanvasMedia']>>(async (path, handle, entry, signal) =>
     (await loadChunk(() => import('./agentCanvas'))).readClosedAgentCanvasMedia({
       rootHandleRef, getVaultActivation, readBoardAsset, resolveVaultFile,

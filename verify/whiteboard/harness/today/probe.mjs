@@ -2,7 +2,6 @@ import { until, frames } from '../runtime.mjs';
 import { decodeNodes, normalizeSaved } from '../saved.mjs';
 import { assertProbeVersion } from './version.mjs';
 
-// Reference only. This reads the already-mounted editor; no mutation/setter is used.
 export function installProbe() {
   if (window !== window.top || !window.__harness) return;
   const state = window.__harness;
@@ -24,8 +23,6 @@ export function installProbe() {
   };
   const json = (value, name, depth = 0) => {
     if (depth > 64) fail(name, 'JSON nesting exceeds the observation bound');
-    // Optional record properties can be absent in this known schema. Required
-    // editor/method/record members are checked separately, never defaulted.
     if (value === null || ['undefined', 'string', 'boolean'].includes(typeof value)) return;
     if (typeof value === 'number') { number(value, name); return; }
     if (typeof value !== 'object') fail(name, 'expected JSON data, not a missing/member/function value');
@@ -89,8 +86,6 @@ export function installProbe() {
         continue;
       }
       if (owner(root[key]) !== path) continue;
-      // A loading container is not an object-shape fault. Once the actual
-      // canvas exists, a missing provider/member must not become an empty read.
       if (!root.querySelector('.tl-canvas')) throw Error(`PROBE_NOT_MOUNTED ${path}: canvas is still loading`);
       let editor;
       for (let fiber = root[key], i = 0; fiber && i < 120 && !editor; fiber = fiber.return, i++) {
@@ -280,7 +275,6 @@ export function probeHelpers(h) {
   const settled = new Set();
   const read = async (path, operation) => {
     if (typeof path !== 'string' || !path || path.startsWith('/') || path.split('/').includes('..')) throw Error('PROBE_PATH_ASSERT: a vault-relative canvas path is required');
-    // Readiness is checked through public DOM before touching the provider.
     if (!await page.locator('.tl-container .tl-canvas').count()) throw Error(`PROBE_NOT_MOUNTED ${path}: no mounted canvas`);
     const evidence = await assertProbeVersion(h);
     return page.evaluate(({ path, operation, evidence }) => window.__harness.readEditor(path, operation, evidence), { path, operation, evidence });

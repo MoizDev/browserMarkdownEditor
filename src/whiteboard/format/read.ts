@@ -73,7 +73,7 @@ async function* lines(source: ByteSource, state: StreamState, options: ReadOptio
                 error = 'Invalid UTF-8 in native input';
             }
         }
-        parts = []; // Release byte copies before the caller validates/admits a large stroke.
+        parts = [];
         const value = { text, line, byteOffset: offset, byteLength: length, error };
         offset += length + 1;
         line++;
@@ -146,7 +146,6 @@ async function retainedMedia(draft: Pick<ReadDraft, 'input'>, cooperate?: () => 
         if (cooperate && (++steps & 255) === 0) await cooperate();
     }
     for (const entry of input.media ?? []) {
-        // R-W40: its own metadata cannot keep a now-unreferenced media entry alive.
         await scan(extRawValues(entry.ext), entry.id);
         if (cooperate && (++steps & 255) === 0) await cooperate();
     }
@@ -297,9 +296,6 @@ async function headerLine(text: string, cooperate?: () => Promise<void>): Promis
     } catch (error) { if (!(error instanceof JsonReadError)) throw error; return null; }
 }
 
-/** Pure native admission. The host retains its original File/bytes whenever readOnly is true,
- * and owns every sample lease until transferring the repaired draft into a document or releasing it.
- * Filename/kind never authorizes a legacy fallback after a native format marker was recognized. */
 export async function readNative(source: ByteSource, options: ReadOptions): Promise<NativeReadResult> {
     const state: StreamState = {
         bytesRead: 0, whitespaceOnly: true, fallback: [], fallbackBytes: 0,
@@ -359,8 +355,6 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
             }
             if (!text) continue;
             if (!streaming) {
-                // Only the root's first nonempty line can open the line-oriented grammar. Never
-                // mistake a compact nested object in a pretty legacy snapshot for an envelope.
                 if (rootLine) {
                     rootLine = false;
                     native ||= cooperate ? await hasNativeMarkerIncremental(text, cooperate) : hasNativeMarker(text);
@@ -408,16 +402,12 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
         else throw error;
     }
     if (!native && state.probeBytes) {
-        // A prefix may end inside a multi-byte character. This probe only recognizes the marker;
-        // full line/fallback decoding is fatal and remains the authority for UTF-8 admission.
         const probe = new TextDecoder().decode(state.probe.subarray(0, state.probeBytes));
         native = cooperate && !fatal ? await hasNativeMarkerIncremental(probe, cooperate) : hasNativeMarker(probe);
     }
     state.probe = new Uint8Array(0);
     if (!fatal && state.whitespaceOnly) return result('empty', null, true);
     if (!fatal && !recordLines && state.fallback !== null) {
-        // Only the no-record-lines case can use whole-envelope parsing. Lexical spans, not
-        // JSON.parse(envelope), keep block/point limits ahead of materializing their arrays.
         try {
             let text = await decode(state.fallback, cooperate);
             state.fallback = null;
@@ -429,7 +419,7 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
             const root = cooperate ? await parseJsonIncremental(text, cooperate) : parseJson(text);
             if (!marked) return result('other', null, true);
             native = true;
-            records = new Records(safeOptions); // Failed line guesses admitted no samples.
+            records = new Records(safeOptions);
             await records.open(root);
             const array = (cooperate ? await root.fieldMapIncremental(cooperate) : root.fieldMap()).get('records');
             if (!array || array.kind !== 'array') throw new JsonReadError('syntax', 'Native records must be an array', root.start);
@@ -449,7 +439,6 @@ export async function readNative(source: ByteSource, options: ReadOptions): Prom
                 const position = { ordinal: records.recordsSeen, line, byteOffset: offset + bomBytes, byteLength: length };
                 await records.record(item, position, true);
                 if (cooperate) await cooperate();
-                // Advance only to the start: the next span's prefix includes this record once.
                 cursor = item.start;
             }
             closed = true;

@@ -15,11 +15,6 @@ import type { NativePolicy } from './types';
 import type { UseAgentCanvasAccessDeps } from './useAgentCanvasAccess';
 import { loadChunk } from '../platform/chunkLoad';
 
-/**
- * The agent's hands on canvases: a live board's native runtime, and a closed
- * board's source and media. Only an agent tool call reaches these, so they load
- * with the first one (useAgentCanvasAccess), never at startup.
- */
 export interface AgentCanvasDeps extends UseAgentCanvasAccessDeps {
   closedCanvasVersions: ReturnType<typeof createClosedCanvasVersions>;
   closedCanvasReads: React.MutableRefObject<Set<{ root: FileSystemDirectoryHandle; activation: number; path: string; controller: AbortController }>>;
@@ -42,11 +37,7 @@ export async function ensureNativeAgentRuntime(deps: Pick<AgentCanvasDeps,
   ensureCanvasBridge(tab);
   const identity = nativeCanvasHost.identity(tab.id);
   if (!identity || identity.kind !== (kind === 'pdf' ? 'pdfInk' : kind)) throw new DOMException('Canvas session ended', 'AbortError');
-  // pinBoardSource is a drawing/notebook buffer pin; a PDF cold source never uses it (the host refuses pdfInk).
   const pinned = kind === 'pdf' || nativeCanvasHost.session(tab.id) ? undefined : nativeCanvasHost.pinBoardSource(identity);
-  // Cold PDF source: one synchronous snapshot before the first await (buffer identity, revision, source and the
-  // verified disk baseline object). pdfPinHolds rechecks it after the import, after prepare and inside take;
-  // any change disposes the prepared source and refuses. A dirty or changed buffer is never read from disk.
   const pinCleanPdf = () => {
     const buffer = documentBuffers.get(tab.id), baseline = getBaseline(tab.id);
     if (buffer && buffer.revision > buffer.savedRevision) return { ok: false as const, message: 'Save the PDF before the agent reads or edits its ink.' };
@@ -69,8 +60,6 @@ export async function ensureNativeAgentRuntime(deps: Pick<AgentCanvasDeps,
   if (!nativeCanvasHost.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
   const reason = 'This native canvas is currently available in read-only mode.';
   const onError = (error: unknown) => console.error('Native canvas session failed:', error);
-  // Cold PDF source: only the already-native ink is admitted (a plain PDF is refused, never annotated),
-  // no legacy conversion, and no notebook handoff. A dirty document is refused rather than read from disk.
   const preparePdfAgentSource = async (prepareSignal: AbortSignal) => {
     if (!pdfPin?.ok) throw new Error(pdfPin?.message ?? 'The PDF source is unavailable.');
     const pin = pdfPin;
@@ -81,9 +70,7 @@ export async function ensureNativeAgentRuntime(deps: Pick<AgentCanvasDeps,
       legacyConversion: false, requireExistingNative: true, onError,
       onNotice: announce, onHistoryLimit: () => announce('The board history limit was reached.') }, prepareSignal);
     if (!pdfPinHolds(pin)) { await prepared.dispose(); throw changed(); }
-    // ensureNativeBoard calls take inside attachCanvasSession, so this covers the attachment too.
     return { ...prepared, take(owner: Parameters<typeof prepared.take>[0], isLiveOwner: Parameters<typeof prepared.take>[1], readOnlyReason: Parameters<typeof prepared.take>[2]) {
-      // No dispose here: ensureNativeBoard's finally awaits prepared.dispose when take never ran.
       if (!pdfPinHolds(pin)) throw changed();
       return prepared.take(owner, isLiveOwner, readOnlyReason);
     } };
@@ -120,8 +107,6 @@ export async function ensureNativeAgentRuntime(deps: Pick<AgentCanvasDeps,
       const pending = runtime.media.get(entry.id);
       if (pending) return pending;
       if (kind === 'pdf') {
-        // A PDF's embedded media lives only in its owned source, read through the lease-checked facade
-        // (same as the view and clipboard). It never goes through the drawing asset path below.
         const { getPdfInkSourceState } = await loadChunk(() => import('../whiteboard/host/preparePdfInkSession'));
         const state = getPdfInkSourceState(identity.documentId);
         if (!state) throw new DOMException('Canvas session ended', 'AbortError');
@@ -163,7 +148,6 @@ export async function acquireClosedAgentCanvas(deps: Pick<AgentCanvasDeps,
   } catch (error) { closedCanvasReads.current.delete(read); throw error; }
 }
 
-/** A closed board's embedded picture, read from its own folder's `.Assets` (the same reader recovery uses). */
 export async function readClosedAgentCanvasMedia(deps: Pick<AgentCanvasDeps,
   'rootHandleRef' | 'getVaultActivation' | 'readBoardAsset' | 'resolveVaultFile'
 >, ...[path, handle, entry, signal]: Parameters<NonNullable<AgentHostDeps['readClosedCanvasMedia']>>): ReturnType<NonNullable<AgentHostDeps['readClosedCanvasMedia']>> {

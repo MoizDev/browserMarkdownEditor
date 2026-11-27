@@ -12,8 +12,6 @@ function matchLine(line: string, re: RegExp): string {
     return `${at > 0 ? '…' : ''}${line.slice(at, at + MAX_MATCH_LINE)}…`;
 }
 
-// Only the worker imports this module as code. In particular filename tests and the second
-// snippet-position exec stay here: moving just the content test would leave two UI freeze paths.
 export function createMatching(config: MatchConfig) {
     const escaped = config.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp(config.regex ? config.query : escaped, config.caseSensitive ? '' : 'i');

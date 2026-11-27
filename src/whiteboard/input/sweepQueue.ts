@@ -17,8 +17,6 @@ export interface SweepQueueServices {
 const SEGMENTS_PER_BLOCK = 1024
 interface SegmentBlock { readonly coordinates: Float64Array; readonly flags: Uint8Array }
 
-/** Exact input is retained in compact blocks until completion: a changed scene
- * restarts the entire path instead of committing a mixture of revisions. */
 export class SweepQueue {
   private readonly blocks: SegmentBlock[] = []
   private readonly visible = new Set<NodeId>()

@@ -6,7 +6,6 @@ export type PreparedOwnedPdfInk =
         readonly outerFingerprint?: string; isCurrent?(): boolean; dispose(): Promise<void> }
     | { readonly kind: 'ready'; take(): PdfEditableInkSource; dispose(): Promise<void> };
 
-/** The pane cancels preparation, but an accepted source belongs to the App session. */
 export async function prepareOwnedPdfInk(
     options: Omit<PdfInkAcquisitionOptions, 'signal'>, paneSignal: AbortSignal,
 ): Promise<PreparedOwnedPdfInk> {

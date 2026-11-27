@@ -10,7 +10,6 @@ import type { Arrowhead, Dash, Fill, FigureShape, Font, HAlign, Size, Swatch, Te
 import type { BoardSession } from '../session/BoardSession';
 import { clampPenScale } from './penWidth';
 
-/** The nodes a style applies to: groups give way to their children, and locked nodes are never restyled. */
 export function selectedNodes(doc: BoardDoc, selected: readonly NodeId[]): Node[] {
     const stack = [...selected];
     const seen = new Set<NodeId>();
@@ -42,15 +41,12 @@ function apply(session: BoardSession, label: string, ops: readonly Op[], grouped
 
 interface StyleGesture { readonly label: string; readonly release: () => void }
 
-/** Style changes. Each one is one undo step, except the steps inside a gesture (a slider drag, a held arrow key, a
- * swatch scrub), which share one step until the gesture ends. Next-shape defaults are history-silent. */
 export class BoardStyleCommands {
     private gesture: StyleGesture | null = null;
     constructor(
         private readonly session: BoardSession,
         private readonly selection: () => readonly NodeId[],
         private readonly activeTool: () => string,
-        /** A figure's label must stay inside its figure after a size or width change (R-9): the caller measures it. */
         private readonly figureGrowY: (node: Readonly<FigureNode>) => number | undefined = () => undefined,
     ) {}
 
@@ -59,15 +55,12 @@ export class BoardStyleCommands {
         if (growY !== undefined && growY !== node.growY) ops.push({ t: 'set', id: node.id, key: 'growY', value: growY });
     }
 
-    /** A different action ends the open gesture first, so it never joins the gesture's undo step. */
     private commit(label: string, ops: readonly Op[]): void {
         if (this.gesture && this.gesture.label !== label) this.end();
-        // Undo or Redo during a gesture closes its group; the rest of the gesture opens a new one, not one step per event.
         if (this.gesture && !this.session.history.isOpen) this.session.history.open(this.gesture.label);
         apply(this.session, label, ops, this.gesture !== null);
     }
 
-    /** Opens one undo step that every change until `end` shares. */
     begin(label: string): void {
         if (this.gesture || this.session.isReadOnly) return;
         const release = this.session.beginGesture();
@@ -147,7 +140,6 @@ export class BoardStyleCommands {
         this.commit('Change colour', ops);
     }
 
-    /** The opacity every selected node shares, or null when none is selected or they differ. */
     currentOpacity(): number | null {
         const values = selectedNodes(this.session.doc, this.selection()).map(node => node.opacity);
         return values.length && values.every(value => value === values[0]) ? values[0] : null;
@@ -190,7 +182,6 @@ export class BoardStyleCommands {
         this.commit('Change font', ops);
     }
 
-    /** Text's own horizontal alignment: a text node has no label alignment, so the two rows never write each other's key. */
     setTextAlignment(textAlign: TextAlign): void {
         const doc = this.session.doc, ops: Op[] = [];
         if (doc.ui.next.textAlign !== textAlign) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, textAlign } });
@@ -200,7 +191,6 @@ export class BoardStyleCommands {
         this.commit('Change alignment', ops);
     }
 
-    /** A figure's or note's label alignment, the horizontal one. */
     setLabelAlignment(align: HAlign): void {
         const doc = this.session.doc, ops: Op[] = [];
         if (doc.ui.next.align !== align) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, align } });
@@ -221,7 +211,6 @@ export class BoardStyleCommands {
         this.commit('Change vertical alignment', ops);
     }
 
-    /** The geo shape of selected figures. With nothing selected the figure tool's own variant is the next shape. */
     setShape(shape: FigureShape): void {
         const ops: Op[] = [];
         const doc = this.session.doc;

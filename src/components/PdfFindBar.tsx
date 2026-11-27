@@ -32,8 +32,6 @@ const cancelled = (error: unknown) => isCancellation(error) || error instanceof 
 function mergeHits(a: readonly PdfFindHit[], b: readonly PdfFindHit[]) {
     return [...new Map([...a, ...b].map(hit => [keyOf(hit), hit])).values()].sort((x, y) => x.page - y.page || x.from - y.from);
 }
-/** Known neighbours can straddle the scan's still-unvisited gap. Document-order
- * array wrapping alone would jump over that gap before it has been searched. */
 function canStep(from: PdfFindHit, to: PdfFindHit, direction: 1 | -1, progress: PdfFindProgress, start: number) {
     if (progress.done) return true;
     if (from.page === to.page) return direction === 1 ? to.from > from.from : to.from < from.from;
@@ -120,8 +118,6 @@ function PdfFindBar(props: PdfFindBarProps, forwarded: React.ForwardedRef<PdfFin
                         if (hit.page > start.current.page || await live.current.atOrAfter(hit, start.current, task.signal)) { current.current = hit; break; }
                         if (task.signal.aborted || serial.current !== id) return;
                     }
-                    // A before-position hit on the starting page is last in
-                    // the wrap, not a reason to jump before the forward scan ends.
                     if (!current.current && (batch.done || batch.pagesDone >= batch.pagesTotal - start.current.page && data.current.hits.some(hit => hit.page < start.current.page))) current.current = data.current.hits[0];
                 }
                 if (task.signal.aborted || serial.current !== id || composingRef.current) return;
@@ -186,8 +182,6 @@ function PdfFindBar(props: PdfFindBarProps, forwarded: React.ForwardedRef<PdfFin
         if (!props.isVisible || !open) live.current.publish([], undefined);
         else live.current.publish(data.current?.hits ?? [], current.current);
     }, [props.isVisible, open]);
-    // Only the focused pane owns Escape outside the input. The input consumes
-    // its own Escape before other floating surfaces, like note search does.
     useEffect(() => open && props.isVisible && props.isActive ? dismissOnEscape(close) : undefined, [open, props.isVisible, props.isActive, close]);
     useEffect(() => () => { stopTimer(); scan.current?.abort(); reveal.current?.abort(); live.current.publish([], undefined); }, [stopTimer]);
     function change(value: string) { queryRef.current = value; setQuery(value); if (!composingRef.current) live.current.memory.query = value; }

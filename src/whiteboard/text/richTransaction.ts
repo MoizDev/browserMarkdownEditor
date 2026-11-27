@@ -15,7 +15,6 @@ export interface RichSpliceOperation {
     readonly from: number;
     readonly to: number;
     readonly insert: RichFragment;
-    /** A block-aligned replacement, including an empty block, for history or block formatting. */
     readonly wholeBlocks?: true;
 }
 export interface RichTransactionResult {
@@ -23,7 +22,6 @@ export interface RichTransactionResult {
     readonly selection: RichSelection;
     readonly inverse: readonly RichSpliceOperation[];
     readonly inverseSelection: RichSelection;
-    /** Null means an operation changed formatting/metadata but not the plain projection. */
     readonly maps: readonly (TextSpliceMap | null)[];
 }
 
@@ -157,12 +155,10 @@ function* validationSteps(fragment: RichFragment): Generator<void, void> {
     if (immutable) validFragments.add(fragment);
 }
 
-/** Validate only the incoming immutable fragment, never rescan the whole document on each edit. */
 export function validateRichFragment(fragment: RichFragment): void {
     finishTextSteps(validationSteps(fragment));
 }
 
-/** Caller owns immutability across yields; only deeply frozen fragments are cached for later apply. */
 export function validateRichFragmentCooperative(fragment: RichFragment, options: PlainTextOptions): Promise<void> {
     return finishTextStepsCooperative(validationSteps(fragment), options);
 }
@@ -174,11 +170,6 @@ function selectionMap(before: RichText, operation: RichSpliceOperation): TextSpl
         insertedLength: local.newTo - local.from } : null;
 }
 
-/**
- * Apply a series in evolving coordinates. Every intermediate is private until
- * all operations succeed; inverse snapshots retain the original block objects,
- * including each independent unknown carrier. No history or host state is touched.
- */
 export function applyRichTransaction(initial: RichText, operations: readonly RichSpliceOperation[], selection: RichSelection,
     affinity: TextAffinity = 'after'): RichTransactionResult {
     if (operations.length > 10_000) throw new RangeError('Rich transaction has too many operations');
@@ -199,7 +190,6 @@ export function applyRichTransaction(initial: RichText, operations: readonly Ric
     return { text, selection: current, inverse: inverses, inverseSelection, maps };
 }
 
-/** Build a complete multi-op result privately, fencing the source after every scheduler yield. */
 export async function applyRichTransactionCooperative(initial: RichText, operations: readonly RichSpliceOperation[], selection: RichSelection,
     options: FragmentSnapshotOptions, affinity: TextAffinity = 'after'): Promise<RichTransactionResult> {
     if (operations.length > 10_000) throw new RangeError('Rich transaction has too many operations');
@@ -233,5 +223,4 @@ export async function applyRichTransactionCooperative(initial: RichText, operati
     return { text, selection: current, inverse: inverses, inverseSelection, maps };
 }
 
-/** Current length is available without joining the transaction's projected text. */
 export function richTransactionLength(result: RichTransactionResult): number { return projectionLength(result.text); }

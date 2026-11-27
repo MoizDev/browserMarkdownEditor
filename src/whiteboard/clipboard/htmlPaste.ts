@@ -22,8 +22,6 @@ import { planBoardClipboardPlacement } from './placement';
 import type { ClipboardIntent, ClipboardTarget } from './types';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: isolated HTML projection, verified media staging and one-step
-// clipboard insertion; independent composition, no upstream engine source.
 export interface HtmlClipboardSource {
     readonly provisionalSheet: SheetId;
     readonly nodes: readonly Node[];
@@ -41,7 +39,6 @@ export interface HtmlClipboardPasteOptions {
     readonly cameraZoom: number;
     current(target: Readonly<ClipboardTarget>): boolean;
     readonly storeMedia: StoreMedia;
-    /** Real native encoding, C5 admission and canonical source geometry. */
     admitSource(source: HtmlClipboardSource, context: JobContext, identity: BoardJobIdentity): Promise<{
         readonly acquisition: BoardClipboardAcquisition; readonly bounds: Readonly<{ x: number; y: number; w: number; h: number }>;
     }>;
@@ -54,7 +51,6 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
         pointer: options.target.pointer ? Object.freeze({ ...options.target.pointer }) : null });
     const check = () => {
         runtime.jobs.assertContext(context); context.assertCurrent();
-        // No revision fence: a gesture committed while the paste is prepared is no reason to drop it (change/insertionLanding.ts).
         if (!options.current(target) || runtime.session !== session || session.doc !== doc
             || session.owner !== owner || session.isReadOnly || runtime.selection.getSnapshot().sheet !== target.sheet) throw new DOMException('HTML paste became stale', 'AbortError');
     };
@@ -91,8 +87,6 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
                         duration: null, animated: info.animated, name: image.alt.slice(0, 10_000), file: null, ext: null };
                     const blob = new Blob([image.blob], { type: info.mime });
                     leases.push(runtime.media.retain(info.id, 'snapshot')); runtime.media.put(info.id, blob);
-                    // Admission first; the final shared media stage performs
-                    // storage exactly once under this same job and one receipt.
                     item = { entry, blob }; records.set(info.id, item);
                 }
                 const scale = Math.min(1, 5000 / Math.max(info.width, info.height));

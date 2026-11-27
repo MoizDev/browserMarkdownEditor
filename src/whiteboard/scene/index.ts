@@ -24,7 +24,6 @@ export class PackedTree {
         while (job.step(4096) === 'pending') { /* Synchronous bounded-data convenience only. */ }
         Object.assign(this, job.result);
     }
-    /** Worker results transfer these arrays; adoption is O(1), never another N-item build. */
     static fromData(data: PackedTreeData): PackedTree {
         const n = data.count, total = data.bounds.length / 4;
         if (!Number.isSafeInteger(n) || n < 0 || data.slots.length !== n || data.generations.length !== n || data.versions.length !== n
@@ -38,9 +37,6 @@ export class PackedTree {
     }
 }
 
-// Balanced binary AABB hierarchy. Perimeter enlargement chooses siblings; ordinary AVL height
-// rotations prevent sorted edits from degenerating into a linear chain. Rotations preserve the
-// descendant set, not a search-key order. Own construction from these standard invariants.
 class EditTree {
     root = NONE;
     bounds = new Float64Array(4 * 16);
@@ -167,7 +163,6 @@ export class HybridIndex {
     get highWater(): number { return this.next; }
     get ready(): boolean { return this.seeded === 0; }
     get byteLength(): number { return this.packed.byteLength + this.edits.byteLength + this.generations.byteLength + this.versions.byteLength + this.dynamic.byteLength + this.dirty.byteLength; }
-    /** Root-only union: obsolete packed leaves deliberately remain a conservative overestimate. */
     occupiedBounds(): Box | null {
         if (!this.ready || !this.active) return null;
         const packed = this.packed, edits = this.edits;
@@ -191,8 +186,6 @@ export class HybridIndex {
         const word = slot >>> 5, bit = 1 << (slot & 31);
         if (this.dirty[word] & bit) { this.dirty[word] &= ~bit; this.dirtyCount--; }
     }
-    // Only cold construction uses this: no binary tree ever reserves 2N nodes just to discard
-    // them after packing. Queries and edits wait until the matching seed snapshot is published.
     seedBounds(slot: number): void {
         if (!this.alive(slot) || this.dynamic[slot] !== -2 || this.packed.count || this.edits.leaves || this.queryLeases) throw new Error('Invalid cold index seed');
         this.dynamic[slot] = NONE; this.seeded++; this.epoch++;
@@ -255,8 +248,6 @@ export class HybridIndex {
     acquireQuery(): void { if (!this.ready) throw new Error('Cold spatial index is not published'); this.queryLeases++; }
     releaseQuery(): void { if (this.queryLeases <= 0) throw new Error('Unbalanced spatial query lease'); this.queryLeases--; }
     publish(packed: PackedTree): boolean {
-        // A source snapshot may be old: versions mask removed/changed entries and every newer
-        // edit stays in the overlay. No replay is lost. Topology swaps wait for active cursors.
         if (this.queryLeases || packed.revision < this.packed.revision || packed.revision > this.epoch) return false;
         if (this.seeded && (packed.revision !== this.epoch || packed.count !== this.seeded)) return false;
         this.packed = packed; this.seeded = 0; this.cleanup = this.dirtyCount ? 0 : packed.count;

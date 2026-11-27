@@ -7,8 +7,6 @@ import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
 import { isOldBoardSniff } from './oldBoards';
 import { routeEngines, type CanvasEngineKind } from './engineRouting';
 
-/** Applied once when native representation is acquired, including PDF ink.
- * A pane and its App-owned session must use this same frozen authority. */
 export function withNativeCanvasPolicy(representation:DocumentRepresentation,kind:CanvasEngineKind):DocumentRepresentation {
  return {...representation,nativeCanvasKind:kind,emergencyReadOnly:routeEngines(kind).canvas[kind].emergencyReadOnly};
 }
@@ -16,7 +14,6 @@ export function classifyRequestedKind(name:string,isHelp=false):LoadedDocumentKi
  if(isHelp||isMarkdownFile(name))return 'markdown';
  if(isEpubFile(name))return 'epub';if(isPdfFile(name))return 'pdf';
  if(isDrawingFile(name)||isNativeDrawingFile(name))return 'drawing';if(isNotebookFile(name))return 'notebook';
- // Native canvases must not inherit text write authority in the guard build.
  if(isCanvasFile(name))return 'unsupported';
  if(isTexFile(name))return 'tex';if(isCodeFile(name))return 'code';return isTextFile(name)?'text':'unsupported';
 }
@@ -49,9 +46,6 @@ export function classifyLoadedTabs(next: OpenTab[], previous: OpenTab[], sourceF
    ? withNativeCanvasPolicy(r, r.loadedKind === 'notebook' ? 'notebook' : 'drawing') : r;
   const admittedNative = policy.nativeCanvasSession !== undefined && !!policy.nativeCanvasKind
    && !policy.emergencyReadOnly && sniff?.format === 'native' && !sniff.kindMismatch;
-  // Either reader calling it old makes it old: the sniff is a lexical guess at what the board's admission then reads
-  // in full (and a binary `.drawing` has no text to sniff). Letting the sniff overrule an admission's "old" left the
-  // two flags disagreeing for every layout the sniff did not know; each new admission states its own answer afresh.
   const oldBoard = isOldBoardSniff(sniff) || !!r.oldBoard;
   const writable = policy.status === 'ready' && policy.bufferKind === 'text' && !tab.readError && !tab.file.isHelp && !policy.emergencyReadOnly
    && !!sniff && !oldBoard && (admittedNative || !canvasReadOnlyReason(sniff));
@@ -86,8 +80,6 @@ export function registerReadingSurface(identity:ReaderIdentity,controller:Readin
 export function getReadingSurface(identity:ReaderToken):ReadingSurfaceController|undefined {const e=surfaces.get(identity.documentId);return e&&sameReaderToken(e.identity,identity)?e.controller:undefined}
 export function subscribeReadingSurface(_id:string,listener:()=>void):()=>void{listeners.add(listener);return ()=>listeners.delete(listener)}
 
-// The opaque reader reports semantic commands. App validates their full token
-// before handing them to the same workspace navigation/focus path as host keys.
 let readerHostCommand:((command:import('../types/reading').ReaderHostCommand)=>void)|undefined;
 export function registerReaderHostCommands(handler:NonNullable<typeof readerHostCommand>):()=>void {readerHostCommand=handler;return ()=>{if(readerHostCommand===handler)readerHostCommand=undefined}}
 export function runReaderHostCommand(command:import('../types/reading').ReaderHostCommand):boolean {if(!readerHostCommand)return false;readerHostCommand(command);return true}

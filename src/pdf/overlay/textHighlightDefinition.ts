@@ -2,7 +2,6 @@ import type { Layer, PlatformLayerDefinition } from '../../platform/render';
 import { PdfTextHighlightLayer } from './textHighlight';
 import type { PdfHighlightPalette, PdfHighlightRects } from './textHighlight';
 
-/** The pane supplies this stable definition after the document page layer. */
 export function pdfTextHighlightDefinition(initialPalette: PdfHighlightPalette): {
     definition: PlatformLayerDefinition;
     setRects(rects: PdfHighlightRects): void;

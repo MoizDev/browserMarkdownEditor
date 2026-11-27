@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter';
 import type { AttachBoardView, BoardViewLease, BoardViewParameters } from './boardHostRuntime';
 
-/** View attachment is pane-local; session ownership remains with App. Passive cleanup follows
- * the platform pane's layout cleanup, so registered layers are detached before engine disposal. */
 export function useBoardViewLease<T extends object, S extends BoardSessionPort>(options: {
     readonly adapter: HostedBoardAdapter<S>;
     readonly attachView: AttachBoardView<S, T>;

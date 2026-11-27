@@ -16,20 +16,14 @@ export interface BoardAttachmentOptions {
     readonly current: () => boolean;
 }
 export interface AttachmentRequest {
-    /** A flag, or a decision taken once the target is known: a gesture's hold and velocity rules need the target's identity. */
     readonly precise?: boolean | ((target: NodeId) => boolean);
     readonly exact?: boolean;
-    /** The connector's route: an elbow's precise end snaps to the target's centre, edge points and edges (catalogue a.3). */
     readonly route?: 'arc' | 'elbow';
     readonly input?: InputKind;
 }
 
-// Snap radii in CSS px (catalogue B§ constants). Priority, first match wins: centre, edge point, centre axis, edge; the
-// catalogue lists the radii but not the order, so this follows the nearest-first reading.
 const ELBOW_SNAP = { centre: 24, edgePoint: 24, axis: 16, edge: 20 } as const;
 
-/** The point service supplies the actual clipped, generation-checked attachment
- * surface, so a group's promoted selection or an AABB is never an attachment. */
 export function createBoardAttachmentResolver(options: BoardAttachmentOptions): {
     resolve(point: Vec2, signal: AbortSignal, request?: AttachmentRequest): Promise<Attachment | null>;
 } {
@@ -55,9 +49,6 @@ export function createBoardAttachmentResolver(options: BoardAttachmentOptions): 
                 }
             };
             check();
-            // The Scene can trail the document by one board-only transaction, and the hit reads its spatial index. Drive
-            // its bounded steps first, as the preview does, rather than failing an arrow commit as stale; a document
-            // change still stops the query through check().
             const scene = runtime.scene ?? await runtime.ready;
             while (!scene.ready) {
                 check();
@@ -80,7 +71,6 @@ export function createBoardAttachmentResolver(options: BoardAttachmentOptions): 
                 throw new Error('Invalid attachment surface');
             }
             const exact = request.exact ?? false;
-            // A line is an open outline: its box is not its surface, so it is always precise (catalogue a.3 rule 3).
             const open = target.kind === 'polyline';
             const precise = exact || open || (typeof request.precise === 'function' ? request.precise(hit.id) : request.precise ?? false);
             const coordinate = (value: number, start: number, size: number): number => {
@@ -94,8 +84,6 @@ export function createBoardAttachmentResolver(options: BoardAttachmentOptions): 
                 return Math.max(0, Math.min(1, raw));
             };
             const raw = { x: coordinate(local.x, box.x, box.width), y: coordinate(local.y, box.y, box.height) };
-            // Exact keeps the pointer's point unsnapped: Alt is the way to bind where the pointer is without any snapping. An open outline
-            // (a line) snaps its edges as an elbow's precise end does (catalogue a.3, the open-shape rule), whatever the route.
             const snapped = precise && !exact && (open || route === 'elbow') ? elbowSnap(hit, point, view.camera.z, box) : null;
             const anchor = precise || exact ? snapped?.anchor ?? raw : { x: 0.5, y: 0.5 };
             check();
@@ -104,8 +92,6 @@ export function createBoardAttachmentResolver(options: BoardAttachmentOptions): 
     };
 }
 
-/** The elbow's precise anchor snaps to the centre, an edge midpoint, a centre line or an edge, each within its radius of the
- * pointer in CSS px. Measured in world units through the target's transform so the radii hold at any zoom. */
 function elbowSnap(hit: { readonly localToWorld: Affine }, point: Vec2, zoom: number, box: Rect): { anchor: Vec2; snap: Attachment['snap'] } | null {
     const scale = zoom > 0 ? zoom : 1, world = (p: Vec2) => transformPoint(hit.localToWorld, p);
     const distance = (p: Vec2, radius: number) => Math.hypot(world(p).x - point.x, world(p).y - point.y) * scale <= radius;
@@ -125,7 +111,6 @@ function elbowSnap(hit: { readonly localToWorld: Affine }, point: Vec2, zoom: nu
     if (Math.abs(at.y - cy) * scale <= ELBOW_SNAP.axis && Math.abs(world({ x: at.x, y: cy }).y - point.y) * scale <= ELBOW_SNAP.axis) {
         return { anchor: fraction({ x: Math.max(box.x, Math.min(box.x + box.width, at.x)), y: cy }), snap: 'center' };
     }
-    // The nearest point of each edge to the pointer, measured in the target's own box.
     let best: { anchor: Vec2; d: number } | null = null;
     const edges: [Vec2, Vec2][] = [[{ x: box.x, y: box.y }, { x: box.x + box.width, y: box.y }], [{ x: box.x + box.width, y: box.y }, { x: box.x + box.width, y: box.y + box.height }],
         [{ x: box.x + box.width, y: box.y + box.height }, { x: box.x, y: box.y + box.height }], [{ x: box.x, y: box.y + box.height }, { x: box.x, y: box.y }]];

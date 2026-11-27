@@ -22,7 +22,6 @@ interface MirrorController {
     setSelection: (selection: MirrorSelection) => boolean;
 }
 
-/** A view owns only its window; the pool and canonical selection remain session-owned. */
 export function usePdfTextMirror(options: MirrorOptions): MirrorController {
     const latest = useRef(options);
     useEffect(() => { latest.current = options; });

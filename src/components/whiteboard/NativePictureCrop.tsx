@@ -16,27 +16,20 @@ import { useFloatingBar, type FloatingAnchor } from './floatingBar';
 
 type Translate = (key: string) => string;
 
-/** Where a picture sits on screen, in surface pixels, with its node-frame geometry: the frame every crop shape is drawn in. */
 export interface PictureFrame {
-    /** The node box's top-left corner (its own origin, before rotation), in surface pixels. */
     readonly originX: number;
     readonly originY: number;
-    /** Rotation in degrees, as CSS takes it: clockwise on screen, the board's own convention. */
     readonly degrees: number;
     readonly radians: number;
-    /** Surface pixels per world unit. */
     readonly zoom: number;
     readonly flipX: boolean;
     readonly flipY: boolean;
-    /** The committed box in world units. */
     readonly w: number;
     readonly h: number;
-    /** The whole original picture in world units, and the committed window it is cut to. */
     readonly fullW: number;
     readonly fullH: number;
     readonly cropX0: number;
     readonly cropY0: number;
-    /** The top edge's centre on screen, for the bars that sit above the picture, and its lowest point, for when they go below. */
     readonly anchorX: number;
     readonly anchorY: number;
     readonly anchorBottom: number;
@@ -49,7 +42,6 @@ function pictureOf(lease: NativeViewLease, id: NodeId): PictureNode | null {
     return node && node.kind === 'picture' ? node : null;
 }
 
-/** The picture's frame now, or null when it is gone or is not a picture. Pure of the DOM, so a frame loop can compare it. */
 function frameOf(lease: NativeViewLease, id: NodeId): PictureFrame | null {
     const doc = lease.runtime.session.doc, node = pictureOf(lease, id);
     if (!node) return null;
@@ -61,7 +53,6 @@ function frameOf(lease: NativeViewLease, id: NodeId): PictureFrame | null {
     const entry = node.media ? doc.media.get(node.media) : undefined;
     const media = { width: entry?.w ?? node.w, height: entry?.h ?? node.h };
     const cos = Math.cos(pose.rotation), sin = Math.sin(pose.rotation);
-    // Top-edge centre of the rotated box: the average of its corners' x, and the highest corner's y.
     const corners = [[0, 0], [node.w, 0], [0, node.h], [node.w, node.h]].map(([x, y]) => ({
         x: origin.x + (cos * x - sin * y) * zoom, y: origin.y + (sin * x + cos * y) * zoom,
     }));
@@ -72,7 +63,6 @@ function frameOf(lease: NativeViewLease, id: NodeId): PictureFrame | null {
         cropX0: crop.x0, cropY0: crop.y0, anchorX, anchorY, anchorBottom, id: node.id, media });
 }
 
-/** Re-reads the frame each animation frame while active, and re-renders only when something it draws has moved. */
 function useFrame(lease: NativeViewLease, id: NodeId, active: boolean): PictureFrame | null {
     const [frame, setFrame] = useState<PictureFrame | null>(() => (active ? frameOf(lease, id) : null));
     useEffect(() => {
@@ -89,7 +79,6 @@ function useFrame(lease: NativeViewLease, id: NodeId, active: boolean): PictureF
     return frame;
 }
 
-/** The screen delta of a pointer, in the picture's own unflipped, unrotated frame, in world units. */
 function localDelta(frame: PictureFrame, dx: number, dy: number): { x: number; y: number } {
     const c = Math.cos(frame.radians), s = Math.sin(frame.radians);
     let x = c * dx + s * dy, y = -s * dx + c * dy;
@@ -107,22 +96,18 @@ export interface NativePictureCropProps {
     readonly onError: (error: unknown) => void;
 }
 
-/** The crop, drawn over the picture on the board: the whole original faded, the kept window bright, and a bar above. */
 export function NativePictureCrop({ lease, store, t, isVisible, onError }: NativePictureCropProps) {
     const session = useSyncExternalStore(store.subscribe, store.get);
     const frame = useFrame(lease, session?.id ?? ('' as NodeId), !!session && isVisible);
     const root = useRef<HTMLDivElement | null>(null);
     const drag = useRef<{ drag: CropDrag; pointer: number; x: number; y: number; frame: PictureFrame } | null>(null);
     const commit = useCallback(() => { try { store.commit(); } catch (error) { onError(error); } }, [store, onError]);
-    // Ending a crop hands the board its keyboard focus back: the bar's button or the pressed bar leaves the DOM with it.
     const leave = useCallback((apply: boolean) => {
         const host = root.current?.closest<HTMLElement>('.board-viewer-host') ?? null;
         if (apply) commit(); else store.cancel();
         returnBoardFocusIfLost(host);
     }, [store, commit]);
 
-    // Escape cancels; Enter applies; an arrow moves the picture's content inside the frame (Shift for ten times as far).
-    // Captured at the window, so the board's own keys do not also act on the same press.
     useEffect(() => {
         if (!session) return;
         const onKey = (event: KeyboardEvent) => {
@@ -147,8 +132,6 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
         return () => window.removeEventListener('keydown', onKey, true);
     }, [session, store, leave, frame]);
 
-    // A press outside the crop ends it and keeps the draft, and passes on: the press still selects whatever it landed on.
-    // The bar is part of the crop: a press on its aspect menu, zoom slider or Fit is not an outside click (measured: it ended the crop).
     useEffect(() => {
         if (!session) return;
         const onDown = (event: PointerEvent) => {
@@ -164,8 +147,6 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
         return () => window.removeEventListener('pointerdown', onDown, true);
     }, [session, store, commit]);
 
-    // A Ctrl/Cmd-press on a selection handle asked for this crop from one edge (the select tool gave the press to the crop): the drag
-    // then follows that press on the window, since the press belongs to the board and no element of this editor holds it.
     useEffect(() => {
         if (!session || !frame) return;
         const grab = store.takeEdge();
@@ -182,7 +163,6 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
                 { shift: event.shiftKey, fromCentre: event.altKey }, live.width, live.height));
         };
         const onUp = (event: PointerEvent) => { if (drag.current?.pointer === event.pointerId) drag.current = null; };
-        // Captured: the board's gesture stops the press's moves below the window, and the drag must still follow them.
         window.addEventListener('pointermove', onMove, true);
         window.addEventListener('pointerup', onUp, true);
         window.addEventListener('pointercancel', onUp, true);
@@ -193,8 +173,6 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
         };
     }, [sessionOpen, store]);
 
-    // The board's own selection frame stays drawn under the crop, and its turn handle, outside the picture, showed beside the
-    // crop's handles though it does nothing there: the board's overlay is hidden for as long as the crop is drawn.
     const cropping = !!session && !!frame;
     useEffect(() => {
         if (!cropping) return;
@@ -214,8 +192,6 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
         store.setWindow(next);
     };
     const end = (event: ReactPointerEvent<HTMLElement>) => { if (drag.current?.pointer === event.pointerId) drag.current = null; };
-    // A double-click on an edge gives back that side of the original (a corner gives back its two sides), catalogue S§12 "Image":
-    // the picture keeps its other sides as they are, so it is one step to undo a cut you have made by hand.
     const resetSide = (handle: { readonly dx: -1 | 0 | 1; readonly dy: -1 | 0 | 1 }) => (event: ReactMouseEvent<HTMLElement>) => {
         event.preventDefault(); event.stopPropagation();
         const live = store.get();
@@ -240,12 +216,10 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
         { id: 'original', key: 'crop.aspect.original' }, { id: 'square', key: 'crop.aspect.square' }, { id: 'circle', key: 'crop.aspect.circle' },
         { id: 'landscape', key: 'crop.aspect.landscape' }, { id: 'portrait', key: 'crop.aspect.portrait' }, { id: 'wide', key: 'crop.aspect.wide' },
     ];
-    // The bar is a sibling, not a child: the picture's frame turns with the picture, and the bar must not.
     return (
         <>
         <div ref={root} className="crop-live" style={{ left: frame.originX, top: frame.originY, transform: `rotate(${frame.degrees}deg)` }}>
             <div className="crop-live-frame" style={{ width: frame.w * z, height: frame.h * z, transform: `scale(${frame.flipX ? -1 : 1}, ${frame.flipY ? -1 : 1})` }}>
-                {/* An opaque backdrop under the faded original: the board's own picture beneath must not show through the fade. */}
                 <div className="crop-live-full" style={{ left: fullLeft, top: fullTop, width: frame.fullW * z, height: frame.fullH * z }}>
                     <img className="crop-live-faded" src={session.url} alt="" draggable={false} />
                 </div>
@@ -283,7 +257,6 @@ interface CropBarProps {
     readonly onApply: () => void;
 }
 
-/** The crop bar: aspect presets, a zoom slider, Fit and Apply. It sits above the picture, unturned, clear of the chrome (floatingBar.ts). */
 function CropBar({ anchor, t, aspect, zoom, aspectOptions, onAspect, onZoom, onFit, onApply }: CropBarProps) {
     const bar = useRef<HTMLDivElement>(null);
     useFloatingBar(bar, anchor);
@@ -324,7 +297,6 @@ export interface NativePictureToolbarProps {
     readonly notice: (message: string) => void;
 }
 
-/** The picture's own toolbar, floating above a single selected picture: replace, crop, download and alternative text. */
 export function NativePictureToolbar({ lease, media, store, t, isVisible, writable, requestText, onError, notice }: NativePictureToolbarProps) {
     const runtime = lease.runtime;
     const subscribe = useCallback((listener: () => void) => runtime.selection.subscribe(listener), [runtime]);
@@ -337,7 +309,6 @@ export function NativePictureToolbar({ lease, media, store, t, isVisible, writab
     useFloatingBar(bar, frame && { x: frame.anchorX, top: frame.anchorY, bottom: frame.anchorBottom });
     if (!id || !frame || !picture) return null;
     const run = (action: () => void | Promise<void>) => () => {
-        // The picture the toolbar was drawn over must still be the one selected; otherwise the press does nothing.
         if (!writable() || runtime.selection.getSnapshot().selected[0] !== id) { notice(t('crop.selectionChanged')); return; }
         try { void Promise.resolve(action()).catch(onError); } catch (error) { onError(error); }
     };

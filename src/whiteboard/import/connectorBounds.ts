@@ -1,7 +1,6 @@
 import type { LegacyConnectorBoundsOptions } from './connectorBoundsTypes';
 import type { LegacyGeometry } from './worldBounds';
 
-// Unroutable received elbows remain read-only; never invent a straight route for page assignment.
 export function legacyConnectorBounds(options: LegacyConnectorBoundsOptions): LegacyGeometry {
     return { worldBounds(node, transform) {
         if (node.kind !== 'connector') return options.fallback.worldBounds(node, transform);

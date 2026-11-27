@@ -14,7 +14,6 @@ interface SearchPanelProps {
     onClose: () => void;
 }
 
-/** Wrap the matched slice of `text` in a highlight span. */
 function Highlighted({ text, range }: { text: string; range: TextRange | null }) {
     if (!range) return <>{text}</>;
     return (
@@ -26,7 +25,6 @@ function Highlighted({ text, range }: { text: string; range: TextRange | null })
     );
 }
 
-/** Keyboard activation (Enter/Space) for the clickable result rows. */
 function rowKeyHandler(activate: () => void) {
     return (e: React.KeyboardEvent<HTMLDivElement>) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -36,11 +34,6 @@ function rowKeyHandler(activate: () => void) {
     };
 }
 
-/**
- * SearchPanel — the vault-wide search view that temporarily replaces the file
- * tree in the sidebar. Matches file names and file contents (VSCode-style),
- * grouped per file; clicking a row opens the file (and jumps to the match).
- */
 export default function SearchPanel({ fileTree, search, onOpenResult, onClose }: SearchPanelProps) {
     const progress = useSyncExternalStore(subscribeIndexProgress, getIndexProgress);
     const unavailable = useSyncExternalStore(subscribeIndexProgress, getIndexUnavailable);
@@ -95,16 +88,13 @@ export default function SearchPanel({ fileTree, search, onOpenResult, onClose }:
         return () => abort.abort();
     }, [deferredQuery, epoch, files, search]);
 
-    /** Open a file group's best target: its first match, or just the file. */
     const openResult = (result: FileSearchResult) => {
         onOpenResult(result.file, result.matches[0] ?? null);
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-        if (e.nativeEvent.isComposing) return; // IME candidate confirmation
+        if (e.nativeEvent.isComposing) return;
         if (e.key === 'Escape') {
-            // Handled: `dismissOnEscape` surfaces skip a prevented Escape, so
-            // one press closes only this (#36).
             e.preventDefault();
             onClose();
         } else if (e.key === 'Enter' && results.files.length > 0) {

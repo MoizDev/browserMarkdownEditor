@@ -32,7 +32,6 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
     };
     const due = () => (steps++ & 1023) === 0;
     const fail = (reason: string): never => { throw new RangeError(reason); };
-    // Unknown marks may contain arbitrary input; bound traversal before serialization.
     const encodeUnknown = async (value: unknown): Promise<RawJson> => {
         const pending: { value: unknown; depth: number }[] = [{ value, depth: 0 }], seen = new Set<object>();
         let size = 0;
@@ -188,10 +187,6 @@ export async function repairNodeText(nodes: readonly NodeRecord[], options: { co
             if (key && Reflect.get(node, key) !== null) {
                 const fixed = await repair(Reflect.get(node, key));
                 if (fixed.changed) {
-                    // Plan document-model §9.3: a preserved raw token is the write authority until the user sets
-                    // this property (change/apply drops it), so the repaired rich text is only the in-memory
-                    // projection that drawing and editing read. Refusing the board here would make a malformed
-                    // rich text read-only for a repair the plan defines as formatting-only (§9.2).
                     node = { ...node, [key]: fixed.value } as NodeRecord;
                     changed.add(i); notices.push({ code: 'rich-text', count: 1, nodeIds: [node.id] });
                     if (fixed.replacements) notices.push({ code: 'rich-text-replaced-surrogates', count: fixed.replacements, nodeIds: [node.id] });

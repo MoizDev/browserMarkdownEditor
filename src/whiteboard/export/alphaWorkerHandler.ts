@@ -1,20 +1,16 @@
 import type { WorkerContext } from '../../platform/workers/serve';
 import { alphaRunSteps } from '../render/alphaMask';
 
-/** One owned source: an ImageBitmap copy the producer transferred here, or the PNG bytes of a raster fallback tile. */
 export interface AlphaTraceRequest {
     readonly bitmap?: ImageBitmap;
     readonly png?: Uint8Array;
-    /** True when full opacity makes alpha 255 occlude exactly; false when an inherited alpha below 1 makes every pixel partial. */
     readonly opaqueAlpha: boolean;
     readonly maxRects: number;
 }
 export interface AlphaTraceReply {
     readonly width: number;
     readonly height: number;
-    /** Flat [x0, y0, x1, y1] rectangles of fully opaque pixels; null when the budget was exceeded. */
     readonly opaque: number[] | null;
-    /** Flat [x0, y0, x1, y1] rectangles of nonzero, non-occluding pixels; null when the budget was exceeded. */
     readonly partial: number[] | null;
 }
 
@@ -32,11 +28,9 @@ async function drain(steps: Generator<void, number[] | null, void>, context: Wor
 
 async function decodeOwnedPng(png: Uint8Array | undefined): Promise<ImageBitmap> {
     if (!png) throw new TypeError('Alpha trace needs a source');
-    // The tile's bytes are already charged as part of the raster tile; slice() gives the Blob an exactly typed buffer.
     return createImageBitmap(new Blob([png.slice()], { type: 'image/png' }));
 }
 
-/** Reads the alpha of an owned source inside the worker and traces it. Only the worker's own copy is closed here. */
 export async function alphaTrace(args: unknown, context: WorkerContext): Promise<AlphaTraceReply> {
     const request = args as AlphaTraceRequest | null;
     if (!request || typeof request.opaqueAlpha !== 'boolean' || !Number.isSafeInteger(request.maxRects)

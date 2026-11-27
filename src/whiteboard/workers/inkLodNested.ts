@@ -9,7 +9,6 @@ const upperDiff = (a: number, b: number) => a === b ? 0 : nextUp(Math.abs(a - b)
 const perimeter = (x0: number, y0: number, x1: number, y1: number, r: number) =>
     upMul(2, upAdd(upAdd(upperDiff(x0, x1), upperDiff(y0, y1)), upMul(4, r)));
 
-/** L1 distance to a point on the closed chord, with every interpolation operation rounded out. */
 function distanceUpper(x: number, y: number, ax: number, ay: number, bx: number, by: number, axis: 0 | 1): number {
     const a = axis ? ay : ax, b = axis ? by : bx, p = axis ? y : x;
     const t = divide(subtract(interval(p), interval(a)), subtract(interval(b), interval(a)));
@@ -25,7 +24,6 @@ export interface NestedLodResult {
     readonly certificate: Readonly<{ areaBoundWorld: number; referenceLowerWorld: number }>;
 }
 
-/** All levels compare directly to the original chain, never to the preceding approximation. */
 export async function nestedInkLod(fine: InkCoverage, request: InkCoverageRequest, chunkCount: number,
     context: WorkerContext, scratch: (bytes: number) => void): Promise<NestedLodResult | null> {
     const s = fine.segments, n = s.length / 6, scale = request.options.deviceScale;

@@ -13,12 +13,6 @@ export interface SpawnSpec {
     env: Record<string, string>;
 }
 
-/**
- * The environment every CLI gets. launchd / Task Scheduler / systemd start the
- * helper with a bare environment (no shell PATH, sometimes no HOME), so we set
- * HOME/USERPROFILE and a PATH that has the CLI's own folder and node's folder
- * first (npm-installed CLIs are `#!/usr/bin/env node` scripts).
- */
 export function agentEnv(extraPathDirs: string[], overrides: Record<string, string | undefined> = {}): Record<string, string> {
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
@@ -34,8 +28,6 @@ export function agentEnv(extraPathDirs: string[], overrides: Record<string, stri
     env.PATH = dirs.join(delimiter);
     if (process.platform === 'win32') delete env.Path;
     env.LANG ??= 'en_US.UTF-8';
-    // A helper started from inside a Claude Code session (dev) must not make
-    // the child think it is a nested Claude Code subprocess.
     delete env.CLAUDECODE;
     delete env.CLAUDE_CODE_ENTRYPOINT;
     for (const [k, v] of Object.entries(overrides)) {
@@ -50,7 +42,6 @@ function defaultPathDirs(): string[] {
     return ['/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin', ...(process.platform === 'darwin' ? ['/opt/homebrew/bin'] : [])];
 }
 
-/** Run to completion with a timeout; stdout/stderr as text. Never throws. */
 export async function runCapture(cmd: string[], opts: { cwd?: string; env?: Record<string, string>; timeoutMs?: number; stdin?: string } = {}):
     Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
     let proc: Subprocess<'pipe', 'pipe', 'pipe'>;
@@ -82,17 +73,11 @@ export async function runCapture(cmd: string[], opts: { cwd?: string; env?: Reco
     return { code: timedOut ? null : code, stdout, stderr, timedOut };
 }
 
-/** Start something that must outlive us (Linux fallback start, Windows self-delete, a restart after self-update). */
 export function detached(cmd: string[]): void {
     const child = nodeSpawn(cmd[0], cmd.slice(1), { detached: true, stdio: 'ignore', windowsHide: true });
     child.unref();
 }
 
-/**
- * Windows: run one cmd.exe command line detached. Verbatim, wrapped in `/s /c "…"`
- * (cmd strips exactly the outer quotes): default argument quoting would turn the
- * line's own quotes into `\"`, which cmd does not understand.
- */
 export function detachedCmd(line: string): void {
     const child = nodeSpawn('cmd.exe', ['/d', '/s', '/c', `"${line}"`], { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true });
     child.unref();
@@ -104,11 +89,6 @@ export function killHard(proc: Subprocess): void {
     } catch { /* already gone */ }
 }
 
-/**
- * SIGTERM, then SIGKILL after `graceMs`. Measured: `opencode serve` and
- * `codex app-server` both outlive a plain SIGTERM for seconds, holding their
- * port and DB handles, so a hard stop always follows.
- */
 export function stopProcess(proc: Subprocess, graceMs = 2000): Promise<void> {
     if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve();
     try {
@@ -118,7 +98,6 @@ export function stopProcess(proc: Subprocess, graceMs = 2000): Promise<void> {
     return proc.exited.then(() => clearTimeout(t), () => clearTimeout(t));
 }
 
-/** Splits a byte stream into lines (LF, tolerating CRLF). */
 export async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
     const decoder = new TextDecoder();
     let buf = '';
@@ -135,7 +114,6 @@ export async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGener
     if (buf.trim()) yield buf.replace(/\r$/, '');
 }
 
-/** Drains a stream, keeping only the tail (for exit diagnostics that are never logged). */
 export async function drainTail(stream: ReadableStream<Uint8Array>, max = 4000): Promise<string> {
     const decoder = new TextDecoder();
     let tail = '';

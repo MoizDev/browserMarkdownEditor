@@ -2,8 +2,6 @@ import type { WorkerContext } from '../../platform/workers';
 import { parseJsonIncremental, type JsonSpan } from '../format/jsonRead';
 import { SECURITY_LIMITS } from '../security/limits';
 
-// Provenance: public Excalidraw clipboard wire fields and clipboard §4.6;
-// independent bounded JSON extraction, no upstream engine source.
 export interface ExcalidrawWireFile { readonly fileId: string; readonly blob: Blob; readonly mimeHint: string }
 export interface ExcalidrawWireDocument {
     readonly elements: readonly Readonly<Record<string, unknown>>[];

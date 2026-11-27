@@ -1,13 +1,3 @@
-// Write the self-update manifest a release publishes beside its binaries:
-//
-//   bun helper/scripts/release-manifest.ts <version> <assets-dir>
-//     → <assets-dir>/vaultagent-release.json  {app, version, assets: {<name>: {sha256, size}}}
-//
-// Every name in UPDATE_ASSET_NAMES must be in <assets-dir>: an installed helper
-// finds its binary by that name, so a release missing one would strand that OS.
-// The release workflow runs it in its publish job; update-smoke.ts and local
-// end-to-end checks import `buildManifest` for their fake release server.
-
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HELPER_APP_ID, RELEASE_MANIFEST } from '../../shared/vaultAgentProtocol.ts';
@@ -19,7 +9,6 @@ async function sha256File(path: string): Promise<string> {
     return hasher.digest('hex');
 }
 
-/** The manifest for the named assets in `dir` (default: all of UPDATE_ASSET_NAMES). Throws on a missing or empty one. */
 export async function buildManifest(version: string, dir: string, names: readonly string[] = UPDATE_ASSET_NAMES): Promise<Manifest> {
     if (!isReleaseVersion(version)) throw new Error(`bad version: ${version}`);
     const assets: Manifest['assets'] = {};
@@ -28,7 +17,6 @@ export async function buildManifest(version: string, dir: string, names: readonl
         if (!existsSync(path) || statSync(path).size === 0) throw new Error(`missing release asset: ${name}`);
         assets[name] = { sha256: await sha256File(path), size: statSync(path).size };
     }
-    // The same validation an installed helper applies: a manifest it would reject never ships.
     return parseManifest({ app: HELPER_APP_ID, version, assets });
 }
 

@@ -7,14 +7,11 @@ import type { BoardSession } from '../session/BoardSession';
 import { createNativeMediaPorts } from './mediaPorts';
 import { createMediaRestorePin } from './pinMediaRestore';
 
-/** Bind restore work to the live board; the filesystem host retains write authority. */
 export function createNativeMediaRestore(
     store: MediaStore, host: NativeCanvasHost, identity: NativeCanvasIdentity,
     currentBoard: () => BoardSession | undefined, locations: MediaLocationWriter,
 ) {
     const media = createNativeMediaPorts(host, identity);
-    // Admission captures R0 while sealed read-only. Pin identity/revision here;
-    // only restore and location edits require the separate live write permission.
     const current = (revision: number): BoardSession | undefined => {
         const live = host.identity(identity.documentId), board = currentBoard();
         if (!host.isCurrent(identity) || !live || live.session !== identity.session

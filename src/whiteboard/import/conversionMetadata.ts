@@ -4,7 +4,6 @@ import type { PreservedBlock } from '../model/doc';
 const KEY = 'legacyOriginalSha256';
 const HASH = /^[0-9a-f]{64}$/;
 
-// The digest, rather than a path, survives both a vault-folder move and a file rename.
 export function withConversionDigest(preserved: PreservedBlock, sha256: string): PreservedBlock {
     if (!HASH.test(sha256)) throw new TypeError('Invalid conversion backup digest');
     const fields = new Map(preserved.fields);

@@ -9,7 +9,6 @@ type Services = Omit<PlatformPaneOptions<object>, 'documentToken' | 'initialVisi
 type NativeViewPorts = Pick<Services, 'consumeInput' | 'isInteracting' | 'setInputEnabled' | 'cancelViewWork'
     | 'writeOverlays' | 'onPresentation' | 'onError' | 'onNotice' | 'onNoticeCleared'>;
 
-/** Construct once per view lease; callbacks read the live viewer and the one shared camera. */
 export function createNativeViewPlatform(options: {
     host: NativeCanvasHost;
     identity: NativeCanvasIdentity;

@@ -1,6 +1,5 @@
 export interface RouteWorker { id: number; inFlight: number; heapBytes: number; retiring: boolean; pages: Set<string> }
 
-/** Rendezvous hashing moves only pages whose winning worker changed. */
 export function homeWorker<T extends RouteWorker>(workers: readonly T[], docKey: string, page: number): T | undefined {
     let best: T | undefined, score = -1;
     for (const worker of workers) {

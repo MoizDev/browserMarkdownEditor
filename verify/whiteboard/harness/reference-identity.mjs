@@ -1,4 +1,3 @@
-// Build binding for the reference exception; package versions are checked separately.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';

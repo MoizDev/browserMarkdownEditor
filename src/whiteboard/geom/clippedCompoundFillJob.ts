@@ -19,9 +19,6 @@ function middle(a: ExactPoint, b: ExactPoint): ExactPoint {
     return { x: midpoint(a.x, b.x), y: midpoint(a.y, b.y), w: { n: 1n, e: 0 } };
 }
 
-/** Multiple nonzero fill subpaths cannot be treated as a union: opposite
- * winding may cancel. Individual fills bound the union; only a compound winding
- * witness can certify overlap. */
 export function createClippedCompoundFillJob(paths: readonly (readonly PathOp[])[], query: RegionQuery, frames: readonly PointClipContour[], options: {
     readonly maxCommands?: number; readonly maxWork?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): CompoundFillResult; cancel(): void } {

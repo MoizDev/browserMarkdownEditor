@@ -1,5 +1,3 @@
-// Main-realm accounting only: opaque frames reserve before DOM attach or decode.
-// These are counters for controlled resources, not a browser process-memory quota.
 export type BudgetKind='dom'|'faces'|'encoded';
 const totals={dom:0,faces:0,pixels:0,fontBytes:0,encoded:0};
 export class EpubBudgets {

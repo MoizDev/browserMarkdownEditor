@@ -47,23 +47,6 @@ export function useVaultSwitch(deps: UseVaultSwitchDeps): void {
     assetRefsRef, boardBaselinesRef, setTabs, setLayout, setSaveStatus, setPendingReveal,
     sessionRootRef, sessionVaultIdRef, currentVaultIdRef,
   } = deps;
-  // ── Vault switch ────────────────────────────────────────────────────────
-  // A tab is only meaningful inside the vault it was opened from: its path
-  // indexes that vault's tree and its handle writes into that vault's folder.
-  // App owns each document session by id, distinct even at a reused path. Carrying
-  // tabs across a switch would still show and autosave the previous vault's
-  // notes behind the new tree. Flush the old handles and hand the new vault
-  // an empty workspace, even when both vaults have a matching path.
-  //
-  // Emptying the workspace does NOT lose the outgoing vault's session: the
-  // persist effect above has already written it under that vault's id on every
-  // layout change, and the two session refs stop this `EMPTY_LAYOUT` being
-  // filed under either vault — the outgoing one because its restore marker no
-  // longer matches `rootHandle`, the incoming one because its restore has not
-  // run yet. That is what makes switching back restore the workspace.
-  //
-  // Only fires on a REAL switch: the null → vault assignment at startup must not
-  // clear the tabs the restore pass below is about to bring back.
   useEffect(() => registerBeforeRootChange(async () => {
     const activation = getVaultActivation();
     for (;;) {
@@ -106,45 +89,20 @@ export function useVaultSwitch(deps: UseVaultSwitchDeps): void {
       clearPdfRenderData(tab.file.path);
       clearNotebookRenderData(tab.file.path);
     }
-    // Every registered pane belongs to the vault being left.
     flushReaderViewState(); flushPdfTextViewState();
     clearViews();
-    // So does every open document's disk baseline and standoff; the pre-commit
-    // hook has finished their writes.
     clearBaselines();
     pdfSeedsRef.current.clear();
     pdfSeedSourcesRef.current.clear();
     diskStateRef.current.clear();
     pdfRebuildRef.current.clear();
-    // These paths index the vault being left.
     assetRefsRef.current.clear();
     boardBaselinesRef.current.clear();
     setTabs([]);
     setLayout(EMPTY_LAYOUT);
     setSaveStatus('');
     setPendingReveal(null);
-    // The workspace on screen is no longer ANY vault's session — least of all
-    // this empty one's. Only the handle ref is released: clearing the id ref too
-    // would let the restore pass claim on this very commit, where
-    // `currentVaultId` is still the OUTGOING vault's, and open the old vault's
-    // paths out of the new vault's tree. Without this, persistence is gated only
-    // by `rootHandle` never being the same OBJECT twice — and it can be, since
-    // the vault menu re-mints its handles from `publishVaults`, which a
-    // `recordVault` that failed after `setCurrentVaultId` never reaches. Coming
-    // back to that vault by the same menu row then matched both refs and filed
-    // this EMPTY layout under its id, destroying the session it was about to
-    // restore. Gated instead, it merely does not restore that once.
     sessionRootRef.current = null;
-    // The id ref is not cleared but RE-POINTED at the vault being left, which is
-    // the only thing the restore pass's `=== currentVaultId` test can safely
-    // mean. Leaving it holding whatever was last CLAIMED is not the same thing,
-    // because a vault can set `currentVaultId` and never claim: the pass returns
-    // above on an empty `fileTree`, and an empty FOLDER is indistinguishable
-    // from a tree that has not landed yet. Measured — vault R with three tabs,
-    // switch to an empty folder, switch back — the pass then claimed R's handle
-    // against the EMPTY vault's id on the mid-switch commit, so the commit
-    // carrying R's own id failed the handle test: R's tabs never came back and
-    // nothing R did afterwards was persisted for the rest of the page load.
     sessionVaultIdRef.current = currentVaultIdRef.current;
   }, [rootHandle, flushTab, assetRefsRef, boardBaselinesRef, currentVaultIdRef, diskStateRef, pdfRebuildRef, pdfSeedSourcesRef, pdfSeedsRef, sessionRootRef, sessionVaultIdRef, setLayout, setPendingReveal, setSaveStatus, setTabs, tabsRef]);
 }

@@ -1,22 +1,3 @@
-// The terminal sessions: the user's shells, owned by the HELPER, not by a socket.
-//
-//   • A socket close DETACHES a session: the shell keeps running and the page can
-//     re-attach (reload, a dropped socket after sleep) until TERMINAL_DETACHED_TTL_MS.
-//     Attaching from another connection STEALS it (the old one gets `terminal.detached`).
-//   • Every session feeds a headless xterm (VS Code's pty-host design). A re-attach
-//     sends one serialized snapshot — screen, scrollback, modes — so vim and htop
-//     come back intact; a raw byte ring replayed from mid-stream corrupts them.
-//   • Flow control without `pause()` (a PTY read cannot be paused): output is
-//     coalesced (5 ms / 64 KiB) and counted until the panel acknowledges it
-//     (`terminal.ack`, from xterm's write callback). Above HIGH the helper stops
-//     streaming and lets the mirror absorb the flood; once acks bring it under LOW,
-//     one `reset` snapshot resynchronizes the panel. Helper memory stays bounded by
-//     the mirror's scrollback, and keystrokes (Ctrl-C) are never queued behind output.
-//   • Output is decoded per session with a streaming TextDecoder, so a UTF-8
-//     sequence split across two PTY reads is never mangled.
-//
-// Terminal bytes are never logged. The manager knows nothing of agent runs.
-
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { Terminal } from '@xterm/headless';
@@ -29,10 +10,7 @@ import { BadRequest } from '../paths.ts';
 import { terminalLaunch, type TerminalLaunch } from './shell.ts';
 import type { PtyBackend, PtyProcess } from './types.ts';
 
-/** One panel connection, as far as the manager is concerned. Compared by identity. */
 export interface TerminalOwner {
-    /** `false`: the frame was DROPPED, not queued (the socket is past its backpressure
-     *  limit). Anything else counts as delivered. */
     send(msg: HelperMessage): boolean | void;
 }
 
@@ -44,7 +22,6 @@ export interface Timers {
 const realTimers: Timers = {
     set(fn, ms) {
         const t = setTimeout(fn, ms);
-        // The server keeps the process alive; a pending flush or TTL must not.
         t.unref?.();
         return t;
     },
@@ -65,15 +42,10 @@ export class TerminalNotFound extends Error {
     }
 }
 
-/** One frame carries at most this much, or what has gathered for this long. */
 const COALESCE_MS = 5;
 const COALESCE_CHARS = 65_536;
-/** After a frame was dropped, how soon to try the resynchronizing snapshot again. */
 const RESYNC_RETRY_MS = 250;
-/** closeAll waits this long for the shells to report their end. */
 const CLOSE_ALL_WAIT_MS = 3000;
-/** Detached shells outlive their connection, so unbounded reconnect loops could
- *  pile them up past the per-connection cap: this bounds them all. */
 const TOTAL_FACTOR = 3;
 
 interface Session {
@@ -85,18 +57,11 @@ interface Session {
     shell: string;
     backend: TerminalBackend;
     owner: TerminalOwner | null;
-    /** A connection whose attach is awaiting its snapshot: not the owner yet, but
-     *  its socket closing must still leave the session detached (with a TTL). */
     attaching: TerminalOwner | null;
-    /** Output not yet sent: coalescing, or held back while a snapshot is taken. */
     pending: string;
-    /** Characters sent in `terminal.output` that the panel has not acknowledged. */
     unacked: number;
-    /** Streaming is paused (over HIGH); the mirror alone absorbs output. */
     behind: boolean;
-    /** A snapshot is being taken: everything after its marker must follow it, in order. */
     holding: boolean;
-    /** Bumped whenever the owner changes, so a snapshot in flight can tell it went stale. */
     epoch: number;
     exited: TerminalExit | null;
     exitSent: boolean;
@@ -110,7 +75,6 @@ interface Session {
 
 export interface TerminalManagerDeps {
     backend: PtyBackend;
-    /** The shell and environment of a new terminal (real machine by default). */
     launch?: () => Promise<TerminalLaunch>;
     timers?: Timers;
     maxTerminals?: number;
@@ -143,12 +107,6 @@ export class TerminalManager {
         return this.sessions.size;
     }
 
-    /**
-     * `cwd` is where the shell starts: the folder of the file the user is
-     * looking at, already resolved to a real directory by the caller
-     * (helper/src/vaultPath.ts). Undefined keeps the old behaviour, the home
-     * directory, which is also what a vault the helper cannot find falls back to.
-     */
     async open(owner: TerminalOwner, termId: unknown, cols: unknown, rows: unknown, cwd?: string): Promise<{ shell: string; pid: number; backend: TerminalBackend; cwd: string }> {
         if (!isUuid(termId)) throw new BadRequest('invalid termId');
         const dims = size(cols, rows);
@@ -159,8 +117,6 @@ export class TerminalManager {
         if (this.sessions.size >= this.maxTerminals * TOTAL_FACTOR) throw new TerminalLimit('Too many terminals are open (some may be detached from closed windows).');
 
         const session = this.create(termId, owner, dims.cols, dims.rows);
-        // Registered before the spawn resolves: a socket that closes meanwhile
-        // must still detach (and so eventually reap) this session.
         this.sessions.set(termId, session);
         try {
             const base = await this.launch();
@@ -172,7 +128,6 @@ export class TerminalManager {
             });
             session.pty = pty;
             session.backend = this.backend.kind;
-            // Closed (or exited) while the spawn was still in flight.
             if (session.disposed || session.exited) pty.kill();
             return { shell: session.shell, pid: pty.pid, backend: session.backend, cwd: launch.cwd };
         } catch (e) {
@@ -181,7 +136,6 @@ export class TerminalManager {
         }
     }
 
-    /** Takes the session over: the previous owner is told, and the snapshot is what to write into a freshly reset xterm. */
     async attach(owner: TerminalOwner, termId: unknown, cols: unknown, rows: unknown): Promise<{ snapshot: string; shell: string; exited: TerminalExit | null }> {
         if (!isUuid(termId)) throw new BadRequest('invalid termId');
         const dims = size(cols, rows);
@@ -195,17 +149,12 @@ export class TerminalManager {
         s.holding = true;
         this.resizeSession(s, dims.cols, dims.rows);
         const snapshot = await this.snapshot(s);
-        // A bumped epoch: taken over meanwhile, or this very connection closed
-        // (detachAll released it and armed the TTL; nobody is left to own it).
         if (s.epoch !== epoch || s.disposed) throw new TerminalNotFound('the terminal was taken over');
         s.attaching = null;
         s.owner = owner;
         s.epoch++;
         s.holding = false;
-        // The result already carries the end; do not announce it again.
         s.exitSent = s.exited !== null;
-        // After a macrotask, not now: the caller's response (snapshot) must reach the
-        // panel before the output that gathered while it was being taken.
         this.scheduleFlush(s);
         return { snapshot, shell: s.shell, exited: s.exited };
     }
@@ -233,7 +182,6 @@ export class TerminalManager {
         if (s.behind && !s.holding && s.unacked < TERMINAL_ACK_LOW) void this.resync(s);
     }
 
-    /** Ends the shell and forgets the session. Idempotent: closing what is already gone is fine. */
     close(owner: TerminalOwner, termId: unknown): void {
         if (typeof termId !== 'string') return;
         const s = this.sessions.get(termId);
@@ -242,7 +190,6 @@ export class TerminalManager {
         this.dispose(s);
     }
 
-    /** The owner's socket closed: its shells keep running, detached, until the TTL. */
     detachAll(owner: TerminalOwner): void {
         for (const s of this.sessions.values()) {
             if (s.owner !== owner && s.attaching !== owner) continue;
@@ -251,7 +198,6 @@ export class TerminalManager {
         }
     }
 
-    /** Helper shutdown: hang up every shell and give them a moment to report it. */
     async closeAll(): Promise<void> {
         const all = [...this.sessions.values()];
         for (const s of all) this.dispose(s);
@@ -261,12 +207,8 @@ export class TerminalManager {
         this.timers.clear(timer);
     }
 
-    /* ───────────── internals ───────────── */
-
     private create(id: string, owner: TerminalOwner, cols: number, rows: number): Session {
         const headless = new Terminal({ cols, rows, scrollback: TERMINAL_SCROLLBACK, allowProposedApi: true });
-        // The panel draws with unicode 11 widths (emoji, CJK); the mirror must lay
-        // the same characters out the same way or a snapshot shifts them.
         headless.loadAddon(new Unicode11Addon());
         headless.unicode.activeVersion = '11';
         const serialize = new SerializeAddon();
@@ -285,7 +227,6 @@ export class TerminalManager {
         if (!s.exited) s.pty?.resize(cols, rows);
     }
 
-    /** No owner any more (detach or a takeover in progress): nothing is streamed, and flow control starts over. */
     private release(s: Session): void {
         if (s.detachTimer !== null) this.timers.clear(s.detachTimer);
         if (s.flushTimer !== null) this.timers.clear(s.flushTimer);
@@ -302,13 +243,6 @@ export class TerminalManager {
         s.holding = false;
     }
 
-    /**
-     * The serialized screen + scrollback exactly as of now: once the mirror's parser has
-     * caught up with everything written so far — and serialized INSIDE the write callback.
-     * Measured: the parser works through its queue in time slices and a promise
-     * continuation only runs after the slice, so output queued after the marker had
-     * already been parsed by then and showed up twice (in the snapshot and after it).
-     */
     private snapshot(s: Session): Promise<string> {
         return new Promise<string>(resolve => {
             s.headless.write('', () => resolve(s.serialize.serialize({ scrollback: TERMINAL_SCROLLBACK })));
@@ -320,7 +254,6 @@ export class TerminalManager {
         const text = s.decoder.decode(bytes, { stream: true });
         if (!text) return;
         s.headless.write(text);
-        // Not streaming (detached, or behind): the mirror has it, and a snapshot will carry it.
         if (!s.holding && (!s.owner || s.behind)) return;
         s.pending += text;
         if (s.holding) return;
@@ -355,12 +288,6 @@ export class TerminalManager {
         this.sendExit(s);
     }
 
-    /**
-     * A frame never left (Bun DROPS frames past the socket's backpressure limit — it
-     * does not queue them). The panel's screen now has a hole, and the frame will never
-     * be acknowledged, so the ack-driven resync might never come: stop streaming, and
-     * resynchronize with a snapshot as soon as one can be sent.
-     */
     private dropped(s: Session): void {
         s.behind = true;
         s.pending = '';
@@ -368,25 +295,21 @@ export class TerminalManager {
         s.retryTimer = this.timers.set(() => {
             s.retryTimer = null;
             if (s.disposed || !s.owner || !s.behind || s.holding) return;
-            // Acks still in flight bring it under LOW themselves (ack → resync).
             if (s.unacked < TERMINAL_ACK_LOW) void this.resync(s);
         }, RESYNC_RETRY_MS);
     }
 
-    /** Back under LOW after a stall: one snapshot replaces everything the panel missed. */
     private async resync(s: Session): Promise<void> {
         const epoch = s.epoch;
         s.holding = true;
         s.pending = '';
         const snapshot = await this.snapshot(s);
-        if (s.epoch !== epoch || s.disposed) return; // detached or taken over meanwhile: that path reset the flags
+        if (s.epoch !== epoch || s.disposed) return;
         if (s.owner?.send({ type: 'terminal.output', termId: s.id, data: snapshot, reset: true }) === false) {
             s.holding = false;
             this.dropped(s);
             return;
         }
-        // The panel acknowledges a reset like any output, so it counts: but it never
-        // trips HIGH by itself (only the next flush can), or one big snapshot would loop.
         s.unacked = snapshot.length;
         s.behind = false;
         s.holding = false;
@@ -397,12 +320,10 @@ export class TerminalManager {
         s.markEnded();
         if (s.disposed) return;
         s.exited = exit;
-        // Releases the backend's handle (it hangs up an already-dead PTY harmlessly).
         s.pty?.kill();
         this.flush(s);
     }
 
-    /** The end is announced after the last output, and only to an owner that is caught up. */
     private sendExit(s: Session): void {
         if (!s.exited || s.exitSent || !s.owner || s.behind || s.holding) return;
         s.exitSent = true;
@@ -420,8 +341,6 @@ export class TerminalManager {
         if (s.retryTimer !== null) this.timers.clear(s.retryTimer);
         s.detachTimer = s.flushTimer = s.retryTimer = null;
         this.sessions.delete(s.id);
-        // A running shell reports its end through onExit; anything else is over already
-        // (or, still spawning, is killed the moment its spawn resolves).
         if (s.pty && !s.exited) s.pty.kill();
         else s.markEnded();
         try {

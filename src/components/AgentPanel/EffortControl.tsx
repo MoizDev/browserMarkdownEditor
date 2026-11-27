@@ -1,6 +1,3 @@
-// How hard the model thinks, for models that report effort levels. The aicss
-// slider when there are two or more levels; a plain line when there is one.
-
 import { ReasoningEffort } from './aicss/ReasoningEffort';
 import { effortLabel } from './useAgentChat';
 

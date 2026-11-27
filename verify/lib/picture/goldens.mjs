@@ -27,9 +27,6 @@ export async function cacheGolden(store, bytes) {
     return { sha256: hash, bytes: bytes.length, file };
 }
 
-/** Stage ONLY a proposal. This never changes an approved manifest or chooses a new baseline.
- * A reviewed expected/actual/difference triple is required even for an initial identical pair.
- */
 export async function proposeGoldens({ expectedDir, actualDir, comparisonDir, store, outDir, manifestPath = resolve(ROOT, 'verify/goldens.manifest.json') }) {
     const comparisonBytes = await readFile(resolve(comparisonDir, 'comparison.json'));
     const comparison = JSON.parse(comparisonBytes);
@@ -80,9 +77,6 @@ export async function proposeGoldens({ expectedDir, actualDir, comparisonDir, st
     return { path, sha256: sha256(Buffer.from(json(proposal))), records: records.length };
 }
 
-/** Only an explicit reviewed note can admit a proposal. Ordinary runs never call this.
- * review.proposalSha256 binds the review to the exact triple, not the latest convenient image.
- */
 export async function admitGoldens({ proposalPath, reviewPath, store, manifestPath }) {
     const proposalBytes = await readFile(proposalPath);
     const proposal = JSON.parse(proposalBytes);

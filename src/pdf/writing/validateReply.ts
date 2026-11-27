@@ -18,7 +18,7 @@ function matching(value: unknown, pattern: RegExp): string {
 }
 function outputBytes(value: unknown): ArrayBuffer {
     if (!(value instanceof ArrayBuffer) || value.byteLength < 1 || value.byteLength > MAX_FILE) invalidPdfReply();
-    return value; // Transferred non-shared bytes are already owned by the privileged host.
+    return value;
 }
 const ROTATION_REFUSALS = new Set(['signed', 'encrypted', 'legacy-annotations', 'newer-annotations', 'other-engine', 'foreign-change', 'missing-attachment', 'unverified', 'unsafe-policy', 'unsupported-format', 'unsupported-rotation']);
 function quarters(value: unknown, count: number): boolean {
@@ -64,8 +64,6 @@ function writeId(value: unknown, expected: string): string {
     const result = matching(value, WRITE_ID); exact(result, expected); return result;
 }
 
-/** Rebuild every response at the privileged boundary; session-bound comparisons
- * require the caller's retained prepare/stage state, not worker-provided claims. */
 export function validatePdfWriterReply<K extends keyof WriterOperations>(op: K, value: unknown,
     args: WriterOperations[K]['args']): WriterOperations[K]['result'] {
     let result: WriterOperations[keyof WriterOperations]['result'];

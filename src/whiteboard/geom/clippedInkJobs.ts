@@ -14,8 +14,6 @@ export type ClippedInkResult = Readonly<{ status: 'pending' | 'hit' | 'miss' | '
 const PENDING: ClippedInkResult = Object.freeze({ status: 'pending' });
 type Primitive = Readonly<{ coverage: InkCoverage; bounds: CertifiedClipBox; kind: 'segment' | 'disc' | 'centreline'; depth: number }>;
 
-/** Geometry enclosures are transformed before frame classification; a source
- * enclosure outside any frame cannot contribute, including its error margin. */
 function primitiveBounds(matrix: Affine, ax: number, ay: number, bx: number, by: number, radius: number, error: number): CertifiedClipBox {
     if (![ax, ay, bx, by, radius, error].every(Number.isFinite) || radius < 0 || error < 0) throw new RangeError('Invalid clipped ink primitive');
     const a = exactPointIntervals(exactAffinePoint(matrix, { x: ax, y: ay })), b = exactPointIntervals(exactAffinePoint(matrix, { x: bx, y: by }));
@@ -84,8 +82,6 @@ function clipRelation(box: CertifiedClipBox, frames: ReturnType<typeof preparePo
     return overlap ? 'overlap' : 'inside';
 }
 
-/** A point hit is accepted only when its entire generating ink primitive is
- * visible. A partial clip with a possible witness remains explicit uncertainty. */
 export function createClippedInkPointJob(coverage: InkCoverage, matrix: Affine, query: InkPickQuery, dpr: number,
     frames: readonly PointClipContour[], maxWork = 2000000): { step(budget: { deadline: number; maxWork: number }): ClippedInkResult; cancel(): void } {
     if (query.kind !== 'point' || !matrix.every(Number.isFinite) || !Number.isFinite(dpr) || dpr <= 0 || frames.length > 64
@@ -143,8 +139,6 @@ export function createClippedInkPointJob(coverage: InkCoverage, matrix: Affine, 
     };
 }
 
-/** Region containment requires every visible primitive; overlap needs one
- * fully visible witness. Frame-straddling undecided primitives are not dropped. */
 export function createClippedInkRegionJob(coverage: InkCoverage, matrix: Affine, query: RegionQuery, dpr: number,
     frames: readonly PointClipContour[], maxWork = 4000000): { step(budget: { deadline: number; maxWork: number }): ClippedInkResult; cancel(): void } {
     if (!matrix.every(Number.isFinite) || !Number.isFinite(dpr) || dpr <= 0 || frames.length > 64

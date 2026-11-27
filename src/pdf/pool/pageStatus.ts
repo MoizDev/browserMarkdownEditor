@@ -52,7 +52,6 @@ function publish(docKey: string, page: number, entry: Entry): void {
     }
 }
 
-/** Called on dispatch, not enqueue. Each lease settles at most once. */
 export function beginPdfPageWork(docKey: string, page: number): { finish(): void } {
     const entry = entryFor(docKey, page);
     if (!Number.isSafeInteger(entry.pending + 1)) throw new RangeError('Too many PDF page jobs');

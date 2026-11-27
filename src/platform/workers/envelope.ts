@@ -21,13 +21,6 @@ export class WorkerHostError extends Error {
     }
 }
 
-/** Whether a rejection means the work was called off rather than failed: a DOM `AbortError` (a signal, or an engine error
- * that kept its name across the worker boundary, e.g. the PDF engine's `PdfEngineError('AbortError')` relayed as a
- * `WorkerHostError`), or the worker host's own `'Cancelled'` (an aborted signal, `cancelAll`, a recycle, a dispose).
- * Cancellation is never shown to the person: whoever called it off already has, or no longer wants, the answer. A
- * `'Deadline'` is NOT a cancellation (the work was wanted and did not come) and stays its caller's decision. One
- * predicate on purpose: the board checked only the DOM `AbortError`, so a hover pick or marquee the person superseded
- * reached them as "bme-worker-host-v1: Request aborted" (measured: 3 of 6 marquee rounds ended by click, ⌘Z or Escape). */
 export function isCancellation(error: unknown): boolean {
     if (typeof DOMException !== 'undefined' && error instanceof DOMException) return error.name === 'AbortError';
     return error instanceof Error && (error.name === 'AbortError' || error.name === 'Cancelled');
@@ -42,13 +35,10 @@ export interface ContainedPort {
 export interface RequestOptions {
     priority: Priority;
     deadlineMs?: number;
-    /** Recycle only when a posted job reaches its deadline, not when waiting in the queue. */
     terminateOnDeadline?: boolean;
     signal?: AbortSignal;
     transfer?: Transferable[];
     cpu?: 'governed' | 'light';
-    // Retrying subsystems supply their own logical identity. Without a key there is no poison marking:
-    // inspecting Blob/array arguments to guess one would put document-sized work on the main thread.
     key?: string;
 }
 
@@ -74,7 +64,6 @@ export interface CpuPermits {
 export interface WorkerSpec {
     name: string;
     protocol: number;
-    /** A worker, or one on its way: a script started through `workerScript` (script.ts), or a contained port. */
     spawn(): Worker | Promise<Worker | ContainedPort>;
     onStart?(client: WorkerClient): Promise<void>;
     silenceMs?: Record<Priority, number>;
@@ -84,8 +73,6 @@ export interface WorkerSpec {
     events?: readonly string[];
     eventLimit?: number;
     permits?: CpuPermits;
-    // C5.5 permits read-only cloned file handles only for the same-origin vault
-    // index tree operations; contained ports still enforce the C5.2 allowlist.
     fileHandleOps?: readonly string[];
 }
 
@@ -93,13 +80,10 @@ export type ClientState = 'idle' | 'starting' | 'ready' | 'recycling' | 'backoff
 
 export interface WorkerClient {
     request<T>(op: string, args: unknown, options: RequestOptions): Promise<T>;
-    /** Physical endpoint retirement can follow logical rejection after a posted cancellation. */
     whenRetired(request: Promise<unknown>): Promise<void>;
     reprioritise(request: Promise<unknown>, priority: Priority): void;
     cancelAll(match: (op: string, args: unknown) => boolean): void;
     on(event: string, handler: (data: unknown) => void): () => void;
-    // A lazy recycle with no queued callers terminates now but waits for the next request to spawn.
-    // Both forms retain crash/poison history; a failed client still requires an explicit reset.
     recycle(reason: string, options?: { lazy?: boolean }): Promise<void>;
     reset(): void;
     dispose(): void;
@@ -135,10 +119,6 @@ export function isWorkerMessage(value: unknown): value is WorkerMessage {
     return typeof value.event === 'string' && 'data' in value;
 }
 
-// Check caller arguments and contained replies only: structuredClone permits shared buffers and
-// handles beyond C5; only the index's opted-in same-origin operations carry file handles.
-// Trusted same-origin replies already cloned without functions/accessors; walking
-// their large index snapshots again on the main thread would defeat moving that work off-thread.
 // Walk containers only; never scan the bytes of a buffer, bitmap or Blob.
 export function assertPayload(value: unknown, seen = new Set<object>(), allowFileHandles = false): void {
     if (value === null || value === undefined || ['string', 'boolean', 'number', 'bigint'].includes(typeof value)) return;

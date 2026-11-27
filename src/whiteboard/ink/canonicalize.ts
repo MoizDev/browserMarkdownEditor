@@ -25,7 +25,6 @@ export interface CanonicalizationCandidate {
 // the store/curve: inconclusive is false, never a sampled-distance guess that silently drops ink.
 export type OmissionCertificate = (candidate: CanonicalizationCandidate) => boolean;
 export type PackingCertificate = (before: SampleSequence, after: SampleSequence, firstSpan: number, spanCount: number) => number;
-// Half of §6.1's 1/16 px packing allocation remains for later GPU packing; it is NOT extra error.
 export const SAMPLE_CURVE_PACKING_ERROR_DEVICE_PX = 1 / 32;
 
 export const certifyExactCollinear: OmissionCertificate = (c) => {
@@ -35,9 +34,6 @@ export const certifyExactCollinear: OmissionCertificate = (c) => {
     const ax = c.rawXY[0], ay = c.rawXY[1];
     const last = c.rawCount - 1, dx = c.rawXY[2 * last] - ax, dy = c.rawXY[2 * last + 1] - ay;
     if (dx === 0 && dy === 0) return false;
-    // Axis-aligned doubles give an exact enclosure. General integer lines also have an exact
-    // determinant when differences/products fit 52 bits; controls may still round off that line,
-    // so E1 conservatively keeps those for the full curved certificate rather than assert equality.
     if (dx !== 0 && dy !== 0) return false;
     if (c.frozen.count) {
         const i = c.frozen.count - 1, x = c.frozen.x(i), y = c.frozen.y(i);
@@ -53,9 +49,6 @@ export const certifyExactCollinear: OmissionCertificate = (c) => {
         if (direction > 0 ? position < previous : position > previous) return false;
         previous = position;
     }
-    // Every old/proposed cubic is monotone on the very same interval with the same radius. Their
-    // symmetric swept coverage distance is exactly zero, including the last published prefix. This
-    // uses all raw points, not a chain of pairwise omissions whose errors could accumulate.
     return true;
 };
 
@@ -150,8 +143,6 @@ export class AuthoringSamples implements SampleSequence, CanonicalizationCandida
         });
     }
     private freezePrefix(): void {
-        // Three retained neighbours remain exact; the next candidate can affect no earlier tangent.
-        // R-W9: packing is provisional until a whole affected-control-hull certificate admits it.
         const keep = Math.min(3, this.retainedCount), stop = this.retainedCount - keep;
         if (stop) {
             const before = this.snapshot(), oldFrozenCount = this.frozen.count;
@@ -163,8 +154,6 @@ export class AuthoringSamples implements SampleSequence, CanonicalizationCandida
             const budget = Math.min(CANONICALIZATION_ERROR_DEVICE_PX / this.captureDeviceScale,
                 SAMPLE_CURVE_PACKING_ERROR_DEVICE_PX / (this.options.declaredMaxScale * (this.options.maxDpr ?? 3)));
             if (!Number.isFinite(error) || error < 0 || this.packingSincePublication + error > budget) {
-                // A tiny positional rounding can cross a tangent/corner threshold. Keep doubles rather
-                // than trust the sample-error name; no published array or canonical record is rolled back.
                 rollback();
                 this.frozen.beginExactTail();
                 for (let j = 0; j < stop; j++) this.appendFrozen(this.retained[j]);
@@ -201,8 +190,6 @@ export class AuthoringSamples implements SampleSequence, CanonicalizationCandida
     }
     finish(): SampleBuilder {
         if (this.finished) throw new Error('Authoring ownership has already transferred');
-        // No omission/packing at pointer-up/save/hide. Keeping this bounded tail in doubles prevents a
-        // commit-time refit; the already frozen prefix stays in its bounded canonical representation.
         this.frozen.beginExactTail();
         for (let j = 0; j < this.retainedCount; j++) this.appendFrozen(this.retained[j]);
         this.rawCount = 0; this.retainedCount = 0; this.finished = true;

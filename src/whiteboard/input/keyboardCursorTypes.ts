@@ -15,7 +15,6 @@ export interface KeyboardCursorServices {
 }
 export interface KeyboardCursor {
   readonly active: boolean
-  /** A press is held at the cursor, begun by Enter or by the comma key. */
   readonly gesture: boolean
   currentSample(): RealSample | null
   activate(point: KeyboardCursorPoint): void

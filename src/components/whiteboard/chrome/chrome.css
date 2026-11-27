@@ -6,7 +6,6 @@
     flex-direction: column;
     justify-content: space-between;
     pointer-events: none;
-    /* Cmd/Ctrl+A with a toolbar button focused painted every chrome label in selection blue. */
     user-select: none;
 }
 
@@ -15,8 +14,6 @@
     pointer-events: auto;
 }
 
-/* The tool bar is centred on the pane's bottom edge and the zoom controls keep the corner: the
-   outer columns take the free width, so the centred bar never moves when zoom's label grows. */
 .board-chrome-bottom {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
@@ -42,9 +39,6 @@
     overflow-x: auto;
 }
 
-/* A pane too narrow for both on one row (ViewerHost's CHROME_STACK_BELOW_PX) puts the zoom controls above the
-   bar's right end: in the three-column grid the bar took every pixel and the zoom column, at 0px, was pushed past
-   the pane's edge. The bar stays centred and scrolls its tools when even it does not fit. */
 .board-viewer-host[data-chrome-stacked] .board-chrome-bottom {
     grid-template-columns: minmax(0, 1fr);
 }
@@ -59,24 +53,18 @@
     grid-column: 1;
 }
 
-/* In a narrow pane the Actions grid (150px), centred under its button, ran 38px past the pane's right edge: it opens
-   from the button's right end instead. */
 .board-viewer-host[data-chrome-stacked] .board-chrome-action-popup {
     left: auto;
     right: 0;
     transform: none;
 }
 
-/* There the More tools popover (five columns, 226px) would hang past a narrow pane's edge: it spans the bar instead,
-   as many columns as fit. */
 .board-viewer-host[data-chrome-stacked] .board-chrome-more {
     inset-inline-start: 0;
     grid-template-columns: repeat(auto-fill, 40px);
     justify-content: center;
 }
 
-/* The header and any page controls are one in-flow column, so a row added below the header
-   pushes nothing over it. The column stays click-through; its children opt back in. */
 .board-chrome-top {
     position: relative;
     display: flex;
@@ -86,7 +74,6 @@
     max-width: 100%;
 }
 
-/* The row between the header and the bottom row: the docked panel and the command palette lay over it, never resize it. */
 .board-chrome-middle {
     position: relative;
     flex: 1 1 0;
@@ -96,8 +83,6 @@
     pointer-events: none;
 }
 
-/* The docked style panel: the overlay's free column, from under the header to the reserved bottom edge. The reserve is
-   the bottom row, a notice band and an open minimap (viewerHost.css sets it per state), so the panel stops above them. */
 .board-chrome-pen {
     flex: 1 1 0;
     display: flex;
@@ -115,8 +100,6 @@
     max-width: 100%;
 }
 
-/* The top bar sits flush in the pane's corner. The overlay is inset 8px for its floating bars, so the header
-   takes that inset back; the page controls and the style panel still start from the overlay's edge. */
 .board-chrome-header {
     display: flex;
     align-self: flex-start;
@@ -128,8 +111,6 @@
     min-width: 0;
 }
 
-/* One grey strip; its bottom-right corner is the only rounded one. Its popups are absolutely placed, so the strip
-   must not clip (no overflow): a long sheet name truncates instead. */
 .board-chrome-strip {
     display: flex;
     align-items: center;
@@ -190,7 +171,6 @@
     white-space: nowrap;
 }
 
-/* A white card centred under the Actions button (as drawn), four 36px cells to a row, five rows. */
 .board-chrome-action-popup {
     position: absolute;
     z-index: 1;
@@ -201,7 +181,6 @@
     border: 1px solid var(--board-bar-border, transparent);
     border-radius: 12px;
     background: var(--board-bar-bg, var(--background-primary));
-    /* The grid's glyphs are mid-grey, between the card and the text ink, in both themes. */
     color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
     box-shadow: var(--board-bar-shadow, 0 6px 20px rgb(0 0 0 / 16%), 0 1px 3px rgb(0 0 0 / 10%));
 }
@@ -238,11 +217,6 @@
     cursor: default;
 }
 
-/* The board's main menu (the strip's menu passes this class to openContextMenu; no other menu carries it).
-   Drawn as the owner's picture: a white card with 12px corners and a soft shadow, 36px rows of 15px text,
-   a grey chord after each label, and a Lucide chevron for each submenu. Its flyouts are scoped the same way,
-   and their panel chrome is reset so only the card shows. The :root[data-theme] selectors outrank the app's
-   light-theme override of .context-menu, which sits on the same kind of selector. */
 .context-menu.board-main-menu,
 :root[data-theme] .context-menu.board-main-menu,
 .board-main-menu .context-menu,
@@ -282,7 +256,6 @@
     font-size: 14px;
 }
 
-/* A mask, so the chevron takes the grey below and not the row's ink. */
 .board-main-menu .context-menu-item-arrow {
     flex: none;
     width: 16px;
@@ -315,7 +288,6 @@
     overflow-x: auto;
 }
 
-/* Opens above the bar, flush with its right end where the chevron sits: five icons to a row. */
 .board-chrome-more {
     position: absolute;
     z-index: 1;
@@ -344,8 +316,6 @@
     cursor: pointer;
     max-width: 100%;
     overflow-wrap: anywhere;
-    /* A finger dragged off a bar tool is the drop gesture (chromeDrag.ts), not a page pan: without this the browser takes the
-     * touch as a pan and cancels the press at the first move (measured: a finger drag-out created nothing). */
     touch-action: none;
 }
 
@@ -359,7 +329,6 @@
     outline-offset: 2px;
 }
 
-/* Every control in the chrome shows the same app ring when keyboard-focused, not only the ones styled above (WB-D32). */
 .board-chrome-overlay :focus-visible {
     outline: 2px solid var(--interactive-accent);
     outline-offset: 2px;
@@ -370,9 +339,6 @@
     opacity: .45;
 }
 
-/* The board's tool bar: one floating rounded bar of 40px icon buttons, measured off the owner's pictures.
-   Its colours are the board theme's (index.css); a notebook or PDF pane has no board theme, so it falls back
-   to the app's own surfaces. */
 .board-chrome-tool-strip {
     gap: 4px;
     padding: 4px;
@@ -398,7 +364,6 @@
     color: var(--text-normal);
 }
 
-/* The same blue whichever pane hosts the bar, so a notebook's active tool matches a drawing's. */
 .board-chrome-tool-strip .board-chrome-tool-icon[aria-pressed='true'],
 .board-chrome-tool-strip .board-chrome-tool-more[data-current] {
     background: var(--board-tool-active, #4a7fe8);
@@ -410,8 +375,6 @@
     background: var(--board-tool-active, #4a7fe8);
 }
 
-/* The tool lock sits above the bar's left end while the selected tool can be locked, drawn as its own small bar so it
-   reads as part of the tool bar. Pressed (locked) it takes the active blue, as a pressed tool does. */
 .board-chrome-tool-lock {
     position: absolute;
     bottom: calc(100% + 8px);
@@ -429,7 +392,6 @@
     color: var(--board-tool-active-fg, #fff);
 }
 
-/* Focus mode's one dot, in the corner the zoom controls keep: the only chrome left on the board while it is on. */
 .board-chrome-focus-overlay {
     justify-content: flex-end;
     align-items: flex-end;
@@ -461,9 +423,6 @@
     background: currentColor;
 }
 
-/* Native select and text input, dressed as the chrome's own controls. Options carry their own
-   colours because the popup is the browser's, and a bare select picks the light system palette
-   on the dark theme. */
 .board-chrome-select,
 .board-chrome-field {
     min-height: 30px;
@@ -493,9 +452,6 @@
     outline-offset: 2px;
 }
 
-/* The docked panel and the popover share one set of rows. The viewer host is the container (viewerHost.css), so the
-   breakpoint is the pane's own width: 641px is where tldraw docks its style panel, and below it the panel is the
-   bottom bar's button, which opens the same rows as a popover. */
 @container (min-width: 641px) {
     .board-style-popover-anchor { display: none; }
 }
@@ -553,8 +509,6 @@
     height: 100%;
     min-height: 0;
     pointer-events: none;
-    /* The room the reserve leaves is the card's own size: below a header's height (a short pane with a minimap and a
-       notice) the card is not drawn, since a clipped sliver of it reads as a broken control. */
     container-type: size;
 }
 
@@ -562,7 +516,6 @@
     .board-style-dock > .board-style-panel { display: none; }
 }
 
-/* The card's header: its title, the folded colour, and the fold's chevron. Folded, the header is the whole card. */
 .board-style-panel-head {
     display: flex;
     flex: none;
@@ -618,12 +571,9 @@
     padding-top: 10px;
 }
 
-/* A scrolled rows region settles on whole choice rows: each button snaps to its top edge, and the buttons of one row share it,
-   so the view never stops halfway through a swatch row (fitRowsToWholeSections fixes the same stops when the pane is short). */
 .board-style-rows { scroll-snap-type: y proximity; }
 .board-style-rows .board-style-choice { scroll-snap-align: start; }
 
-/* The card keeps its header whatever the room: only the rows scroll (.board-style-rows), so a short pane shows the fold. */
 .board-style-panel {
     box-sizing: border-box;
     display: flex;
@@ -686,7 +636,6 @@
 }
 
 .board-style-choice:hover:not(:disabled) { background: var(--background-modifier-hover); }
-/* A five-option grid is 32px a cell in a 184px panel: "100%" needs the padding gone to fit without clipping. */
 .board-style-choices[style*='repeat(5'] .board-style-choice { padding: 4px 0; }
 .board-style-choice[aria-pressed='true'] {
     border-color: var(--interactive-accent);
@@ -817,7 +766,6 @@
 .board-shortcuts-content {
     overflow: auto;
     padding: 0 16px 16px;
-    /* Groups flow into columns the way the sheet reads: three across when the dialog is wide, fewer when it is not. */
     columns: 3 260px;
     column-gap: 32px;
 }
@@ -852,20 +800,14 @@
 
 .board-shortcut-row dd { margin: 0; }
 
-/* Key caps read as the UI's own text: the default monospace made "Delete" and "Tab" look like code next to the symbols. */
-/* A chord is keys, not prose: in an RTL dialog its modifier glyphs and letters reorder ("⌘Z" read as "Z⌘"), so it stays LTR. */
 .board-shortcuts-dialog kbd { font-family: inherit; direction: ltr; unicode-bidi: isolate; }
 
-/* The command palette (CommandPalette.tsx): the main menu's card, opened as the bottom column's neighbour, so it sits
-   8 px above the tool bar. The pointer-coarse case puts it below the header instead: a finger's own keyboard is the
-   on-screen one, which covers the bottom bar. The backdrop is the modal's outside: a press there closes the palette. */
 .board-palette-backdrop {
     position: fixed;
     inset: 0;
     pointer-events: auto;
 }
 
-/* The palette lays over the middle row, 8 px above the tool bar, and is centred in it: it covers the docked panel while open. */
 .board-palette {
     position: absolute;
     inset-inline: 0;

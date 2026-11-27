@@ -2,7 +2,6 @@ import { add, divide, interval, multiply, nextDown, nextUp, sqrtInterval, subtra
 import type { Interval } from './numeric';
 import type { Arc, Cubic } from './path';
 
-// Packed scene/index boxes use [minX,minY,maxX,maxY], never Float32 absolute positions.
 export type Box = readonly [number, number, number, number];
 export function validBox(a: ArrayLike<number>, offset = 0): boolean {
     return Number.isFinite(a[offset]) && Number.isFinite(a[offset + 1]) && Number.isFinite(a[offset + 2])
@@ -38,7 +37,6 @@ export function multiplyAffine(out: Float64Array, oi: number, a: ArrayLike<numbe
     if (!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Scene transform overflows');
     out[oi] = x0; out[oi + 1] = y0; out[oi + 2] = x1; out[oi + 3] = y1; out[oi + 4] = x; out[oi + 5] = y;
 }
-// Roots that cannot be certified fall back to the control hull, never a smaller envelope.
 function cubicAxis(p0: number, p1: number, p2: number, p3: number): readonly [number, number] {
     const points = [p0, p1, p2, p3];
     if (!points.every(Number.isFinite)) throw new RangeError('Non-finite cubic');
@@ -80,7 +78,6 @@ export function arcBounds(arc: Arc): Box {
     let x0 = Math.min(Math.cos(start), Math.cos(end)), x1 = Math.max(Math.cos(start), Math.cos(end));
     let y0 = Math.min(Math.sin(start), Math.sin(end)), y1 = Math.max(Math.sin(start), Math.sin(end));
     const low = Math.min(start, end), high = Math.max(start, end), quarter = Math.PI / 2;
-    // Include a neighbouring quadrant when angle rounding makes membership uncertain.
     const first = Math.ceil(nextDown(low / quarter)), last = Math.floor(nextUp(high / quarter));
     for (let k = first; k <= last; k++) {
         const axis = ((k % 4) + 4) % 4;

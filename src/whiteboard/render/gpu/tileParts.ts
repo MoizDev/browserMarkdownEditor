@@ -1,17 +1,3 @@
-// The prepared paint, flattened into the parts each one paints and indexed by world rectangle. A tile asks for the parts
-// that reach its span; a new revision re-derives only the items its changed regions touch, and reports only what it
-// actually changed. Indexing is resumable: one item per step, stepped under the frame's budget.
-//
-// What is reported to takeChanges, and why (the counters say which cause fired):
-//   • index:regions (+rects)   the scene's changed regions, when the revision moved;
-//   • index:members            items that entered or left the prepared paint (its item set changed, not its content);
-//   • index:epoch              text items whose font epoch moved;
-//   • index:rederive           items re-derived because a changed region reaches them;
-//   • index:unknown-span       the revision span has no region history (a sync source, or a span the scene cannot bound):
-//                              items are compared by identity and only the parts that changed are reported;
-//   • index:rebuild-all        the index was rebuilt from nothing (no index yet, or theme/raster variant changed).
-// The span's regions are never a reason to report the whole index: a changed item's old and new bounds are exactly what moved.
-// A new paint object with the same revision and the same items reports nothing: its items are reused by identity.
 import type { Rect } from '../../../platform/types';
 import type { FrameBudget } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
@@ -23,64 +9,46 @@ import { originalOf } from '../../media/videoFrames';
 import type { PreparedPaint2d } from '../reference/canvasPaintAdapter';
 import type { Blend, CreateTileParts, TilePart, TileParts } from './contracts';
 
-/** World edge of one index cell. A part is listed in every cell it reaches; one that reaches more than MAX_CELLS cells (a
- * page, a whole frame) waits in a short list every query reads, so a query never walks it cell by cell. */
 const CELL = 1024, MAX_CELLS = 16;
-/** A part's order is its item's sequence times this span, plus its index among the item's parts: an item never has
- * 2^20 parts (a text item has one per glyph run, never that many). */
 const ORDER_SPAN = 1048576;
-/** Above this many parts a query sorts with the native sort; below it an insertion sort allocates nothing. */
 const INSERTION_SORT_MAX = 64;
 const NO_RECTS: readonly Rect[] = Object.freeze([]);
 
 type Root = PreparedPaint2d['root'];
 type Windows = PreparedPaint2d['windows'];
 
-/** A part as the index keeps it: the contract's TilePart, with the order the index assigns and a query mark. */
 interface IndexedPart extends TilePart { order: number; mark: number }
-/** One item of the prepared paint and the parts it contributes. Entries are the unit of reuse across revisions. */
 interface Entry {
     item: PaintItem;
     readonly band: PaintBand;
     readonly nodeId: string;
     readonly key: string;
     readonly blend: Blend;
-    /** A text item's font epoch; −1 for every other kind. */
     readonly epoch: number;
     readonly parts: IndexedPart[];
-    /** The union of the parts' world rects, or null when the item paints nothing. */
     readonly bounds: Rect | null;
-    /** The item's position in canonical order, and the position its parts were last numbered for. */
     seq: number;
     placed: number;
-    /** The pass that last matched this entry; an entry no pass matched has left the paint. */
     stamp: number;
 }
 interface Cell { readonly cx: number; readonly cy: number; readonly parts: IndexedPart[]; slot: number }
 interface Grid {
-    /** cx → cy → the cell's parts. */
     readonly cells: Map<number, Map<number, Cell>>;
-    /** Every populated cell, so a query that names more cells than are populated walks these instead. */
     readonly populated: Cell[];
     readonly wide: IndexedPart[];
     count: number;
 }
-/** The published index. Mutated in place by an incremental build's apply; a full rebuild publishes a new one. */
 interface Index {
     version: number;
     revision: number;
-    /** The original frame the index was built from (a decorated video frame maps to its original): same original, same content. */
     original: PaintSource | null;
     theme: Root['theme'];
     variant: Root['rasterVariant'];
     windows: Windows;
     entries: Entry[];
-    /** Node id → its entries, so a new item finds the old entry it may reuse, and boundsOfNodes finds a node's parts. */
     readonly byNode: Map<string, Entry[]>;
     readonly grid: Grid;
 }
-/** One index being built: the cursor through the windows, the entries it has kept or derived, and what it will report. */
-/** An item's bounds derivation in progress: its contributions are measured one budgeted unit at a time. */
 interface Derivation {
     readonly band: PaintBand;
     readonly item: PaintItem;
@@ -98,19 +66,12 @@ interface Build {
     readonly theme: Root['theme'];
     readonly variant: Root['rasterVariant'];
     readonly windows: Windows;
-    /** The index it is built from, which an incremental apply mutates; null for a full rebuild. */
     readonly old: Index | null;
-    /** The index it becomes: the old one (incremental) or a new one (full). */
     readonly target: Index;
-    /** A rebuild from nothing: theme or raster variant moved, or there is no index. */
     readonly full: boolean;
-    /** Why the build is full: no index yet, the theme, or the raster variant (fonts, palette); null when not full. */
     readonly cause: 'no-index' | 'theme' | 'variant' | null;
-    /** The item whose bounds are being derived, one budgeted unit per step (see advanceDerive); null between items. */
     deriving: Derivation | null;
-    /** Whether an index was published before this build started: only then has anything been drawn from one. */
     readonly prior: boolean;
-    /** The span has no usable region history: an item is reused only by identity, and every other item is re-derived. */
     readonly unknown: boolean;
     readonly regions: readonly Rect[];
     readonly regionBox: Rect | null;
@@ -128,24 +89,16 @@ interface Build {
 function newGrid(): Grid {
     return { cells: new Map(), populated: [], wide: [], count: 0 };
 }
-/** A paint item's blend as a tile sees it: a multiply item is laid by `modulate`, everything else by `over`. */
-/** Whether two number arrays hold the same values (an affine, a rect). */
 function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
     return true;
 }
-/** The content of an item beyond its paint's named parts: its material and bounds, and an image's placement. */
 function contentTail(item: PaintItem): unknown {
     if (item.kind === 'image') return [item.imageKey, item.rect, item.sourceRect ?? null, item.opacity, item.inverted, item.blend,
         item.retainedTile ?? false, item.allocationBounds ?? null];
     return [item.material, item.allocationBounds ?? null];
 }
-/**
- * Whether two items paint the same content. A source rebuilds its item objects on every stream, so identity says nothing about
- * content. The geometry is named by geometryKey, which names a node revision (its commands and coverage follow from it), so a
- * matching key, geometry key, placement, clips and material is the same paint.
- */
 export function sameItemContent(a: PaintItem, b: PaintItem): boolean {
     if (a.kind !== b.kind || a.nodeId !== b.nodeId || a.key !== b.key || a.geometryKey !== b.geometryKey) return false;
     if (!sameNumbers(a.localToWorld, b.localToWorld) || a.clips.length !== b.clips.length) return false;
@@ -168,7 +121,6 @@ function reachesWorld(rect: Readonly<Rect>, world: Readonly<Rect>): boolean {
     return rect.x <= world.x + world.width && rect.x + rect.width >= world.x
         && rect.y <= world.y + world.height && rect.y + rect.height >= world.y;
 }
-/** The cells a world rect reaches: first and last column, first and last row. */
 function cellSpan(r: Readonly<Rect>): readonly [number, number, number, number] {
     return [Math.floor(r.x / CELL), Math.floor((r.x + r.width) / CELL), Math.floor(r.y / CELL), Math.floor((r.y + r.height) / CELL)];
 }
@@ -210,7 +162,6 @@ function removePart(grid: Grid, part: IndexedPart): void {
             removeFrom(cell.parts, part);
             if (cell.parts.length) continue;
             column.delete(cy);
-            // Swap-remove from the populated list, so the list stays dense and no iterator is needed to walk it.
             const last = grid.populated.pop();
             if (last && last !== cell) { grid.populated[cell.slot] = last; last.slot = cell.slot; }
         }
@@ -218,7 +169,6 @@ function removePart(grid: Grid, part: IndexedPart): void {
     }
 }
 
-/** Numbers an entry's parts for its canonical position. */
 function place(entry: Entry): void {
     if (entry.parts.length >= ORDER_SPAN) throw new RangeError('Paint item has too many parts to order');
     const base = entry.seq * ORDER_SPAN;
@@ -226,7 +176,6 @@ function place(entry: Entry): void {
     entry.placed = entry.seq;
 }
 function byOrder(a: IndexedPart, b: IndexedPart): number { return a.order - b.order; }
-/** Orders a query's parts in place: an insertion sort for the usual handful, the native sort beyond that. */
 function sortByOrder(out: IndexedPart[]): void {
     if (out.length > INSERTION_SORT_MAX) { out.sort(byOrder); return; }
     for (let i = 1; i < out.length; i++) {
@@ -236,20 +185,14 @@ function sortByOrder(out: IndexedPart[]): void {
         out[j + 1] = part;
     }
 }
-/** Appends `part` to a query's output once, if it is on the band, reaches the world and is not omitted. */
 function consider(out: IndexedPart[], part: IndexedPart, band: PaintBand, world: Readonly<Rect>, omit: ReadonlySet<string> | undefined, stamp: number): void {
     if (part.band !== band || part.mark === stamp || omit?.has(part.nodeId) || !reachesWorld(part.world, world)) return;
     part.mark = stamp;
     out.push(part);
 }
 
-/**
- * Whether a set of node ids differs from the last one an omit tracker saw. A drag hands over a new Set every frame, so
- * identity is no test; the members are. Allocates only when the members change.
- */
 export class OmitTracker {
     readonly #last = new Set<string>();
-    /** True when `omit` names other nodes than the last call did; a new Set of the same nodes is not a change. */
     changed(omit: ReadonlySet<string> | undefined): boolean {
         const size = omit?.size ?? 0;
         let same = size === this.#last.size;
@@ -262,21 +205,16 @@ export class OmitTracker {
 }
 
 export const createTileParts: CreateTileParts = (_host, audit) => {
-    /** The published index; null until the first build publishes. */
     let index: Index | null = null;
-    /** The build in progress, if any. Only one runs at a time; a newer paint waits for it to publish. */
     let building: Build | null = null;
-    /** The entries array the last apply replaced, kept to be the next build's buffer. */
     let spare: Entry[] = [];
     let passes = 0;
-    /** Changes accumulated since the last takeChanges. */
     let pending: Rect[] = [];
     let pendingAll = false;
     let changesReady = false;
     let queryStamp = 0;
     /** The output of partsFor, reused: the caller copies it to keep it. */
     const out: IndexedPart[] = [];
-    /** boundsOfNodes' cache: valid for one index version and one set of ids. */
     let boundsVersion = -1;
     let boundsIds = new Set<string>();
     let boundsRects: Rect[] = [];
@@ -287,13 +225,9 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         return false;
     };
 
-    /** Derives an item's parts: the contributions of its paint, with their world bounds. Build-time only. */
-    /** Begins an item's bounds derivation. Its contributions are measured by advanceDerive, one budgeted unit per step, so a
-     * path with very many segments or a text item with very many glyph runs never spends a frame's budget in one call. */
     const startDerive = (build: Build, band: PaintBand, item: PaintItem, blend: Blend, seq: number): void => {
         build.deriving = { band, item, blend, seq, contributions: paintContributions(item), index: 0, job: null, parts: [], bounds: null };
     };
-    /** Measures one unit of the item in progress; when its last contribution is measured, the entry joins the build. */
     const advanceDerive = (build: Build): void => {
         const d = build.deriving!;
         if (d.index >= d.contributions.length) {
@@ -314,8 +248,6 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         d.bounds = unionOf(d.bounds, world);
     };
 
-    /** Handles one item of the build's walk: reuses its old entry when nothing a region or a font epoch changed reaches it,
-     * otherwise derives it. Reuse by identity or by unchanged bounds costs nothing and reports nothing. */
     const visit = (build: Build, band: PaintBand, item: PaintItem): void => {
         const blend = blendOf(item), seq = build.seq++;
         const epoch = item.kind === 'text' ? item.paint.fontEpoch : -1;
@@ -327,8 +259,6 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         if (candidate) {
             const sameEpoch = candidate.epoch === epoch;
             if (sameEpoch && candidate.band === band && candidate.blend === blend) {
-                // An item is reused when its content is the same, or, with region history, when no changed region reaches it.
-                // Without region history only the content decides: a new object for the same paint is not a change.
                 if (candidate.item === item || sameItemContent(candidate.item, item) || (!build.unknown && !reachesAnyRegion(candidate, build))) {
                     candidate.item = item; candidate.seq = seq; candidate.stamp = build.pass;
                     build.next.push(candidate);
@@ -345,12 +275,8 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
     const startBuild = (prepared: PreparedPaint2d): Build => {
         const root = prepared.root, revision = root.sceneRevision;
         const cause = !index ? 'no-index' : index.theme !== root.theme ? 'theme' : index.variant !== root.rasterVariant ? 'variant' : null;
-        // A raster variant change (font epoch, palette) is not a rebuild: only the items whose fonts or colours moved change, and
-        // they are found by content, as an unknown span. A theme change or a first index still rebuilds everything.
         const full = cause === 'no-index' || cause === 'theme';
         let regions: readonly Rect[] = NO_RECTS;
-        // A span without region history (no regionChangesSince on the source, or one the scene cannot bound) is not a rebuild:
-        // the items are diffed against the index, so only the parts that actually changed are reported.
         let unknown = false;
         if (!full && index) {
             const changes = cause === 'variant' ? undefined : root.regionChangesSince?.(index.revision);
@@ -373,7 +299,6 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
             window: 0, item: 0, seq: 0, replaced: 0, epochs: 0, rederived: 0 };
     };
 
-    /** One item of the walk; true once every window has been visited. */
     const step = (build: Build): boolean => {
         if (build.deriving) { advanceDerive(build); return false; }
         const windows = build.windows;
@@ -387,8 +312,6 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
     const publish = (build: Build): void => {
         const target = build.target, old = build.old;
         if (build.full) {
-            // A full rebuild has no old entries to take out: its target is new, and the old index is dropped. Only an index that
-            // was published before can have drawn anything; the first build has nothing to invalidate.
             if (build.prior) pendingAll = true;
             pending = [];
         } else {
@@ -428,7 +351,6 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
             auditCount(audit, `index:full:${build.cause ?? 'none'}`);
             auditCount(audit, 'parts:indexed', target.grid.count);
         } else {
-            // Entries that entered or left the paint, not counting the replaced ones: those are counted by their cause.
             const members = build.added.length + removed - 2 * build.replaced;
             if (members) auditCount(audit, 'index:members', members);
             if (build.epochs) auditCount(audit, 'index:epoch', build.epochs);
@@ -452,15 +374,11 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
             const root = prepared.root;
             if (!building && index && index.revision === root.sceneRevision && index.theme === root.theme && index.variant === root.rasterVariant
                 && (index.windows === prepared.windows || index.original === originalOf(prepared.sourceFrame))) {
-                // The same original paint, under a new object: a decorated video frame indexes as the frame it decorates, so a
-                // video advance costs nothing here. The index adopts the object; its parts stay as they were.
                 index.windows = prepared.windows;
                 return true;
             }
-            // An index in progress is finished first, as the paint it was started from; the next call indexes the newer one.
             if (!building) building = startBuild(prepared);
             const build = building;
-            // At least one item per call: an exhausted budget still moves the index forward.
             let done = false;
             do { done = step(build); } while (!done && !budget.shouldYield());
             if (!done) return false;
@@ -472,10 +390,8 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
             out.length = 0;
             if (!index) return out;
             const grid = index.grid, stamp = ++queryStamp;
-            // The cell span, inline: a tuple here would be an allocation on every query.
             const x0 = Math.floor(world.x / CELL), x1 = Math.floor((world.x + world.width) / CELL);
             const y0 = Math.floor(world.y / CELL), y1 = Math.floor((world.y + world.height) / CELL);
-            // A query that names more cells than are populated walks the populated cells instead.
             if ((x1 - x0 + 1) * (y1 - y0 + 1) > grid.populated.length) {
                 for (const cell of grid.populated) {
                     if (cell.cx < x0 || cell.cx > x1 || cell.cy < y0 || cell.cy > y1) continue;
@@ -499,8 +415,6 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         takeChanges(): readonly Rect[] | 'all' {
             if (!changesReady) return NO_RECTS;
             changesReady = false;
-            // What each take reports, counted: an 'all' is one event, and a rect list is its size and its total area, so a
-            // drag that reports every item as changed shows as a large count and area, not only as 'all'.
             if (pendingAll) { pendingAll = false; pending = []; auditCount(audit, 'index:take-all'); return 'all'; }
             if (!pending.length) return NO_RECTS;
             const taken = pending;

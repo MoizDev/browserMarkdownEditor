@@ -9,27 +9,19 @@ import type { GfxDevice } from './gfx/api';
 
 export interface LayerHostBindings {
     readonly allocator: LayerAllocators;
-    /** The layer's id, for the measured render audit (renderAudit.ts). */
     readonly auditId?: string;
     generation(): number;
-    /** Actual preparing GPU, possibly before promotion; null during CPU preparation/bridges. */
     gpuResources(): CompositorResources | null;
     compositor(): PaneCompositor | null;
-    /** The scheduled candidate can differ from the currently selected display. */
     preparationCompositor(): PaneCompositor | null;
     invalidate(reason: string, damage?: DamageRecord): void;
     wakeAt(deadlineMs: number | null): void;
     demandChanged?(): void;
     refreshDemandNow?(): void;
-    /** The pane's governor trouble state (memoryGovernor's getter); absent means 'none'. */
     trouble?(): LayerTrouble;
-    /** A device-path error raised by the layer's own work (a draw or a resource it drives), routed to the pane's GPU error channel. */
     gpuError?(error: unknown): void;
 }
 
-/** One stable host per layer. Accessors consult the live qualified generation, never the
- * compositor captured at layer creation; backend switches retain the same layer objects.
- */
 export function createLayerHost(bindings: LayerHostBindings): LayerHost {
     const resources = (): CompositorResources => {
         const current = bindings.gpuResources();
@@ -53,11 +45,9 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
     function drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
     function drawTexturedQuads(target: GpuPass | CanvasRenderingContext2D, image: TextureHandle | DrawableImage,
         quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void {
-        // One counter per batch, with its quad count: the batch is the unit the GPU sees, the quads are what the layer drew.
         if ('drawImage' in target) { auditCount(surface, 'canvas2d-quad', quads.length); compositor().resources.drawTexturedQuads(target, image as DrawableImage, quads, options); }
         else { auditCount(surface, 'gpu-quad-batch', 1, { quads: quads.length }); resources().drawTexturedQuads(target, image as TextureHandle, quads, options); }
     }
-    // Audit only: a per-layer view of the shared device that counts what this layer creates and uploads.
     const audited = new WeakMap<GfxDevice, GfxDevice>();
     const auditedDevice = (device: GfxDevice | null): GfxDevice | null => {
         if (!device || !renderAuditEnabled()) return device;
@@ -66,7 +56,6 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
             view = new Proxy(device, { get(target, key) {
                 const value = Reflect.get(target, key, target) as unknown;
                 if (typeof value !== 'function') return value;
-                // The upload stage is timed here, where the layer's writes enter the device (the view exists only when the audit is on).
                 if (key === 'writeTexture') return (dst: unknown, rect: Rect, src: unknown) => {
                     auditCount(surface, 'upload', 1, { bytes: rect.width * rect.height * 4 });
                     const started = performance.now();

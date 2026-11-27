@@ -5,10 +5,7 @@ import { SECURITY_LIMITS } from '../security/limits';
 import { pngCrc32 } from './pngDensity';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: clipboard §2.4 capture formats and PNG density convention;
-// independent bounded chunk rewriting, no upstream engine source.
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10] as const;
-/** Adds our density to trusted PNG capture bytes without decoding or resampling pixels. */
 export async function pngWithClipboardDensity(png: Blob, pixelsPerWorldUnit: number, signal: AbortSignal,
     memory: MemoryAllocator): Promise<{ readonly blob: Blob; release(): void }> {
     if (!(png instanceof Blob) || !Number.isFinite(pixelsPerWorldUnit) || pixelsPerWorldUnit <= 0) throw new TypeError('Invalid PNG capture');
@@ -44,7 +41,6 @@ export async function pngWithClipboardDensity(png: Blob, pixelsPerWorldUnit: num
     return { blob: new Blob(parts, { type: 'image/x-board+png' }), release };
     } catch (error) { release(); throw error; }
 }
-/** Capture is the real in-job export port; promises are installed while user activation is live. */
 export async function copyBoardPng(runtime: BoardRuntime, memory: MemoryAllocator,
     capture: (signal: AbortSignal) => Promise<{ readonly png: Blob; readonly pixelsPerWorldUnit: number; release(): void }>,
     signal: AbortSignal, current: () => boolean): Promise<void> {
@@ -69,7 +65,6 @@ export async function copyBoardPng(runtime: BoardRuntime, memory: MemoryAllocato
         owned = value; return value;
     });
     const image = captured.then(value => value.image), privateImage = captured.then(value => value.privateImage.blob);
-    // The OS promise must be installed during the gesture; unsupported custom formats fall back to standard PNG.
     void image.catch(() => undefined); void privateImage.catch(() => undefined);
     try {
         try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': image, 'web image/x-board+png': privateImage })]); }
@@ -77,7 +72,6 @@ export async function copyBoardPng(runtime: BoardRuntime, memory: MemoryAllocato
         check();
     } finally { finished = true; controller.abort(); owned?.release(); }
 }
-/** The in-job capture supplies the real escaped/exported SVG and its C2 resource lease. */
 export async function copyBoardSvg(options: {
     readonly runtime: BoardRuntime; readonly signal?: AbortSignal; current(): boolean;
     capture(signal: AbortSignal): Promise<{ readonly svg: Blob; release(): void }>;

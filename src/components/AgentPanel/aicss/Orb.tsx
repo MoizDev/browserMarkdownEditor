@@ -6,7 +6,6 @@
 
 import type { CSSProperties } from 'react';
 
-/** The stage the geometry is tuned on; --orb-k scales it to `size`. */
 const STAGE = 28;
 const SIZE = 20;
 
@@ -20,11 +19,10 @@ function isLattice(v: OrbVariant): v is LatticeVariant {
     return LATTICE_VARIANTS.includes(v);
 }
 
-const N = 3; // lattice is N×N
-const PITCH = 6; // centre-to-centre spacing in stage px; the dot size is CSS
+const N = 3;
+const PITCH = 6;
 const MID = (N - 1) / 2;
 
-/** Clockwise walk of the lattice perimeter - the track `orbit` runs on. */
 const RING: [number, number][] = (() => {
     const ring: [number, number][] = [];
     for (let x = 0; x < N; x++) ring.push([x, 0]);
@@ -36,31 +34,21 @@ const RING: [number, number][] = (() => {
 
 const RING_INDEX = new Map(RING.map(([x, y], i) => [x + ',' + y, i]));
 
-/**
- * Per-cell `animation-delay` in ms. Negative values seed a cell partway
- * into its cycle, which is what turns 8 identical animations into one
- * comet travelling the ring.
- */
 function cellDelay(v: LatticeVariant, x: number, y: number): number {
     const dx = x - MID;
     const dy = y - MID;
     switch (v) {
-        // Radiates from the centre on a round wavefront.
         case 'S1':
             return Math.hypot(dx, dy) * 700 - (dx === 0 && dy === 0 ? 180 : 0);
-        // A broad band crosses the grid on the diagonal.
         case 'S2':
             return ((x + y) / (2 * (N - 1))) * 1500;
-        // One head with a decaying tail, running the perimeter clockwise.
         case 'S3': {
             const i = RING_INDEX.get(x + ',' + y);
             if (i === undefined) return 0;
             return -(((RING.length - i) % RING.length) / RING.length) * 1700;
         }
-        // A soft column travels left to right.
         case 'S4':
             return (x / (N - 1)) * 1100;
-        // Like S3 but scrambled order - the pulse jumps pseudo-randomly.
         case 'S5': {
             const i = RING_INDEX.get(x + ',' + y);
             if (i === undefined) return 0;
@@ -99,10 +87,8 @@ function latticeCells(v: LatticeVariant): Cell[] {
 export interface OrbProps {
     variant?: OrbVariant;
     size?: number;
-    /** Accessible label, and the status text when `pill` is set. */
     label: string;
     pill?: boolean;
-    /** A still orb: idle / connected, no motion. */
     still?: boolean;
     className?: string;
     style?: CSSProperties;
@@ -117,7 +103,6 @@ export function Orb({ variant = 'S1', size = SIZE, label, pill, still, className
         >
             <span
                 className="aic-orb-glyph"
-                // In pill form the visible label already carries the meaning.
                 role={pill ? undefined : 'img'}
                 aria-label={pill ? undefined : label}
                 aria-hidden={pill ? true : undefined}

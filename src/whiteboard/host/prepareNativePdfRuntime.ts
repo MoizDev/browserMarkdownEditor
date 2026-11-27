@@ -32,7 +32,6 @@ type WrittenPdf = ReturnType<ReturnType<typeof createPdfInkBuildCapture>['writte
 export interface PrepareNativePdfRuntimeOptions {
     readonly host: NativeCanvasHost;
     readonly identity: NativeCanvasIdentity;
-    /** Ownership transfers on entry, including on preparation failure. */
     readonly accepted: PdfRuntimeInkSource;
     readonly signal: AbortSignal;
     readonly deadlineMs: number;
@@ -48,7 +47,6 @@ export interface PrepareNativePdfRuntimeOptions {
     onHistoryLimit(): void;
 }
 
-/** A PDF acquisition and native board share one owner and one mutable document. */
 export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOptions) {
     const { host, identity, accepted, signal } = options;
     const tokenCurrent = (token: RenderToken) => {
@@ -99,9 +97,6 @@ export async function prepareNativePdfRuntime(options: PrepareNativePdfRuntimeOp
     };
     try {
         check();
-        // A plain PDF's empty ink board comes out the same on every open (its sheet id and placeholder write id are taken
-        // from the PDF itself): the recovery journal pins the board it started from, and Recover after a reload or crash
-        // applies only onto that same board.
         const bytes = accepted.kind === 'plain' ? createEmptyNativeBytes('pdf-ink', { pdfHost: options.createHost(accepted),
             sheetId: sheetId(`pdf${accepted.source.pristineFingerprint.slice(0, 12)}`) }) : accepted.board;
         acquired = await acquireNativeBoard({ bytes, kind: 'pdf-ink', signal, deadlineMs: options.deadlineMs,

@@ -1,4 +1,3 @@
-// Registration is explicit: adding a file to a directory never silently adds it to a corpus.
 export const SEED = 123456789;
 export const invocations = [
     { key: 'core/notes', stream: 'core', generator: 'verify/fixtures/core/generators/notes.mjs', args: [], gates: ['V-05', 'X-FUNNEL', 'TB-ED'], purpose: 'Every rendered Markdown construct, save-path mixed note, authored checker asset' },

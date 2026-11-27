@@ -9,10 +9,6 @@ import { createBoardToolServices, type BoardToolServicesOptions } from './toolSe
 import type { ViewerEngine } from './types';
 import { NO_SENSITIVE_IDS } from './sensitiveTargets';
 
-// Provenance: the view-owned composition of the input host and tool services,
-// written against this repository's own viewer contracts; no third-party source.
-
-/** Caller-supplied ports: Core owns React, App owns commands, imports and UI state. Nothing here is synthesised. */
 export interface NativeEditingOptions extends Pick<BoardToolServicesOptions, 'view' | 'viewport' | 'images' | 'spelling'
     | 'platform' | 'ui' | 'commands' | 'imports'> {
     readonly session: BoardSession;
@@ -30,15 +26,9 @@ export interface NativeEditingOptions extends Pick<BoardToolServicesOptions, 'vi
     readonly invalidate: () => void;
     readonly cameraChanged: () => void;
     readonly onError: (error: unknown) => void;
-    /** Composable observer of each actual presented frame (e.g. the embed presentation producer). */
     readonly presented?: BoardInputHostOptions['presented'];
 }
 
-/**
- * One live tool set per attachment: the host creates services for each surface it
- * binds and releases them when that binding ends, so no paste listener or pending
- * gesture outlives the surface it was made for.
- */
 export function createNativeEditingInput(options: NativeEditingOptions) {
     const runtime = getBoardRuntime(options.session);
     if (!runtime || runtime.session !== options.session) throw new Error('Native editing requires the App-owned board runtime');
@@ -73,7 +63,6 @@ export function createNativeEditingInput(options: NativeEditingOptions) {
     const { dispose: disposeHost, ...input } = host;
     return {
         ...input,
-        /** The tool set bound to the current attachment, or null when detached. */
         tools: () => active,
         dispose() { disposeHost(); release(); },
     };

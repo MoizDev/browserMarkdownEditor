@@ -5,9 +5,6 @@ export interface AgentDrawingCamera {
     readonly viewport: { readonly x: number; readonly y: number; readonly w: number; readonly h: number };
 }
 
-// C8: the agent camera translates world coordinates before zoom; the platform
-// camera is the world point under surface (0,0). The viewport itself stays in
-// world coordinates, not device pixels or camera translation coordinates.
 export function agentDrawingCamera(camera: Camera, viewport: Viewport): AgentDrawingCamera {
     if (!Number.isFinite(camera.x) || !Number.isFinite(camera.y) || !Number.isFinite(camera.z) || camera.z <= 0
         || !Number.isFinite(viewport.width) || !Number.isFinite(viewport.height) || viewport.width < 0 || viewport.height < 0) {

@@ -10,13 +10,9 @@ export interface CaptureExportOptions extends CaptureOptions {
 }
 export interface CaptureExportTile { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
 export type CaptureExportRenderer = (tile: CaptureExportTile, signal?: AbortSignal) => Promise<Uint8Array>;
-/** The caller injects its existing streaming encoder. The platform never imports a document
- * engine, and the encoder receives no scene, live view, filesystem handle or GPU context. */
 export type CapturePngEncoder = (width: number, height: number, render: CaptureExportRenderer,
     options: Readonly<{ signal: AbortSignal; clipboard?: boolean; pixelsPerWorldUnit?: number; memory: MemoryAllocator }>) => Promise<Blob>;
 
-/** A bounded tile has a two-output-pixel apron on the SAME global sample grid. The returned
- * straight-alpha pixels remain leased until the encoder asks for another tile or finishes. */
 export async function renderCaptureExport(request: CaptureRequest, snapshot: CaptureSnapshot, layers: readonly CapturedLayer[],
     memory: MemoryAllocator, encoder: CapturePngEncoder, signal: AbortSignal, check: () => void,
     options: CaptureExportOptions): Promise<Blob> {

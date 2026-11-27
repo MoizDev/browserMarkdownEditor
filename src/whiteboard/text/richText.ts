@@ -7,7 +7,6 @@ import { firstRunAt, runContaining, runIndex, runIndexSteps } from './runIndex';
 import type { PlainTextOptions } from './plainText';
 import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
-// text.md §4.1: immutable values; UTF-16 offsets refer to the plain-text projection.
 export interface RichText { readonly blocks: readonly Block[] }
 export type RichFragment = RichText;
 
@@ -24,18 +23,17 @@ export interface BlockCarrier {
 export interface Block {
     readonly kind: 'p' | 'ul' | 'ol' | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
     readonly level: number;
-    /** Semantic only for ol; a future tuple tail may retain this otherwise inert slot. */
     readonly start?: number;
     readonly dir: 'auto' | 'ltr' | 'rtl';
     readonly runs: readonly Run[];
-    readonly tail?: RawJson; // R-W19/R-W21: JSON ARRAY of trailing tuple elements; writer splices its interior.
+    readonly tail?: RawJson;
     readonly carriers?: readonly BlockCarrier[];
 }
 
 export interface Run {
     readonly text: string;
     readonly marks: Marks;
-    readonly tail?: RawJson; // R-W19/R-W21: JSON ARRAY of trailing tuple elements; TX-2 finalizes editing semantics.
+    readonly tail?: RawJson;
 }
 
 export interface Marks {
@@ -46,7 +44,7 @@ export interface Marks {
     readonly code?: true;
     readonly hl?: true;
     readonly link?: string;
-    readonly x?: RawJson; // R-W25: unknown marks use the same opaque preservation channel.
+    readonly x?: RawJson;
 }
 
 export const EMPTY_RICH_TEXT: RichText = {
@@ -55,7 +53,6 @@ export const EMPTY_RICH_TEXT: RichText = {
 
 export class RichTextLimitError extends RangeError {}
 
-/** Plain text as rich text: one paragraph per line, with no marks. */
 export function plainRichText(text: string): RichText {
     return { blocks: text.split('\n').map(line => ({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: line, marks: {} }] })) };
 }
@@ -118,7 +115,6 @@ export function normalizeRichText(text: RichText): RichText {
     return finishTextSteps(normalizeRichTextSteps(text));
 }
 
-/** Large imported fragments can normalize without retaining partially published output. */
 export function normalizeRichTextCooperative(text: RichText, options: PlainTextOptions): Promise<RichText> {
     return finishTextStepsCooperative(normalizeRichTextSteps(text), options);
 }
@@ -171,7 +167,6 @@ function* sliceSteps(text: RichText, from: number, to: number, preserveOrigins: 
         const source = text.blocks[first.block], run = emptyRun(text, first.block, first.offset, false);
         const { tail: _tail, carriers: _carriers, ...block } = source;
         const { x: _x, ...marks } = run.marks;
-        // A caret contains no unknown data to copy; the original anchors stay in place.
         return { blocks: [{ ...block, runs: [{ text: '', marks }] }] };
     }
     const blocks: Block[] = [];
@@ -193,7 +188,6 @@ export function sliceRichText(text: RichText, from: number, to: number, preserve
     return finishTextSteps(sliceSteps(text, from, to, preserveOrigins));
 }
 
-/** A long selection can be captured cooperatively without publishing a partial fragment. */
 export function sliceRichTextCooperative(text: RichText, from: number, to: number, options: PlainTextOptions,
     preserveOrigins = false): Promise<RichFragment> {
     return finishTextStepsCooperative(sliceSteps(text, from, to, preserveOrigins), options);
@@ -294,10 +288,6 @@ export interface RichSpliceResult {
     readonly after: readonly Block[];
 }
 
-// CH-1/R-W32: inverse splices widen to boundary blocks, retaining their original
-// references, not copying whole strings or assigning a saved whole RichText value.
-// wholeBlocks distinguishes replacement of an empty block from ordinary insertion
-// into it; without that explicit mode opaque zero-length runs would duplicate.
 export function* spliceRichTextSteps(text: RichText, from: number, to: number, insert: RichFragment,
     wholeBlocks = false): Generator<void, RichSpliceResult> {
     if (to < from || insert.blocks.length === 0 || !(yield* textBoundaries.isBoundarySteps(text, from))
@@ -311,7 +301,7 @@ export function* spliceRichTextSteps(text: RichText, from: number, to: number, i
     if (count > MAX_TEXT_BLOCKS) throw new RichTextLimitError('Rich text exceeds 100000 blocks');
     const before = text.blocks.slice(first.block, last.block + 1);
     let after: readonly Block[];
-    if (wholeBlocks) after = insert.blocks; // Exact history/rollback snapshot, already validated.
+    if (wholeBlocks) after = insert.blocks;
     else {
         const startBlock = text.blocks[first.block];
         const mappedCarriers = yield* spliceCarrierSteps(text, first.block, before, first.offset, last.offset, insert);
@@ -349,8 +339,6 @@ export function* spliceRichTextSteps(text: RichText, from: number, to: number, i
                 runs.push(run);
                 if ((++work & 255) === 0) yield;
             }
-            // Existing first-block attributes live outside the replaced character
-            // range. Newline-bearing fragment blocks carry their own attributes.
             const base = i === 0 ? startBlock : fragment;
             const { carriers: _carriers, ...attributes } = base;
             const carriers = mappedCarriers[i];

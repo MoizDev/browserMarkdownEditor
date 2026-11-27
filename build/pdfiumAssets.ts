@@ -4,9 +4,6 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
 
-// The one PDFium engine the app ships: src/pdf/vendor/pdfium/, our from-source build (build/pdfium/README.md).
-// Dev and production serve the same committed bytes at pdfium/<buildId>/; a missing or altered file fails the
-// dev server and `npm run build` here, before anything is served. NOTICE.txt and licenses/ ship with it.
 const root = fileURLToPath(new URL('../', import.meta.url))
 const engineDir = resolve(root, 'src/pdf/vendor/pdfium')
 const PATH = /^(?:pdfium\.(?:mjs|wasm)|abi\.json|NOTICE\.txt|licenses\/[A-Za-z0-9-]+\.txt)$/

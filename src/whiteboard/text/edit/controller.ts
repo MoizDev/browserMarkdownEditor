@@ -5,8 +5,6 @@ import type { EditSelection, TextChange } from './host';
 import { linkUrl, type ToggleMark } from './format';
 import { inputRule, typographyRule } from './rules';
 
-// The rich-text lane supplies these operations; this controller owns only the
-// edit session and sends every content change through the transaction service.
 export interface EditTransactions {
     apply(transaction: Transaction): void;
     readText(): RichText;
@@ -22,7 +20,6 @@ export interface EditTransactions {
     enter(selection: EditSelection): { readonly transaction: Transaction; readonly selection: EditSelection };
 }
 
-/** Typed openers that wrap a selection, with their closers. */
 const WRAP_PAIRS: Readonly<Record<string, readonly [string, string]>> = {
     '(': ['(', ')'], '[': ['[', ']'], '{': ['{', '}'], '<': ['<', '>'], '"': ['"', '"'], "'": ["'", "'"],
 };
@@ -84,13 +81,10 @@ export class TextEditController {
         return result.selection;
     }
 
-    /** A typed bracket or quote over a selection surrounds it and keeps the selection on the same text. The closer is spliced
-     * first, so the opener's offset is still valid when it goes in. */
     private wrap(change: TextChange, pair: readonly [string, string], before: EditSelection): EditSelection {
         const from = change.from, to = change.to;
         const after = { anchor: from + 1, focus: to + 1 };
         const { storedMarks } = this;
-        // Inside code the quotes stay straight, as the rest of code text does.
         const [open, close] = pair;
         const marks = this.services.marksAt(from);
         const [left, right] = marks.code ? [open, close] : open === '"' ? ['\u201c', '\u201d'] : open === "'" ? ['\u2018', '\u2019'] : [open, close];

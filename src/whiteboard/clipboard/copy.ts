@@ -11,7 +11,6 @@ export interface CachedClipboard {
     readonly encoded: string;
     readonly plain: string;
     readonly cacheOnly: boolean;
-    /** Source bytes remain behind their original session-owned media leases. */
     readMedia?(id: MediaId, signal: AbortSignal): Promise<Blob | null>;
 }
 export interface ClipboardCut {
@@ -20,16 +19,13 @@ export interface ClipboardCut {
 }
 export interface ClipboardCachePin {
     match(encoded: string, plain: string): CachedClipboard | null;
-    /** The payload this window wrote, when `html` is the HTML it wrote with it; null for any other HTML. */
     ownPayload(html: string): string | null;
     release(): void;
 }
 export interface ClipboardCopyHost {
-    /** Shared allocator; frozen copy leases can outlive their document owner. */
     readonly memory: MemoryAllocator;
     readMedia(snapshot: CopySnapshot, id: MediaId, signal: AbortSignal): Promise<Blob | null>;
     isCurrent(snapshot: CopySnapshot): boolean;
-    /** Captures eligibility and an exact revision; it must refuse opaque deletions before clipboard write. */
     prepareCut(snapshot: CopySnapshot): ClipboardCut;
     duplicate(snapshot: CopySnapshot): Promise<void>;
     notice(message: string): void;
@@ -43,7 +39,6 @@ function hold(snapshot: CopySnapshot, memory: MemoryAllocator): HeldSnapshot {
         blocks++;
         for (const run of block.runs) { runs++; text += run.text.length; }
     }
-    // Over-limit records become a small marker, but the real text rendition still needs DOM and serialization memory.
     const portable = records <= 48 * 1024 * 1024;
     const bytes = Math.max(64 * 1024, (portable ? records * 8 : 0) + text * 8
         + snapshot.textItems.length * 512 + blocks * 384 + runs * 256 + (portable && media <= 32 * 1024 * 1024 ? media * 6 : 0));
@@ -77,8 +72,6 @@ class WrittenSnapshot {
         readonly readMedia: (id: MediaId, signal: AbortSignal) => Promise<Blob | null>) {}
 }
 
-/** Candidates belong to documents; successful copies belong to the App window.
- * A cache hit proves the exact envelope, and cache-only also proves plain text. */
 export class ClipboardCopy {
     private candidate: Candidate | null = null;
     private disposed = false;
@@ -121,7 +114,6 @@ export class ClipboardCopy {
         return { snapshot: entry.held.snapshot, encoded, plain: entry.envelope.plain, cacheOnly: entry.envelope.cacheOnly, readMedia: entry.readMedia };
     }
 
-    /** Pin the current window cache when a paste is queued, before a later copy can replace it. */
     pin(): ClipboardCachePin | null {
         const entry = this.cache.peek();
         if (this.disposed || !(entry instanceof WrittenSnapshot)) return null;
@@ -138,10 +130,6 @@ export class ClipboardCopy {
                         finally { release(entry.held); }
                     } };
             },
-            // The HTML this window wrote carries its payload whole, and only that payload is ever returned, never anything read
-            // out of `html`: a match needs no parse. Parsed, a copy of 2,000 strokes (880 KB of HTML) asked the 32 MB pool for
-            // 29 MB to parse it and could never be pasted ("Insufficient memory to parse clipboard HTML"); 1,000 strokes was the
-            // most that pasted. The system may wrap what it hands back, so containing the payload is the test, not equality.
             ownPayload(html) {
                 const encoded = entry.envelope.encoded;
                 return active && (html === entry.envelope.html || html.length > encoded.length && html.includes(encoded)) ? encoded : null;
@@ -150,7 +138,6 @@ export class ClipboardCopy {
         };
     }
 
-    /** The event path captures the current selection synchronously; it never waits for a warm cache. */
     copyEventNow(event: ClipboardEvent, capture: () => CopySnapshot, cut = false): boolean {
         if (!event.clipboardData || this.disposed) return false;
         try {
@@ -192,14 +179,11 @@ export class ClipboardCopy {
         } finally { preparedCut?.release(); }
     }
 
-    /** C2 capture is asynchronous, but ClipboardItem promises are installed during the initiating gesture. */
     async copyMenuFresh(capture: (signal: AbortSignal) => Promise<CopySnapshot>, cut = false): Promise<void> {
         if (this.disposed) throw new Error('Clipboard cache is closed');
         const controller = new AbortController();
         let held: HeldSnapshot | undefined, finished = false;
         let commitCut: ReturnType<ClipboardCopyHost['prepareCut']> | undefined;
-        // A captured read-only copy does not belong to the live mutation queue:
-        // closing its pane/document cannot revoke the retained source midway.
         const prepared = (async () => {
             const snapshot = await capture(controller.signal);
             const owner = hold(snapshot, this.host.memory);

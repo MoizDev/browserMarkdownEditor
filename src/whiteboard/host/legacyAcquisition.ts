@@ -20,8 +20,6 @@ import { admitLegacyLoad } from './legacyLoadQueue';
 import { yieldToHost } from '../../platform/yieldToHost';
 import { isFileReadTimeout, withinFileDeadline } from '../../utils/fileReadDeadline';
 
-// Provenance: copied original -> governed legacy mapping -> real native C5.
-// Native R0 is a conversion-pending source, never an invented user edit or disk baseline.
 export interface LegacyAcquisitionOptions {
     readonly bytes: Blob;
     readonly kind: BoardKind;
@@ -31,11 +29,8 @@ export interface LegacyAcquisitionOptions {
     readonly memory: MemoryAllocator;
     readonly nativeReport: Pick<NativeLoadReply, 'format' | 'complete' | 'bytesRead'>;
     readonly identity: BoardJobIdentity;
-    /** The document this loads, so a pane showing it is admitted first and can say it is opening (legacyLoadQueue.ts). */
     readonly loadKey?: string;
-    /** A load the person is waiting on that no pane marks as shown (legacyLoadQueue.ts). */
     readonly urgent?: boolean;
-    /** App alone resolves local relative paths against this source document's folder. */
     readAsset?(src: string, signal: AbortSignal): Promise<Blob | null>;
     isCurrent(identity: BoardJobIdentity): boolean;
     readonly signal?: AbortSignal;
@@ -45,7 +40,6 @@ export type LegacyBoardAcquisition =
     | { readonly status: 'read-only'; readonly original: Blob; readonly legacyReport: ImportReport;
         readonly conversionPending: true; dispose(): void }
     | { readonly status: 'editable'; readonly original: Blob;
-        /** Hash of the supplied legacy JSON, NOT an enclosing PDF's disk baseline. */
         readonly originalSha256: string;
         /** Serializer offsets and native prime MUST use these bytes, not original legacy JSON. */
         readonly bytes: Blob; readonly native: Extract<NativeBoardAcquisition, { status: 'editable' }>;
@@ -89,13 +83,9 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
     const check = () => { signal.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Legacy acquisition became stale', 'AbortError'); };
     const cooperate = async () => { check(); await (options.cooperate?.() ?? yieldToHost()); check(); };
     check();
-    // Original text, legacy object graph, two admitted sample representations and native assembly coexist in the parse
-    // worker's heap: one legacy load at a time holds that peak (legacyLoadQueue.ts), never the render raster pool.
     const release = await admitLegacyLoad({ key: options.loadKey ?? identity.session, bytes: original.size, signal, urgent: options.urgent });
-    // The scan and the import run in a worker of this load's own, ended with the load (client.ts, dedicatedBoardWorker).
     const parser = dedicatedBoardWorker('parse'), keep = crypto.randomUUID();
     let owned: NativeBoardAcquisition | undefined;
-    // Rejects with the signal's reason the moment it aborts, for the awaits below that cannot be cancelled themselves.
     const untilAborted = <T,>(work: Promise<T>): Promise<T> => new Promise<T>((resolve, reject) => {
         const abort = () => reject(signal.reason ?? new DOMException('Legacy load cancelled', 'AbortError'));
         if (signal.aborted) { abort(); return; }
@@ -118,14 +108,6 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
                 const cached = resolved.get(asset.src);
                 if (cached) blob = cached;
                 else {
-                    // A picture kept beside the board is a vault file like any other: on a cloud folder that has not
-                    // downloaded it, its read never settles and ignores the signal. Bounded here, inside the slot.
-                    //
-                    // A picture whose file is gone, unreadable or over the size a board accepts costs that picture, as any
-                    // item the importer cannot read does: left unresolved here, the importer counts it in the board's
-                    // notice ("1 item … could not be shown (1 picture)"). Thrown, it cost the whole board (measured: one
-                    // deleted picture → "Could not open canvas: Relative legacy media is unavailable: …", for good). A
-                    // file that has not ANSWERED is different — it may yet arrive — and still fails the load, with Try again.
                     if (absent.has(asset.src)) continue;
                     let read: Blob | null | undefined;
                     try { read = await untilAborted(withinFileDeadline(Promise.resolve(options.readAsset?.(asset.src, signal)), asset.src)); }
@@ -149,7 +131,6 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
         const reply: unknown = await parser.request('legacyPrepare', { bytes: original, kind: options.kind,
             host: options.host, token: options.token, zMax: options.zMax, media: verified, relativeAssets, keep }, identity,
         { priority: 0, cpu: 'governed', deadlineMs: LEGACY_LOAD_DEADLINE_MS, signal }, options.isCurrent);
-        // Its work is done: what it replied with is held here, and its heap is returned now, not after admission.
         parser.dispose();
         check();
         if (!reply || typeof reply !== 'object' || Array.isArray(reply)) throw new TypeError('Invalid legacy preparation reply');
@@ -159,8 +140,6 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
             || (value.status === 'prepared' ? !(value.bytes instanceof Blob) || value.bytes.size > 512 * 1024 * 1024 : value.bytes !== null)) {
             throw new TypeError('Invalid legacy preparation reply');
         }
-        // A prepared board may report items it left out (each preserved as written in the native bytes): they cost
-        // those items, never the board. The host shows them once in the board's notice.
         if (value.status !== 'prepared' || !value.bytes) return { status: 'read-only', original, legacyReport: value.report, conversionPending: true, dispose() {} };
         const nativeBytes = new Blob([value.bytes], { type: value.bytes.type });
         owned = await acquireNativeBoard({ bytes: nativeBytes, kind: options.kind,
@@ -189,15 +168,10 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
             previousFrames: Object.freeze(value.previousFrames.map(rect => Object.freeze({ ...rect }))),
             nextFrames: Object.freeze(value.nextFrames.map(rect => Object.freeze({ ...rect }))), conversionPending: true });
     } finally {
-        // The native board retires (its builds settle), and the import's worker has ended, before the next legacy load is admitted.
         try { await owned?.dispose(); } finally { try { parser.dispose(); } finally { release(); } }
     }
 }
 
-/** Upgrade a genuine PDF preview HOST only after the PDF domain minted its final
- * conversion host. This does not grant write authority, reconvert legacy shapes,
- * or manufacture an edit: offsets and all other R0 bytes remain source-owned.
- * Caller keeps the old acquisition until this independent result is acquired. */
 export async function rehostLegacyBoard(source: EditableLegacy,
     finalHost: Extract<HostBlock, { kind: 'pdf-ink' }>,
     options: Pick<LegacyAcquisitionOptions, 'identity' | 'isCurrent' | 'signal' | 'cooperate' | 'loadKey'>): Promise<EditableLegacy> {
@@ -243,8 +217,6 @@ export async function rehostLegacyBoard(source: EditableLegacy,
         }
         // ReadPosition spans the PHYSICAL line, including its comma, not just
         // the JSON token (actual failure: final rehost dropped that delimiter).
-        // Only the skipped ASCII prefix/suffix need byte conversion; Unicode
-        // inside the untouched token cannot shift either splice boundary.
         const tokenStart = position.byteOffset + first;
         const tokenEnd = position.byteOffset + position.byteLength - (line.length - last);
         const bytes = new Blob([source.bytes.slice(0, tokenStart), encoded.value.text,

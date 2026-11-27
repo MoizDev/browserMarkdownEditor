@@ -59,7 +59,6 @@ function copyText(source: string, start: number, end: number, minify = false): s
     return parts.join('');
 }
 function tokenText(source: string, start: number, end: number): string {
-    // A tiny raw value must not pin a 64 MiB parent line through V8's sliced-string backing.
     return source.length > 16_384 && end - start < source.length / 4
         ? copyText(source, start, end) : source.slice(start, end);
 }
@@ -234,8 +233,6 @@ class Span implements JsonSpan {
         if (this.reader.unescaped(this.start)) {
             this.cached = tokenText(this.source, this.start + 1, this.end - 1);
         } else {
-            // Split only between complete escapes; JSON.parse on each bounded string preserves
-            // UTF-16 code units, including isolated escaped surrogates, exactly as one parse.
             const parts: string[] = [];
             let start = this.start + 1, index = start;
             while (index < this.end - 1) {
@@ -256,7 +253,7 @@ class Span implements JsonSpan {
     }
     number(): number {
         if (this.kind !== 'number') return error('syntax', 'Expected a number', this.start);
-        return Number(this.text()); // skip() has checked grammar and finiteness already.
+        return Number(this.text());
     }
     value(): unknown {
         if (!this.parsed) {
@@ -272,8 +269,6 @@ class Span implements JsonSpan {
         return this.cached;
     }
     raw(): RawJson {
-        // Only this reader brands a grammar/depth/number-validated source value. No JSON.parse /
-        // stringify cycle touches its strings, escapes, numbers or nested key spellings (R-W16).
         let quoted = false, escaped = false;
         for (let i = this.start; i < this.end; i++) {
             const code = this.source.charCodeAt(i);
@@ -417,7 +412,6 @@ export async function hasNativeMarkerIncremental(source: string, cooperate: () =
             index = await completeIncremental(reader.whiteSteps(index), cooperate);
             if (source.charCodeAt(index) === 125) return false;
             const keyEnd = await completeIncremental(reader.quotedSteps(index), cooperate);
-            // Six characters can occupy at most 36 escaped code units plus the quotes.
             const name = keyEnd - index <= 38 ? JSON.parse(tokenText(source, index, keyEnd)) as string : '';
             index = await completeIncremental(reader.whiteSteps(keyEnd), cooperate);
             if (source.charCodeAt(index++) !== 58) return false;
@@ -442,7 +436,6 @@ export function parseJson(source: string, maxDepth: number = FORMAT_LIMITS.jsonD
     return span;
 }
 
-/** The same lexical admission, with resumable scans inside large strings and containers. */
 export async function parseJsonIncremental(source: string, cooperate: () => Promise<void>,
     maxDepth: number = FORMAT_LIMITS.jsonDepth): Promise<JsonSpan> {
     if (source.length > FORMAT_LIMITS.recordBytes) error('limit', 'JSON value exceeds 64 MiB', 0);

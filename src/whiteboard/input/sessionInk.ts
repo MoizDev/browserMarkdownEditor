@@ -19,25 +19,19 @@ export interface SessionInkServices {
   readonly width: number
   readonly declaredMaxScale: number
   readonly captureDeviceScale: number
-  /** One CSS pixel of pointer input in world units at pointer down (1 / zoom). */
   readonly inputPixelWorld: number
-  readonly nextSequence: () => number // Monotone per session, shared by every attached view.
+  readonly nextSequence: () => number
   readonly rememberStroke: (id: StrokeNode['id']) => void
   readonly admit: (builder: SampleBuilder) => SampleLease
-  /** Extra operations join the stroke's one transaction, never a later save. */
   readonly planStroke?: (node: StrokeNode, summary: SampleSummary | null) => readonly Op[]
-  /** Independently retain sealed samples until the matching dry frame is presented. */
   readonly retainWet?: (ref: SampleRef) => SampleLease
   readonly clearRedoAtDown: () => void
   readonly invalidate: () => void
   readonly error: (error: unknown) => void
-  /** Writes the sample's point, in shared-camera world coordinates, into `out`. */
   readonly mapPoint: (sample: RealSample, out: { x: number; y: number }) => void
   readonly localToWorld: (origin: { readonly x: number; readonly y: number }) => readonly [number, number, number, number, number, number]
 }
 
-// All node content is committed once through the session, while the caller lease
-// remains alive until apply and history have retained the newly admitted samples.
 export function sessionInkContext(first: RealSample, services: SessionInkServices): LiveInkContext {
   const { session, sheet, page, tool, color, width } = services
   const origin = { x: 0, y: 0 }, id = newNodeId(session.doc)

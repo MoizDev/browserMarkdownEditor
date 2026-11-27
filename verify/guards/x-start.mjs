@@ -10,7 +10,6 @@ await fastGuard('X-START', async ({ session }) => {
     ]) {
         await session({ label, files, requests: false }, async ({ page, check, meta }) => {
             await openDocument(page, path);
-            // Observe the app's session write; never manufacture a restored tab.
             await page.waitForFunction(path => Object.keys(localStorage).some(key =>
                 key.includes('tab') && localStorage.getItem(key)?.includes(path)), path);
             meta.restores = [];

@@ -25,9 +25,6 @@ export function readLegacyUi(ui: LegacyObject | null): UiBlock {
     const scale = ui?.penScale;
     const penWidth = typeof scale === 'number' && Number.isFinite(scale) ? 3 * Math.max(0.12, Math.min(3.5, scale)) : UI_DEFAULTS.penWidth;
     const raw = ui ? parseJson(JSON.stringify(ui)).raw() : null;
-    // The board starts with a new board's tool, not the one the old app had chosen when it last saved: this app keeps a
-    // board's tool in its file, so an editable copy opened with that tool (seen: Text, with its style panel, on a copy
-    // whose old file was saved mid-text). The old `toolId` is still kept as written in `legacyUi`.
     return { tool: UI_DEFAULTS.tool, next, penWidth,
         ext: raw ? { fields: new Map([['legacyUi', raw]]), raw: new Map() } : null };
 }

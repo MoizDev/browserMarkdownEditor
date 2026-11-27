@@ -1,11 +1,4 @@
 #!/bin/bash
-# VaultAgent.pkg postinstall — runs as root after the payload lands in the stage.
-#
-# The helper is per-user: it lives in the console user's home and runs as a
-# LaunchAgent in their GUI session, so the panel can uninstall it later without
-# a password. Root is only needed for two things: running the user's install
-# step as that user, and bootstrapping into their GUI domain (`launchctl
-# bootstrap gui/<uid>` from `sudo -u` fails outside the user's audit session).
 
 set -u
 
@@ -32,17 +25,12 @@ if [ -z "$uid" ] || [ -z "$home" ] || [ ! -d "$home" ]; then
     exit 1
 fi
 
-# Copies the binary to ~/Library/Application Support/VaultAgent/ and writes
-# ~/Library/LaunchAgents/$LABEL.plist, as the user, so both are theirs.
 if ! sudo -u "$user" -H "$BIN" install --no-launchctl; then
     echo "VaultAgent: install step failed." >&2
     exit 1
 fi
 
 plist="$home/Library/LaunchAgents/$LABEL.plist"
-# A reinstall replaces the running old version. Wait for launchd to finish
-# tearing it down: a bootstrap right behind a bootout can fail with
-# "5: Input/output error", so it is also retried.
 launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
 for _ in $(seq 1 25); do
     launchctl print "gui/$uid/$LABEL" >/dev/null 2>&1 || break

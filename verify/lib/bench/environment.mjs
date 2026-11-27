@@ -1,12 +1,9 @@
-// Process/lid/VM evidence for timing-window-bound.md §4. No CPU-percentage cutoff.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { scratch } from './lock.mjs';
 import { sourceRoot } from '../paths.mjs';
 import { sampleCPU, runtimeClass } from './cpuMeasurement.mjs';
 const exec = promisify(execFile);
-// A process working in this clone or its scratch is the run's own load (a server or build left
-// behind), not the machine's: either invalidates a timing.
 const runRoots = [scratch, sourceRoot];
 const underRun = path => runRoots.some(root => path === root || path.startsWith(`${root}/`));
 function parseProcesses(raw) {

@@ -1,4 +1,3 @@
-// Preparation only: run it before, never inside, a browser run.
 // All source patches live in a detached scratch worktree, never this checkout's src/.
 import { readFile, writeFile, mkdir, realpath } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -43,11 +42,9 @@ if ((options.variant === 'holds') !== Boolean(sourceDiff)) throw new Error('Prep
 const sourcePatch = sourceDiff ? sourceDiff + '\n' : '';
 await writeFile(join(scratch, 'source.patch'), sourcePatch);
 
-// Each scratch worktree gets its own install, never a symlink/shared cache.
 if (!await exists(join(sourceRoot, 'node_modules/.package-lock.json'))) await command('npm', ['ci', '--no-audit', '--no-fund'], sourceRoot);
 if (await realpath(join(sourceRoot, 'node_modules')) !== join(sourceRoot, 'node_modules')) throw new Error('Scratch dependencies must be an owned install');
 const config = join(scratch, 'vite.config.mjs'), dist = join(scratch, 'dist');
-// Hidden source maps are external attribution data, not app instrumentation.
 await writeFile(config, `import original from ${JSON.stringify(join(sourceRoot, 'vite.config.ts'))};\nexport default {...original,root:${JSON.stringify(sourceRoot)},cacheDir:${JSON.stringify(join(scratch, 'vite-cache'))},optimizeDeps:{...original.optimizeDeps,exclude:[...(original.optimizeDeps?.exclude||[]),'@tldraw/assets/imports.vite']},build:{...original.build,outDir:${JSON.stringify(dist)},emptyOutDir:true,sourcemap:'hidden'}};\n`);
 await command(process.execPath, [join(sourceRoot, 'node_modules/vite/bin/vite.js'), 'build', '--config', config, '--mode', 'production'], sourceRoot);
 const identity = await tools.buildIdentity({ worktree: sourceRoot, distDir: dist, patch: sourcePatch || undefined });

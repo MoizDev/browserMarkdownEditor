@@ -1,6 +1,5 @@
 import type { BoardNotices } from './boardNotices';
 
-/** The notices in one box above the board's bottom row, each with its own Dismiss, newest last. */
 export function BoardNoticeStack({ notices }: { readonly notices: BoardNotices }) {
     if (!notices.list.length) return null;
     return <div className="board-viewer-notice board-viewer-notices" role="status">

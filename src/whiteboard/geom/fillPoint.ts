@@ -6,7 +6,6 @@ import type { Dyadic } from './numeric';
 import type { PathOp, Vec2 } from './path';
 
 export interface FillPointLimits { readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number; readonly maxCommands?: number; readonly localToWorld?: Affine;
-    /** Exact unit-weight dyadic query, for a transformed source point without rounding. */
     readonly exactPoint?: ExactPoint }
 export type FillPointStep = { readonly status: 'pending' | 'inside' | 'outside' } | { readonly status: 'uncertain'; readonly reason: string };
 type DPoint = { readonly x: Dyadic; readonly y: Dyadic };
@@ -32,7 +31,6 @@ function midpoint(a: Dyadic, b: Dyadic): Dyadic {
     valid(result); return result;
 }
 function middle(a: DPoint, b: DPoint): DPoint { return { x: midpoint(a.x, b.x), y: midpoint(a.y, b.y) }; }
-/** True when n * 2^e is exactly 1, whatever its representation: trailing zero bits of n move into e first. */
 function isUnitDyadic(w: Dyadic): boolean {
     let n = w.n, e = w.e;
     if (n === 0n) return false;
@@ -42,7 +40,6 @@ function isUnitDyadic(w: Dyadic): boolean {
 function signed(n: bigint): -1 | 0 | 1 { return n < 0n ? -1 : n > 0n ? 1 : 0; }
 function spans(a: bigint, b: bigint): boolean { return (a <= 0n && b >= 0n) || (b <= 0n && a >= 0n); }
 
-/** Classifies a point by exact dyadic ray crossings; boundary and exhausted budgets stay uncertain. */
 export function createFillPointJob(paths: readonly (readonly PathOp[])[], point: Vec2, fillRule: 'nonzero' | 'evenodd',
     limits: FillPointLimits = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): FillPointStep } {
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || (fillRule !== 'nonzero' && fillRule !== 'evenodd')) throw new RangeError('Invalid fill point or rule');
@@ -80,8 +77,6 @@ export function createFillPointJob(paths: readonly (readonly PathOp[])[], point:
                 const curve = stack.pop();
                 if (curve) {
                     const p = curve.p;
-                    // When the entire control hull is strictly right of the ray
-                    // origin, all y crossings contribute their net endpoint sign.
                     if (p.every(v => v.x.n > 0n)) { winding += Number(p[3].y.n > 0n) - Number(p[0].y.n > 0n); continue; }
                     if (p.every(v => v.x.n < 0n) || p.every(v => v.y.n > 0n) || p.every(v => v.y.n < 0n)) continue;
                     if (curve.depth >= maxDepth || nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Fill boundary or subdivision limit' });

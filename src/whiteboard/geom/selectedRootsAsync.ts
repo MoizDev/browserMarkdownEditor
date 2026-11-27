@@ -7,8 +7,6 @@ import { yieldToHost } from '../../platform/yieldToHost';
 
 interface RootPath { readonly node: Node; readonly sheet: BoardDoc['sheetOrder'][number]; readonly path: readonly Node[] }
 
-/** The command root policy, with a cooperative stable hierarchy sort instead
- * of sorting an unbounded selection synchronously on the input thread. */
 export async function selectedRootsAsync(doc: BoardDoc, ids: Iterable<NodeId>, options: {
     readonly signal: AbortSignal;
     readonly current: () => boolean;

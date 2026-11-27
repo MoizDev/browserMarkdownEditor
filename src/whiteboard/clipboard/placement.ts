@@ -8,8 +8,6 @@ import { pageAt } from '../../platform/render/pageStack';
 import type { BoardPayload, ClipboardBounds } from './snapshot';
 import type { ClipboardIntent, ClipboardPoint, ClipboardTarget } from './types';
 
-// Provenance: clipboard placement §6, page-stack and frame locking contracts;
-// independent pure placement planner, no third-party source.
 export interface BoardClipboardPlacement {
     readonly worldOrigin: ClipboardPoint;
     readonly worldCentre: ClipboardPoint;
@@ -25,7 +23,6 @@ export interface BoardClipboardPlacementOptions {
     readonly doc: BoardDoc;
     readonly cameraZoom: number;
     readonly intent: ClipboardIntent;
-    /** A duplicate repeating the offset its predecessor was moved by (catalogue S§7.4, K§2); absent, the copy steps right. */
     readonly duplicateOffset?: { readonly x: number; readonly y: number } | null;
 }
 function boundsValid(value: ClipboardBounds): boolean {
@@ -46,9 +43,6 @@ function clampPoint(doc: BoardDoc, point: ClipboardPoint): ClipboardPoint {
     return { x: Math.max(rect.x, Math.min(rect.x + rect.width, point.x)),
         y: Math.max(rect.y, Math.min(rect.y + rect.height, point.y)) };
 }
-/** The deepest unlocked frame on the sheet that holds a world point, or null. A cursor paste lands in it (catalogue c.4 "Parent"):
- *  the same rule a shape drop uses to pick its frame, and nested frames give the innermost. Rotated frames are tested in their own
- *  frame. */
 function frameUnder(doc: BoardDoc, sheet: SheetId, point: ClipboardPoint): ParentId | null {
     let best: ParentId | null = null, bestDepth = -1;
     for (const id of doc.bySheet.get(sheet) ?? []) {
@@ -83,8 +77,6 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
     }
     const inverted = intent === 'paste-inverted' || intent === 'paste-plain-inverted';
     const cursor = target.pasteAtCursor !== inverted;
-    // A cursor paste takes the frame under the cursor, not the selected one (catalogue c.4): the point decides, and a selected frame
-    // is only the target of a paste made without a point. Copies that include frames never nest.
     const cursorPaste = cursor && target.pointer !== null && intent !== 'drop' && intent !== 'duplicate';
     let parent: ParentId = target.sheet;
     if (cursorPaste) {
@@ -97,7 +89,6 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
     const bounds = source.bounds, viewport = target.viewport;
     const sourceCentre = { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 };
     const viewportCentre = { x: viewport.x + viewport.w / 2, y: viewport.y + viewport.h / 2 };
-    // Board content that is already on screen pastes where it is, as a copy on top; anything out of view lands at the view centre.
     const overlaps = bounds.x < viewport.x + viewport.w && bounds.x + bounds.w > viewport.x
         && bounds.y < viewport.y + viewport.h && bounds.y + bounds.h > viewport.y;
     const same = source.from !== null && source.from.board === receivingBoardId && source.from.sheet === target.sheet;
@@ -106,19 +97,14 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
         if (!target.pointer) throw new RangeError('Drop placement requires its captured world point');
         centre = target.pointer;
     } else if (intent === 'duplicate') {
-        // Duplicate steps right by the selection's width plus a 10-unit gap, in world units (spec F-ARR-005: 190 then 280).
-        // A repeat steps by the offset the previous copy now sits at, so a copy moved by hand is followed at the same distance.
         centre = options.duplicateOffset ? { x: sourceCentre.x + options.duplicateOffset.x, y: sourceCentre.y + options.duplicateOffset.y }
             : { x: sourceCentre.x + bounds.w + 10, y: sourceCentre.y };
     } else if (cursor) centre = target.pointer ?? viewportCentre;
     else if (same && overlaps) { centre = sourceCentre; preserve = true; }
     else centre = viewportCentre;
-    // In-place is exact even when existing content straddles a physical page gap.
     if (!preserve) centre = clampPoint(doc, centre);
     let delta = { x: centre.x - sourceCentre.x, y: centre.y - sourceCentre.y };
     let origin = { x: bounds.x + delta.x, y: bounds.y + delta.y };
-    // Show grid: a pasted or dropped group's top-left lands on the lattice after centring. An in-place paste stays exact, and a
-    // duplicate keeps its offset from the source.
     const lattice = preserve || intent === 'duplicate' ? null : boardSnapGrid(doc);
     if (lattice && Number.isFinite(origin.x) && Number.isFinite(origin.y)) {
         origin = { x: nearestBoardGridCoordinate(origin.x, lattice.origin.x, lattice.step.x).coordinate,

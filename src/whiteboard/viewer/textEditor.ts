@@ -42,7 +42,6 @@ import { isCancellation } from '../../platform/workers/envelope';
 import { MULTI_CLICK_MS } from '../input/tool';
 
 export interface BoardTextEditorOptions {
-    /** The node whose text is being edited, or null: its paint is exact while the editor holds it. */
     readonly editingChanged?: (id: NodeId | null) => void;
     readonly runtime: BoardRuntime;
     readonly render: ReturnType<typeof createBoardRenderServices>;
@@ -52,24 +51,19 @@ export interface BoardTextEditorOptions {
     readonly camera: CameraController;
     readonly viewport: () => Viewport;
     readonly overlay: HTMLElement;
-    /** The board's keyboard root: where focus goes when an edit closes. */
     readonly keyboardTarget: HTMLElement;
     readonly current: () => boolean;
     readonly interaction: { invalidate(): void; cameraChanged(): void };
     readonly inputFrames: { schedule(callback: () => void): () => void };
     readonly mac: boolean;
     readonly onError: (error: unknown) => void;
-    /** App-wide persisted dictionary; its owner also propagates cross-window changes. */
     readonly spelling: { words(): readonly string[]; subscribe(listener: () => void): () => void; add(word: string): void };
-    /** App-owned UI, never geometry or transaction authorities. */
     readonly ui: {
         menu(x: number, y: number): void;
         spellingMenu(x: number, y: number, rows: SpellMenuRows | null): void;
         openLink(url: string): void;
-        /** Opens the directional neighbour of the edited note once its own edit has committed. */
         stickyNeighbour?(direction: 'left' | 'right' | 'up' | 'down'): boolean;
         command(name: string, selection: EditSelection): void;
-        /** Opens the command palette of the board chrome; the edit is already finished when this runs. */
         commandPalette?(): void;
         selectionChanged(node: NodeId | null, selection: EditSelection | null): void;
         touchHandles(show: boolean): void;
@@ -105,7 +99,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     let currentWorld: Affine | null = null, handles = false, scroll: { x: number; y: number } | null = null;
     let editingEpoch = 0, ownBaseRevision = -1;
     const metrics = new Map<NodeId, { revision: number; font: number; value: ConnectorMetrics }>();
-    // The stale metrics a refresh is already preparing (id:revision:font), so a frame that reads one again starts no second prepare.
     const refreshing = new Set<string>();
     let svg: SVGSVGElement | null = null, toolbar: HTMLElement | null = null, lastZoom = camera.camera.z;
     let spell: BoardSpellClient | null = null, spellLoad: Promise<BoardSpellClient> | null = null;
@@ -202,10 +195,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             entry = { ...entry, revision: doc.rev }; metrics.set(node.id, entry); ownBaseRevision = -1;
         }
         if (!entry) throw new Error('Connector text geometry is not ready');
-        // Behind the document or the fonts (the label's first character loads its face: the font epoch moves, and the frame that load
-        // asks for can come before the refresh it started): the last metrics serve until the refresh lands and lays the label out again.
-        // Thrown here, the editor's overlay write failed inside the frame and the board closed ('Could not open canvas'; on WebGL2
-        // earlier, the pane fell back to canvas2d on the compositor's invalid-input): kinds kit arrow-label, DPR 2 dark, 2 of 6 runs.
         if (entry.revision !== doc.rev || entry.font !== render.text.fonts.epoch) {
             const key = `${node.id}:${doc.rev}:${render.text.fonts.epoch}`;
             if (!refreshing.has(key)) { refreshing.add(key); refreshConnector(node.id, () => refreshing.delete(key)); }
@@ -275,8 +264,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         }
         result = { ...result, ops }; return result;
     };
-    // The height of an empty line per font and size. The layout reads the face, so a font is measured only once it has loaded;
-    // until then a click is placed on the pointer's top edge. The cache is dropped whenever the font set changes.
     const lineHeights = new Map<string, number>(), lineLoading = new Set<string>();
     const lineProbe = () => createText({ id: newNodeId(doc), parent: runtime.selection.getSnapshot().focus, order: keyBetween(null, null), page: -1,
         x: 0, y: 0, ext: null, text: EMPTY_RICH_TEXT, color: doc.ui.next.color, size: doc.ui.next.size, font: doc.ui.next.font,
@@ -307,10 +294,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             const growth = doc.host.kind === 'notebook' ? notebookGrowthOp(doc, y) : undefined;
             return { parent, page, x: c * dx + s * dy, y: -s * dx + c * dy, ...(growth ? { before: [growth] } : {}) };
         } });
-    // The edge-scroll step carries no state of its own: stopping the scroll makes a queued step a no-op. The input host
-    // may drop a queued callback when input is disabled, so a guard that only that callback clears would stay set and
-    // later scroll requests would be skipped (the same fault as the marquee overlay: 11b74174). Requesting again is
-    // cheap: the host de-duplicates the same callback reference.
     const stepScroll = () => {
         if (!scroll || !current()) return;
         const rect = overlay.getBoundingClientRect(), margin = 32;
@@ -337,7 +320,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 touchHandles(value) { handles = value; options.ui.touchHandles(value); requestFrame(); },
                 menu: openTextMenu, openLink: options.ui.openLink, stickyNeighbour: direction => stickyNeighbour(direction),
                 returnFocus() {
-                    // Only focus the editor's own element or nothing: a button the person clicked keeps the focus.
                     const focused = document.activeElement;
                     if (focused === null || focused === document.body || overlay.contains(focused)) options.keyboardTarget.focus({ preventScroll: true });
                 },
@@ -370,7 +352,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         try { await prepareMetric(id, controller.signal); if (!current() || revision !== doc.rev || generation !== editingEpoch) return false; return manager.start(id); }
         catch (error) { if (!isCancellation(error)) report(error); return false; }
     };
-    /** The edit the last click on selected text opened, and the caret it put (`openedByClick`). */
     let clickOpened: { readonly binding: NonNullable<typeof manager.current>; readonly at: number; readonly selection: { readonly anchor: number; readonly focus: number } } | null = null;
     const routedInput = createTextInputBridge({ manager, selected: () => runtime.selection.getSnapshot().active,
         openedByClick() {
@@ -446,8 +427,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         item.setAttribute('x', String(value.x)); item.setAttribute('y', String(value.y)); item.setAttribute('width', String(Math.max(0, value.width)));
         item.setAttribute('height', String(Math.max(0, value.height))); item.setAttribute('fill', fill); if (stroke) item.setAttribute('stroke', stroke); parent.append(item);
     };
-    /** The floating "Text formatting" toolbar (F-TEXT-011/012). Its buttons run the same command bridge as the
-     * text menu and the shortcuts; pointerdown is kept from the editor so the selection survives the click. */
     let formatBar: ReturnType<typeof createFormatToolbar> | null = null, formatKey = '';
     const formatToolbar = (): ReturnType<typeof createFormatToolbar> => {
         if (formatBar) return formatBar;
@@ -464,7 +443,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const bounds = overlay.getBoundingClientRect(), bar = formatToolbar();
         if (!(bounds.width > 0 && viewport.width > 0)) { bar.element.hidden = true; return; }
         const scale = bounds.width / viewport.width;
-        // The state is read from the text only when the text or the selection moved: placeToolbar runs every frame.
         const node = active && doc.nodes.get(active), text = node && nodeText(node), key = `${active}:${doc.rev}:${selection.anchor}:${selection.focus}`;
         if (text && key !== formatKey) { formatKey = key; bar.setState(formatStateIn(text, Math.min(selection.anchor, selection.focus), Math.max(selection.anchor, selection.focus))); }
         bar.element.style.left = `${point.x * scale}px`; bar.element.style.top = `${point.y * scale - 8}px`; bar.element.hidden = false;
@@ -498,7 +476,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const fallbackSwatch = edited?.kind === 'text' ? edited.color
             : edited?.kind === 'sticky' || edited?.kind === 'figure' || edited?.kind === 'connector' ? edited.labelColor
                 : edited?.kind === 'frame' ? edited.color ?? 'black' : 'black';
-        // The caret takes the ink the note's label is painted in, so it stays visible on a note whose label was made legible.
         const palette = engine.getSnapshot().palette;
         const backdrop = edited?.kind === 'sticky' ? resolveSwatch(palette, edited.color, 'fill') : undefined;
         const inkOf = (swatch: Parameters<typeof resolveSwatch>[1]) => backdrop ? legibleInk(backdrop, palette.stroke[swatch]) : palette.stroke[swatch];
@@ -555,12 +532,8 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         if (!command('finish')) return false;
         return options.ui.stickyNeighbour(direction);
     };
-    /** A click on selected text: starts editing, then gives the editor the press so the caret lands where it was (catalogue S§4.2). */
     const editTextAt = async (id: NodeId, point: { x: number; y: number }, pointerId: number, clicks = 1): Promise<void> => {
         if (!current()) return;
-        // The second click of a double-click edits all of the text (catalogue S§12). Its click lands once the board has looked at
-        // what it hit, which can be after the double-click itself opened the text: placing a caret then undid the select-all
-        // (measured: a double-click on a text that was not selected always left a caret).
         if (clicks >= 2) {
             if (manager.current && active === id) return;
             const revision = doc.rev, generation = ++editingEpoch;
@@ -631,7 +604,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 || selection.anchor !== context.selection.anchor || selection.focus !== context.selection.focus) return false;
             return editor.applyLink(href, context.target ?? context.selection);
         },
-        /** Paste is one canonical whole-value set, prepared cooperatively from the captured value. */
         pasteText(fragment: RichFragment, options: FragmentSnapshotOptions): Promise<boolean> {
             const editor = manager.current?.editor;
             return editor ? editor.pasteCooperative(fragment, options) : Promise.resolve(false);

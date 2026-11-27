@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { createRecoveryJournal } from '../utils/recoveryJournalCoordinator';
 import { createRecoveryFunnel } from '../utils/recoveryFunnel';
 
-/** The crash-recovery journal and the one funnel every document change reports into. */
 export function useRecoveryJournal(announce: (message: string) => void) {
   const [recoveryJournal] = useState(() => createRecoveryJournal({
     failed: () => announce('Could not write recovery storage; keep your edits open.'),

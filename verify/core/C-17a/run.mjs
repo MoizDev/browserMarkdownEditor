@@ -70,7 +70,6 @@ try {
     result.before = await page.evaluate(keys => Object.fromEntries(keys.map(key => [key, localStorage.getItem(key)])), keys);
     if (candidate) {
         await page.waitForFunction(() => localStorage.getItem('bme.lsMirror') !== null);
-        // Hide is a real lifecycle checkpoint for not-yet-migrated writers.
         await hideSnapshot();
         await mirrorHas(result.before);
     }
@@ -86,7 +85,6 @@ try {
     await page.screenshot({ path: path.join(out, 'after.png'), fullPage: true });
     assert.deepEqual(result.after, result.before, 'settings, sessions and scroll records must survive the clear');
     if (args.includes('--notice-api')) {
-        // App already consumed the notice; an additional take must be empty.
         result.notice = await page.evaluate(async () => {
             const storage = await import('/src/utils/storage.ts');
             return { first: storage.takeRestoreNotice(), second: storage.takeRestoreNotice() };
@@ -112,10 +110,7 @@ try {
         assert.equal(await page.evaluate(() => localStorage.getItem('editorFontSize')), '23');
         result.twoWindows = true;
 
-        // This is an actual application removeItem path, not a fake deletion.
         await page.evaluate(() => localStorage.setItem('terminalFontSize', '20'));
-        // A real reload also exercises the legacy-writer reconciliation after
-        // first paint; headless tab activation need not change visibilityState.
         await page.reload();
         await page.locator('.vault-switcher').waitFor();
         await mirrorHas({ terminalFontSize: '20' });

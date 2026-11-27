@@ -20,7 +20,6 @@ interface CachedIndex {
 const indices = new WeakMap<ReferenceMeasurer, CachedIndex>();
 export function clearLongAsciiCaretIndex(measurer: ReferenceMeasurer): void { indices.delete(measurer); }
 
-/** Exact canvas-prefix queries over long LTR ASCII without allocating one measured prefix per character. */
 export function longAsciiCaretIndex(request: TextLayoutRequest, paint: TextPaint, table: FaceTable, measurer: ReferenceMeasurer): CaretIndex | null {
     const cached = indices.get(measurer);
     if (cached && cached.paint === paint && cached.text === request.text && cached.epoch === request.fontEpoch && cached.table === table) return cached.index;

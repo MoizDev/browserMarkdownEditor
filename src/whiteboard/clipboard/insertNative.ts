@@ -24,8 +24,6 @@ import type { PreparedClipboardMedia } from './prepareMedia';
 import type { ClipboardTarget } from './types';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: C5 clipboard source, staged geometry, page membership and atomic
-// transaction contracts; independent paste composition, no third-party source.
 export interface InsertNativeClipboardOptions {
     readonly runtime: BoardRuntime;
     readonly acquisition: BoardClipboardAcquisition;
@@ -33,9 +31,7 @@ export interface InsertNativeClipboardOptions {
     readonly placement: BoardClipboardPlacement;
     readonly target: Readonly<ClipboardTarget>;
     readonly receivingBoardId: string;
-    /** External conversions have no source-board identity. */
     readonly external: boolean;
-    /** Checks this captured target's session, epoch and generation, not the active pane. */
     current(target: Readonly<ClipboardTarget>): boolean;
     readonly signal?: AbortSignal;
     cooperate?(): Promise<void>;
@@ -50,7 +46,6 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
     const signal = options.signal ?? new AbortController().signal, leases: SampleLease[] = [];
     const check = () => {
         signal.throwIfAborted();
-        // No revision fence: what lands is carried over to the board as it is then (rebaseInsertion).
         if (!options.current(target) || runtime.session !== session || session.owner !== owner || session.doc !== doc || session.isReadOnly
             || media.stamp.runtime !== runtime || media.stamp.doc !== doc
             || media.stamp.owner.documentId !== owner.documentId || media.stamp.owner.session !== owner.session
@@ -64,7 +59,6 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
         const parent = placement.parent;
         if (!isSheetParent(doc, parent)) {
             const frame = doc.nodes.get(parent as NodeId);
-            // Its frame removed or locked since the paste was placed (an erase, an undo meanwhile): placed again, on the board as it is.
             if (!frame || frame.kind !== 'frame' || sheetOf(doc, frame.id) !== targetSheet || isLocked(doc, frame)) throw new InsertionStale('the frame it goes into was removed or locked');
         } else if (parent !== targetSheet) throw new Error('Clipboard target sheet changed');
         const sourceSheet = acquisition.payload.from.sheet;
@@ -129,7 +123,6 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
                 node = { ...node, start: { ...node.start, attach: remapAttachment(external?.start ?? node.start.attach) },
                     end: { ...node.end, attach: remapAttachment(external?.end ?? node.end.attach) } };
             } else if (node.kind === 'polyline') {
-                // Endpoint attachments are remapped with their polyline, never detached by changing its geometry.
                 const line = node as typeof node & { readonly startAttach?: ConnectorNode['start']['attach']; readonly endAttach?: ConnectorNode['end']['attach'] };
                 const external = acquisition.externalBindings?.get(original.id);
                 const start = external?.start ?? line.startAttach, end = external?.end ?? line.endAttach;
@@ -151,7 +144,6 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
         for (const op of media.mediaOps) {
             if (op.t !== 'media') throw new Error('Unexpected clipboard media operation');
             if (op.op === 'add') {
-                // A picture added meanwhile (the same picture pasted just before, landing first) is no fault: it is prepared again.
                 if (doc.media.has(op.entry.id)) throw new InsertionStale('a picture it adds is already on the board');
                 if (mediaEntries.has(op.entry.id)) throw new Error('Clipboard media already exists');
                 mediaEntries.set(op.entry.id, op.entry);

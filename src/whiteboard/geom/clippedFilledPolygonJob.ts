@@ -13,8 +13,6 @@ type Sample = Readonly<{ point: ExactPoint; polygon: 'inside' | 'outside' | 'ove
 const PENDING: ClippedPolygonResult = Object.freeze({ status: 'pending' });
 const IDENTITY: Affine = [1, 0, 0, 1, 0, 0];
 
-/** Convex polygon queries against a clipped filled contour and optional stroke.
- * Certified witnesses decide overlap; containment needs a whole-shape or frame certificate. */
 export function createClippedFilledPolygonJob(path: readonly PathOp[], query: Polygon, options: {
     readonly frames: readonly PointClipContour[];
     readonly fill: boolean;

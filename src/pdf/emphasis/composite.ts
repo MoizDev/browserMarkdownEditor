@@ -1,18 +1,15 @@
 export interface EmphasisPoint { x: number; y: number }
 export type EmphasisCell = readonly [EmphasisPoint, EmphasisPoint, EmphasisPoint, EmphasisPoint];
 export interface EmphasisRegion {
-    /** Global device-pixel origin, including any apron. */
     x: number;
     y: number;
     width: number;
     height: number;
-    /** Page point (0, 0) in global device pixels, and pixels per page point. */
     pageX: number;
     pageY: number;
     scale: number;
 }
 
-/** Copy full-composition ON pixels only at covered global pixel centres; OFF is never mutated. */
 export function compositeEmphasis(off: Uint8Array | Uint8ClampedArray, on: Uint8Array | Uint8ClampedArray,
     cells: readonly EmphasisCell[], region: EmphasisRegion): { pixels: Uint8Array; changedPixels: number } {
     const { x, y, width, height, pageX, pageY, scale } = region;

@@ -32,7 +32,6 @@ function hintsFor(source: ByteSource): Map<number, string | null> {
     return hints;
 }
 
-/** MapFont has no per-glyph oracle; the owner accepts a uniform-page hint for untagged text. */
 function uniformPageLanguage(runtime: PdfiumRuntime, page: number, hasForms: boolean): string | undefined {
     if (hasForms || runtime.call('FPDFPage_GetAnnotCount', page) !== 0) return undefined;
     const count = runtime.call('FPDFPage_CountObjects', page), limit = 20_000;
@@ -119,8 +118,6 @@ class PdfiumDocument implements BackendDoc {
         const version = withPdfiumMemory(runtime, 4, pointer => runtime.call('FPDF_GetFileVersion', document, pointer)
             ? heapView(runtime, pointer, 4).getInt32(0, true) : null);
         const attachments = this.inventory();
-        // Index-only extents deliberately omit rotation and transforms. Exact
-        // geometry comes from page(), never an invented affine on doc.open.
         const pages = this.sizes.map((size, index) => ({ index, ...size }));
         this.documentInfo = { pageCount: count, pages, encrypted: revision >= 0,
             permissions: runtime.call('FPDF_GetDocPermissions', document) >>> 0, signatureCount: signatures,
@@ -142,7 +139,6 @@ class PdfiumDocument implements BackendDoc {
     }
     private stopJobs(): void { for (const job of [...this.jobs]) job.abort(); }
     private account(page: LoadedPage, before: number): void {
-        // WASM exposes committed heap growth, not per-page allocations; zero is unknown, not proof of a light page.
         page.footprint += Math.max(0, this.runtime.HEAPU8.byteLength - before);
     }
     private trim(anchor: number): void {
@@ -372,7 +368,6 @@ class PdfiumDocument implements BackendDoc {
     }
 }
 
-/** The compiled module and all native handles stay inside the opaque worker. */
 export async function loadPdfiumBackend(options: PdfiumLoadOptions): Promise<PdfBackend> {
     const runtime = await loadPdfiumModule(options);
     let environment: BackendEnv | undefined, bridge: PdfiumFontBridge | undefined, closed = false;

@@ -31,8 +31,6 @@ class ReadingEmphasisView {
     }
     private build(view: EditorView): void {
         const options = view.state.facet(readingEmphasisFacet);
-        // Neither projection nor segmentation runs Off/in Edit. The extension
-        // may be installed in every prose state without touching code/chat.
         if (!options.enabled || options.mode !== 'read' || view.composing) {
             this.decorations = Decoration.none;
             return;
@@ -80,7 +78,6 @@ class ReadingEmphasisView {
     }
 }
 
-/** Singleton outside the options compartment; cached states keep its identity. */
 export const readingEmphasis: Extension = [
     ViewPlugin.fromClass(ReadingEmphasisView, { decorations: plugin => plugin.decorations }),
     EditorView.baseTheme({
@@ -90,8 +87,6 @@ export const readingEmphasis: Extension = [
 
 interface DeferredConfiguration { apply: () => void; frame: number; ended: () => void }
 const pending = new WeakMap<EditorView, DeferredConfiguration>();
-/** Integrator uses this for BOTH mode and preference reconfiguration. Latest
- * requested state wins, without committing/cancelling an in-flight composition. */
 export function deferReadingConfiguration(view: EditorView, apply: () => void): void {
     const previous = pending.get(view);
     if (previous) { previous.apply = apply; return; }

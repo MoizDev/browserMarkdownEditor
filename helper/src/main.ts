@@ -1,18 +1,3 @@
-// VaultAgent — the local helper that lets the browserMarkdownEditor panel run
-// Claude Code, Codex or OpenCode against the open vault.
-//
-//   vaultagent serve [--dev] [--no-register]   run the helper (what the login item starts)
-//   vaultagent install [--root <dir>]          copy into place + register at login
-//   vaultagent uninstall [--root <dir>]        undo install (keeps ~/.bme-agent-sessions)
-//   vaultagent uninstall-service               Windows uninstaller hook: drop the task, stop helpers
-//   vaultagent --version
-//   vaultagent                                 = install (a Linux double-click, a terminal run)
-//
-// --dev also accepts http://localhost:* / http://127.0.0.1:* origins (the Vite
-// dev server). --no-register: a foreground run (dev, CI smoke) — log to stderr,
-// never touch the installed layout, refuse `helper.uninstall` and `helper.update`.
-// An installed `serve` can update itself from the panel (update.ts).
-
 import { HELPER_PORTS, type AgentId } from '../../shared/vaultAgentProtocol.ts';
 import { createClaudeAdapter } from './agents/claude.ts';
 import { createCodexAdapter } from './agents/codex.ts';
@@ -68,7 +53,6 @@ async function serve(args: string[]): Promise<void> {
     };
     const layout = installLayout(platform);
     let server: ReturnType<typeof startServer> | undefined;
-    // One for the whole process: a shell outlives the socket that opened it.
     const terminals = new TerminalManager({ backend: chooseBackend(platform, layout, !noRegister) });
     const updater = noRegister ? undefined : createUpdater({
         platform,
@@ -76,7 +60,6 @@ async function serve(args: string[]): Promise<void> {
         currentVersion: HELPER_VERSION,
         releasesBase: RELEASES_BASE_URL,
         activeRuns: activeRunCount,
-        // The restart that follows ends every shell: hang them up first, not mid-keystroke.
         stopServer: () => {
             void terminals.closeAll();
             server?.stop();
@@ -98,15 +81,10 @@ async function serve(args: string[]): Promise<void> {
         });
     } catch (e) {
         logError('could not bind a port', e);
-        // Non-zero: launchd / Task Scheduler / systemd retry later.
         process.exit(1);
     }
     if (!noRegister) {
         cleanupLeftovers(layout.appDir);
-        // macOS: the frozen PTY host that owns the terminal's shells. Also here, not only
-        // at install, so a helper that self-updated from before the terminal gets it. Never
-        // fatal: the terminal then falls back to the in-process PTY (chooseBackend), and
-        // the chat is unaffected.
         void ensurePtyHost(layout).catch(e => logError('could not set up the PTY host', e));
     }
     if (noRegister || dev) process.stdout.write(`VaultAgent ${HELPER_VERSION} listening on http://127.0.0.1:${server.port}${dev ? ' (dev origins allowed)' : ''}\n`);
@@ -114,7 +92,6 @@ async function serve(args: string[]): Promise<void> {
     const stop = () => {
         if (stopping) return;
         stopping = true;
-        // Hang up every shell (and let them report it) before the server goes.
         void terminals.closeAll().finally(() => {
             server?.stop();
             process.exit(0);
@@ -124,7 +101,6 @@ async function serve(args: string[]): Promise<void> {
     process.on('SIGINT', stop);
 }
 
-/** Linux double-click: there is no terminal to print to. */
 async function notify(title: string, body: string): Promise<void> {
     if (helperPlatform() !== 'linux' || process.stdout.isTTY) return;
     await runCapture(['notify-send', title, body], { timeoutMs: 5000 });
@@ -145,8 +121,6 @@ async function main(): Promise<void> {
         case 'install': {
             const root = option(args, '--root');
             if (!root && !isCompiled()) {
-                // From source, "this executable" is the bun runtime itself: it
-                // would be installed as vaultagent and started with `serve`.
                 process.stderr.write('vaultagent install: run it from a compiled helper (npm run helper:build), not from source.\n');
                 process.exit(2);
             }
@@ -156,7 +130,6 @@ async function main(): Promise<void> {
                 await notify('VaultAgent installed', 'It runs in the background and starts at login. Go back to the editor and press Connect.');
             } catch (e) {
                 logError('install failed', e);
-                // Also in the log file: the Windows installer runs us without a console.
                 if (!root) {
                     setLogFile(installLayout(platform).logFile);
                     logError('install failed', e);
@@ -179,13 +152,11 @@ async function main(): Promise<void> {
     }
 }
 
-/** A `bun build --compile` executable, not `bun helper/src/main.ts`. */
 function isCompiled(): boolean {
     return Bun.main.startsWith('/$bunfs/') || /^[A-Za-z]:[\\/]~BUN[\\/]/.test(Bun.main);
 }
 
 main().catch(e => {
-    // A usage error (`--root` with no value …): one line, not a stack trace.
     process.stderr.write(`vaultagent: ${e instanceof Error ? e.message : String(e)}\n`);
     process.exit(2);
 });

@@ -55,19 +55,15 @@ import type { BoardPreview } from './preview';
 import { isCancellation } from '../../platform/workers/envelope';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: SelectGesture, swept selection, geometry preparation, transaction
-// and shared frame contracts; independent host composition, no third-party source.
 export interface BoardSelectServicesOptions {
     readonly runtime: BoardRuntime;
     readonly render: Pick<ReturnType<typeof createBoardRenderServices>, 'prepareChangeGeometry' | 'pinChangeGeometry' | 'changeGeometry'>;
     readonly camera: () => ViewState;
     readonly cameraController: CameraController;
-    /** The pane's motion, for the camera glides the commands run (back to content). */
     readonly motion: { glideTo(target: Camera, durationMs: number): void; cancel(): void };
     readonly surface: HTMLElement;
     readonly inputToken: InputToken;
     readonly cameraChanged: () => void;
-    /** Convert a physical sample using the mapping that actually presented it. */
     readonly sampleToSurface: (sample: RealSample) => Vec2;
     readonly point: Pick<ReturnType<typeof createBoardPointQuery>, 'hit' | 'hitTarget' | 'hitLocked'>;
     readonly region: Pick<ReturnType<typeof createBoardRegionQuery>, 'region'>;
@@ -75,18 +71,13 @@ export interface BoardSelectServicesOptions {
     readonly overlay: HTMLElement;
     readonly token: RenderToken;
     current(token: RenderToken): boolean;
-    /** The view's own editable gate. A read-only or non-editable view refuses document commands; navigation, camera and picking stay live. */
     canMutateView(): boolean;
     readonly inputFrames: { schedule(callback: () => void, onDrop?: () => void): () => void };
     readonly editSticky: (id: NodeId) => void | Promise<void>;
-    /** A click on the sole selected text: edits it with the caret at the press (see `BoardSelectGestureContext.editTextAt`). */
     readonly editTextAt?: (id: NodeId, point: Vec2, pointerId: number, clicks: number) => void | Promise<void>;
-    /** The embed and link-card chips' actions; absent, the cards draw no chips. */
     readonly cards?: BoardCardActions | null;
     readonly alwaysSnap?: () => boolean;
-    /** The wrap-mode preference (utils/boardPreferences.ts `isWrapMode`): a brush then selects only what it fully encloses. */
     readonly wrapMode?: () => boolean;
-    /** Ctrl/Cmd-drag from a resize handle of the one selected picture crops it from that edge; false when it cannot be cropped. */
     readonly cropFromHandle?: (id: NodeId, edge: { readonly dx: -1 | 0 | 1; readonly dy: -1 | 0 | 1 }, pointer: { readonly pointerId: number; readonly x: number; readonly y: number }) => boolean;
     onError(error: unknown): void;
     onKeptLocked?(ids: readonly NodeId[]): void;
@@ -94,7 +85,6 @@ export interface BoardSelectServicesOptions {
     openKeyboardContextMenu?(request: KeyboardContextRequest): void;
 }
 const IDENTITY = [1, 0, 0, 1, 0, 0] as const;
-/** A frame's border band for double-click fitting, in screen pixels. */
 const FRAME_BORDER_CSS = 6;
 export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const { runtime, render } = options, session = runtime.session, doc = session.doc;
@@ -130,14 +120,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         pending.clear(); for (const cancel of work) { try { cancel(); } catch (error) { report(error); } }
         return had;
     };
-    // Gestures the person has finished (an erase, a box) that are still landing. A new press, Escape, a tool change or
-    // another key does not cancel them (cancelPending above leaves them alone); the view's end does, and an undo cancels
-    // the ones whose landing would be its undo step. `settled` lets a new gesture's first decision wait for them.
     const settling = new Map<(undo: boolean) => boolean | void, boolean>();
-    // Each waiter waits for the work landing when it asked, never for work registered after: a press released before its own
-    // decision registers itself as settling, and waiting for an empty registry made it wait for itself. Measured: two quick clicks
-    // on empty canvas of a board holding a frame (whose first hit query is the slower one) left every later press, Escape and
-    // ⌘A waiting, still 10 s later.
     const settledWaiters = new Set<{ readonly work: Set<(undo: boolean) => boolean | void>; readonly wake: () => void }>();
     const registerSettling = (cancel: (undo: boolean) => boolean | void, undoable: boolean) => {
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
@@ -150,23 +133,17 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             }
         };
     };
-    // The key edits among them (keyEdit): the view's end leaves them to land on the session, which outlives it.
     const keyEdits = new Set<(undo: boolean) => boolean | void>();
     const settled = (): Promise<void> => settling.size
         ? new Promise(wake => { settledWaiters.add({ work: new Set(settling.keys()), wake }); }) : Promise.resolve();
-    // An undo takes back ONE step: the latest undoable work still landing. Cancelling every one made a ⌘Z right after two
-    // shapes drawn back to back take both. The view's end (undo false) cancels them all.
     const cancelSettling = (undo: boolean): boolean => {
         const work = [...settling].filter(([cancel, undoable]) => undo ? undoable : !keyEdits.has(cancel));
         const chosen = undo ? work.slice(-1) : work;
-        // Work that declines an undo (a released erase with a stroke drawn since) is left to land: the undo is the board's own.
         let taken = false;
         for (const [cancel] of chosen) { try { if (cancel(undo) !== false) taken = true; } catch (error) { taken = true; report(error); } }
         return taken;
     };
     const setGuides = (value: readonly BoardSnapGuide[]) => { guides = value; requestFrame(); };
-    // A transform preview draws the moving shape. The committed selection box must not stay behind it, and it follows
-    // a translation by the offset its ops carry (every node moves by the same amount); other transforms hide it.
     let transformPreview = false, transformOffset: Vec2 | null = null;
     const translationOf = (ops: readonly Op[]): Vec2 | null => {
         let dx = 0, dy = 0;
@@ -177,9 +154,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         }
         return ops.length ? { x: dx, y: dy } : null;
     };
-    // The handles and guides are written by a presented frame (writeOverlays), so a drag whose board stops presenting froze
-    // them: a move that no frame wrote since the previous move is written here, with the live camera. A frame that did
-    // write them clears the flag, so a board that presents every move (canvas2d) never takes this path.
     let overlaysFramed = true;
     const followMove = () => {
         const framed = overlaysFramed; overlaysFramed = false;
@@ -283,8 +257,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         },
         onError: report,
     };
-    // A key's edit whose view went out of sight (a tab switch right after the key) has no frame to wait for: it lands without its
-    // preview. Waited for, the preview's frame never came and the edit was dropped with it.
     const previewIdle = async (signal: AbortSignal): Promise<void> => {
         if (!current()) return;
         try { await options.preview.waitUntilIdle(signal); } catch (error) { signal.throwIfAborted(); if (current()) throw error; }
@@ -302,33 +274,16 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             catch (error) { options.preview.cancelCommit(); throw error; }
         } finally { clearTransform(); }
     };
-    /** A key's edit (a nudge, a turn, a flip, a stretch, a resize) is finished once the key is pressed: it lands whatever the
-     * person does next, and the session counts it as landing from the press (trackEdit), so a close, a switch or a reload waits for
-     * it. It is released work (registerSettling): a press, a camera move or focus leaving does not cancel it, nor does the view's end
-     * (a tab switch unmounts the board; the edit lands on the session); an undo of it does. Nor is it stale for a selection that
-     * changed or a view that went away meanwhile, only for a document that did (another vault, read-only, content edited under it).
-     * As cancellable pending work, a select-all nudge of 4,000 strokes (4.4 s to land) or a turn followed by a tab switch was
-     * dropped and never saved (measured: both lost, cancelled by the view's dispose). */
     const KEY_EDIT_ATTEMPTS = 32;
     const keyEdit = (run: (controller: AbortController, active: () => boolean) => Promise<void>): void => {
         const controller = new AbortController(), cancel = () => controller.abort(), unregister = registerSettling(cancel, true);
         keyEdits.add(cancel);
-        // The view's own permission is read at the key: once the view is gone (a tab switch) it answers no, and the edit it allowed
-        // would be dropped as stale. The document's is read throughout.
         const writable = () => !session.isReadOnly && session.doc === doc;
         const work = nudgeTail.catch(() => {}).then(async () => {
             if (controller.signal.aborted || !writable()) return;
             const revision = session.contentRevision, release = session.beginGesture();
             const active = () => !controller.signal.aborted && writable() && session.contentRevision === revision;
             try {
-                // The edit is prepared against the document's revision, which a change of no content moves too: choosing a
-                // tool writes the tool, and the preparation then stops as stale ("Selection roots changed") while the edit
-                // itself is as valid as it was. It is prepared again. Given up instead, the edit was dropped with no sign:
-                // every item selected on a 3,000-stroke board, an arrow key and then R, D, E, A, H or T at once lost the
-                // nudge (measured: 6 of 6, and the third of three nudges; also on the build before the eraser's rewrite).
-                // Only a revision that moved is a reason to prepare again: any other cancellation would be met again on every
-                // attempt, and every press waits while a key's edit lands. Bounded so a board whose tool changes without pause
-                // cannot hold the input forever.
                 for (let attempt = 1; ; attempt++) {
                     const prepared = doc.rev;
                     try { await run(controller, active); break; }
@@ -340,7 +295,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             catch (error) { if (active()) report(error); }
             finally { release(); }
         }).finally(() => { keyEdits.delete(cancel); unregister(); });
-        // Repeated key presses queue individual history steps rather than racing immutable snapshots.
         nudgeTail = work;
         session.trackEdit(work);
     };
@@ -378,7 +332,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return true;
     };
     const transform = (command: string): boolean => {
-        // Fine rotation is one sixteenth of the 15° keyboard step.
         const angles: Record<string, number> = { 'rotate.clockwise': Math.PI / 12, 'rotate.counterclockwise': -Math.PI / 12,
             'rotate.fineClockwise': Math.PI / 192, 'rotate.fineCounterclockwise': -Math.PI / 192 };
         const flip = command === 'flip.horizontal' ? 'x' : command === 'flip.vertical' ? 'y' : null;
@@ -389,7 +342,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (!mutable()) return viewRefused();
         if (!selection.selected.length) return false;
         const ids = [...selection.selected];
-        // Keyboard transforms share the nudge queue so no two preflights race the same revision.
         keyEdit(async (controller, active) => {
             {
                 await previewIdle(controller.signal);
@@ -418,7 +370,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                     return;
                 }
                 if (!active()) return;
-                // The hold above is this transform's own: the flip runs under it, so it must not refuse it as a foreign gesture.
                 if (flip) {
                     const scope = await acquireBoardGeometryScope(runtime, ids, { signal: controller.signal, current: active });
                     let centre: Vec2;
@@ -437,8 +388,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                     if (!active()) return;
                     await flipBoardLeaves({ runtime, ids, centre, axis: flip, current: active, signal: controller.signal, heldGestures: 1 }); return;
                 }
-                // A step turns about a centre the turn leaves in place (rotationCentre), so repeated steps compose. A locked
-                // member never turns, so it stays out of the centre.
                 const movable = (await selectedRootsAsync(doc, ids, { signal: controller.signal, current: active })).filter(node => !node.locked).map(node => node.id);
                 if (!movable.length) return;
                 const pivotScope = await acquireBoardGeometryScope(runtime, movable, { signal: controller.signal, current: active });
@@ -449,8 +398,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 const plan = await createBoardRotationPlan({ runtime, ids, centre, down, orientation: 0,
                     current: active, signal: controller.signal });
                 try {
-                    // The angle is applied as given: a pointer placed at centre + (cos, sin) and read back by atan2 rounds at
-                    // this magnitude (measured: a 1e-14 rad residue per step, which a return to 0 then carried into the record).
                     const preview = await plan.previewAngle(angle, controller.signal);
                     const notebook = preview.ops.length ? await prepareNotebookTransform({ runtime, ids, preview, signal: controller.signal, current: active }) : null;
                     try {
@@ -465,9 +412,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         });
         return true;
     };
-    // Whether taking an item off the board reads geometry: a container re-places the locked items it leaves behind, an arrow
-    // bound to the item (or the item's own bound end) is let go at the tip it was drawn with, and a group left with one
-    // member dissolves around it. Nothing else does, and that is every pen stroke in a notebook or over a PDF.
     const eraseReadsGeometry = (id: NodeId): boolean => {
         const node = doc.nodes.get(id);
         if (!node) return false;
@@ -476,10 +420,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (node.kind === 'polyline' && (node.startAttach || node.endAttach)) return true;
         return doc.nodes.get(node.parent as NodeId)?.kind === 'group';
     };
-    // A document that changes while an item's geometry is pinned is pinned again. Bounded only so a board that changes
-    // without pause cannot hold an erase forever; each one waits on a real change.
     const ERASE_PIN_ATTEMPTS = 32;
-    // Released erases finish in the order they were released: the second waits for the first's last stretch.
     let eraseTail: Promise<void> = Promise.resolve();
     const eraser: EraserContext = {
         hold: () => session.beginGesture(), settle: () => session.beginGesture('settling'), registerSettling,
@@ -490,9 +431,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             eraseTail = new Promise<void>(resolve => { done = resolve; });
             return { ready, done };
         },
-        // The path is kept in world units and mapped through the view as it is when the question is asked, with the reach
-        // that view gives it; the answer then holds wherever the view goes meanwhile (`at`). Mapped once at the press and
-        // checked against the live view, a wheel turn or a palm's pan in the middle of a drag ended the erase.
         async touched(points, radiusCss, signal) {
             check(signal);
             const view = options.camera(), css = points.map(point => worldToSurface(point, view.camera));
@@ -502,15 +440,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         },
         beginErase() {
             const sheet = runtime.selection.getSnapshot().sheet, history: HistoryController = session.history;
-            // 'own': this gesture opened the step and closes it. 'mark': a step was already open (a style press held through
-            // the erase), so the erase is recorded into it and taken back to this mark.
             let step: 'none' | 'own' | { readonly mark: number } = 'none', over = false;
-            // From the release on the step is closed, and each stretch still to land reopens it (`token`) for its own change.
-            // Left open until the last stretch had landed, it took in whatever the person did meanwhile. Where that stretch
-            // is slow to land (5,640 strokes on one spot: seconds, while the picture catches up), Draw chosen from the tool
-            // bar and a stroke drawn 300 ms later became part of the erase: one undo removed the new stroke and brought back
-            // all 193 erased ones (measured; now the stroke is one step and the erase another). A step made since the release
-            // is on top and cannot be joined: what lands after it is a step of its own, undone before it.
             let released = false, token: number | null = null;
             const apply = (ids: readonly NodeId[]) => {
                 check();
@@ -519,7 +449,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 if (released) {
                     if (!history.isOpen) { if (token === null || !history.reopenLast(token)) history.open('Erase'); reopened = true; }
                 } else if (step === 'none') { if (history.isOpen) step = { mark: history.mark() }; else { history.open('Erase'); step = 'own'; } }
-                // One item that cannot go (preserved content this app cannot make, a page it is not on) must not keep the others.
                 const remove = (roots: readonly NodeId[]) => {
                     const builder = session.begin('tool', 'Erase');
                     try { planDelete(doc, builder, sheet, roots, render.changeGeometry); builder.commit().release(); }
@@ -538,8 +467,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                     if (over) return;
                     const plain: NodeId[] = [], reading: NodeId[] = [];
                     for (const id of ids) if (doc.nodes.has(id)) (eraseReadsGeometry(id) ? reading : plain).push(id);
-                    // Applied in this task: by the time the pointer has moved on, the item is off the board and in the undo
-                    // step. Before, every item waited for the release, then for its geometry and a preview frame.
                     if (plain.length) apply(plain);
                     for (let attempt = 1; reading.length; attempt++) {
                         check(signal);
@@ -579,7 +506,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 revert() {
                     if (over) return;
                     over = true;
-                    // Released, the erase is an ordinary step and is taken back as one (`latest` has said it is on top).
                     if (released) { if (token !== null && !history.isOpen) history.undo(); return; }
                     if (step === 'own') { if (history.isOpen) history.cancel(); }
                     else if (step !== 'none' && history.isOpen) history.rollbackTo(step.mark);
@@ -587,10 +513,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             };
         },
     };
-    // Show grid is the lattice snapping uses (boardSnapGrid), drawn under the handles and guides. Its period doubles while one
-    // cell is under 8 CSS px, so a zoomed-out board stays legible and the line count stays bounded at every zoom.
     let gridSvg: SVGSVGElement | null = null, gridPath: SVGPathElement | null = null;
-    // The grid's camera and viewport, as five numbers (x, y, z, width, height); NaN until drawn.
     const gridCamera = new Float64Array(5).fill(Number.NaN);
     const drawGrid = (frame: ScheduledFrame) => {
         const lattice = boardSnapGrid(runtime.session.doc);
@@ -622,11 +545,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         }
         gridPath.setAttribute('d', d);
     };
-    /** The region preview (marquee or scribble) in its own SVG. A marquee is written when its preview changes, with the live
-     * camera, so the wash follows the pointer even while the GPU frame is deferred (its overlays are otherwise written only
-     * with a submitted frame, and a stalled board froze the wash for the whole drag). A scribble is still written per frame. */
-    // The shape's attributes are written when their value changes, and its style once per kind. By reading: a frame used to
-    // re-set the stroke, fill, dash and width, and the marquee's four numbers, whether or not any had moved.
     let shapeMode: 'rect' | 'g' | null = null, shapeStroke = '';
     const shapeBox = new Float64Array(4).fill(Number.NaN);
     const writeRegion = (camera: ViewState['camera']) => {
@@ -661,13 +579,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             if (shapeBox[3] !== height) { shapeBox[3] = height; shape.setAttribute('height', String(height)); }
         } else {
             const source = regionPreview.points;
-            // Checked first and unconditionally: the cache must track the camera even on a frame that rebuilds for another reason.
             const cameraMoved = cameraChanged(scribbleCamera, camera);
             if (scribbleSource !== source || cameraMoved || scribbleCount > source.length) {
                 shape.replaceChildren(); scribbleSource = source; scribbleCount = 0;
                 scribbleTail = null; scribblePoints = [];
             }
-            // Keep exact points, but bound DOM projection to four small chunks per shared frame.
             const limit = Math.min(source.length, scribbleCount + 1024);
             while (scribbleCount < limit) {
                 if (!scribbleTail || scribblePoints.length >= 257) {
@@ -697,8 +613,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         writeRegion(frame.view.camera);
         writeHover(frame.view.camera);
     };
-    // All guides are one path, rebuilt only when the guide list or the camera changes. Each alignment is a line with a cross
-    // (×) on every point that lands on it; each gap is a line with a tick at both ends. Arms are 4 CSS px, a 1 px stroke.
     let guidePath: SVGPathElement | null = null, guidesDrawn: readonly BoardSnapGuide[] | undefined;
     const guideCamera = new Float64Array(3).fill(Number.NaN);
     const writeGuides = (camera: ViewState['camera']) => {
@@ -730,10 +644,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         }
         guidePath.setAttribute('d', d);
     };
-    // Hover outline (catalogue S§2): the shape a press would pick, outlined while the Select tool is idle and it is not selected.
-    // Its box is the node's own rotated extent from the geometry scope, the same measure the selection frame uses. That box is a
-    // measure of the document as it is now, so it is re-measured on every document or selection change. Measured: Shift+. on a
-    // rectangle under a still pointer, then Cmd+G, left the unrotated 150×90 box on the grouped child, because nothing re-measured it.
     let hoverNode: NodeId | null = null, hoverCorners: readonly Vec2[] | null = null, hoverController: AbortController | null = null;
     let hoverSvg: SVGSVGElement | null = null, hoverPath: SVGPathElement | null = null;
     const writeHover = (camera: ViewState['camera']) => {
@@ -751,15 +661,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         hoverCorners.forEach((corner, i) => { const p = worldToSurface(corner, camera); d += `${i ? 'L' : 'M'}${p.x} ${p.y}`; });
         hoverPath!.setAttribute('d', `${d}Z`);
     };
-    // Measures the hovered node in its own rotated frame. The previous box stays on screen until this one lands, so a nudge
-    // does not blink the outline out; a node that has left the document drops it at once.
     const measureHover = () => {
         hoverController?.abort(); hoverController = null;
         const id = hoverNode;
         if (!id || !current() || !doc.nodes.has(id)) { hoverNode = null; hoverCorners = null; writeHover(options.camera().camera); requestFrame(); return; }
         const controller = new AbortController(); hoverController = controller;
-        // worldPose composes every ancestor's transform with the node's own rotation, so a child of a group or frame is measured
-        // in the space it is drawn in. A group is boxed in the frame its selection draws, so hovering and selecting it agree.
         const node = doc.nodes.get(id)!;
         const rotation = node.kind === 'group' ? commonResizeRotation(frameLeafRotations(doc, [node])) ?? 0 : worldPose(doc, id).rotation;
         const c = Math.cos(rotation), s = Math.sin(rotation), target = inverse([c, s, -s, c, 0, 0], 1e12);
@@ -781,15 +687,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (id === hoverNode) return;
         hoverNode = id; hoverCorners = null; measureHover();
     };
-    // Session notices carry selection changes too, and arrive on the frame that presents them. Nothing is hovered during a gesture
-    // (setHover(null) at its start), so a drag's notices cost nothing here.
     const stopHoverNotices = session.subscribe(() => { if (hoverNode) measureHover(); });
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
-        // A card's chips need no write right: consent to load an embed, and opening a link, change no document.
         const chip = cardControls.begin(physicalSurface(sample), sample, modifiers.accel);
         if (chip) return chip;
         if (!mutable()) return null;
-        // A finger or a pen is a coarse pointer: its handles and hit margins are the larger ones (catalogue I§4.5).
         const surface = physicalSurface(sample), coarse = sample.source === 'touch' || sample.source === 'pen';
         const shapeHit = shapeHandles.hit(surface, coarse, sample.time);
         if (shapeHit) return shapeHandles.begin(shapeHit, sample, modifiers);
@@ -797,8 +699,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (!direction) {
             const hit = selectionHandles.hit(surface, coarse, sample.time); if (!hit) return null;
             if (modifiers.accel) {
-                // Accel-drag from a resize handle of one picture crops it from that edge (catalogue S§10.2): the press is the crop's
-                // to finish, so it holds the gesture alone and no brush starts. Any other accel-drag from a handle brushes (S§4.4, S§8.1).
                 const selected = runtime.selection.getSnapshot().selected;
                 if (hit.kind === 'resize' && selected.length === 1 && options.cropFromHandle?.(selected[0]!, { dx: hit.handle.x, dy: hit.handle.y },
                     { pointerId: sample.pointerId, x: sample.x, y: sample.y })) {
@@ -865,16 +765,12 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (!mutable()) return false;
         const hit = shapeHandles.hit(surface, false, time);
         if (hit && shapeHandles.toggleHead(hit)) return true;
-        // Six screen pixels: the border's band, measured at the camera's zoom (the same band at every zoom).
         if (fitFrameAtBorder({ runtime, point: world, bandWorld: FRAME_BORDER_CSS / options.camera().camera.z, current: mutable,
             registerPending, error: report })) return true;
         if (!selectionHandles.contains(world, time)) return false;
         return enterGroupAtPoint({ runtime, point: world, current: mutable, hold: () => session.beginGesture(), registerPending,
             hit: (point, signal) => options.point.hit(point, 'mouse', signal), error: report });
     };
-    /** A secondary click chooses what its menu acts on (catalogue S§17): a press inside the selection keeps it; an unselected
-     * shape under the press is selected alone; empty canvas clears a selection. Runs only in the Select tool, so a press
-     * in Draw or Text never changes the selection. */
     const secondarySelect = async (world: Vec2, signal: AbortSignal): Promise<void> => {
         if (!mutable() || runtime.tools.getSnapshot().active.id !== 'select') return;
         const before = runtime.selection.getSnapshot();
@@ -896,7 +792,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const keyboardContext = options.openKeyboardContextMenu ? createKeyboardContext({ runtime, camera: options.cameraController,
         surface: options.surface, current, open: options.openKeyboardContextMenu, error: report }) : null;
     const keyboardContextMenu = (surface: Vec2, world: Vec2) => keyboardContext?.request(surface, world) ?? false;
-    /** The locked node a secondary click at this world point targets, without selecting it (F-CTX-006). */
     const lockedAt = (world: Vec2, signal: AbortSignal) => options.point.hitLocked(world, 'mouse', signal);
     const selectionCommands = createSelectionCommandDriver({ runtime, zoom: () => options.camera().camera.z, current,
         canMutateView: options.canMutateView, registerPending, error: report, keptLocked: options.onKeptLocked });
@@ -909,7 +804,6 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (id.startsWith('nudge.')) return nudge(id.slice('nudge.'.length), false) || viewRefused();
         return navigate(id) || transform(id);
     };
-    // The host routes select through this tool so handles win over body picking for both pointer and keyboard input.
     const selectContext: BoardSelectGestureContext = { ...select, sampleToSurface: physicalSurface, beginHandle, editTextAt: options.editTextAt,
         brushOverHandle: sample => shapeHandles.isEndOrLabel(physicalSurface(sample), sample.time),
         settle: () => session.beginGesture('settling'), registerSettling, settled,
@@ -918,15 +812,12 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         leaveFocusAt: point => leaveGroupAtPoint({ runtime, point, zoom: () => options.camera().camera.z, current: mutable,
             hold: () => session.beginGesture(), registerPending, error: report }),
         wrapMode: options.wrapMode ?? (() => false),
-        // The selection's picture is built at rest when a press lands on it: a drag's first move then only moves that picture,
-        // and a build takes frames that the first move cannot wait for.
         prewarm() {
             const rest: Op[] = [];
             for (const id of runtime.selection.getSnapshot().selected) { const node = runtime.session.doc.nodes.get(id); if (node) rest.push({ t: 'set', id, key: 'x', value: node.x }); }
             if (rest.length) options.preview.showOps(rest, true);
         } };
     const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
-        // A gesture never shows a hover outline: the press owns the pointer until it ends.
         setHoverOutline(null);
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };

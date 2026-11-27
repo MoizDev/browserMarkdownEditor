@@ -1,24 +1,19 @@
 import type { NodeId } from '../model/ids'
 import type { InputToken } from './tool'
 
-// Tool choice is session UI state, not document history. Tool implementations and
-// their command services are registered by the host, not imported by the router.
 export interface ToolRegistration {
   readonly id: string
   readonly persistence: 'persistent' | 'single-use'
   readonly hasVariants?: boolean
-  /** A tool the tool lock may keep chosen; absent means lockable. */
   readonly lockable?: boolean
 }
 
 export interface ToolChoice {
   readonly id: string
   readonly variant?: string
-  /** The tool's name in the board's language, when the bar supplies it: a text dropped from the bar starts with it. */
   readonly label?: string
 }
 
-/** Returns true when the board view takes the press (see ChromeToolDrag). */
 export type ChromeDragBegin = (choice: ToolChoice, event: PointerEvent, bar: Element) => boolean
 
 export interface ToolStateSnapshot {
@@ -62,7 +57,6 @@ export class ToolState {
     const key = this.pointerKey(token); this.pointerResolvers.set(key, resolve)
     return () => { if (this.pointerResolvers.get(key) === resolve) this.pointerResolvers.delete(key) }
   }
-  /** A board view takes a press that began on the chrome's tool bar. Each view binds its own token; the first current view accepts. */
   bindChromeDrag(token: InputToken, begin: ChromeDragBegin): () => void {
     const key = this.pointerKey(token); this.chromeDrags.set(key, begin)
     return () => { if (this.chromeDrags.get(key) === begin) this.chromeDrags.delete(key) }
@@ -159,17 +153,12 @@ export class ToolState {
     this.publish({ ...this.snapshot, active: { id, ...(variant !== undefined ? { variant } : {}) }, lastFigure, selectionEpoch: this.snapshot.selectionEpoch + 1 })
   }
 
-  /** Adopt a tool named by the document (`ui.tool` stores the id alone). The same id keeps its variant, and a
-   * figure coming back takes the last figure: re-applying the bare id dropped `rectangle` from the snapshot after
-   * every choice, so the bar showed no tool pressed (measured: R pressed, `aria-pressed` false on every button). */
   adoptTool(id: string): void {
     const registration = this.registry.get(id)
     if (!registration || this.snapshot.active.id === id) return
     this.setTool(id, id === this.figureId && registration.hasVariants ? this.snapshot.lastFigure : undefined)
   }
 
-  /** The tools the chrome's bar shows, in order, as the chrome last drew them: the number keys press them. Session UI
-   * state, so it is not published to listeners; the chrome clears it when its bar unmounts. */
   setBarTools(choices: readonly ToolChoice[]): void { this.bar = choices }
   barTool(index: number): ToolChoice | undefined { return this.bar[index] }
 
@@ -179,7 +168,6 @@ export class ToolState {
 
   toggleLocked(): void { this.setLocked(!this.snapshot.locked) }
 
-  // A stale completion must not switch away from a tool chosen during the gesture.
   complete(start: ToolStateSnapshot): void {
     const keep = this.keepToolEpoch === start.selectionEpoch
     this.keepToolEpoch = null
@@ -190,7 +178,6 @@ export class ToolState {
 
   escape(): void { this.setTool(this.selectId) }
 
-  /** The engine's "exit pen mode" command: the helper button and the accessibility button both call it. */
   exitPenMode(): void { this.setPenMode(false) }
 
   private publish(snapshot: ToolStateSnapshot): void {

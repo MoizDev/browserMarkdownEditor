@@ -2,7 +2,6 @@ export interface StoredGraphPosition { path: string; x: number; y: number }
 export interface StoredGraphLayout { positions: StoredGraphPosition[]; topologySignature: string; alpha?: number }
 export interface GraphTopology { nodes: string[]; edges: [string, string][] }
 
-// Session memory is keyed by vault identity, never by the common note paths.
 const layouts = new Map<string, StoredGraphLayout>();
 const saves = new Map<string, Promise<void>>();
 export function queueGraphLayoutSave(vaultId: string, write: () => Promise<void>): void {

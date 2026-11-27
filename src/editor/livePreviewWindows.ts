@@ -51,7 +51,6 @@ function candidates<T extends CharRange>(items: readonly T[], intervals: readonl
     }
 }
 
-/** New-coordinate, whole-line windows. A failed revision check is handled by the caller. */
 export function planPreviewWindows(tr: Transaction, analysis: DocAnalysis, edit: boolean, analysisChanged: boolean): PreviewWindow[] {
     const state = tr.state, doc = state.doc;
     const dirty: PreviewWindow[] = analysisChanged ? [...(analysis.delta?.changed ?? []), ...(analysis.delta?.treeChanged ?? [])] : [];
@@ -101,7 +100,6 @@ export function planPreviewWindows(tr: Transaction, analysis: DocAnalysis, edit:
             if (exact(before, item.from, item.to) !== exact(after, item.from, item.to)) dirty.push(item);
         });
     }
-    // A changed leaf is the smallest unit in which inline syntax can nest.
     const widened: PreviewWindow[] = [];
     for (const range of dirty) {
         let from = Math.max(0, Math.min(doc.length, range.from)), to = Math.max(0, Math.min(doc.length, range.to));

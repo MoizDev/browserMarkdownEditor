@@ -21,7 +21,6 @@ import { styleGeometryMetrics } from './styleMetrics';
 import type { KindGeometry, NarrowResult } from './types';
 import { DashWalker, DotWalker, dashPath, dotPath, drawPath } from './variants';
 
-/** Translate the engine's retained path into the platform paint/export command vocabulary. */
 export function* pathCommands(ops: Iterable<PathOp>): Generator<PathCommand> {
     for (const op of ops) {
         if (op.op === 'Z') yield ['Z'];
@@ -41,7 +40,6 @@ export interface PositionedFigureText { readonly paint: TextPaint; readonly x: n
 export interface FigureAttachmentSurface { readonly outline: readonly PathOp[]; readonly logicalBox: Rect }
 const FIGURE_LABEL_SIZE = { s: 18, m: 22, l: 26, xl: 32 } as const;
 
-/** Text layout remains text-owned; this only supplies the figure's host constraints. */
 export function figureLabelRequest(node: Readonly<FigureNode>, revision: string, fontEpoch: number):
     Readonly<{ request: TextLayoutRequest; x: number; y: number }> | null {
     if (!node.label) return null;
@@ -67,7 +65,6 @@ export function stickyLabelRequest(node: Readonly<StickyNode>, revision: string,
             minHeight: 200 + node.growY, overflow: 'shrink' } } };
 }
 
-/** Frame titles are laid out as text, not a second editable content format. */
 export function frameTitleRequest(node: Readonly<FrameNode>, fallback: string, revision: string,
     fontEpoch: number, zoom: number): TextLayoutRequest {
     if (!Number.isFinite(zoom) || zoom <= 0 || !Number.isFinite(node.w) || node.w < 0 || !Number.isFinite(fontEpoch)) throw new RangeError('Invalid frame title layout');
@@ -92,7 +89,6 @@ export interface FigureGeometryOptions {
 }
 export type FigureGeometry = KindGeometry<FigurePaintPath, PositionedFigureText, FigureAttachmentSurface>;
 
-/** Restrict hatch work to a visible local region; export can enumerate regions in tiles. */
 export function* figureHatch(geometry: FigureGeometry, node: Readonly<FigureNode>, bounds: Rect,
     angle: number, spacing: number, phase: number, maxLines: number, maxSegments: number): Generator<HatchLine> {
     if (!geometry.attachments) throw new RangeError('Figure outline is unavailable');
@@ -161,7 +157,6 @@ export interface FigureWorldBoundsOptions {
     readonly kernelVersion: number; readonly pathError: number; readonly lengthError: number; readonly maxPieces: number;
 }
 
-/** Preserve the approximation enclosure so page-centre callers can defer an ambiguous boundary. */
 export function figureWorldSemanticBounds(node: Readonly<FigureNode>, matrix: Affine,
     options: FigureWorldBoundsOptions): Readonly<{ bounds: Rect; errorWorld: number }> {
     if (!Number.isFinite(options.pathError) || options.pathError <= 0 || !Number.isFinite(options.lengthError) || options.lengthError <= 0
@@ -188,7 +183,6 @@ function expand(rect: Rect, radius: number): Rect {
 export type { PolylineGeometryOptions } from './polylineTypes';
 export type PolylineGeometry = KindGeometry<FigurePaintPath, never, never>;
 
-/** Polyline picks use the exact same open styled path as paint; coincident ends never imply fill. */
 export function preparePolylineGeometry(node: Readonly<PolylineNode>, options: PolylineGeometryOptions): PolylineGeometry {
     const { lengthError, maxPieces, hitMarginCss, hitErrorCss } = options;
     if (![node.width, lengthError, hitMarginCss, hitErrorCss].every(Number.isFinite) || node.width < 0 || lengthError <= 0
@@ -223,7 +217,6 @@ export interface InkGeometry {
     pickJob(localToSurface: Affine, query: InkPickQuery, dpr: number): InkPickJob;
 }
 
-/** Keep long ink coverage leased and let its own resumable picker enforce R-13. */
 export function prepareInkGeometry(key: string, coverage: InkCoverage): InkGeometry {
     const rect = (r: Readonly<{ x: number; y: number; w: number; h: number }>): Rect =>
         ({ x: r.x, y: r.y, width: r.w, height: r.h });
@@ -240,7 +233,6 @@ export interface TextGeometryOptions {
 }
 export type TextGeometry = KindGeometry<never, PositionedFigureText, FigureAttachmentSurface>;
 
-/** Whitespace remains selectable: text selection follows its layout box, not glyph alpha. */
 export function prepareTextGeometry(node: Readonly<TextNode>, paint: TextPaint, options: TextGeometryOptions): TextGeometry | undefined {
     if (paint.fontEpoch !== options.fontEpoch) return undefined;
     if (!Number.isFinite(node.scale) || node.scale < 0 || !Number.isFinite(options.hitErrorCss) || options.hitErrorCss <= 0
@@ -322,8 +314,6 @@ function containerGeometry(box: Rect, outline: readonly PathOp[], border: number
             if (query.kind === 'polygon' && query.containment) return body.hit && textHit.hit ? body : { hit: false, distanceCss: Infinity, part: 'none' };
             return textHit.hit ? { hit: true, distanceCss: 0, part: selectInterior ? 'label' : 'title' } : body;
         } },
-    // The same parts `region` reads, in its order. A surface with no border is its filled inside alone: its outline
-    // drawn with no width adds nothing a touch could reach that the fill does not already hold.
     { parts: [...(textPath ? [{ part: selectInterior ? 'label' as const : 'title' as const, paths: [], options: textOptions }] : []),
         { part: 'body', paths: selectInterior && !border ? [] : [outline], options: bodyOptions }] });
 }
@@ -353,7 +343,6 @@ export function prepareMediaBoxGeometry(node: Readonly<MediaBoxNode>, options: C
     return containerGeometry(box, outline, 0, true, options);
 }
 
-/** Figure paint, attachment and hit geometry are derived from the same realized contours. */
 export function prepareFigureGeometry(node: Readonly<FigureNode>, options: FigureGeometryOptions): FigureGeometry | undefined {
     const { pathError, lengthError, maxPieces, hitMarginCss, hitErrorCss, label } = options;
     if ((!node.label && label) || (node.label && (!label || label.paint.fontEpoch !== options.fontEpoch))) return undefined;

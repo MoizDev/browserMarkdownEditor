@@ -1,12 +1,3 @@
-// The AI agent panel: a right-docked column App mounts lazily (index.tsx). It
-// fills whatever box App gives it; App owns the width, the resize handle, the
-// toggle button and ⌘⇧X.
-//
-// This component is only a view. The connection (utils/agentBridge.ts) and the
-// chats and the run (chatStore.ts) are module stores that outlive it, so
-// closing the panel mid-reply loses nothing and the agent's tool calls keep
-// being answered.
-//
 // `data-agent-panel` on the root is load-bearing: App's global shortcut
 // handler ignores ⌘E whose target is inside it (it would flip the mode of the
 // note behind, unseen); ⌘S, ⌘N and ⌘\ stay app-wide.
@@ -41,13 +32,10 @@ const EMPTY: Conversation = { items: [], tree: emptyTree(), history: 'none' };
 
 const WAIT_FOR_UPDATE = 'Wait for the update to finish';
 
-/** "1 open terminal" / "3 open terminals" — the count the terminal chunk keeps
- *  in a tiny store, so this chunk never imports the terminal's. */
 function terminalsPhrase(n: number): string {
     return `${n} open terminal${n === 1 ? '' : 's'}`;
 }
 
-/** Resolves once no run is in flight (a stopped one ends on its run.done), or after `timeoutMs`. */
 function runEnded(timeoutMs: number): Promise<void> {
     return new Promise(resolve => {
         if (!chatStore.getState().run) { resolve(); return; }
@@ -57,20 +45,8 @@ function runEnded(timeoutMs: number): Promise<void> {
     });
 }
 
-/** How long after opening the composer may still take the keyboard from where
- *  it was, while the connection or the agent check is still coming up. Past
- *  it, a reader who went on typing in their note keeps it. */
 const OPEN_FOCUS_WINDOW_MS = 1500;
 
-/**
- * The panel's mark: the app's own AI glyph, the same one the sidebar button
- * carries, tinted by the connection (`data-state`, inked in AgentPanel.css).
- *
- * It replaced an aicss orb — a 3x3 lattice of dots, which at 22px in the top
- * corner read as a menu grid and said "agent" to nobody. The orb still does the
- * work it is good at: the animated ones in the conversation, where motion IS
- * the message.
- */
 function StatusMark({ bridge, running }: { bridge: BridgeState; running: boolean }) {
     let label: string;
     let state: 'working' | 'on' | 'connecting' | 'off';
@@ -97,7 +73,6 @@ function StatusMark({ bridge, running }: { bridge: BridgeState; running: boolean
     );
 }
 
-/** Why the composer cannot send, or null. */
 function blockedReason(state: ChatStoreState, vaultOpen: boolean, conversation: Conversation): string | null {
     if (!vaultOpen) return 'Open a vault to chat';
     if (conversation.history === 'missing') return 'History unavailable here — start a new chat';
@@ -110,8 +85,6 @@ function blockedReason(state: ChatStoreState, vaultOpen: boolean, conversation: 
     return null;
 }
 
-/** Built once per page, like the stores it feeds: chatStore and an in-flight
- *  run keep this object, so it must outlive every mount of the panel. */
 let sharedHost: AgentHost | null = null;
 function hostFor(getDeps: () => AgentHostDeps): AgentHost {
     return (sharedHost ??= createAgentHosts(getDeps));
@@ -129,20 +102,10 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
     const [dragging, setDragging] = useState(false);
     const rootRef = useRef<HTMLDivElement>(null);
 
-    // ── The keyboard in and out ──
-    // Opening hands the keyboard to the composer; closing hands it back to
-    // whatever had it (an Edit-mode caret, the footer button) or else to the
-    // focused note, the way EditorPane gives a note the keyboard (its
-    // scroller — a note in Reading mode leaves <body> focused). Only an open
-    // the reader asked for takes it: a panel restored open with the page
-    // leaves the keyboard to the note being restored.
     const takeFocusAtMount = useRef(takeFocus);
     const returnFocusTo = useRef<Element | null>(null);
     const wantsComposer = useRef(false);
     const openedAt = useRef(0);
-    // A layout effect so its cleanup runs while the panel is still in the
-    // document — after removal, focus inside it has already fallen to <body>
-    // and there is no telling "the reader was in the panel" from "elsewhere".
     useLayoutEffect(() => {
         const before = document.activeElement;
         returnFocusTo.current = before && before !== document.body ? before : null;
@@ -150,8 +113,6 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         openedAt.current = performance.now();
         return () => {
             const active = document.activeElement;
-            // Closed from outside (the footer button) with the keyboard
-            // elsewhere: leave it there.
             if (active && active !== document.body && !active.closest('[data-agent-panel]')) return;
             const back = returnFocusTo.current;
             if (back instanceof HTMLElement && back.isConnected && !back.closest('[data-agent-panel]')) {
@@ -163,17 +124,12 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
             note?.focus({ preventScroll: true });
         };
     }, []);
-    // The composer exists only once connected, and is disabled until the
-    // agent check lands — so this waits for it, every render until then.
     useEffect(() => {
         if (!wantsComposer.current) return;
         const field = rootRef.current?.querySelector<HTMLTextAreaElement>('.agent-textarea');
         if (!field || field.disabled) return;
         wantsComposer.current = false;
         const active = document.activeElement;
-        // <body> is nobody's keyboard (a Reading-mode note, a Connect button
-        // that went away as it connected); where the reader was when they
-        // opened the panel is theirs again once the window has passed.
         const unmoved = !active || active === document.body || !!rootRef.current?.contains(active)
             || (active === returnFocusTo.current && performance.now() - openedAt.current < OPEN_FOCUS_WINDOW_MS);
         if (unmoved) field.focus({ preventScroll: true });
@@ -192,8 +148,6 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         return () => { live = false; };
     }, [os]);
 
-    // Hold the connection while the panel is open, and dial by itself only
-    // where agentBridge.autoConnect says that cannot raise Chrome's prompt.
     useEffect(() => {
         if (!supported) return;
         const release = agentBridge.retain();
@@ -201,13 +155,10 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         return release;
     }, [supported]);
 
-    // A socket to a helper — possibly an outdated one, there only to be
-    // updated or uninstalled. `ready` is the one the chat may use.
     const connected = bridge.status === 'connected';
     const updating = bridge.status === 'updating';
     const ready = supported && helperReady(bridge);
 
-    // A chat opened before the connection was up gets its history now.
     const active = activeChatOf(state);
     const activeConversation = state.conversations[state.activeChatId ?? DRAFT_KEY];
     useEffect(() => {
@@ -226,16 +177,11 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
 
     const connect = useCallback(() => { void agentBridge.connect(); }, []);
 
-    // The bar's button, the outdated screen's and the menu row can all be
-    // pressed again while the question below is up or the reply is stopping;
-    // the bridge ignores a second update, this keeps a second question away.
     const updateStarting = useRef(false);
     const doUpdate = useCallback(async () => {
         if (updateStarting.current) return;
         updateStarting.current = true;
         try {
-            // A restart ends every shell the helper runs, so they are asked
-            // about in the same question as a reply in flight — one prompt, not two.
             const replying = !!chatStore.getState().run;
             const shells = getTerminalCount();
             if (replying || shells > 0) {
@@ -253,10 +199,7 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
                 if (!ok) return;
             }
             if (replying) {
-                // The helper refuses to update while a run is live.
                 await chatStore.stop();
-                // A stopped run ends when its run.done arrives; updating before
-                // that would abandon it too, stacking a second notice on it.
                 await runEnded(5000);
             }
             await agentBridge.update();
@@ -279,7 +222,6 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         try {
             await agentBridge.request('helper.uninstall', {});
         } catch (e) {
-            // It answers before it goes; a socket that closed first means it went.
             if (!(e instanceof BridgeError && e.code === 'disconnected')) {
                 setPanelError(`Couldn't uninstall ${HELPER_NAME}: ${e instanceof Error ? e.message : String(e)}`);
                 return;
@@ -289,8 +231,6 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         agentBridge.markUninstalled();
     };
 
-    /** The ⋯ menu's Update row, for a helper that can update itself — in
-     *  place of "Download installer", which is for one that cannot. */
     const updateRow = (): ContextMenuEntry | null => {
         if (updating) {
             return { kind: 'command', id: 'update', label: `Updating ${HELPER_NAME}…`, run: () => {}, disabled: true, reason: WAIT_FOR_UPDATE };
@@ -310,8 +250,6 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
                     kind: 'command', id: 'update', label, run: update, disabled: true,
                     reason: `${HELPER_NAME} ${bridge.helper.version} is the latest version`,
                 };
-            // The helper checks again as it starts, and a failure brings back
-            // the bar with the installer download.
             case 'unknown':
             case 'failed':
                 return { kind: 'command', id: 'update', label, run: update };
@@ -322,20 +260,12 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         const button = e.currentTarget;
         const r = button.getBoundingClientRect();
         const asset = installerAsset(os, arch);
-        // Which CLI runs the next chat lives HERE rather than in the header: the
-        // header carried a dot, a name and a chevron for a choice that is made
-        // once and then not thought about, and the panel is 400px wide. The
-        // status it used to show is still surfaced where it matters — the
-        // warning above the composer when the chosen agent is not ready.
         void chatStore.refreshAgents(false);
-        // Cached by the helper, so asking on every open is cheap; the row is
-        // built from what is known now and the bar picks up the answer.
         void agentBridge.checkForUpdate(false);
         const agentRows: ContextMenuEntry[] = ready ? [
             ...AGENT_IDS.map(id => ({
                 kind: 'command' as const,
                 id: `agent-${id}`,
-                // A pick-one menu: `checked` on every row draws the ✓ column.
                 label: `${AGENT_LABELS[id]} · ${HEALTH_CAPTION[agentHealth(state, id)]}`,
                 checked: id === config.agent,
                 disabled: !!run,
@@ -344,9 +274,6 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
             })),
             { kind: 'separator', id: 'sep-agent' },
         ] : [];
-        // Only what a connected helper said of itself in `hello`: with none
-        // (or mid-update, when the one that answered may already be gone) the
-        // menu shows no version rather than a stale or blank one.
         const versionRows: ContextMenuEntry[] = bridge.status === 'connected' && bridge.helper.version ? [
             { kind: 'label', id: 'version', label: bridge.helper.version, tooltip: `${HELPER_NAME} version` },
             { kind: 'separator', id: 'sep-version' },
@@ -363,9 +290,6 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
                 {
                     kind: 'command', id: 'reconnect', label: 'Reconnect', run: connect,
                     disabled: !supported || updating,
-                    // A reason is the row's tooltip, so only a dead row gets
-                    // one (measured: an enabled Uninstall said "Connect to
-                    // VaultAgent first" on hover while connected).
                     reason: updating ? WAIT_FOR_UPDATE : !supported ? 'Not available in this browser' : undefined,
                 },
                 updateRow() ?? {
@@ -383,10 +307,6 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         });
     };
 
-    // The app draws every context menu itself (AGENTS.md): Copy for what is
-    // selected anywhere in the panel, and in the message box Paste as well —
-    // there the menu opens with nothing selected too, since pasting needs no
-    // selection. A row that cannot act stays and says why (app-context-menu).
     const onContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
         e.preventDefault();
         const selection = window.getSelection()?.toString() ?? '';
@@ -411,17 +331,10 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
                 disabled: field.disabled,
                 reason: field.disabled ? field.placeholder : undefined,
                 run: async () => {
-                    // A menu row's clipboard read is permission-gated (the
-                    // right-click is spent by now), so a refusal is ordinary;
-                    // naming ⌘V is the whole handling.
                     const read = await readClipboardText();
                     if (!read.ok) { host.notify(CLIPBOARD_READ_BLOCKED); return; }
                     if (!read.text || !field.isConnected || field.disabled) return;
                     field.focus();
-                    // insertText rather than a value write: the paste lands on
-                    // the field's own undo stack (⌘Z takes it back) and raises
-                    // the input event React's onChange reads. The selection it
-                    // replaces is the field's own, kept while the menu was up.
                     if (!document.execCommand('insertText', false, read.text)) {
                         field.setRangeText(read.text, field.selectionStart, field.selectionEnd, 'end');
                         field.dispatchEvent(new Event('input', { bubbles: true }));
@@ -432,7 +345,6 @@ export default function AgentPanel({ vault, theme, getHostDeps, takeFocus, onClo
         openContextMenu({ x: e.clientX, y: e.clientY, label: 'Agent panel', opener: target, entries });
     };
 
-    // Refuse unhandled drops here, rather than letting the browser open a file.
     const onDragOver = (e: DragEvent<HTMLDivElement>) => {
         e.preventDefault();
         const hasFiles = Array.from(e.dataTransfer.types).includes('Files');

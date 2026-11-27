@@ -7,7 +7,6 @@ const mirroredMethods = new Set<PropertyKey>([
     'ellipse', 'rect', 'roundRect', 'clip',
 ]);
 
-/** The witness shares geometry and clipping, but never receives document paint. */
 export function benchmarkDeviceContext(native: CanvasRenderingContext2D, origin: { x: number; y: number },
     imageCallback: CanvasImageCall, witnessNative: CanvasRenderingContext2D, onWitnessFailure?: () => void): CanvasRenderingContext2D {
     const context = deviceContext(native, origin, imageCallback);

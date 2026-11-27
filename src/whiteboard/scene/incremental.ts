@@ -30,9 +30,6 @@ function* sort<T>(values: T[], compare: (a: T, b: T) => number): Generator<void>
     if (source !== values) for (let i = 0; i < values.length; i++) { values[i] = source[i]; if ((++steps & 255) === 0) yield; }
 }
 
-/** Mutable work is private until the returned revision is published. The owner
- * must keep all dirty flags if a later document edit interrupts this generator:
- * an interrupted order splice is completed before starting the newer revision. */
 export interface SceneUpdateResult extends BootstrappedScene { readonly boundsChanges: ReadonlyMap<NodeId, SceneBounds | null> }
 export function* updateScene(doc: BoardDoc, state: BootstrappedScene, dirty: SceneDirty, provider: BoundsProvider,
     zoom = 1, invalidateGeometry?: (id: NodeId) => void): Generator<void, SceneUpdateResult> {
@@ -80,14 +77,10 @@ export function* updateScene(doc: BoardDoc, state: BootstrappedScene, dirty: Sce
         }
         if (bits & BOUNDS) {
             ancestors(id);
-            // A moved frame/group also moves descendant attachment surfaces.
-            // Resolve their incident paths once, before the revision publishes.
             for (const connector of doc.attachedTo.get(id) ?? []) add(connector, Flag.Geometry | Flag.Bounds | Flag.Paint);
         }
         if ((++work & 255) === 0) yield;
     }
-    // Existing sheet numbers never change when a sheet's order changes. Spatial
-    // columns refer to stable numbers, not the sheetOrder array's current index.
     let nextSheet = 0;
     for (const value of sheets.values()) { nextSheet = Math.max(nextSheet, value + 1); if ((++work & 255) === 0) yield; }
     for (const sheet of doc.sheetOrder) if (!sheets.has(sheet.id)) sheets.set(sheet.id, nextSheet++);
@@ -154,8 +147,6 @@ export function* updateScene(doc: BoardDoc, state: BootstrappedScene, dirty: Sce
         if (fresh || bits & Flag.Paint) col.paint[slot]++;
         col.nodeRevision[slot] = revision;
         if (fresh || bits & (Flag.Order | Flag.Structure)) {
-            // Previous sibling's subtree end is the insertion anchor. Binary
-            // lookup avoids scanning a million unaffected siblings for one move.
             const siblings = childrenOf(doc, node.parent);
             let lo = 0, hi = siblings.length;
             while (lo < hi) { const mid = (lo + hi) >>> 1; if (compareOrder(siblings[mid], node) < 0) lo = mid + 1; else hi = mid; }

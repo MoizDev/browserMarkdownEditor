@@ -12,8 +12,6 @@ const between = (a: Vec2, b: Vec2, p: Vec2) => p.x >= Math.min(a.x, b.x) && p.x 
     && p.y >= Math.min(a.y, b.y) && p.y <= Math.max(a.y, b.y);
 function add(a: Dyadic, b: Dyadic): Dyadic { return dyadicSubtract(a, { n: -b.n, e: b.e }); }
 
-/** Cooperative exact ear decomposition for a simple lasso. Self-touching,
- * folded and budget-exhausted input is uncertainty, never an empty polygon. */
 export function createPolygonTriangulationJob(input: readonly Vec2[], options: {
     readonly maxVertices?: number; readonly maxWork?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): PolygonTriangulationResult; cancel(): void } {

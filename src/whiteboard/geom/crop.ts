@@ -6,7 +6,6 @@ import type { Vec2 } from './path';
 const FULL_CROP: Crop = Object.freeze({ x0: 0, y0: 0, x1: 1, y1: 1, circle: false });
 function clamp(value: number, low: number, high: number): number { return Math.min(high, Math.max(low, value)); }
 
-// Delta is measured in the picture's displayed local axes, from the start snapshot.
 export function cropPicture(node: Readonly<PictureNode>, handle: ResizeHandle, delta: Vec2): readonly Op[] {
     if (node.locked || ![node.x, node.y, node.w, node.h, node.rotation, delta.x, delta.y].every(Number.isFinite)
         || node.w < 1 || node.h < 1 || (!handle.x && !handle.y)) throw new RangeError('Invalid picture crop');

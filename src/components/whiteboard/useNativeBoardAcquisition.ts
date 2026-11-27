@@ -3,7 +3,6 @@ import type { BoardSessionPort } from './boardSessionAdapter';
 import { ensureNativeBoard } from './acquireNativeBoard';
 import type { AcquiredNativeBoard, NativeBoardAcquisitionOptions } from './nativeBoardAcquisitionTypes';
 
-/** The bridge owns the board; a pane cancels only its own acquisition wait. */
 export function useNativeBoardAcquisition<S extends BoardSessionPort>(
     options: NativeBoardAcquisitionOptions<S>,
 ): AcquiredNativeBoard<S> | null {

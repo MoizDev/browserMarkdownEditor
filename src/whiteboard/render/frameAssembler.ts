@@ -14,21 +14,15 @@ import type { SessionDenseRasters } from './sessionDenseRasters';
 import type { ScenePaintNodeStream } from './scenePaintStream';
 import type { ResolvedNodeCache } from './resolvedNodeCache';
 import { auditCount } from '../../platform/render/renderAudit';
-/** The audit surface of the frame assembler: `board-frame:<event>` counters for staging, publication and drops. */
 const AUDIT = 'board-frame';
 
 const BLOCK_BYTES = 64 * 1024;
-// Array capacity and Set bookkeeping are JS-engine dependent; retain conservative per-entry
-// estimates, including spare array capacity. The source owns the PaintItem objects themselves.
 const REFERENCE_BYTES = 16;
 const INK_SET_ENTRY_BYTES = 64;
 const FRAME_BASE_BYTES = 256;
-// Per-window bookkeeping of a live frame: the window object, its frozen array and its band entry.
 const WINDOW_BYTES = 64;
 interface Block { readonly owner: MemoryAllocator; readonly lease: ByteLease }
 
-/** What a frame borrows from its source: identity fields read at publication, the pinned
- * release, and whether the scene behind it is still current. */
 interface Owner {
     readonly token: RenderToken;
     readonly theme?: 'light' | 'dark';
@@ -49,15 +43,11 @@ interface Owner {
     release(): void | Promise<void>;
 }
 type Add = (item: PaintItem, band: PaintBand) => void;
-/** One bounded unit of work per step(). 'waiting' means an awaited node has not arrived yet;
- * the feed calls wake() when it does, so the host need not poll. */
 interface Feed {
     step(): 'pending' | 'waiting' | 'complete' | 'stale' | 'cancelled';
     readonly waiting: boolean;
     cancel(): void;
 }
-/** Where staged items go: band arrays for a full frame, bounded windows for a live-only frame. A live frame
- * never builds a whole band array, so its staging holds only the windows already closed plus one open window. */
 type StagedItems =
     | { readonly kind: 'arrays'; readonly underlay: PaintItem[]; readonly content: PaintItem[] }
     | { readonly kind: 'windows'; readonly underlay: PaintWindowBuilder; readonly content: PaintWindowBuilder };
@@ -65,7 +55,6 @@ interface Staging {
     readonly owner: Owner;
     feed: Feed;
     readonly items: StagedItems;
-    /** Live items admitted so far; each window's bookkeeping is charged once per window, not per item. */
     windowed: number;
     readonly inkNodeIds: Set<string>;
     readonly blocks: Block[];
@@ -98,9 +87,6 @@ const sameWindows = (a: readonly PaintWindow[], b: readonly PaintWindow[]): bool
     for (let i = 0; i < a.length; i++) if (a[i].band !== b[i].band || !sameItems(a[i].items, b[i].items)) return false;
     return true;
 };
-/** Whether two staged frames would draw the same picture: the same scene, theme, variant, token and sensitivity set,
- * and the same items in the same order. Items compare by identity, which is what a republish of an unchanged scene
- * reuses from its source; a republish that does not reuse them is conservatively treated as a change. */
 function sameFrame(a: PaintSource, b: PaintSource): boolean {
     if (a.liveOnly !== b.liveOnly || a.sceneRevision !== b.sceneRevision || a.theme !== b.theme ||
         a.rasterVariant !== b.rasterVariant || a.sourceDoc !== b.sourceDoc || a.sourceWorld !== b.sourceWorld ||
@@ -159,8 +145,6 @@ function syncFeed(source: PaintNodeSource, add: Add): Feed {
     };
 }
 const IDLE_FEED: Feed = { step: () => 'cancelled', get waiting() { return false; }, cancel() { /* Nothing staged yet. */ } };
-/** Pulls nodes in background slices bounded by the staged blocks and a short time budget, then wakes
- * the host once per slice. A per-node wake would cost one host frame for every scene node. */
 function streamFeed(stream: PinnedPaintStream['stream'], add: Add, room: () => boolean, wake: () => void): Feed {
     const SLICE_MS = 4;
     let pumping = false, ended = false, cancelled = false, failure: { error: unknown } | null = null;
@@ -171,7 +155,6 @@ function streamFeed(stream: PinnedPaintStream['stream'], add: Add, room: () => b
                 const node: PaintNode | null = await stream.next();
                 if (cancelled) return;
                 if (node === null) { ended = true; return; }
-                // A node is admitted whole; its items are the only per-node memory, already bounded by the source.
                 for (const item of node.underlay ?? []) add(item, 'underlay');
                 for (const item of node.content) add(item, 'content');
             }
@@ -186,7 +169,6 @@ function streamFeed(stream: PinnedPaintStream['stream'], add: Add, room: () => b
             if (failure) { const { error } = failure; failure = null; throw error; }
             if (cancelled) return 'cancelled';
             if (pumping) return 'waiting';
-            // EOF physically closes the cursor, not the immutable source the finished frame owns.
             if (ended) return 'complete';
             if (!stream.isCurrent()) return 'stale';
             if (!room()) return 'waiting';
@@ -199,14 +181,8 @@ function streamFeed(stream: PinnedPaintStream['stream'], add: Add, room: () => b
     };
 }
 
-/** Stages source commands in bounded slices. A retired frame's source lease remains owned until
- * the backend explicitly drops it; a newer requested revision alone never frees pixels in use.
- * Staged work advances in its own task slices, not in host frames: a slice asks the host for a frame only by
- * publishing a frame that draws something new. `isActive` parks the work while the pane is hidden. */
 export interface PaintFrameAssemblerOptions {
-    /** False while the owning pane is hidden: staged work then waits for the host's next frame for the pane. */
     readonly isActive?: () => boolean;
-    /** Runs at the moment a frame is published, whichever task or frame staged it. */
     readonly onPublished?: (frame: PaintSource) => void;
 }
 export function createPaintFrameAssembler(invalidate: () => void, onError: (error: unknown) => void,
@@ -214,9 +190,6 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
     const isActive = options.isActive ?? (() => true);
     let staging: Staging | null = null, latest: Published | null = null, disposed = false;
     let allocator: MemoryAllocator | null = null, blocked = false, heldBytes = 0;
-    // Measured: every staged slice used to request a host frame (start, each stream wake), and most of those frames
-    // re-encoded an unchanged picture after a drag. A MessageChannel message is not clamped to 4 ms per nested
-    // setTimeout(0), so a long staging pass is not stretched by the slice chain.
     const TASK_SLICE_MS = 4;
     let taskPending = false, parked = false;
     const channel = typeof MessageChannel === 'function' ? new MessageChannel() : null;
@@ -228,7 +201,6 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
     const runSlice = (): void => {
         taskPending = false;
         if (disposed || !staging) return;
-        // A hidden pane keeps its staged work and waits; the host's next frame for the pane resumes it.
         if (!isActive()) { parked = true; return; }
         parked = false;
         const started = performance.now();
@@ -313,7 +285,6 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         staging = work;
         schedule();
     };
-    // A denied block waits for a real capacity change; the wake only re-runs the staged build, it never polls.
     const wakeStaged = () => { if (!disposed && staging && blocked) { blocked = false; schedule(); } };
     const publish = (work: Staging) => {
         const o = work.owner, staged = work.items;
@@ -325,7 +296,6 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         const frame: PaintSource = staged.kind === 'windows'
             ? Object.freeze({ ...root, liveOnly: true as const, windows: Object.freeze([...staged.underlay.finish(), ...staged.content.finish()]) })
             : Object.freeze({ ...root, underlay: Object.freeze(staged.underlay), content: Object.freeze(staged.content) });
-        // An unchanged picture is not published: the presented frame stays, and no frame is requested for it.
         if (latest && sameFrame(latest.frame, frame)) { staging = null; releaseOwned(o, work.blocks); return; }
         const published: Published = { owner: o, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
         auditCount(AUDIT, 'frame:published', 1, { items: work.windowed || (staged.kind === 'arrays' ? staged.underlay.length + staged.content.length : 0) });
@@ -333,7 +303,6 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         options.onPublished?.(frame);
         invalidate();
     };
-    // One pass of staged work within the slice budget; 'yield' means work remains and the caller reschedules it.
     const stage = (budget: { shouldYield(): boolean }): 'yield' | 'idle' => {
         const work = staging;
         if (disposed || !work) return 'idle';
@@ -371,7 +340,6 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
             if (disposed) { releaseOwned(streamOwner(pin), []); return; }
             start(streamOwner(pin), (add, room) => streamFeed(pin.stream, add, room, () => { if (staging) schedule(); }));
         },
-        // The host's frame may also advance staged work; it shares the same stage, and its leftover work is rescheduled.
         prepare(budget) { parked = false; if (stage(budget) === 'yield') schedule(); },
         readFrame: () => disposed ? null : latest?.frame ?? null,
         isCurrent: frame => !disposed && retained.has(frame) && !retained.get(frame)!.retired && retained.get(frame)!.owner.isCurrent(),
@@ -386,10 +354,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                 freeRetired(entry); notifyRetired();
             };
         },
-        // Staged work is not a reason for a frame: its task slices run without one. Only a parked pane needs a frame,
-        // to resume when it is shown again.
         needsFrame: () => !disposed && staging !== null && parked,
-        // Waiting for an allocator to bind is not a denial; only a refused reservation is reported as memory pressure.
         blocked: () => !disposed && blocked && staging !== null && allocator !== null,
         replacing: () => !disposed && staging !== null,
         presented(frame) {

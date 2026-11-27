@@ -28,7 +28,6 @@ function transferable(item: PageDisplayItem, transfers: Transferable[]): PageDis
   return item
 }
 
-/** Stream one pinned scene to the shared export worker; no partial SVG is published. */
 export async function streamSvg(
   source: PaintNodeSource, bounds: Readonly<Rect>, scale: number, image: ExportImage,
   signal: AbortSignal, background?: Rgba,

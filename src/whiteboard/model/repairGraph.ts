@@ -24,9 +24,6 @@ export interface GraphRepairResult {
 }
 interface Item { node: NodeRecord; readonly ordinal: number }
 
-/** Ordered load-only graph repair. Opaque records are never rewritten: if repair
- * would require that, the original bytes remain authoritative and the host opens
- * read-only. Source ordinals tell the line cache which records need re-encoding. */
 export async function repairGraph(options: GraphRepairOptions): Promise<GraphRepairResult> {
     const changed = new Set<number>(), messages = new Map<string, string[]>();
     const record = (item: Item, code: string) => {
@@ -70,7 +67,6 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
             if (!id) return result(items, 'Cannot allocate a unique node identity');
             reserved.add(id);
             const fields = new Map(node.ext?.fields);
-            // Existing user metadata wins; the generated JSON string is inert and valid by construction.
             if (!fields.has('importedId')) fields.set('importedId', JSON.stringify(node.id) as RawJson);
             node = { ...node, id: id as NodeId, ext: { fields, raw: node.ext?.raw ?? new Map() } };
             const item = { node, ordinal: i }; items.push(item); byId.set(node.id, item); record(item, 'duplicate-id');
@@ -127,9 +123,6 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
         }
         record(item, 'page');
     }
-    // A cached depth is needed even when a path terminates at a previously
-    // visited ancestor: otherwise a long chain admitted in parent-first order
-    // incorrectly passes the per-path depth limit.
     const depths = new Map<NodeId, number>();
     for (let i = 0; i < items.length; i++) {
         if ((i & 1023) === 0) await tick();
@@ -142,7 +135,6 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
             depths.set(path[j].node.id, depth);
         }
     }
-    // Set insertion order is file order here; later dissolution only needs membership.
     const children = new Map<ParentId, Set<Item>>();
     let work = 0;
     for (const item of items) {
@@ -156,7 +148,6 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
         let bad = false, protectedOrder = false;
         for (const item of bucket) {
             if ((work++ & 1023) === 0) await tick();
-            // Equal valid keys are ordered by id; load must not renumber them.
             if (!isValidKey(item.node.order)) bad = true;
             if (item.node.kind === 'opaque' || NODE_FILE_FIELDS.order.some(token => item.node.ext?.raw.has(token))) protectedOrder = true;
         }
@@ -170,9 +161,6 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
             record(item, 'order');
         }
     }
-    // Build parent buckets once; a chain of dissolving groups is linear rather
-    // than rescanning every node on each removal. An opaque descendant pins all
-    // of its ancestors: its byte-preserved parent cannot be rewritten.
     const opaqueAncestors = new Set<ParentId>();
     for (const item of items) {
         if ((work++ & 1023) === 0) await tick();
@@ -271,8 +259,6 @@ export async function repairGraph(options: GraphRepairOptions): Promise<GraphRep
             item.node = { ...node, start, end }; record(item, 'detached-attachment');
         }
     }
-    // A bound path may target another bound path. Cut only DFS back-edges in
-    // source order; the stored free endpoint remains, rather than guessing a cycle's geometry.
     const states = new Map<NodeId, 1 | 2>();
     for (const root of items) {
         if (!live.has(root.node.id) || root.node.kind !== 'polyline' || states.has(root.node.id)) continue;

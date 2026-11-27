@@ -8,8 +8,6 @@ import { figureOutline } from './figures';
 import { contourPolylines, nearestOnPolylines, type OutlinePolyline } from './outlineSnap';
 import type { Vec2 } from './path';
 
-/** The model's target index is authoritative; a self-targeted pair has two distinct ends. */
-/** Default, calibration cut by owner: a reflected target mirrors normalized attached anchors. */
 export function reflectedTargetAnchors(doc: Readonly<BoardDoc>, target: NodeId, flipX: boolean, flipY: boolean): readonly NodeSetOp[] {
     if (!flipX && !flipY) return [];
     const ops: NodeSetOp[] = [];
@@ -34,9 +32,6 @@ export function reflectedTargetAnchors(doc: Readonly<BoardDoc>, target: NodeId, 
     return ops;
 }
 
-/** A figure that changes shape keeps each precise end on its outline: an anchor the new outline leaves outside moves to the nearest
- * outline point (catalogue a.5). Anchors are fractions of the box, so they are re-read against it.
- * Every figure is closed; an anchor already inside, and every imprecise end, stays where it is. */
 export function resnappedShapeAnchors(doc: Readonly<BoardDoc>, figure: Readonly<FigureNode>, shape: FigureShape): NodeSetOp[] {
     const height = figure.h + figure.growY;
     if (!(figure.w > 0) || !(height > 0)) return [];
@@ -71,7 +66,6 @@ export function resnappedShapeAnchors(doc: Readonly<BoardDoc>, figure: Readonly<
 
 function clamp01(value: number): number { return Math.min(1, Math.max(0, value)); }
 
-/** Even-odd containment against the closed pieces, with the same flattened outline the snapping uses. */
 function insideClosed(point: Vec2, pieces: readonly OutlinePolyline[]): boolean {
     let inside = false;
     for (const piece of pieces) {

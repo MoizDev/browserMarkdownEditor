@@ -25,12 +25,9 @@ export interface ServeSpec {
     capabilities?: string[];
     handlers: Record<string, (args: unknown, context: WorkerContext) => unknown | Promise<unknown>>;
     endpoint?: ServeEndpoint;
-    /** A contained renderer can use MessageChannel turns without timer clamping. */
     yield?: () => Promise<void>;
 }
 
-// Worker replies can contain an entire board's ordered records. Validate the same allowed
-// payload domain as the synchronous input guard, but never monopolize a worker on that walk.
 async function assertReply(value: unknown, context: WorkerContext): Promise<void> {
     const seen = new Set<object>();
     const pending: Iterator<unknown>[] = [[value][Symbol.iterator]()];
@@ -87,8 +84,6 @@ function mainMessage(value: unknown): value is MainMessage {
     return 'cancel' in m || 'pause' in m || 'resume' in m || ('reprioritise' in m && isPriority(m.priority));
 }
 
-// No interval or per-slice permission round trip: a heartbeat is part of a handler's cooperation
-// point, and pause/resume are pushed only when the main-thread governor's queue changes.
 export function serve(spec: ServeSpec): () => void {
     const endpoint = spec.endpoint ?? globalThis as unknown as ServeEndpoint;
     const tasks = new Map<number, Task>();

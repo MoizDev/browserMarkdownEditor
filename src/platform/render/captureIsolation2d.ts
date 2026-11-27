@@ -5,9 +5,6 @@ import type { RectI } from './gfx/api';
 import type { MemoryAllocator } from './memoryGovernor';
 import { CaptureError } from './captureError';
 
-/** Captures own their CPU memory independently of any visible pane. Never borrow the selected
- * compositor's canvas: a capture may finish after its pane was hidden or the GPU was replaced.
- */
 export function captureIsolation2d(root: CanvasRenderingContext2D, memory: MemoryAllocator): void {
     const origins = new WeakMap<CanvasRenderingContext2D, { x: number; y: number }>();
     origins.set(root, { x: 0, y: 0 });

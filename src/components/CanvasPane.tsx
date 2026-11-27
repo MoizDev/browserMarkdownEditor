@@ -1,5 +1,3 @@
-// Panes float over their layout slots so tab switches do not replace their
-// document-owned runtime, input history or camera. Hidden work is explicitly gated.
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { nativeCanvasEntrySlot } from './paneModules';
 import DiskBar from './DiskBar';
@@ -16,9 +14,6 @@ import { PAGED_TOP_INSET } from '../utils/pagedChrome';
 const subscribeScheme = (listener: () => void) => subscribeBoardPreferences(listener);
 const readScheme = () => getBoardPreferences().colorScheme;
 
-/** The whiteboard's own Preferences ▸ Theme (F-THEME-002, R-26): Dark and Light pin the board's palette, System
- * follows the app theme, and an app theme change pushes into the stored choice as it does today. Paper hosts
- * ignore the choice and always resolve light (WB-D28), which the viewer already enforces by document kind. */
 function useWhiteboardTheme(appTheme: Theme): Theme {
     const scheme = useSyncExternalStore(subscribeScheme, readScheme, readScheme);
     const previous = useRef(appTheme);
@@ -52,7 +47,6 @@ export interface CanvasPaneProps {
     registerKeyboardTarget: (path: string, take: () => void) => () => void;
     theme: Theme;
     disk?: 'conflict' | 'deleted';
-    /** Unsaved bytes, as the DiskBar words a conflict. */
     isDirty: boolean;
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
 }

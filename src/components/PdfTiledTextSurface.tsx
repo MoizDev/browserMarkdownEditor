@@ -9,8 +9,6 @@ import { loadChunk } from '../platform/chunkLoad';
 
 const DEFAULT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-/** A Text pane borrows the App session's PDFium reader; it never opens a
- * second engine or projects raw page arrays on the main thread. */
 export default function PdfTiledTextSurface({ source, reading, filePath, findMemory, checkpoint, anchor,
     expectedPageDigest, sameSchema, restorationNotice, isVisible, isFocused, onReader,
     onShowOriginalPage, onShowOriginal, onLocation, onTextQuality }: PdfTiledTextSurfaceProps) {
@@ -45,7 +43,6 @@ export default function PdfTiledTextSurface({ source, reading, filePath, findMem
         return () => notify.current?.(undefined);
     }, [reader]);
     const [mapped, setMapped] = useState<{ reader: NonNullable<typeof reader>; anchor: PdfTextAnchor }>();
-    // The mapping reads only the page and offset of the checkpoint, so those primitives are its inputs.
     const { page: checkpointPage, offset: checkpointOffset, zoom: checkpointZoom } = checkpoint;
     useEffect(() => {
         if (!reader || anchor) return;

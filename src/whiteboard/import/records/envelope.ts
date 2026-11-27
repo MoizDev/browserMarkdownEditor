@@ -10,23 +10,18 @@ export interface LegacyEnvelope {
     readonly paper: LegacyObject | null;
     readonly extras: LegacyObject;
     readonly documentExtras: LegacyObject;
-    /** Each record family's format generation as the file declares it ('shape.draw' → 5); empty when it declares none. */
     readonly versions: ReadonlyMap<string, number>;
 }
 export function object(value: unknown): LegacyObject | null {
     return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as LegacyObject : null;
 }
 
-// I-3: sequence numbers are a format generation, not a package version. A file of any tldraw generation is read:
-// each record is mapped by its own layout and version (records/versions.ts), and a record family newer than these, the
-// newest this reader knows (tldraw 5.6), costs only its own records (read.ts), never the file.
 export const KNOWN_SEQUENCES: Readonly<Record<string, number>> = {
     'shape.draw': 5, 'shape.highlight': 4, 'shape.geo': 14, 'shape.note': 15, 'shape.text': 4, 'shape.arrow': 8,
     'shape.line': 5, 'shape.frame': 1, 'shape.group': 0, 'shape.image': 7, 'shape.video': 6, 'shape.bookmark': 4,
     'shape.embed': 4, 'binding.arrow': 1, 'asset.image': 6, 'asset.video': 5, 'asset.bookmark': 2,
 };
 
-/** schema v2 (`sequences`, tldraw 2.1+) and v1 (`recordVersions` with per-type `subTypeVersions`, tldraw 2.0). */
 function readVersions(schema: LegacyObject): Map<string, number> | null {
     const versions = new Map<string, number>();
     if (schema.schemaVersion === 2) {
@@ -64,13 +59,10 @@ export function readLegacyEnvelope(text: string, report: ReportBuilder): LegacyE
     try { root = object(JSON.parse(text.replace(/^\uFEFF/, ''))); }
     catch { report.refuse(null, 'The file is not valid JSON'); return null; }
     if (!root) { report.refuse(null, 'Invalid drawing envelope'); return null; }
-    // tldraw's own file (.tldr): {tldrawFileFormatVersion, schema, records: [...]}, beside this app's former
-    // {document: {schema, store}, session?, ui?, paper?}. Both name the same records.
     const tldr = !('document' in root) && Array.isArray(root.records) && object(root.schema) !== null;
     const extras: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const [key, value] of Object.entries(root)) {
         if (key === 'document' || (tldr && (key === 'records' || key === 'schema'))) continue;
-        // Kept whole in the converted file (legacyEnvelope), so an unknown field costs nothing.
         extras[key] = value;
         if (key !== 'ui' && key !== 'session' && key !== 'paper' && !(tldr && key === 'tldrawFileFormatVersion')) {
             report.repair(null, `Unknown envelope field ${key} preserved`);

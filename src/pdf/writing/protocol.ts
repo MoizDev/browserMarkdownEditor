@@ -2,19 +2,14 @@ import type { PageGeometry, PageDisplayList } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import type { PdfDocKey } from '../worker/protocol';
 
-/** C2/C5 worker payloads only. Handles, live board sessions and callbacks stay on the host. */
 export interface WriterSource {
     token: RenderToken;
-    /** Canonical key uses bytesGeneration, not the rename-bumped reader token. */
     docKey: PdfDocKey;
     pristine: Blob;
     pristineFingerprint: string;
     outer: Blob;
     outerFingerprint: string;
-    /** Stable id supplied by the board format owner. */
     formatId: string;
-    /** Issued only by the exhaustive attachment reader after validating both
-     * snapshots. Missing proof takes the preservation converter, never a guess. */
     attachmentProof?: { pristineFingerprint: string; outerFingerprint: string; canonical: true; unknownCount: 0 };
     geometryEngine: { id: string; build: string; generation: number };
 }
@@ -24,7 +19,6 @@ export interface WriterInspection {
     geometries: PageGeometry[];
     encrypted: boolean;
     signed: boolean;
-    /** The writer must preserve this inventory, including duplicate names. */
     attachments: AttachmentDescriptor[];
 }
 export interface AttachmentMetadata {
@@ -42,7 +36,6 @@ export interface AttachmentDescriptor {
 export interface AttachmentInput extends AttachmentDescriptor {
     bytes: Blob;
     role: 'pristine' | 'editable' | 'media' | 'fence' | 'notebook-source' | 'write-mark' | 'unknown';
-    /** The owning format supplies this stable identifier, never an inferred one. */
     format?: string;
 }
 export interface EmittedInk {
@@ -70,8 +63,6 @@ export interface StagedWriterResult {
     verification: { pageCount: number; attachmentCount: number; writeMark: 'verified' };
 }
 
-/** Each save gets a separate mutable writer session; a session id is not a native pointer. */
-/** Why the writer would not turn a PDF's pages; App words each one for the person. */
 export type RotationRefusal = 'signed' | 'encrypted' | 'legacy-annotations' | 'newer-annotations' | 'other-engine' | 'foreign-change'
     | 'missing-attachment' | 'unverified' | 'unsafe-policy' | 'unsupported-format' | 'unsupported-rotation';
 
@@ -110,14 +101,11 @@ export interface WriterOperations {
         args: { bytes: ArrayBuffer; notebookSource: { path: string } };
         result: { bytes: ArrayBuffer; sha256: string; path: string; geometries: PageGeometry[] };
     };
-    /** Plans an incremental /Rotate update (rotationUpdate.ts): the appendix to write after `base` source bytes. A PDF
-     * annotated here turns with its marks (inkRotation.ts). */
     'writer.rotate': {
         args: { source: Blob; turns: { all: number; pages: Array<[number, number]> } };
         result: { kind: 'refused'; cause: RotationRefusal } | { kind: 'unchanged' }
             | { kind: 'update'; appendix: ArrayBuffer; base: number; pageCount: number; before: number[]; rotations: number[] };
     };
-    /** A fresh writer proves `bytes` (the source's first `base` bytes plus the appendix) before App writes it. */
     'writer.verifyRotation': {
         args: { source: Blob; bytes: ArrayBuffer; base: number; rotations: number[] };
         result: { bytes: ArrayBuffer; pageCount: number };

@@ -22,7 +22,6 @@ import type { ActiveFile, ContentChangeOptions, FileSystemContextValue, FileTree
 import { RECOVERY_SESSION_BINDING } from './nativeOwners';
 import type { IndexGraphRef, PdfRebuildEntry, SetDiskState, SetTabs } from './types';
 
-/** The App-scope values `useOutsideChanges` reads, named as App names them. */
 export interface UseOutsideChangesDeps {
   rootHandleRef: React.RefObject<FileSystemDirectoryHandle | null>;
   tabsRef: React.RefObject<OpenTab[]>;
@@ -85,36 +84,12 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
     readFileVersioned,
   } = deps;
 
-  // ── Changes made OUTSIDE the app ────────────────────────────────────────
-  // A `git pull` in the terminal, a formatter, a sync client, another editor.
-  // FileSystemObserver records (FileSystemContext) are HINTS that say where to
-  // look; a stat — and a hash of the bytes when the stat moved — is the truth,
-  // compared with each open document's baseline (utils/docBaselines.ts). A
-  // document with nothing unsaved reloads in place; one with unsaved edits gets
-  // the DiskBar, and neither version is ever dropped. The save-time check in
-  // flushTab stands on its own: with no observer at all, nothing is overwritten.
-
-  /** Whether a document holds anything that is not on disk yet. `dirty` alone
-   *  is not enough: an edit's save timer is armed before its render commits,
-   *  a write may be in flight, and a canvas keeps strokes in its own debounce
-   *  App cannot see (the reporter's hasPendingEdits). */
   const hasUnsaved = useCallback((tab: OpenTab): boolean => {
     return documentSessions.hasPendingEdits(tab.id)
       || saveTimersRef.current.has(tab.file.path)
       || flushingRef.current.has(tab.id)
       || !!getView(tab.file.path)?.hasPendingEdits?.();
   }, [documentSessions, flushingRef, saveTimersRef]);
-  /**
-   * Put the file's new contents into an open document that had nothing unsaved.
-   *
-   * Text: one minimal transaction annotated `externalReload` — through the live
-   * view when there is one, else into the cached EditorState and the buffer
-   * (a hidden tab, the graph view, a typeset .tex) — so the caret, the scroll
-   * place and the undo history outside the change survive, ⌘Z steps back over
-   * the reload, and nothing marks the tab dirty or writes it back. Canvases:
-   * the buffer is replaced and `diskRev` remounts the pane on it; its camera
-   * and view position are per path and come back.
-   */
   const reloadFromDisk = useCallback((tab: OpenTab, text: string, version: DiskVersion) => {
     const { id, file } = tab;
     const path = file.path;
@@ -151,17 +126,10 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
       if (spec) markdown.dispatch(spec);
       else updateTabContent(path, markdown.checkpoint(), { fromDisk: true });
     } else updateTabContent(path, text, { fromDisk: true });
-    // The asset diff's baseline is the file as it now is.
     rememberAssetRefs(file, text);
     setTabs(prev => prev.map(t => (t.id === id && (t.dirty || t.disk) ? { ...t, dirty: false, disk: undefined } : t)));
   }, [bumpBytesGeneration, clearSaveTimer, documentBuffers, documentSessions, markdownSessions, updateTabContent, rememberAssetRefs, syncExitGuard, seedDocumentBuffer, bytesGenerationsRef, diskStateRef, invalidReaderTokens, pdfRebuildRef, setTabs]);
 
-  /**
-   * Follow a rename/move made on disk: open documents, expanded folders, icons,
-   * colours and custom order all move with it — through the code an in-app
-   * rename uses, minus the copy. Only when it is CERTAIN: the old path is gone
-   * and the new one is there (a move is never followed on a guess).
-   */
   // Resolves to the open documents it moved (old path → new): their tabs only
   // reach tabsRef a commit later, so the caller must not take them for missing.
   const followDiskMove = useCallback(async (root: FileSystemDirectoryHandle, from: string, to: string): Promise<Array<{ from: string; to: string }>> => {
@@ -188,21 +156,10 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
     return moved;
   }, [resolveFileHandle, trackVaultMove, retargetExpandedPaths, retargetPaths, resolveVaultDir, vaultDirExists, rootHandleRef, tabsRef]);
 
-  /**
-   * Re-verify open documents against the disk — those `scope` names (or that
-   * sit under a folder it names), or all of them.
-   *
-   * Serialized (one pass at a time, in order), and it waits out the app's own
-   * moves, trashes and the session restore: each is copy → delete → fix-up, and
-   * mid-span the old file is simply gone — read then, it would be a false
-   * "deleted". A document with a write in flight is checked again once it lands.
-   */
   const checkQueueRef = useRef<Promise<void>>(Promise.resolve());
   const fullCheckQueuedRef = useRef(false);
   const runCheckRef = useRef<(scope: ReadonlySet<string> | 'all', batch?: VaultChangeBatch) => Promise<void>>(async () => {});
   const checkOpenDocs = useCallback((scope: ReadonlySet<string> | 'all', batch?: VaultChangeBatch): Promise<void> => {
-    // Focus and visibilitychange arrive together, and a poll can land beside
-    // them: one queued full pass answers all of them.
     if (scope === 'all' && !batch) {
       if (fullCheckQueuedRef.current) return checkQueueRef.current;
       fullCheckQueuedRef.current = true;
@@ -228,10 +185,6 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
       if (!stillHere()) return;
 
       const retry = new Set<string>();
-      // Documents a move below re-pointed. tabsRef still shows them at the OLD
-      // path until React commits, which read as missing — a false "deleted"
-      // (measured: a root-level `mv a.md a2.md` raised it). They are verified at
-      // their new path by the retry pass, which runs after that commit.
       const followed = new Set<string>();
       const follow = async (from: string, to: string) => {
         for (const m of await followDiskMove(root, from, to)) {
@@ -239,18 +192,12 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
           retry.add(m.to);
         }
       };
-      // Disk and document agree again (it came back, or was put back as it
-      // was): the bar goes, and whatever was typed while it was up gets saved.
       const lift = (id: string, path: string) => {
         setDiskState(id, null);
         scheduleSave(path);
       };
-      // Search and the graph re-read a document whose file really changed —
-      // once per pass (the subscriber leaves open documents to this pass, so
-      // the echo of the app's own autosave costs no second rebuild).
       let contentChanged = false;
 
-      // Renames the platform reported outright (not on Windows, nor in polling).
       if (batch?.moved.length) {
         for (const { from, to } of batch.moved.slice(0, 64)) {
           await follow(from, to);
@@ -288,7 +235,6 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
         if (!now || now.file.path !== path) continue;
         if (!handle || !stat) { missing.push(now); continue; }
         const held = diskStateRef.current.has(id);
-        // The echo of the app's own save, or nothing happened at all.
         if (sameStat(stat, baseline)) { if (held) lift(id, path); continue; }
         let read: { text: string; version: DiskVersion };
         try {
@@ -304,7 +250,6 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
         if (!stillHere()) return;
         const latest = tabsRef.current.find(t => t.id === id);
         if (!latest || latest.file.path !== path) continue;
-        // Only the timestamps moved (`touch`, a checkout writing equal bytes).
         if (read.version.hash === baseline.hash) {
           setBaseline(id, read.version);
           if (held) lift(id, path);
@@ -322,10 +267,6 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
         else reloadFromDisk(latest, read.text, read.version);
       }
 
-      // Missing: a rename the platform did not name (Windows, polling, a copy
-      // then delete) is followed only when a file that appeared in the same
-      // batch is the ONLY one of that size and has the very same hash.
-      // Anything less certain is shown as deleted, never moved on a guess.
       if (missing.length) {
         const pairs = new Map<string, string>();
         const appearedPaths = batch ? [...batch.appeared]
@@ -368,7 +309,6 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
     };
   });
 
-  // Every batch of outside changes, after the context has patched the tree.
   useEffect(() => subscribeVaultChanges(batch => {
     indexGraphRef.noteMoves(batch.moved);
     assetReferenceRevisionRef.current++;
@@ -378,12 +318,6 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
       ...batch.modified, ...batch.appeared, ...batch.disappeared,
       ...batch.moved.flatMap(m => [m.from, m.to]),
     ]), batch);
-    // Search and the graph re-validate by (lastModified, size), so one nudge
-    // per batch is all a file edited elsewhere needs. Structural changes move
-    // the tree, which re-runs both on its own. OPEN documents are left to
-    // checkOpenDocs, which nudges only when one really changed: every autosave
-    // comes back here as `modified`, and nudging on that echo doubled the
-    // graph's vault-wide stat pass per save.
     const open = new Set(tabsRef.current.map(t => t.file.path));
     if (batch.rescan || batch.modified.size) notifySearchChanges();
     const graphOwner = indexGraphRef.current;
@@ -400,8 +334,6 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
       else graphOwner.echo.hints([...batch.modified]);
     }
     if (batch.rescan || [...batch.modified].some(p => !open.has(p))) bumpSaveEpoch();
-    // The Modified-time sort, without re-statting the vault: only the files the
-    // batch names, and only while a time sort has loaded any times at all.
     if (batch.modified.size && getFileTimes().size) {
       void (async () => {
         const stamps: Array<[string, number]> = [];
@@ -417,10 +349,6 @@ export function useOutsideChanges(deps: UseOutsideChangesDeps) {
     }
   }), [subscribeVaultChanges, checkOpenDocs, resolveFileHandle, statFile, requeueAllAssets, requeueAssetsAffected, indexMediaAssets, indexGraphRef, getVaultActivation, assetReferenceRevisionRef, fileTreeRef, tabsRef]);
 
-  // The belt to the observer's braces: coming back to the window re-checks
-  // every open document (one stat each). Without an observer at all — an older
-  // Chrome, or one whose observe() failed — open documents are also polled
-  // every 2 s while the page is visible; the context polls the tree itself.
   useEffect(() => {
     if (liveDetection === 'off') return;
     const recheck = () => { if (document.visibilityState === 'visible') void checkOpenDocs('all'); };

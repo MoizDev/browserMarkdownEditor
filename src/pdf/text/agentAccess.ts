@@ -3,7 +3,6 @@ import type { RenderToken } from '../../platform/render';
 import type { PdfOpenOptions, PdfPool } from '../pool/types';
 import { readPdfAgentText, renderPdfAgentPage } from './agentText';
 
-/** A fresh token is required for each captured byte snapshot, including a reopened path. */
 export function createClosedPdfAgentAccess(pool: PdfPool, capture: (path: string) => {
     token: RenderToken;
     isCurrent(): boolean;

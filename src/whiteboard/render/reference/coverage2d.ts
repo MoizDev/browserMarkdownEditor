@@ -6,9 +6,6 @@ import { inkCoverageChunks, type PaintInkCoverage } from '../paintStream';
 export type PathOrigin2d = readonly [x: number, y: number];
 const ZERO_ORIGIN: PathOrigin2d = Object.freeze([0, 0]);
 
-/** Rebase in doubles before handing coordinates to the native path (rendering §2).
- * The caller composes this origin into its local-to-device transform exactly once.
- */
 export function appendPath2d(path: Path2D, command: Readonly<PathCommand>, origin: PathOrigin2d = ZERO_ORIGIN): void {
     const [x, y] = origin;
     switch (command[0]) {
@@ -35,7 +32,6 @@ export function path2d(commands: Iterable<Readonly<PathCommand>>, origin: PathOr
 
 type WorkState = 'pending' | 'complete' | 'cancelled';
 
-/** Clip and ordinary geometry can also be arbitrarily large; append one command per unit. */
 export class Path2dJob {
     private path: Path2D | null = new Path2D();
     private commands: readonly PathCommand[] | null;
@@ -74,9 +70,6 @@ export class Path2dJob {
     }
 }
 
-/** A partially appended path must never replace the previous complete stroke (rendering §2/§11).
- * The shared outline job counts cap refinement and empty primitives too, not just emitted commands.
- */
 export class InkPath2dJob {
     private outline: InkOutlineJob | null;
     private path: Path2D | null = new Path2D();
@@ -120,7 +113,6 @@ export class InkPath2dJob {
     }
 }
 
-/** Every chunk appends to one nonzero path; the stroke is filled once per band. */
 export class InkCoverageUnionPath2dJob {
     private chunks: readonly InkCoverage[] | null;
     private path: Path2D | null = new Path2D();
@@ -165,9 +157,6 @@ export class InkCoverageUnionPath2dJob {
     }
 }
 
-/** Cache by geometryKey + scale band and fill ONCE with nonzero, never capsule source-over.
- * Synchronous callers use this convenience entry; Layer.prepare advances InkPath2dJob instead.
- */
 export function inkPath2d(coverage: InkCoverage, deviceScale: number, origin: PathOrigin2d = ZERO_ORIGIN, maxCommands = 1048576): Path2D {
     const job = new InkPath2dJob(coverage, deviceScale, origin, maxCommands);
     while (job.step(4096) === 'pending') { /* Bounded callers deliberately finish synchronously. */ }

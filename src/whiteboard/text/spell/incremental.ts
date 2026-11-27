@@ -24,7 +24,6 @@ function current(context: WorkerContext): void {
 }
 function space(value: string): boolean { return /\s/u.test(value); }
 
-/** A shared whitespace boundary is a word boundary, including when an edit joins two words. */
 async function changedRange(before: string, after: string, context: WorkerContext): Promise<ChangedRange | null> {
     const common = Math.min(before.length, after.length);
     let prefix = 0;
@@ -48,8 +47,6 @@ async function changedRange(before: string, after: string, context: WorkerContex
         from--;
         if (++steps % COMPARISON_SLICE === 0) await context.slice();
     }
-    // Both positions are at the start of the same suffix; advancing them together cannot
-    // split a word on one side while retaining its old result on the other.
     while (oldTo < before.length && newTo < after.length && !space(before[oldTo])) {
         oldTo++; newTo++;
         if (++steps % COMPARISON_SLICE === 0) await context.slice();
@@ -111,7 +108,6 @@ async function splice(previous: Uint32Array, changed: ChangedRange, replacement:
     return result;
 }
 
-/** One bounded, dictionary-affine previous result; unsupported sizes use the same full scanner. */
 export class IncrementalSpelling {
     private cached: CachedCheck | null = null;
     private epoch = 0;

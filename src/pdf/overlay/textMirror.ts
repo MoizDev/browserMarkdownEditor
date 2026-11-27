@@ -11,7 +11,6 @@ export interface MirrorLine {
 export interface MirrorFigure { box: Rect; alt: string; offset: number }
 export interface MirrorPageText { text: string; lines: readonly MirrorLine[]; figures?: readonly MirrorFigure[] }
 
-/** The select-detail part of the planned page.text reply; arrays are in page space. */
 export interface MirrorTextReply {
     text: string;
     sel?: {
@@ -25,7 +24,6 @@ export interface MirrorTextReply {
     };
 }
 
-/** Tags are resolved by the text model, not inferred from font size or geometry. */
 export function mirrorTextFromReply(reply: MirrorTextReply, tags?: {
     headingLevels?: ReadonlyMap<number, 1 | 2 | 3 | 4 | 5 | 6>;
     figures?: readonly MirrorFigure[];
@@ -53,9 +51,7 @@ export interface MirrorSelection { anchor: MirrorPosition; focus: MirrorPosition
 export interface TextMirrorOptions {
     fileName: string;
     pageCount: number;
-    /** Page-local sections are positioned in the same world frame as the page compositor. */
     pageBox: (page: number) => Rect;
-    /** Must request geometry at priority 0, bring the page into view, and load its text window. */
     focusPage: (page: number) => void;
     selectionChanged: (selection: MirrorSelection) => void;
     openTextView: () => void;
@@ -68,7 +64,6 @@ function place(element: HTMLElement, box: Rect): void {
     element.style.height = `${box.height}px`;
 }
 
-/** DOM is an accessibility projection, never the source of canonical text or selection. */
 export class PdfTextMirror {
     readonly element: HTMLDivElement;
     private readonly sections: HTMLElement[] = [];
@@ -155,7 +150,6 @@ export class PdfTextMirror {
         section.style.containIntrinsicSize = `${box.width}px ${box.height}px`;
     }
 
-    /** Only the visible window and its one-page margin are retained. */
     setWindow(pages: ReadonlyMap<number, MirrorPageText>): void {
         for (const page of this.populated) if (!pages.has(page)) this.placeholder(page);
         for (const [page, text] of pages) if (this.rendered.get(page) !== text) this.setPageText(page, text);
@@ -226,7 +220,6 @@ export class PdfTextMirror {
         return { page, offset: Math.min(to, from + within) };
     }
 
-    /** Returns false when either endpoint is outside the currently mirrored window. */
     setSelection(selection: MirrorSelection): boolean {
         const point = (position: MirrorPosition): [Node, number] | null => {
             const section = this.sections[position.page];

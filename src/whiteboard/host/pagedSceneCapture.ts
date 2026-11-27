@@ -9,7 +9,6 @@ import type { BoardRuntime } from './runtime';
 import { inspectPdfVisualDoc, visualRefusal, type PdfVisualPreflight } from './pdfVisualPreflight';
 import { missingFromExport, type MissingMediaError } from '../media/missingMedia';
 
-/** Pin the actual paged scene and embedded/media-store bytes, not live view geometry. */
 export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, current: () => boolean, onError: (error: unknown) => void) {
     const doc = runtime.session.doc;
     // Callers fence their own revision: notebook export on doc.rev, the PDF save build on the content
@@ -43,7 +42,6 @@ export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, curr
         }
     };
     try {
-        // At a content-revision fence the scene is current at doc.rev, which only non-dirtying commits moved past it.
         const sceneCurrent = scene.revision === revision || runtime.session.contentRevision === revision && scene.revision === doc.rev;
         if (!sceneCurrent || !scene.layout) throw new Error('Paged scene revision or layout is unavailable');
         const rects = Object.freeze(scene.layout.rects.map(rect => Object.freeze({ ...rect })));
@@ -53,7 +51,6 @@ export function pinPagedBoardScene(runtime: BoardRuntime, revision: number, curr
         for (const [id, entry] of entries) {
             held.push(runtime.media.retain(id, 'snapshot'));
             const blob = runtime.media.get(id);
-            // A notebook picture whose file is not in `.Assets` is drawn as its placeholder (a PDF's pictures are embedded and present).
             if (!blob && doc.kind === 'notebook') { missing.set(id, missingFromExport(entry)); continue; }
             if (!blob || blob.size !== entry.bytes) throw new Error(`Captured board media is unavailable: ${id}`);
             blobs.set(id, blob);

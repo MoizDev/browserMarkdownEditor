@@ -1,4 +1,3 @@
-// A failing run alone is not a working mutant: it must mount, draw and WRITE.
 import { readFile, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';

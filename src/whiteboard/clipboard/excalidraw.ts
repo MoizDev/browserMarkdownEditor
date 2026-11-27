@@ -80,7 +80,6 @@ function elementGeometry(element: Readonly<Record<string, unknown>>): { x: numbe
     if (!finite(x, -SECURITY_LIMITS.world, SECURITY_LIMITS.world) || !finite(y, -SECURITY_LIMITS.world, SECURITY_LIMITS.world)) return null;
     return { x, y, w: element.width, h: element.height, rotation, opacity: element.opacity / 100 };
 }
-/** Converts only figures and standalone/bound text; other wire elements remain explicit deferred input. */
 export async function convertExcalidrawShapes(elements: readonly Readonly<Record<string, unknown>>[], options: {
     readonly sheet: SheetId; readonly signal: AbortSignal; cooperate(): Promise<void>;
 }): Promise<ExcalidrawShapeDraft> {
@@ -137,8 +136,6 @@ export async function convertExcalidrawShapes(elements: readonly Readonly<Record
             shape: element.type, w: geometry.w, h: geometry.h, growY: 0, color: stroke, labelColor, fill, dash, size, font,
             align, valign, label, width: element.strokeWidth, labelScale, flipX: false, flipY: false, url: null });
         if (background && background !== stroke) {
-            // A native figure has one paint swatch. A derived group preserves a distinct
-            // source fill and outline while keeping the actual foreground binding target.
             const groupId = newNodeId(tables); allocated.add(groupId);
             const backgroundId = newNodeId(tables); allocated.add(backgroundId);
             const childOrders = keysBetween(null, null, 2);
@@ -211,7 +208,6 @@ function visibleDash(element: Readonly<Record<string, unknown>>): Dash | null {
     if (!finite(element.roughness, 0, 10) || !['solid', 'dashed', 'dotted'].includes(String(element.strokeStyle))) return null;
     return element.roughness > 0 ? 'draw' : element.strokeStyle === 'dashed' ? 'dashed' : element.strokeStyle === 'dotted' ? 'dotted' : 'solid';
 }
-/** Both callbacks are real host admission/geometry providers; no image or binding is fabricated here. */
 export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, options: {
     readonly elements: readonly Readonly<Record<string, unknown>>[];
     readonly files: readonly ExcalidrawWireFile[];
@@ -305,7 +301,6 @@ export async function finalizeExcalidrawDraft(draft: ExcalidrawShapeDraft, optio
                 } else if (points.length > 2) {
                     const line = createPolyline({ ...base, points, spline: 'line', color: stroke, dash,
                         size: sizeFor(element.strokeWidth, [2, 3.5, 5, 10]), width: element.strokeWidth });
-                    // Endpoint bindings belong to the native polyline, not a guessed connector replacement.
                     nodes.push({ ...line, startAttach: null, endAttach: null } as typeof line);
                     if (element.startBinding && typeof element.startBinding === 'object' && !Array.isArray(element.startBinding)) bindings.push({ id, terminal: 'start', source: element.startBinding as Record<string, unknown> });
                     if (element.endBinding && typeof element.endBinding === 'object' && !Array.isArray(element.endBinding)) bindings.push({ id, terminal: 'end', source: element.endBinding as Record<string, unknown> });

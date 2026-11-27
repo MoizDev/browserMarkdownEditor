@@ -1,4 +1,3 @@
-// Independent inspection of the bytes actually read from OPFS, not app modules.
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFRawStream, PDFString, decodePDFRawStream } from 'pdf-lib';
 const key = PDFName.of;
 const text = value => value instanceof PDFString || value instanceof PDFHexString ? value.decodeText() : undefined;

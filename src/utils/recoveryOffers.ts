@@ -1,13 +1,11 @@
 import type { RecoveryEntry } from './recoveryJournal';
 
 export interface RecoveryOffer {
-    /** The only entry eligible for in-place recovery at this path. */
     newest?: RecoveryEntry;
     /** Other windows' edits are never discarded or applied to the live file. */
     copies: RecoveryEntry[];
 }
 
-/** A path can only have one in-place offer; equal timestamps break ties deterministically. */
 export function groupRecovery(entries: readonly RecoveryEntry[]): Map<string, RecoveryOffer> {
     const sorted = [...entries].sort((a, b) => b.updatedAt - a.updatedAt || b.journalId.localeCompare(a.journalId));
     const groups = new Map<string, RecoveryOffer>();

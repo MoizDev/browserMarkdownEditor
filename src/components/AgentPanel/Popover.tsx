@@ -1,15 +1,7 @@
-// The panel's dropdowns (chat list, agent, model + effort). Not the app's
-// context menu: those rows are plain text by design (utils/contextMenu.ts),
-// and these carry status dots, a delete button per chat and an effort slider.
-//
 // Portalled to <body> so no ancestor App gives the panel (overflow, contain,
 // a transform) can clip or re-anchor it — and the portal root carries
 // `data-agent-panel` itself, because App's global shortcut guard asks the DOM
 // (`closest('[data-agent-panel]')`), not React's tree.
-//
-// Non-modal, like VaultMenu: Escape through utils/escapeDismiss.ts (one press,
-// one surface), outside pointerdown closes it, the keyboard returns to the
-// button that opened it.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
@@ -24,9 +16,7 @@ export interface PopoverProps {
     anchor: HTMLElement | null;
     onClose: () => void;
     theme: Theme;
-    /** aria-label of the surface. */
     label: string;
-    /** Opens below the anchor unless told otherwise (the composer's chip opens above). */
     placement?: 'below' | 'above';
     align?: 'start' | 'end';
     className?: string;
@@ -41,8 +31,6 @@ export function Popover({ anchor, onClose, theme, label, placement = 'below', al
     const onCloseRef = useRef(onClose);
     useEffect(() => { onCloseRef.current = onClose; });
 
-    // Measure, then place: rendered once invisible, like ContextMenu, so the
-    // real width is known before it is clamped into the viewport.
     useLayoutEffect(() => {
         const el = ref.current;
         if (!anchor || !el) return;
@@ -52,9 +40,6 @@ export function Popover({ anchor, onClose, theme, label, placement = 'below', al
             let left = align === 'end' ? r.right - w : r.left;
             left = Math.max(MARGIN, Math.min(left, window.innerWidth - w - MARGIN));
             if (placement === 'above') {
-                // Never over the panel's header: a long model list (OpenCode
-                // lists dozens) grew to the window's top and hid the header's
-                // own controls. It scrolls within the room below instead.
                 const header = anchor.closest('.agent-panel')?.querySelector('.agent-header');
                 const ceiling = Math.max(MARGIN, header ? header.getBoundingClientRect().bottom + GAP : 0);
                 setPos({ left, bottom: window.innerHeight - r.top + GAP, maxHeight: r.top - GAP - ceiling });
@@ -67,11 +52,6 @@ export function Popover({ anchor, onClose, theme, label, placement = 'below', al
         return () => window.removeEventListener('resize', place);
     }, [anchor, align, placement]);
 
-    // The keyboard moves in on open and back to the opener on close — but only
-    // if it is still inside, so a row that focused something else keeps it.
-    // A LAYOUT effect: a passive cleanup runs after the surface has left the
-    // document, when the keyboard has already fallen to <body> and "still
-    // inside" was never true (measured: Escape left the chip unfocused).
     useLayoutEffect(() => {
         const el = ref.current;
         const first = el?.querySelector<HTMLElement>('[aria-checked="true"]') ?? el?.querySelector<HTMLElement>(ITEM_SELECTOR);
@@ -87,8 +67,6 @@ export function Popover({ anchor, onClose, theme, label, placement = 'below', al
         const onPointerDown = (e: PointerEvent) => {
             const target = e.target as Node | null;
             if (!target) return;
-            // The opener toggles itself: closing here would let the same
-            // press's click re-open it (the flicker ContextMenu fixed).
             if (ref.current?.contains(target) || anchor?.contains(target)) return;
             onCloseRef.current();
         };
@@ -98,7 +76,6 @@ export function Popover({ anchor, onClose, theme, label, placement = 'below', al
 
     const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
         if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
-        // The effort slider takes the arrows itself.
         if ((e.target as HTMLElement).getAttribute('role') === 'slider') return;
         const items = Array.from(ref.current?.querySelectorAll<HTMLElement>(ITEM_SELECTOR) ?? []);
         if (!items.length) return;

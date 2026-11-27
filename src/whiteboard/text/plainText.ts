@@ -3,14 +3,11 @@ import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
 export interface PlainTextOptions {
     readonly signal?: AbortSignal;
-    /** Yield to the host scheduler, not just another microtask. */
     readonly cooperate: () => Promise<void>;
     readonly sliceMilliseconds?: number;
 }
 
-/** Shared strict ingress: CR/CRLF become separators; unsupported UTF-16 is refused. */
 function* normalizeSteps(value: string): Generator<void, string> {
-    // CRLF can contract by at most half; reject impossible input before allocating a second string.
     if (value.length > MAX_TEXT_LENGTH * 2) throw new RangeError('Rich text exceeds limits');
     let blocks = 1, length = 0, last = 0, checkpoint = 4096;
     const pieces: string[] = [];
@@ -44,7 +41,6 @@ export function normalizePlainInsertion(value: string): string {
     return finishTextSteps(normalizeSteps(value));
 }
 
-/** Cancellation discards the unpublished partial conversion. */
 export function normalizePlainInsertionCooperative(value: string, options: PlainTextOptions): Promise<string> {
     return finishTextStepsCooperative(normalizeSteps(value), options);
 }

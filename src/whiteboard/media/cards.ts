@@ -12,8 +12,6 @@ import type { StoreMedia } from './storage.types';
 import { EMBED_CARD_SIZES, embedCardSize, resolveEmbedCandidate, type EmbedManifest } from './embed';
 import { isCancellation } from '../../platform/workers/envelope';
 
-// Provenance: media §10a/§11 card conversion and explicit preview consent;
-// independent transaction composition, no upstream engine source.
 export function convertMediaCard(options: {
     readonly runtime: BoardRuntime; readonly id: NodeId; current(): boolean;
     readonly environment: UrlEnvironment; readonly manifest: EmbedManifest;
@@ -23,7 +21,6 @@ export function convertMediaCard(options: {
         || node.kind !== 'linkcard' && node.kind !== 'embed') throw new Error('Card conversion is unavailable');
     const candidate = node.kind === 'linkcard' ? resolveEmbedCandidate(node.url, options.environment, options.manifest) : null;
     if (node.kind === 'linkcard' && !candidate) throw new Error('This URL has no supported embed provider');
-    // A card or embed keeps the size the person gave it; only a node still at a size the app gives its kind takes the target default.
     const target = candidate ? embedCardSize(candidate.provider) : { w: 300, h: 320 };
     const kindDefaults = node.kind === 'linkcard' ? [{ w: 300, h: 320 }, { w: 320, h: 180 }] : EMBED_CARD_SIZES;
     const resized = !kindDefaults.some(size => size.w === node.w && size.h === node.h);
@@ -41,11 +38,9 @@ export function convertMediaCard(options: {
     return id;
 }
 
-/** A preview is requested only by explicit gesture and becomes inert text on commit. */
 export function fetchCardPreview(options: {
     readonly runtime: BoardRuntime; readonly id: NodeId; readonly memory: MemoryAllocator;
     readonly environment: UrlEnvironment; readonly signal?: AbortSignal; current(): boolean;
-    /** The document's storage port for preview pictures; without it the card keeps its text and stores no picture. */
     readonly storeMedia?: StoreMedia;
 }): Promise<void> {
     const { runtime } = options, session = runtime.session, doc = session.doc, revision = doc.rev, owner = session.owner;
@@ -62,7 +57,6 @@ export function fetchCardPreview(options: {
             }
         };
         check();
-        // The HTML frame belongs to this job: its identity is the job's, so a stale job cannot parse for a newer one.
         const live = () => { try { check(); return true; } catch { return false; } };
         const identity: BoardJobIdentity = { session: context.job.session, epoch: context.job.vaultEpoch, revision };
         const frame = createClipboardHtmlFrameHost({ memory: options.memory, identity,
@@ -72,15 +66,11 @@ export function fetchCardPreview(options: {
         check();
         await session.enqueueAfterGesture(context.signal, () => {
             check();
-            // History-silent by policy (DERIVED_TEXT): a completed fetch is not a step, so it cannot clear the redo branch.
             const applied = session.apply({ origin: 'host', label: 'Fetch preview', ops: [{ t: 'set', id: options.id, key: 'preview',
                 value: { title: metadata.title ?? node.preview?.title ?? null, description: metadata.description ?? node.preview?.description ?? null,
                     image: node.preview?.image ?? null, favicon: node.preview?.favicon ?? null } }] });
             applied.release();
         });
-        // The picture requests this explicit job may make: the declared preview image, then the icon (declared, else the
-        // site's /favicon.ico). Each is its own commit, so a failure keeps the title, description and whatever succeeded.
-        // Source: t21 ruling (A), which amends security.md §8.2 step 4 and E-SEC-6; only this explicit Fetch preview makes them.
         const storage = options.storeMedia;
         if (!storage) return;
         const failures: string[] = [];

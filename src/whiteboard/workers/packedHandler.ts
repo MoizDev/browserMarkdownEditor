@@ -3,7 +3,6 @@ import { validBox } from '../geom/bounds';
 import { PackedBuildJob, type PackedSnapshot } from '../scene/packedBuild';
 import { SECURITY_LIMITS } from '../security/limits';
 
-/** The worker receives only owned numeric slabs; it never reads a live scene. */
 export async function buildPacked(payload: unknown, context: WorkerContext): Promise<unknown> {
     if (!payload || typeof payload !== 'object') throw new TypeError('Invalid packed scene request');
     const input = payload as PackedSnapshot;

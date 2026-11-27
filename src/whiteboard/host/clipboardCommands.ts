@@ -22,14 +22,12 @@ const JSON_MEDIA_NOTICE = 'Media are referenced by hash; this JSON is not a port
 const mediaBytes = Symbol('copied board media');
 type ResourceSnapshot = CopySnapshot & { readonly [mediaBytes]: { readonly blobs: ReadonlyMap<MediaId, Blob>; readonly fontEpoch: number } }; 
 
-/** Bytes of an actual copy remain available after its source document closes. */
 export function readNativeClipboardMedia(snapshot: CopySnapshot, id: MediaId): Blob | null {
     return (snapshot as Partial<ResourceSnapshot>)[mediaBytes]?.blobs.get(id) ?? null;
 }
 
 export interface NativeTextClipboardAuthority {
     isCurrent(snapshot: CopySnapshot): boolean;
-    /** This proof must perform the real cut preflight before any clipboard write. */
     prepareCut(snapshot: CopySnapshot): ClipboardCut;
 }
 
@@ -38,24 +36,19 @@ export interface NativeClipboardCommandsOptions {
     readonly token: RenderToken;
     readonly memory: MemoryAllocator;
     readonly cache: ClipboardCache;
-    /** Starts synchronously: the producer pins the source before its first await. */
     prepareExport(route: 'copy' | 'context' | 'menu', signal: AbortSignal): Promise<NativeExportJob>;
     duplicate(snapshot: CopySnapshot): Promise<void>;
     current(): boolean;
-    /** Captures the originating view, so an async cut cannot borrow a different pane's authority. */
     captureWriteAuthority(): () => boolean;
-    /** Whether a view of this document is on screen: only then is a copy prepared ahead, or one kept (see `shownChanged`). */
     shown(): boolean;
     notice(message: string): void;
     onError(error: unknown): void;
     copyPng(capture: Promise<Readonly<{ image: Blob; privateImage: Blob }>>): Promise<void>;
     copySvg(capture: Promise<Blob>): Promise<void>;
     download(blob: Blob, filename: string): void;
-    /** The open board's name, for the files it exports. */
     boardName(): string;
 }
 
-/** Event copy uses the real synchronous native projection, never the previous selection. */
 export function createNativeClipboardCommands(options: NativeClipboardCommandsOptions) {
     const { runtime, token } = options, board = runtime.session;
     const active = new Set<AbortController>();
@@ -157,23 +150,11 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         if (idle !== undefined) cancelIdleCallback(idle);
         idle = undefined; background?.abort(); background = undefined;
     };
-    // This copy is prepared ahead only so that ⌘C has it at once; it measures every selected item exactly, which on a large
-    // selection is far more work than anything the person asked for (measured: 4,000 strokes, about 60 s of main thread). It
-    // ran in 3 ms turns beside the person's own work and took most of the thread from it: a keyboard nudge of those strokes
-    // took 72 s instead of 4.5 s, so closing the tab or reloading meanwhile found the nudge unfinished and refused, and Export
-    // to PDF right after took 73 s instead of 13 s. So it runs only when the browser is idle, and stops for a gesture (a
-    // nudge, a drag) and starts again once that has landed.
     const idleTurn = () => new Promise<void>(resolve => { requestIdleCallback(() => resolve()); });
     const prepareSettledSelection = () => {
         cancelBackground();
         if (textAuthority) return;
         selectedProduct = undefined; copy.setSelection(null);
-        // A board nobody is looking at prepares no copy and keeps none: ⌘C cannot reach it, and the copy is charged to the
-        // picture budget every board shares, where nothing can evict it. Kept, each board left with a large selection went on
-        // preparing its copy for about 70 s after its tab was left and then held it for good (3,000 strokes: 7.4 MB of the
-        // 32 MB); with two or three of them the board on screen got no room, and an arrow key there never landed: the
-        // picture stayed unfinished and no key or press did anything again (measured: the seventh of seven such boards, on
-        // this build and on those before it). It is prepared again when the board is shown.
         if (!options.shown() || !current() || !runtime.selection.getSnapshot().selected.length || board.isGestureActive) return;
         const state = runtime.selection.getSnapshot(), revision = board.doc.rev, epoch = runtime.render.text.fonts.epoch;
         idle = requestIdleCallback(() => {
@@ -192,7 +173,6 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
     };
     const stopSelection = runtime.selection.subscribe(prepareSettledSelection), stopChanges = board.onChange(prepareSettledSelection);
     const stopGeometry = runtime.render.subscribeInvalidation(prepareSettledSelection);
-    // A copy already made stays; one still being prepared gives way to the gesture and is prepared again once it has landed.
     const stopGesture = board.subscribeGesture(() => {
         if (board.isGestureActive) { cancelBackground(); return; }
         const made = selectedProduct?.snapshot;
@@ -205,15 +185,12 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
     const capture = (extension: 'png' | 'svg', signal: AbortSignal) => {
         guard();
         const prepared = options.prepareExport('copy', signal);
-        // ClipboardItem receives this promise immediately, while activation is
-        // still live. The frozen producer—not a later live revision—owns pixels.
         const pending = prepared.then(async job => {
             try { return await job[extension](signal); } finally { job.release(); }
         });
         void pending.catch(() => {}); // Permission denial can reject before ClipboardItem consumes its data.
         return pending;
     };
-    /** Copy-as-PNG reads the same single producer as capture, with both clipboard items from one frozen job. */
     const capturePng = (signal: AbortSignal) => {
         guard();
         const prepared = options.prepareExport('copy', signal);
@@ -231,11 +208,7 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
             signal.throwIfAborted(); options.download(blob, job.filename(extension));
         } finally { job.release(); }
     };
-    // One export or copy of this view at a time: a new one supersedes the one still running, so the older capture stops
-    // instead of finishing into a clipboard or download the user has already replaced.
     let latest: AbortController | undefined;
-    /** File export of the records: the same chunked producer as copy, saved under the board's name. A selection on a
-     * context route, otherwise the whole sheet. */
     const exportJson = async (route: 'context' | 'menu', signal: AbortSignal) => {
         guard();
         const state = runtime.selection.getSnapshot(), roots = route === 'context' ? [...state.selected] : [];
@@ -259,7 +232,6 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         finally { active.delete(owned); if (latest === owned) latest = undefined; owned.abort(); }
     };
     return {
-        /** Borrowed by inline text clipboard adapters; this document remains its owner. */
         clipboardCopy: copy,
         bindTextAuthority(authority: NativeTextClipboardAuthority) {
             guard();
@@ -271,7 +243,6 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
                 if (!disposed) prepareSettledSelection();
             };
         },
-        /** The document's first view came on screen, or its last one left it. */
         shownChanged() { if (!disposed) prepareSettledSelection(); },
         matchClipboard: (encoded: string, plain: string) => copy.match(encoded, plain),
         copy: () => run(async () => { prepare(); await copy.copyMenu(); }),
@@ -287,8 +258,6 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
             guard();
             const state = runtime.selection.getSnapshot();
             const selection = state.selected.length ? state.selected : [...(board.doc.bySheet.get(state.sheet) ?? [])];
-            // The JSON is built inside its own job, chunk by chunk under the memory governor, and the write takes its promise
-            // while the click is live: the same in-job capture the record copy uses.
             let media = 0;
             await copyBoardJsonFresh({ runtime, memory: options.memory, current, capture: async signal => {
                 const snapshot = await createBoardCopySnapshot({ runtime, memory: options.memory, current, selection, signal });
@@ -301,8 +270,6 @@ export function createNativeClipboardCommands(options: NativeClipboardCommandsOp
         exportPng: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => download('png', route, signal))),
         exportSvg: (route: 'context' | 'menu' = 'menu') => run(() => withController(signal => download('svg', route, signal))),
         dispose() { if (!disposed) { disposed = true; cancelBackground(); stopSelection(); stopChanges(); stopGeometry(); stopGesture();
-            // Captured read-only jobs own their source leases. Retiring the
-            // document stops new work, not a clipboard write already in flight.
             selectedProduct = undefined; textAuthority = undefined; copy.dispose(); } },
     };
 }

@@ -7,8 +7,6 @@ import type { AgentProjection, AgentProjectionSource, AgentWorldBox } from './pr
 
 export type { AgentProjection, AgentProjectionSource, AgentWorldBox } from './projectionTypes';
 
-// WB-D11/C8: one projection boundary converts the shared world-space scene to
-// the agent's page-relative rectangles, regardless of live or closed origin.
 export function createAgentProjection(doc: BoardDoc, source: AgentProjectionSource): AgentProjection {
     const box = (node: Node): AgentWorldBox => {
         const value = source.worldBox(node);
@@ -42,7 +40,6 @@ export function createAgentProjection(doc: BoardDoc, source: AgentProjectionSour
         changeGeometry: {
             worldBoundsCenter: (_doc, node) => center(node),
             resolvedTip: (current, connector, end) => source.resolvedTip(current, connector, end),
-            // The C2 detach path reads a polyline's actual resolved end, never a fixed or scope-cached bound.
             resolvedPolylineTip: (current, polyline, end) => source.resolvedPolylineTip(current, polyline, end),
         },
         localBox: node => source.localBox(node),

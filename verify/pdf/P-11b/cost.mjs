@@ -1,5 +1,3 @@
-// Real-UI trace collection, never an in-app timer or a microbenchmark. Advisory
-// output cannot pass a timed gate; v-c owns calibration/window admission/statistics.
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
@@ -57,8 +55,6 @@ try {
     browser = await chromium.launch({ headless: true, executablePath: options.chrome ?? await pinnedChrome(), args: ['--host-resolver-rules=MAP fonts.googleapis.com ~NOTFOUND, MAP fonts.gstatic.com ~NOTFOUND'] });
     if (browser.version() !== '157.0.8103.39') throw new Error('Wrong Chrome');
     report.browser = browser.version();
-    // ABBA blocks balance browser/OS cache history. Every session has a fresh
-    // context; no source override or browser request interception is installed.
     const order = Array.from({ length: sessions / 2 }, () => ['fixed', 'omitted', 'omitted', 'fixed']).flat();
     for (const fixture of fixtures) for (const [sessionIndex, arm] of order.entries()) {
         currentArm = arm; currentFixture = fixture;
@@ -106,7 +102,6 @@ try {
             await write.write(await (await fetch('/__fixture.pdf')).arrayBuffer()); await write.close();
         }, fixture.file);
         await page.getByRole('button', { name: 'Open Vault', exact: true }).click();
-        // Refetch before the timed action, then once after it; never during it.
         await binding.check();
         const cdp = await context.newCDPSession(page);
         await cdp.send('Tracing.start', { categories: 'toplevel,devtools.timeline,disabled-by-default-devtools.timeline,v8,blink.console', transferMode: 'ReturnAsStream' });

@@ -7,7 +7,6 @@ import type { BoardRuntime } from './runtime';
 
 let serial = 0;
 
-/** The capture begins synchronously while the measured Scene pin is still held. */
 export async function pinNativeSheetThumbnailBounds(options: {
     runtime: BoardRuntime;
     sheet: SheetId;
@@ -48,7 +47,6 @@ export async function pinNativeSheetThumbnailBounds(options: {
         const paint = await pin.paintSource({ sheetId: sheet, theme: 'light' }, signal); check();
         const measured = await measureBoardPaintBounds(paint, { memory, signal }); check();
         const value = measured.bounds;
-        // An empty sheet has nothing to picture, but its minimap still frames the visible window.
         if (!value) { check(); return { bounds: null, blob: null }; }
         if (!value.every(Number.isFinite) || value[2] <= value[0] || value[3] <= value[1]) {
             throw new Error('The drawing content has no measurable extent for a minimap.');

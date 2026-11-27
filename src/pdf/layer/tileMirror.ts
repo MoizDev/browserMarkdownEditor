@@ -4,7 +4,6 @@ import type { CompositorMirrorQuad } from '../../platform/render/compositor.type
 import type { MirrorSet } from '../../platform/render/mirrorSet';
 import type { TileKey } from '../../platform/render/tiles/geometry';
 
-/** Pixels and placement belong to the document session, not the transient page layer. */
 export interface PdfMirrorPixels {
     readonly bitmap: ImageBitmap;
     readonly world: Readonly<Rect>;
@@ -27,14 +26,12 @@ export interface PdfSessionMirrors {
     remember(view: MirrorView): void;
     lastView(): MirrorView | null;
     publish(input: PdfMirrorPublish): string | null;
-    /** Whether the mirror set still holds this crop: present and not closing. A crop published earlier can be reused while it does. */
     holds(id: string): boolean;
     mirrorQuad(item: BorrowedMirror<PdfMirrorPixels>, view: MirrorView): CompositorMirrorQuad;
 }
 
 const slot = Symbol('PDF session mirror storage');
 
-/** Session slots keep both pixels and the platform mirror across hide and graph unmount (§8:193–204). */
 export function getPdfSessionMirrors(options: {
     readonly session: {
         getSlot<T>(key: symbol): T | undefined;
@@ -90,7 +87,6 @@ export function getPdfSessionMirrors(options: {
             pixels.delete(id);
             return null;
         },
-        /** The compositor consumes device-pixel destinations for the identical frozen view. */
         mirrorQuad(item: BorrowedMirror<PdfMirrorPixels>, view: MirrorView): CompositorMirrorQuad {
             const { bitmap, world, source, page } = item.pixels;
             const { camera, viewport } = view.view;

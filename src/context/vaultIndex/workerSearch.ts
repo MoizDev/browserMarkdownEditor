@@ -7,8 +7,6 @@ import type { WorkerContext } from '../../platform/workers/serve';
 import type { SearchResidency } from './searchResidency';
 
 export interface SearchOverlay { rev: number; text: string }
-/** Match in authoritative tree order. The consumer groups name hits first,
- * while each streamed row preserves the same caps and original offsets. */
 export async function searchSidebar(session: IndexSession, queryId: number, query: string,
     files: readonly IndexFile[], text: SearchResidency, overlays: ReadonlyMap<string, SearchOverlay>,
     context: WorkerContext, current: () => boolean): Promise<void> {

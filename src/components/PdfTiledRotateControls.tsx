@@ -1,13 +1,11 @@
 import { RotateCcw, RotateCw } from './icons';
 
 interface Props {
-    /** Zero-based physical page. */
     page: number;
     onRotate: (delta: number, pageIndex?: number) => void;
     disabledReason?: string;
 }
 
-/** The page turns at the press (utils/pdfRotationStandIn.ts), so the buttons need no busy state of their own. */
 export default function PdfTiledRotateControls({ page, onRotate, disabledReason }: Props) {
     return <>
         <button className="pdf-viewer-rotate-btn" disabled={!!disabledReason} aria-label="Rotate the document left"

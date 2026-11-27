@@ -1,12 +1,8 @@
-// This module is deliberately library-free: App's write/rotate funnels can
-// inspect a loaded capability without importing either PDF implementation.
 import type { NotebookSource } from './pdfFormat';
 import type { PdfWriteMarkCheck } from './pdfWriteMark';
 import type { DiskVersion } from './diskVersion';
 
 export const PDF_EDITABLE_JSON_LIMIT = 32 * 1024 * 1024;
-// Retain the current assembler's structural profile; never substitute a small
-// arbitrary reader cap that would strand a previously annotatable scan.
 export const PDF_PRISTINE_LIMIT = 0x7fffffff;
 export type PdfRoleFailure = 'missing' | 'null' | 'corrupt' | 'limit' | 'timeout' | 'workerDeath' | 'schema' | 'encrypted' | 'policy';
 export type PdfWriteSafety = { kind: 'safe' } | { kind: 'signed' | 'encrypted' | 'unknown'; reason?: string };
@@ -24,8 +20,6 @@ export type PdfRole =
     | (RoleIdentity & { kind: 'unreadable'; attachment: string; attachmentId?: string; reason: PdfRoleFailure; detail?: string; alreadyAnnotated: true })
     | (RoleIdentity & { kind: 'ambiguous'; candidates: string[]; alreadyAnnotated: true })
     | (RoleIdentity & { kind: 'newer'; attachments: string[]; alreadyAnnotated: true });
-// Worker attachment classification precedes the independent outer/pristine policy pass.
-// Raw roles are data only and cannot pass the main-thread capability gates.
 type WithoutWriteSafety<T> = T extends unknown ? Omit<T, 'writeSafety'> : never;
 export type RawPdfRole = WithoutWriteSafety<PdfRole>;
 export type EditablePdfRole = Extract<PdfRole, { kind: 'plain' | 'annotated' }>;
@@ -34,8 +28,6 @@ export interface PdfAnnotationPreflight { role: EditablePdfRole; version: DiskVe
 export function isEditablePdfRole(role: PdfRole): role is EditablePdfRole {
     return (role.kind === 'plain' || role.kind === 'annotated') && role.writeSafety?.kind === 'safe';
 }
-/** A PDF exported from a notebook turns like a plain one: the turn appends page dictionaries only, so its notebook pointer
- * stays, and exporting the notebook again asks before replacing a PDF changed since (app/notebookExport.ts). */
 export function canRotatePdfRole(role: PdfRole): boolean {
     return (role.kind === 'plain' || role.kind === 'notebookExport') && role.writeSafety?.kind === 'safe';
 }
@@ -58,8 +50,6 @@ export function authorizePdfRole(role: PdfRole): void {
     if (isEditablePdfRole(role) && (role.kind === 'plain' || role.writeMark.kind !== 'foreign')) writableSources.add(role.original);
 }
 
-/** App calls only after keeping the exact baseline bytes in Trash and checking
- *  the current document/owner again. This never blesses a different generation. */
 export function authorizeKeptPdfRole(role: PdfRole, generation: string): boolean {
     if (!isEditablePdfRole(role) || role.kind !== 'annotated' || role.writeMark.kind !== 'foreign' || !generation || role.generation !== generation) return false;
     writableSources.add(role.original);
@@ -93,7 +83,6 @@ function object(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** Validate data only. Never import the legacy editor to authorize a source. */
 export function compatibleLegacySnapshot(value: unknown): boolean {
     if (!object(value) || !object(value.document)) return false;
     const { schema, store } = value.document;

@@ -1,30 +1,3 @@
-// Self-update: the panel's one-click "Update VaultAgent".
-//
-// The browser can neither run a program nor read a GitHub release asset (CORS),
-// so the helper does the work itself, as the user, in its own per-user folder.
-// What it reads is fixed at build time (RELEASES_BASE_URL, never from the wire):
-//
-//   <base>/latest/download/vaultagent-release.json      {app, version, assets: {<name>: {sha256, size}}}
-//   <base>/download/vaultagent-v<version>/<asset>      the raw binary for this OS/arch
-//
-// The asset comes from the VERSIONED url: "latest" can move between the two fetches.
-//
-// Nothing on disk changes until the new binary has proven itself, so any failure
-// before the swap leaves the running helper, its binary and its socket untouched:
-//   1. manifest (size-capped, validated) — refuse unless it is newer;
-//   2. stream the asset into `<appDir>/vaultagent.update-<pid>` (same folder: the
-//      swap is one rename), sha256 + size checked as it arrives;
-//   3. `<staged> --version` must print the manifest's version, and `<staged> serve
-//      --no-register` must bind a port and answer /health with it;
-//   4. swap: POSIX `rename` (a new inode — the running process keeps the old one,
-//      and macOS's code-signing cache SIGKILLs a binary overwritten in place);
-//      Windows renames the running .exe aside first (allowed while it runs);
-//   5. respond, then restart into the new binary under the OS's service manager.
-// Leftovers (`vaultagent.update-*`, `vaultagent.previous-*`) go at the next start.
-//
-// Trust: HTTPS to GitHub is the root, as for the manual download. The sha256
-// guards against truncation and corruption, not against a compromised repo.
-
 import { chmodSync, closeSync, fsyncSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
@@ -45,8 +18,6 @@ export const UPDATE_ASSET_NAMES = [
     'vaultagent-linux-arm64',
 ] as const;
 
-/** EX_TEMPFAIL: a non-zero exit, so launchd (KeepAlive SuccessfulExit=false) and
- *  systemd (Restart=on-failure) start the service again — from the new binary. */
 export const RESTART_EXIT_CODE = 75;
 
 const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
@@ -57,14 +28,12 @@ const DOWNLOAD_IDLE_MS = 60_000;
 const MANIFEST_TIMEOUT_MS = 20_000;
 const CHECK_OK_TTL_MS = 10 * 60_000;
 const CHECK_FAIL_TTL_MS = 30_000;
-/** The panel stops its own reply just before it asks; give that run a moment to wind down. */
 const RUN_DRAIN_MS = 5000;
 
 export interface ReleaseAsset { sha256: string; size: number }
 export interface Manifest { app: typeof HELPER_APP_ID; version: string; assets: Record<string, ReleaseAsset> }
 export interface UpdateProgress { phase: UpdatePhase; received?: number; total?: number }
 
-/** A refusal the panel shows as is, with the protocol's error code. */
 export class UpdateRefused extends Error {
     constructor(public code: 'busy' | 'unsupported' | 'not-found', message: string) {
         super(message);
@@ -72,7 +41,6 @@ export class UpdateRefused extends Error {
     }
 }
 
-/** A failed attempt whose message is written for the user. */
 export class UpdateFailed extends Error {
     constructor(message: string, options?: { cause?: unknown }) {
         super(message, options);
@@ -82,7 +50,6 @@ export class UpdateFailed extends Error {
 
 export function updateAssetName(platform: HelperPlatform, arch: string): string | null {
     if (platform === 'macos') return arch === 'arm64' ? 'vaultagent-macos-arm64' : arch === 'x64' ? 'vaultagent-macos-x64' : null;
-    // Windows on Arm runs the x64 build emulated, as the installer does.
     if (platform === 'windows') return arch === 'x64' || arch === 'arm64' ? 'vaultagent-windows-x64.exe' : null;
     if (platform === 'linux') return arch === 'x64' || arch === 'arm64' ? `vaultagent-linux-${arch}` : null;
     return null;
@@ -145,10 +112,6 @@ export async function fetchManifest(base: string, fetchImpl: FetchImpl = fetch):
     return parseManifest(json);
 }
 
-/**
- * Stream `url` into `dest`, hashing as it arrives; `dest` exists afterwards only
- * if size and sha256 both match. Progress at most every 200 ms.
- */
 export async function downloadVerified(
     url: string,
     expect: ReleaseAsset,
@@ -222,11 +185,6 @@ export async function downloadVerified(
 
 const DIDNT_START = "The new version didn't start on this computer.";
 
-/**
- * Prove the staged binary runs here before anything is replaced: `--version`
- * prints exactly `version`, and `serve --no-register` binds a port (the next free
- * one: the running helper keeps its own) and answers /health as that version.
- */
 export async function probeStaged(path: string, version: string): Promise<void> {
     const v = await runCapture([path, '--version'], { timeoutMs: 15_000 });
     if (v.code !== 0 || v.stdout.trim() !== version) throw new UpdateFailed(DIDNT_START);
@@ -255,7 +213,6 @@ export async function probeStaged(path: string, version: string): Promise<void> 
         }
         reader.releaseLock();
         if (!port) {
-            // It exited on its own: the one failure worth naming is every helper port being taken.
             const exited = typeof (await Promise.race([proc.exited, Bun.sleep(200)])) === 'number';
             if (exited && /none of the ports/.test(await Promise.race([errTail, Bun.sleep(1000).then(() => '')]))) {
                 throw new UpdateFailed("Couldn't start the new version to check it (no free port).");
@@ -273,7 +230,6 @@ export async function probeStaged(path: string, version: string): Promise<void> 
     }
 }
 
-/** Put the staged binary where the installed one is. Throws with nothing changed. */
 export function swapInto(staged: string, binary: string, platform: HelperPlatform): void {
     const fail = (e: unknown) => new UpdateFailed("Couldn't replace the installed VaultAgent.", { cause: e });
     if (platform !== 'windows') {
@@ -306,10 +262,8 @@ export function swapInto(staged: string, binary: string, platform: HelperPlatfor
     }
 }
 
-/** A Windows swap that could neither finish nor be undone (see swapInto). */
 class SwapStranded extends UpdateFailed {}
 
-/** Inno Setup's Apps & Features entry (AppId in VaultAgent.iss), when the installer made one. */
 const WINDOWS_UNINSTALL_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{6B0C3F0E-8F2A-4E57-9D1B-5A4C7E2B9F31}_is1';
 
 async function updateWindowsDisplayVersion(version: string): Promise<void> {
@@ -318,7 +272,6 @@ async function updateWindowsDisplayVersion(version: string): Promise<void> {
     if (r.code !== 0) logError(`update: could not record the new version in Apps & Features (${r.code})`);
 }
 
-/** Is this process the systemd user service (not a terminal run that merely inherited a service's env)? */
 function underSystemdService(): boolean {
     try {
         return readFileSync('/proc/self/cgroup', 'utf8').split('\n').some(l => l.endsWith(`/${SYSTEMD_UNIT}`));
@@ -327,24 +280,17 @@ function underSystemdService(): boolean {
     }
 }
 
-/** Exit and come back as the (now new) installed binary, under the same service manager. Never returns. */
 export function restartHelper(platform: HelperPlatform, layout: InstallLayout): never {
     if (platform === 'macos' && process.env.XPC_SERVICE_NAME === LAUNCHD_LABEL) process.exit(RESTART_EXIT_CODE);
     if (platform === 'linux' && underSystemdService()) process.exit(RESTART_EXIT_CODE);
     if (platform === 'windows' && !/["%]/.test(layout.binary)) {
-        // Through the logon task, so it stays Task Scheduler's (MultipleInstancesPolicy
-        // IgnoreNew: only once this instance has gone); the direct start covers a
-        // missing task. `ping` is the delay: `timeout` fails with no console.
         detachedCmd(`ping -n 3 127.0.0.1 >nul & schtasks /Run /TN ${WINDOWS_TASK} >nul 2>&1 || start "" "${layout.binary}" serve`);
         process.exit(0);
     }
-    // A helper started by hand, the Linux XDG-autostart fallback: no service to do it.
-    // The server has already stopped, so the new process can take the same port.
     detached([layout.binary, 'serve']);
     process.exit(0);
 }
 
-/** Best effort, at start: what an earlier update left behind (a crash mid-download, Windows' renamed .exe). */
 export function cleanupLeftovers(appDir: string): void {
     let names: string[];
     try {
@@ -365,22 +311,17 @@ export interface UpdaterDeps {
     layout: InstallLayout;
     currentVersion: string;
     releasesBase: string;
-    /** Runs in flight on every connection: an update would end them. */
     activeRuns: () => number;
-    /** Frees the port before the new binary starts. */
     stopServer: () => void;
     arch?: string;
-    /** The running executable (default `process.execPath`). */
     execPath?: string;
     fetchImpl?: FetchImpl;
     probe?: (path: string, version: string) => Promise<void>;
     restart?: () => void;
-    /** How long to wait for in-flight runs to end (tests shorten it). */
     runDrainMs?: number;
 }
 
 export interface Updater {
-    /** An update is in flight — or done, and the helper is about to restart. */
     readonly busy: boolean;
     check(force: boolean): Promise<UpdateCheck>;
     update(onProgress: (p: UpdateProgress) => void): Promise<{ from: string; to: string }>;
@@ -416,12 +357,10 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     };
 
     async function check(force: boolean): Promise<UpdateCheck> {
-        // update() refuses such a copy, so offering it an update would only ever fail.
         if (!samePath(deps.execPath ?? process.execPath, layout.binary)) {
             return { current: currentVersion, latest: null, available: false, installed: false };
         }
         if (!force && cached && Date.now() - cached.at < (cached.result.error ? CHECK_FAIL_TTL_MS : CHECK_OK_TTL_MS)) return cached.result;
-        // One request to GitHub however many tabs ask at once.
         checking ??= fetchManifest(releasesBase, fetchImpl).then(
             m => remember(fromManifest(m)),
             e => {
@@ -443,8 +382,6 @@ export function createUpdater(deps: UpdaterDeps): Updater {
             for (const until = Date.now() + (deps.runDrainMs ?? RUN_DRAIN_MS); deps.activeRuns() > 0 && Date.now() < until;) await Bun.sleep(100);
             if (deps.activeRuns() > 0) throw new UpdateRefused('busy', 'A reply is still being written in another window. Update when it has finished.');
             if (!asset) throw new UpdateRefused('unsupported', 'There is no VaultAgent build to update to for this computer.');
-            // Only the installed copy may replace itself: a helper run from a download
-            // folder would otherwise overwrite the installed one behind the service's back.
             if (!samePath(deps.execPath ?? process.execPath, layout.binary)) {
                 throw new UpdateRefused('unsupported', "This VaultAgent isn't running from its installed location, so it can't update itself.");
             }
@@ -476,7 +413,6 @@ export function createUpdater(deps: UpdaterDeps): Updater {
             if (!(e instanceof SwapStranded)) rmSync(staged, { force: true });
             if (e instanceof UpdateRefused) throw e;
             if (e instanceof UpdateFailed) {
-                // Our own message, plus the cause's name/code (never a body or a path's contents).
                 logError(`update failed: ${e.message}`, e.cause);
                 throw e;
             }
@@ -501,8 +437,6 @@ export function createUpdater(deps: UpdaterDeps): Updater {
                 if (deps.restart) deps.restart();
                 else restartHelper(platform, layout);
             } catch (e) {
-                // The port is gone either way: exiting non-zero at least hands the
-                // helper back to its service manager rather than idling deaf and busy.
                 logError('update: restart failed', e);
                 if (!deps.restart) process.exit(RESTART_EXIT_CODE);
             }

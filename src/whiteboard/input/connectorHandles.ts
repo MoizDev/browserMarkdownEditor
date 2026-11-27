@@ -38,10 +38,8 @@ export interface ConnectorEndHandleOptions {
     readonly cooperate?: () => Promise<void>;
 }
 
-/** Shift holds a free end at 15° steps from the other end (catalogue §7 a.4: the reference is the adjacent handle). */
 const ANGLE_STEP = Math.PI / 12;
 
-/** An endpoint drag is the explicit binding gesture; unrelated transforms keep bindings. */
 export function connectorEndHandleGesture(first: RealSample, modifiers: Modifiers, options: ConnectorEndHandleOptions): GestureOwner {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), node = doc.nodes.get(options.id), controller = new AbortController();
@@ -53,7 +51,6 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
     const precision = new BindingPrecision(PRECISE_HOLD_MS, lastAt);
     let request: AbortController | undefined, scope: BoardGeometryScope | undefined, unregister: (() => void) | undefined;
     let font: number | undefined, wake: ReturnType<typeof setTimeout> | undefined;
-    // An arc end that leaves its shape keeps the arc's curvature: the bend is derived once, for the first free position (catalogue a.5).
     const releasing = node[options.terminal].attach !== null;
     let freeBend: number | undefined;
     const release = options.hold();
@@ -78,20 +75,17 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
         try {
             if (!scope) await source;
             check();
-            // The accel key (Cmd on macOS, Ctrl elsewhere) and Ctrl are the no-binding keys; the free end then moves as an ordinary point.
             const bindable = !input.accel && !input.control;
             const attachment = bindable ? await options.resolveAttachment(point, localRequest.signal,
                 { precise: target => precision.decide(target, now, speed, otherEnd?.target === target && otherEnd.precise),
                     exact: input.alt, route: node.route, input: point.source === 'keyboard' ? 'mouse' : point.source }) : null;
             check();
             if (!attachment) precision.leave(now);
-            // Two ends on one shape at one precise anchor would be a zero-length arrow: this end steps 0.05 along x and is precise.
             options.hint?.(attachment?.target ?? null, elbowHintOf(node.route, attachment));
             const duplicate = !!attachment && otherEnd?.target === attachment.target && otherEnd.anchor.x === attachment.anchor.x && otherEnd.anchor.y === attachment.anchor.y;
             const bound = duplicate ? { ...attachment!, precise: true, anchor: { x: attachment!.anchor.x + 0.05 <= 1 ? attachment!.anchor.x + 0.05 : attachment!.anchor.x - 0.05, y: attachment!.anchor.y } } : attachment;
             let target = { x: point.x, y: point.y };
             if (!bound) {
-                // Free ends follow the grid when grid mode is on and nothing else: they never snap to objects (catalogue a.3, a.4).
                 if (input.shift) {
                     const reference = runtime.render.changeGeometry.resolvedTip(doc, node, otherTerminal);
                     const dx = target.x - reference.x, dy = target.y - reference.y, length = Math.hypot(dx, dy);
@@ -113,8 +107,6 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             }
             const candidate = await projectBoardGeometrySets(doc, ops, { signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             preview = await acquireBoardGeometryScope(runtime, [node.id], { doc: candidate, signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
-            // The bound ends' stubs follow the drag: they are read from the candidate's geometry, not the committed one. A failed read
-            // only leaves the stub where it was; staleness is still checked right after.
             const live = candidate.nodes.get(node.id);
             if (live?.kind === 'connector') {
                 const prepared = await runtime.render.prepareForPick(live, localRequest.signal, candidate).catch(() => null); check();
@@ -123,8 +115,6 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             const bounds = preview.logicalBounds(node.id), pose = worldPose(candidate, node.id);
             const geometry: ChangeGeometry = { resolvedTip: (d, connector, side) => runtime.render.changeGeometry.resolvedTip(d, connector, side),
                 worldBoundsCenter: () => ({ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }) };
-            // A bound arrow joins the container its two shapes share (catalogue a.5). The parent and its last order key change in the
-            // same transaction as the end, so the arrow is never left in a container its ends do not share.
             const startAttach = terminal === 'start' ? bound : otherEnd, endAttach = terminal === 'end' ? bound : otherEnd;
             const container = bindingContainer(doc, startAttach, endAttach);
             const holder = container !== null && !isSheetParent(doc, container) ? doc.nodes.get(container as NodeId) : undefined;
@@ -140,7 +130,6 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             if (placement.y !== node.y) ops.push({ t: 'set', id: node.id, key: 'y', value: placement.y });
             const finalDoc = await projectBoardGeometrySets(doc, ops, { signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             final = await acquireBoardGeometryScope(runtime, [node.id], { doc: finalDoc, signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
-            // A precise end that waits out its hold needs no pointer event to become precise: wake the drag when it is due.
             const wait = commit ? null : precision.wakeIn(now);
             if (wait !== null) {
                 clearTimeout(wake);
@@ -176,8 +165,6 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
                 if (Math.hypot(surface.x - downSurface.x, surface.y - downSurface.y) >= 4) moved = true;
                 lastSurface = surface; sample = value;
             }
-            // Speed is the pointer's travel since the last move, in CSS px per ms: the gate that makes a slow entry precise. A sample
-            // with no travel (the release, routed here before finish) keeps the last speed instead of reading as a stop.
             if (lastSurface.x !== before.x || lastSurface.y !== before.y) {
                 const at = performance.now();
                 speed = Math.hypot(lastSurface.x - before.x, lastSurface.y - before.y) / Math.max(1, at - lastAt); lastAt = at;

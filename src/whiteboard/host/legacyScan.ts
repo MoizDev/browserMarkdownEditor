@@ -7,9 +7,7 @@ import type { BoardJobIdentity } from '../workers/protocol';
 import type { LegacyScanReply } from '../workers/legacyScan';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: native format fence, legacy preflight and C5 governed worker
-// contracts; independent acquisition client, no third-party source.
-const INPUT_LIMIT = 256 * 1024 * 1024; // Same expanded UTF-8 limit as import/preflight.ts.
+const INPUT_LIMIT = 256 * 1024 * 1024;
 const RECORD_LIMIT = 200_000;
 async function validReply(value: unknown, kind: BoardKind, inputBytes: number, check: () => void): Promise<boolean> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -53,7 +51,6 @@ async function validReply(value: unknown, kind: BoardKind, inputBytes: number, c
     }
     return bytes <= inputBytes;
 }
-/** Only the exact copied bytes already classified OTHER by the native reader may enter this path. */
 export async function scanLegacyBoard(options: {
     readonly bytes: Blob;
     readonly kind: BoardKind;
@@ -61,9 +58,7 @@ export async function scanLegacyBoard(options: {
     readonly identity: BoardJobIdentity;
     isCurrent(identity: BoardJobIdentity): boolean;
     readonly signal?: AbortSignal;
-    /** The load's own parse worker (legacyAcquisition.ts); the shared one otherwise. */
     readonly worker?: BoardWorkerClient;
-    /** With `worker`: the key under which that worker keeps the text it read for this load's import (workers/legacyScan.ts). */
     readonly keep?: string;
 }): Promise<LegacyScanReply> {
     const { bytes, identity, nativeReport } = options;

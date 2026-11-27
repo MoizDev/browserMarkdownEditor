@@ -1,4 +1,3 @@
-// WB-D26 / SEC-5: normalise the link before handing it to rich-text editing.
 export function linkUrl(input: string): string | null {
     const trimmed = input.trim();
     if (!trimmed || trimmed.length > 2048) return null;

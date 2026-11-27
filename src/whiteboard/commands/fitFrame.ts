@@ -18,7 +18,6 @@ export interface FitFrameOptions {
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
-    /** Which sides of the frame the fit may move: a frame's edge fits its own axis, a corner (and the menu) both. */
     readonly axes?: 'both' | 'x' | 'y';
 }
 export interface FrameFitPlan {
@@ -28,8 +27,6 @@ export interface FrameFitPlan {
     cancel(): void;
 }
 
-/** Prepare a frame fit without touching live indexes. Source and projected
- * geometry stay pinned until its one commit or explicit cancellation. */
 export async function prepareBoardFrameFit(options: FitFrameOptions): Promise<FrameFitPlan> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
@@ -81,7 +78,6 @@ export async function prepareBoardFrameFit(options: FitFrameOptions): Promise<Fr
             await tick();
         }
         if (!bounds) return plan([], doc);
-        // Default, calibration cut by owner: fitting uses 50 world units on every side.
         const fitX = options.axes !== 'y', fitY = options.axes !== 'x';
         const left = fitX ? bounds[0] - 50 : 0, width = fitX ? bounds[2] - bounds[0] + 100 : frame.w;
         const top = fitY ? bounds[1] - 50 : 0, height = fitY ? bounds[3] - bounds[1] + 100 : frame.h;
@@ -124,7 +120,6 @@ export async function prepareBoardFrameFit(options: FitFrameOptions): Promise<Fr
     } catch (error) { release(); throw error; }
 }
 
-/** Backwards-compatible immediate command; preview clients can hold the plan. */
 export async function fitBoardFrameToContent(options: FitFrameOptions): Promise<void> {
     const plan = await prepareBoardFrameFit(options);
     plan.commit();

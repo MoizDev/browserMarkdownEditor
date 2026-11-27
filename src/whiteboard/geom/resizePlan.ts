@@ -26,8 +26,6 @@ export class ResizePlan {
         const rotations = this.snapshots.flatMap(target => target.relevantRotations.length ? target.relevantRotations : [target.worldRotation]);
         const common = commonResizeRotation(rotations);
         this.mixed = common === null;
-        // Default, calibration cut by owner: one aspect-locked participant locks the whole selection.
-        // A picture's side handle keeps its proportions (spec F-XFORM-013: 80×40 → 120×60); its corners stay free.
         this.forceAspect = this.mixed || this.snapshots.some(target => target.forceAspect || target.node.kind === 'clip'
             || target.node.kind === 'sticky' || (target.node.kind === 'text' && !!handle.x && !!handle.y)
             || (target.node.kind === 'picture' && !(handle.x && handle.y)));

@@ -19,16 +19,13 @@ export interface MediaMenuSource extends Omit<MediaRowOptions, 'current' | 'noti
     readonly selection: (writable: boolean) => MediaRowSelection | null;
 }
 
-/** Every context row belongs to the actual selection and revision which raised the menu. */
 export function createNativeBoardContextMenu(options: {
     readonly runtime: BoardRuntime;
     readonly commands: BoardCommandSource;
     readonly language: BoardLanguageState;
     readonly preferences: BoardPreferenceState;
     readonly embed: () => NativeEmbedController | null;
-    /** A link card's or embed's address, opened in a new tab as the card's own Open link. */
     readonly openLink: (url: string) => void;
-    /** The picture or card rows for this view; edit mode's menu is the only one a right-click opens. */
     readonly media: () => MediaMenuSource | null;
     readonly current: () => boolean;
     readonly canWrite: () => boolean;
@@ -37,7 +34,6 @@ export function createNativeBoardContextMenu(options: {
 }) {
     const { runtime } = options, session = runtime.session, backend = createPageMoveBackend(runtime);
     const locks = createBoardSelectionCommands({ runtime, current: options.current, zoom: options.zoom });
-    /** The rows the board's menu shows for the current selection, or null when the board or selection has moved on. */
     const entriesAt = (expected?: KeyboardContextRequest['selection'], locked: NodeId | null = null) => {
         if (!options.current()) return null;
         const selection = runtime.selection.getSnapshot(), revision = session.doc.rev;
@@ -75,8 +71,6 @@ export function createNativeBoardContextMenu(options: {
                 text: key => t(key) });
             if (rows.length) extra.push({ kind: 'separator', id: 'media-separator' }, ...rows);
         }
-        // A locked node is never in the selection, so a secondary click targets it here (F-CTX-006): the row acts on that
-        // node alone and leaves the selection as it is, and opening the menu changes nothing.
         const lockedId = locked !== null && session.doc.nodes.get(locked)?.locked ? locked : null;
         if (lockedId !== null) extra.push({ kind: 'command', id: 'toggle-locked-target', label: labels.commandLabel('toggleLocked'),
             disabled: !options.canWrite(), ...(!options.canWrite() ? { reason: 'Board view is read-only' } : {}), run() {
@@ -115,10 +109,8 @@ export function createNativeBoardContextMenu(options: {
     return {
         pointer(request: BoardContextMenuRequest) { openAt(request.point, request.opener, undefined, request.locked); },
         keyboard(request: KeyboardContextRequest) { openAt(request.client, request.opener, request.selection); },
-        /** The selection-scoped rows (Edit, Arrange, Reorder, Move to page and the picture or card rows) for the command palette. */
         selectionEntries(): ContextMenuEntry[] {
             const entries = entriesAt()?.entries ?? [];
-            // contextEntries lists the selection rows ahead of the common Cut/Copy/Paste rows: everything before Cut is the selection's.
             const common = entries.findIndex(entry => entry.kind === 'command' && entry.id === 'cut');
             return common > 0 ? entries.slice(0, common) : [];
         },

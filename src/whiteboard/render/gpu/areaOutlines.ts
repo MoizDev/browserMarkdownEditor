@@ -1,18 +1,7 @@
-/** Exact-area outlines for path shapes: the closed contours the exact-area kit sums (see whiteboard/render/inkAreaCells.ts).
- *
- * A fill is its flattened subpaths. A stroke is the outline of its flattened polyline: an open polyline is one contour, its left
- * side forward and its right side back, with its caps; a closed polyline (a ring) is two contours, the outer offset and the inner
- * offset reversed, so the signed sum is the ring's area. Joins follow canvas2d's rules: miter (bevelled past the miter limit),
- * bevel, round. Every builder returns null when the outline is not represented exactly: a dash, a degenerate or reversing polyline,
- * or a contour that overlaps itself (an inner offset of a tight bend). The caller then takes the coverage route and counts why.
- *
- * Coordinates are path-local (the units the path is flattened in); a caller maps them to device px. */
 import type { Affine, PathCommand } from '../../../platform/types';
 import type { Vec2 } from '../../geom/path';
 
-/** A flattened subpath: its points, and whether it is closed. */
 export interface Polyline { readonly points: readonly Vec2[]; readonly closed: boolean }
-/** One contour: x, y pairs, closed (the last point joins the first). */
 export type Contour = Float64Array;
 export interface OutlineStyle { readonly width: number; readonly cap: 'butt' | 'round' | 'square'; readonly join: 'miter' | 'round' | 'bevel'; readonly miterLimit: number }
 
@@ -20,7 +9,6 @@ interface Dir { readonly x: number; readonly y: number }
 
 const SAME = 1e-9;
 
-/** The polyline without repeated points (and without a closing point repeated), or null when it is too short to bound an area. */
 function distinct(points: readonly Vec2[], closed: boolean): Vec2[] | null {
     const out: Vec2[] = [];
     for (const p of points) {
@@ -36,7 +24,6 @@ function distinct(points: readonly Vec2[], closed: boolean): Vec2[] | null {
     return out.length >= (closed ? 3 : 2) ? out : null;
 }
 
-/** The unit direction of each edge: m − 1 for an open polyline of m points, m for a closed one. Null on a zero-length edge. */
 function directions(p: readonly Vec2[], closed: boolean): Dir[] | null {
     const count = closed ? p.length : p.length - 1;
     const out: Dir[] = [];
@@ -49,11 +36,8 @@ function directions(p: readonly Vec2[], closed: boolean): Dir[] | null {
     return out;
 }
 
-/** The offset of one edge's direction to side s (+1 left, −1 right) at distance h. */
 const normal = (d: Dir, s: number, h: number): Dir => ({ x: -s * d.y * h, y: s * d.x * h });
 
-/** Appends the points of an arc around `c` (radius h) from the vector `a` to the vector `b`, through the side of `mid`, excluding
- * both ends. The step keeps the chord within `tol`. */
 function arc(c: Vec2, a: Dir, b: Dir, mid: Dir, h: number, tol: number, out: number[]): void {
     const ta = Math.atan2(a.y, a.x), tb = Math.atan2(b.y, b.x);
     let sweep = tb - ta;
@@ -69,15 +53,12 @@ function arc(c: Vec2, a: Dir, b: Dir, mid: Dir, h: number, tol: number, out: num
     }
 }
 
-/** The points of one vertex's join on side s, between the offsets of its incoming and outgoing edges. False when the join is not
- * representable (a reversal, whose offset is unbounded). */
 function joinPoints(p: Vec2, ein: Dir, eout: Dir, s: number, h: number, style: OutlineStyle, tol: number, out: number[]): boolean {
     const nin = normal(ein, s, h), nout = normal(eout, s, h);
     const cross = ein.x * eout.y - ein.y * eout.x, dot = ein.x * eout.x + ein.y * eout.y;
     if (Math.abs(cross) < 1e-12 && dot > 0) { out.push(p.x + nin.x, p.y + nin.y); return true; }
     const denom = 1 + dot;
     if (denom < 1e-9) return false;
-    // The offset lines meet here: the inner side's corner, and the outer side's miter tip.
     const mx = p.x + (nin.x + nout.x) / denom, my = p.y + (nin.y + nout.y) / denom;
     if (s * cross > 0) { out.push(mx, my); return true; }
     if (style.join === 'miter' && Math.hypot(mx - p.x, my - p.y) <= style.miterLimit * h) { out.push(mx, my); return true; }
@@ -91,7 +72,6 @@ function joinPoints(p: Vec2, ein: Dir, eout: Dir, s: number, h: number, style: O
     return true;
 }
 
-/** One side of a polyline: a closed ring's offset (every vertex joins), or an open polyline's offset from its start to its end. */
 function sideOf(p: readonly Vec2[], d: readonly Dir[], closed: boolean, s: number, h: number, style: OutlineStyle, tol: number): number[] | null {
     const out: number[] = [];
     const m = p.length;
@@ -107,7 +87,6 @@ function sideOf(p: readonly Vec2[], d: readonly Dir[], closed: boolean, s: numbe
     return out;
 }
 
-/** Twice the signed area of a flat x, y list. */
 export function signedArea2(points: ArrayLike<number>): number {
     const n = points.length / 2;
     let sum = 0;
@@ -125,12 +104,10 @@ function reversed(points: readonly number[]): number[] {
     return out;
 }
 
-/** Whether (px, py), on the line through a and b, lies within the segment's box (its ends included). */
 function onSegment(ax: number, ay: number, bx: number, by: number, px: number, py: number): boolean {
     return px >= Math.min(ax, bx) && px <= Math.max(ax, bx) && py >= Math.min(ay, by) && py <= Math.max(ay, by);
 }
 
-/** Whether the closed contour does not cross or touch itself (non-adjacent edges apart, no zero-area spike). */
 export function simpleContour(points: ArrayLike<number>): boolean {
     const n = points.length / 2;
     if (n < 3) return false;
@@ -156,7 +133,6 @@ export function simpleContour(points: ArrayLike<number>): boolean {
 
 function flat(points: readonly number[]): Contour { return Float64Array.from(points); }
 
-/** The fill contours of subpaths, or null when one is not a simple contour. An open subpath closes by its chord (the fill's rule). */
 export function fillContours(subpaths: readonly (readonly Vec2[])[]): Contour[] | null {
     const out: Contour[] = [];
     for (const sub of subpaths) {
@@ -170,9 +146,6 @@ export function fillContours(subpaths: readonly (readonly Vec2[])[]): Contour[] 
     return out;
 }
 
-/** The stroke's contours for the polylines, in path-local units at half-width `style.width / 2`. A closed polyline gives its outer
- * offset and its inner offset reversed (an annulus, opposite signs); an open one gives one contour around its caps. Null when a
- * contour is not representable exactly (see the file's notes). The caller checks nesting over the device contours. */
 export function strokeContours(lines: readonly Polyline[], style: OutlineStyle, tol: number): Contour[] | null {
     const h = style.width / 2;
     if (!(h > 0) || !Number.isFinite(h)) return null;
@@ -185,7 +158,6 @@ export function strokeContours(lines: readonly Polyline[], style: OutlineStyle, 
         if (line.closed) {
             const left = sideOf(pts, d, true, +1, h, style, tol), right = sideOf(pts, d, true, -1, h, style, tol);
             if (!left || !right || !simpleContour(left) || !simpleContour(right)) return null;
-            // The larger offset is the outer contour; the inner one runs the other way, so the pair sums to the ring.
             const leftArea = Math.abs(signedArea2(left)), rightArea = Math.abs(signedArea2(right));
             const outer = leftArea >= rightArea ? left : right, inner = leftArea >= rightArea ? right : left;
             out.push(flat(outer), flat(reversed(inner)));
@@ -198,7 +170,6 @@ export function strokeContours(lines: readonly Polyline[], style: OutlineStyle, 
     return out;
 }
 
-/** One open polyline's stroke outline: its left side forward, the end cap, its right side back, the start cap. */
 function openOutline(p: readonly Vec2[], d: readonly Dir[], h: number, style: OutlineStyle, tol: number): number[] | null {
     const left = sideOf(p, d, false, +1, h, style, tol), right = sideOf(p, d, false, -1, h, style, tol);
     if (!left || !right) return null;
@@ -217,8 +188,6 @@ function openOutline(p: readonly Vec2[], d: readonly Dir[], h: number, style: Ou
     return out;
 }
 
-/** An evenodd clip shaped as one convex outer polygon minus convex holes inside it, disjoint (a connector's body cut around its label):
- * its polygons mapped by `toLocal` into the clipped item's own units, or null for any other clip. Straight segments only. */
 export interface CutClip { readonly outer: Contour; readonly holes: readonly Contour[] }
 export function cutClipOf(d: readonly PathCommand[], fillRule: 'nonzero' | 'evenodd', toLocal: Affine): CutClip | null {
     if (fillRule !== 'evenodd') return null;
@@ -247,9 +216,6 @@ export function cutClipOf(d: readonly PathCommand[], fillRule: 'nonzero' | 'even
     return { outer, holes };
 }
 
-/** The exact-area contours of `contours` (exact by themselves: simple, nesting with opposite signs) under `cut`: each contour's part
- * inside the outer polygon, and its part inside each hole reversed, so the signed sum is the item inside the clip, nothing masked. The
- * parts may run back and forth along a clip edge; those runs cancel in the sum, which is all the exact-area kit takes. */
 export function cutContours(contours: readonly Contour[], cut: CutClip): Contour[] {
     const out: Contour[] = [];
     for (const contour of contours) {
@@ -279,7 +245,6 @@ function boxOf(poly: Contour): [number, number, number, number] {
     for (let i = 0; i < poly.length; i += 2) { x0 = Math.min(x0, poly[i]); x1 = Math.max(x1, poly[i]); y0 = Math.min(y0, poly[i + 1]); y1 = Math.max(y1, poly[i + 1]); }
     return [x0, y0, x1, y1];
 }
-/** Inside or on a convex polygon of either orientation. */
 function insideConvex(poly: Contour, x: number, y: number): boolean {
     const n = poly.length / 2, sign = Math.sign(signedArea2(poly));
     for (let i = 0; i < n; i++) {
@@ -288,8 +253,6 @@ function insideConvex(poly: Contour, x: number, y: number): boolean {
     }
     return true;
 }
-/** Sutherland-Hodgman: the part of `subject` inside the convex `clipper`. For a non-convex subject the result may run along the
- * clipper's edges in both directions; those runs cancel in a signed area sum, which is all the exact-area kit takes. */
 function clipConvex(subject: Contour, clipper: Contour): number[] {
     let out: number[] = Array.from(subject);
     const n = clipper.length / 2, sign = Math.sign(signedArea2(clipper));

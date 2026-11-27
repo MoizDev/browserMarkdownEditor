@@ -1,5 +1,3 @@
-// CfT Crashpad deliberately reparents to PID1. Exact native birth time binds ONLY
-// handlers born during this browser launch; current PPID alone cannot prove that.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename } from 'node:path';
@@ -8,8 +6,6 @@ const registry = new Map();
 const pendingLaunches = new Set();
 export const epochMicroseconds = () => (performance.timeOrigin + performance.now()) * 1000;
 
-// Darwin proc_bsdinfo (SDK sys/proc_info.h:59–82), not ps lstart's whole seconds.
-// Python stdlib is an OS-API bridge here: no install, argv/prompt read, or self-test.
 const nativeQuery = String.raw`import ctypes, json, sys
 class BSD(ctypes.Structure):
     _fields_ = [(name, ctypes.c_uint32) for name in ['flags','status','xstatus','pid','ppid','uid','gid','ruid','rgid','svuid','svgid','reserved']] + [
@@ -69,8 +65,6 @@ export function beginBrowserLaunch(options) {
         } };
 }
 export async function registeredBenchEvidence(processes) {
-    // A poll can coincide with startup. Wait for its measured first-page bound
-    // before classifying new orphan handlers; never grant a provisional exemption.
     await Promise.all([...pendingLaunches]);
     const pids = processes.filter(p => registry.has(p.pid) && basename(p.comm) === 'chrome_crashpad_handler').map(p => p.pid);
     const verified = new Map();

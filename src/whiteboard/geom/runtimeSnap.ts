@@ -21,7 +21,6 @@ export interface BoardSnapGuide {
     readonly target?: NodeId;
     readonly kind?: 'alignment' | 'equal-gap' | 'grid';
     readonly featureAxis?: 'x' | 'y';
-    /** Points on an alignment line where a feature of the moved box or of its target lands exactly; drawn as crosses. */
     readonly marks?: readonly Vec2[];
 }
 export interface BoardSnapResult {
@@ -33,7 +32,6 @@ export interface BoardSnapResult {
 }
 export interface BoardSnapOptions {
     readonly runtime: BoardRuntime;
-    /** Actual proposed logical bounds before applying the snap. */
     readonly bounds: Rect;
     readonly selected: readonly NodeId[];
     readonly zoom: number;
@@ -43,43 +41,27 @@ export interface BoardSnapOptions {
     readonly thresholdCss?: number;
     readonly allowX?: boolean;
     readonly allowY?: boolean;
-    /** Alignment and gap snapping to other shapes. Callers decide it: Always snap XOR accel, the velocity gate, right-angle rotation. */
     readonly objects?: boolean;
-    /** Show-grid lattice snapping. Callers pass false while the accelerator is held. Any object snap on either axis wins over the grid. */
     readonly grid?: boolean;
-    /** Gap snapping (centre of a gap, duplicate gaps). A point has no width, so a point snap turns it off. */
     readonly gaps?: boolean;
-    /** Point snapping for a handle or a new end: the nearest corner or centre of another box, or one of `ownPoints`, within the
-     * threshold in both axes at once. Alignment to edges is not used; `outline` adds the edge fallback. */
     readonly points?: boolean;
-    /** World positions the handle may snap to besides other boxes (the edited polyline's other vertices). */
     readonly ownPoints?: readonly Vec2[];
-    /** With `points`: when no point is within the threshold, the nearest point on another figure's or line's outline (catalogue b.4). */
     readonly outline?: boolean;
 }
 type Axis = 'x' | 'y';
-/** A snappable shape as the snap sees it: its visible logical box, and its rank for ties. */
 interface Box { readonly id: NodeId; readonly rect: Readonly<Rect>; readonly rank: number }
-/** A gap is a fact about the moved box's final position. Its anchors must still overlap the box across the other axis. */
 interface GapFact {
     readonly kind: 'centre' | 'duplicate-before' | 'duplicate-after';
-    /** centre: [left, right]. duplicate: [neighbour, referenceStart, referenceEnd]. */
     readonly anchors: readonly NodeId[];
 }
 interface Winner {
     readonly delta: ExactSnapDelta; readonly rank: number; readonly priority: number; readonly source: number; readonly edge: number;
     readonly gap?: GapFact; readonly grid?: { readonly value: number; readonly representable: boolean };
-    /** The exact coordinate this winner lands on, when it lands on a point or an outline. */
     readonly target?: number;
 }
-/** Object snapping is skipped while the pointer moves at or above this speed (CSS px per ms), so a quick flick is not pulled
- * onto a guide. Measured against the catalogue's gate (0.5); the grid is not gated by it. */
 export const SNAP_MAX_SPEED = 0.5;
-/** Two boxes whose edges differ by less than this land on the same line: the snapped coordinates are exact binary64 values, and
- * this only absorbs the final addition of a delta to a position. */
 const LAND_TOLERANCE = 1e-6;
 
-/** Complete Scene strip traversal followed by actual logical geometry, never a hint or a prefix. */
 export async function snapBoardBounds(options: BoardSnapOptions): Promise<BoardSnapResult> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), cooperate = options.cooperate ?? yieldToHost;
@@ -97,7 +79,6 @@ export async function snapBoardBounds(options: BoardSnapOptions): Promise<BoardS
         catch (error) {
             if (!valid()) throw error;
             if (runtime.render.text.fonts.epoch === epoch && scene.ready) throw error;
-            // Font loads invalidate the index; repeat only after the actual Scene publishes its new bounds.
         }
     }
 }
@@ -105,20 +86,16 @@ export async function snapBoardBounds(options: BoardSnapOptions): Promise<BoardS
 function span(rect: Readonly<Rect>, axis: Axis): [number, number] {
     return axis === 'x' ? [rect.x, rect.x + rect.width] : [rect.y, rect.y + rect.height];
 }
-/** The overlap of two boxes across `axis`'s perpendicular; touching counts. */
 function crossOverlap(a: Readonly<Rect>, b: Readonly<Rect>, axis: Axis): number {
     const perpendicular: Axis = axis === 'x' ? 'y' : 'x';
     const [a0, a1] = span(a, perpendicular), [b0, b1] = span(b, perpendicular);
     return Math.min(a1, b1) - Math.max(a0, b0);
 }
-/** The points of a box that lie on the line `value` of `axis`: its three features along the other axis. */
 function featurePoints(rect: Readonly<Rect>, axis: Axis, value: number): Vec2[] {
     const along = axis === 'x' ? [rect.y, rect.y + rect.height / 2, rect.y + rect.height] : [rect.x, rect.x + rect.width / 2, rect.x + rect.width];
     return along.map(position => axis === 'x' ? { x: value, y: position } : { x: position, y: value });
 }
 
-/** The nearest outline point to `point` among the boxes it could reach. Figures and lines use their real outline in board space;
- * other boxes (notes, frames) use their box edges. A box whose outline is unknown is skipped rather than guessed. */
 function nearestOutlinePoint(doc: BoardRuntime['session']['doc'], boxes: readonly Box[], point: Vec2, threshold: number):
     { readonly point: Vec2; readonly rank: number } | undefined {
     let best: { point: Vec2; rank: number; distance: number } | undefined;
@@ -185,7 +162,6 @@ async function snapAttempt(options: BoardSnapOptions, objects: boolean, grid: bo
                     || (candidate.rank === old.rank && (candidate.source < old.source || (candidate.source === old.source && candidate.edge < old.edge)))))));
         const offer = (axis: Axis, winner: Winner) => { if (better(winner, best[axis])) best[axis] = winner; };
         if (objects && options.points) {
-            // Points before anything else: the nearest point within the threshold in two dimensions, then both axes land on it.
             const pool: { readonly point: Vec2; readonly rank: number; readonly source: number }[] = [];
             for (const box of boxes) {
                 const r = box.rect;
@@ -205,7 +181,6 @@ async function snapAttempt(options: BoardSnapOptions, objects: boolean, grid: bo
                 if (dx.representable) offer('x', { delta: dx, rank: hit.rank, priority: 0, source: 0, edge: 0, target: hit.point.x });
                 if (dy.representable) offer('y', { delta: dy, rank: hit.rank, priority: 0, source: 0, edge: 0, target: hit.point.y });
             } else if (options.outline) {
-                // No point is in reach, so the handle may land on an edge: the nearest outline point within the same threshold.
                 const edge = nearestOutlinePoint(doc, boxes, bounds, threshold);
                 if (edge) {
                     const dx = exactSnapDisplacement(edge.point.x, bounds.x), dy = exactSnapDisplacement(edge.point.y, bounds.y);
@@ -232,8 +207,6 @@ async function snapAttempt(options: BoardSnapOptions, objects: boolean, grid: bo
         }
         if (options.allowX === false) best.x = undefined;
         if (options.allowY === false) best.y = undefined;
-        // A gap's anchors must still overlap the moved box across the other axis after both corrections. Dropping one can
-        // only move the box, so repeat until nothing is dropped; a stale gap is never published.
         for (let pass = 0; pass < 3; pass++) {
             const box = { x: bounds.x + (best.x?.delta.rounded ?? 0), y: bounds.y + (best.y?.delta.rounded ?? 0), width: bounds.width, height: bounds.height };
             let dropped = false;
@@ -246,7 +219,6 @@ async function snapAttempt(options: BoardSnapOptions, objects: boolean, grid: bo
             }
             if (!dropped) break;
         }
-        // Object snaps beat the grid: the lattice is only consulted when no object snap survives on either axis.
         if (!best.x && !best.y && lattice) {
             for (const [axis, features, origin, step] of [
                 ['x', xs, lattice.origin.x, lattice.step.x],
@@ -268,7 +240,6 @@ async function snapAttempt(options: BoardSnapOptions, objects: boolean, grid: bo
         const dx = x?.delta.rounded ?? 0, dy = y?.delta.rounded ?? 0;
         const final: Rect = { x: bounds.x + dx, y: bounds.y + dy, width: bounds.width, height: bounds.height };
         const guides: BoardSnapGuide[] = [];
-        // Every alignment that lands exactly after the snap, merged per line: ties accumulate, one line each, with its crosses.
         const lines = new Map<string, { axis: Axis; value: number; from: number; to: number; target: NodeId | undefined; marks: Vec2[]; keys: Set<string> }>();
         const targets: { readonly rect: Readonly<Rect>; readonly id?: NodeId }[] = [
             ...boxes.map(box => ({ rect: box.rect, id: box.id })),
@@ -307,9 +278,6 @@ async function snapAttempt(options: BoardSnapOptions, objects: boolean, grid: bo
     } finally { scope?.release(); }
 }
 
-/** Gap offers along one axis: a centre (the moved box fits between two boxes) and duplicates (it repeats a gap between
- * two other boxes that overlap each other across the axis). Only boxes sharing a cross-axis range with the moved box
- * can be anchors. */
 function gapOffers(axis: Axis, bounds: Readonly<Rect>, boxes: readonly Box[], threshold: number,
     offer: (axis: Axis, winner: Winner) => void): void {
     const m0 = span(bounds, axis)[0], size = axis === 'x' ? bounds.width : bounds.height;
@@ -323,7 +291,6 @@ function gapOffers(axis: Axis, bounds: Readonly<Rect>, boxes: readonly Box[], th
         offer(axis, { delta, rank: Math.max(a.rank, b.rank), priority: 1, source: 0, edge: 0,
             gap: { kind: 'centre', anchors: [a.id, b.id] } });
     }
-    // One exact gap per distinct size, from any pair of boxes that overlap across the axis.
     const gaps = new Map<number, { readonly gap: Dyadic; readonly a: Box; readonly b: Box }>();
     for (const a of boxes) for (const b of boxes) {
         if (a === b) continue;
@@ -346,8 +313,6 @@ function gapOffers(axis: Axis, bounds: Readonly<Rect>, boxes: readonly Box[], th
     }
 }
 
-/** The guide segments for a winning gap: both sides of a centre; the new gap and the reference gap of a duplicate.
- * Drawn across the shared range of the boxes involved, at its middle, so the line sits inside every box it describes. */
 function gapGuides(gap: GapFact, axis: Axis, final: Readonly<Rect>, byId: ReadonlyMap<NodeId, Box>): BoardSnapGuide[] {
     const rect = (id: NodeId) => byId.get(id)!.rect;
     const [f0, f1] = span(final, axis);

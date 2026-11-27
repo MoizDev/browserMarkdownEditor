@@ -14,8 +14,6 @@ import { AVAILABLE_PDF_VIEWERS, CANVAS_KINDS, developerEnabled, emergencyKey, in
 
 const DEFAULTS: SettingsDefaults = { editorFontSize: 16, codeFontSize: 14, rainbowBrackets: true, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT, showVaultInTitle: true };
 
-/** What the swatch shows while no custom accent is set ('') — the dark theme's
- *  default purple. Purely cosmetic; '' still means "theme default". */
 const ACCENT_SWATCH_FALLBACK = '#8b6cef';
 
 interface SettingsPanelProps {
@@ -24,24 +22,18 @@ interface SettingsPanelProps {
     rainbowBrackets: boolean;
     treeFontSize: number;
     editorPadding: number;
-    /** Spaces a Tab inserts — and how far Tab indents a list item. */
     tabSize: number;
     fontFamily: string;
     caretStyle: CaretStyle;
     caretThickness: number;
     smoothCaret: boolean;
     caretSpeed: number;
-    /** Custom accent as #rrggbb, or '' for the theme default. */
     accentColor: string;
-    /** Ink for language-less ``` blocks as #rrggbb, or '' to follow the accent. */
     codeBlockColor: string;
-    /** How many recently opened vaults the vault switcher's menu lists. */
     recentVaultLimit: number;
-    /** Whether the browser tab is titled with the open vault's name. */
     showVaultInTitle: boolean;
     onEditorFontSizeChange: (v: number) => void;
     onCodeFontSizeChange: (v: number) => void;
-    /** This vault's id, for the terminal's "where is it on disk" row (null = no vault). */
     vaultId: string | null;
     onRainbowBracketsChange: (v: boolean) => void;
     onTreeFontSizeChange: (v: number) => void;
@@ -61,8 +53,6 @@ interface SettingsPanelProps {
 }
 
 export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBrackets, vaultId, treeFontSize, editorPadding, tabSize, fontFamily, caretStyle, caretThickness, smoothCaret, caretSpeed, accentColor, codeBlockColor, recentVaultLimit, showVaultInTitle, onEditorFontSizeChange, onCodeFontSizeChange, onRainbowBracketsChange, onTreeFontSizeChange, onEditorPaddingChange, onTabSizeChange, onFontFamilyChange, onCaretStyleChange, onCaretThicknessChange, onSmoothCaretChange, onCaretSpeedChange, onAccentColorChange, onCodeBlockColorChange, onRecentVaultLimitChange, onShowVaultInTitleChange, onResetDefaults, onClose }: SettingsPanelProps) {
-    // Uncontrolled input (keyed on fontFamily) so we only load the Google Font
-    // when the user commits the name, and it auto-resets on "Reset to Defaults".
     const fontInputRef = useRef<HTMLInputElement | null>(null);
     const applyFont = () => onFontFamilyChange((fontInputRef.current?.value || '').trim());
     const titleId = useId();
@@ -73,28 +63,17 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
         if (setDeveloperSetting(key, value)) refreshDeveloper(n => n + 1);
     };
 
-    // The terminal's two settings live in their own store (utils/terminalSettings):
-    // the lazy terminal chunk reads it too, and neither side imports the other.
     const terminal = useSyncExternalStore(subscribeTerminalSettings, getTerminalSettings);
     const terminalFontRef = useRef<HTMLInputElement | null>(null);
     const applyTerminalFont = () => setTerminalFontFamily(terminalFontRef.current?.value ?? '');
     const terminalSize = terminal.fontSize ?? terminal.detectedSize ?? 13;
 
-    // A modal dialog (`aria-modal`, which DocumentPane's ⌘F guard also reads)
-    // has to hold the keyboard, or a screen reader is told to ignore the very
-    // place focus still is — the sidebar button that opened it. TrashPanel's
-    // treatment: take it on open, from the opener read during the first render,
-    // and hand it back on the way out; Escape closes.
     const panelRef = useRef<HTMLDivElement | null>(null);
     const [opener] = useState<HTMLElement | null>(() => document.activeElement as HTMLElement | null);
     useEffect(() => {
         panelRef.current?.focus({ preventScroll: true });
         return () => { if (opener?.isConnected) opener.focus({ preventScroll: true }); };
     }, [opener]);
-    // And take it back whenever it falls on the floor: committing a font
-    // remounts that field (it is keyed on the font), which drops the keyboard
-    // on <body> with the dialog still open — and Escape, handled on the panel,
-    // then did nothing (measured). Every commit, as TrashPanel does.
     useEffect(() => {
         const active = document.activeElement;
         if (!active || active === document.body) panelRef.current?.focus({ preventScroll: true });

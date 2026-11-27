@@ -80,7 +80,6 @@ function validLayout(value: unknown): value is IndexLayout {
         && (layout.alpha === undefined || Number.isFinite(layout.alpha));
 }
 
-/** Layout is disposable; a missing, old or corrupt value simply starts a new layout. */
 export async function loadLayout(vaultKey: string): Promise<IndexLayout | undefined> {
     if (forgotten.has(vaultKey)) return undefined;
     try {
@@ -93,7 +92,6 @@ export async function loadLayout(vaultKey: string): Promise<IndexLayout | undefi
     } catch { return undefined; }
 }
 
-/** A second window never writes the shared index while the first holds its lock. */
 export async function saveLayout(vaultKey: string, layout: IndexLayout): Promise<void> {
     if (!vaultKey || forgotten.has(vaultKey) || !validLayout(layout)) return;
     try {

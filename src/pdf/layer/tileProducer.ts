@@ -27,10 +27,6 @@ function priority(request: PdfTileRequest, focused: boolean): Priority {
     return request.priority === 'prefetch' ? 2 : focused ? 0 : 1;
 }
 
-/** One pool request can serve multiple consumers, but every consumer owns its own bitmap (C5.3). */
-
-/** The one colour of a raster whose every pixel is the same (RGBA compared as one word), as its four bytes; null otherwise. Stops at
- * the first pixel that differs; a whole blank tile is one pass over its words (measured: 0.1 ms for a 514x514 tile). */
 function uniformColour(pixels: ArrayBuffer): Uint8Array | null {
     const words = new Uint32Array(pixels), first = words[0];
     for (let i = 1; i < words.length; i++) if (words[i] !== first) return null;
@@ -39,7 +35,6 @@ function uniformColour(pixels: ArrayBuffer): Uint8Array | null {
 
 export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTileProducerOptions) => {
     const { document } = options;
-    // The pool returns reply credit only when every bitmap conversion has finished (C5.3).
     const releaseTile = document.releaseTile.bind(document);
     const flights = new Map<string, Flight>();
     return {
@@ -122,8 +117,6 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
                     }
                     if (!options.isCurrent() || document.closed || getPdfFontEpoch(document.docKey) !== epoch) throw new DOMException('Stale PDF tile', 'AbortError');
                     converting = true;
-                    // Whether the raster is one colour, read here where the raw pixels still are: a GPU layer draws such a tile from
-                    // a 1x1 texture (tileLayer's solid tiles), and the audit tapes 'pdf:uniform-replaced' by it.
                     const uniform = uniformColour(result.pixels);
                     const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(result.pixels), width, height),
                         { premultiplyAlpha: 'premultiply', colorSpaceConversion: 'none' });

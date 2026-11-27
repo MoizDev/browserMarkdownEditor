@@ -19,7 +19,6 @@ interface ContentBox {
     readonly y: number;
 }
 
-/** Records only; metrics commits backing sizes later in the shared frame (§3.2:331–345). */
 export class PaneSizeObserver {
     private host: HTMLElement | null;
     private observer: ResizeObserver | null = null;
@@ -40,20 +39,14 @@ export class PaneSizeObserver {
         this.host = host;
     }
 
-    /** Latest reported geometry; onSize wakes the actor but may report this batch more than once. */
     get current(): PaneSizeObservation | null { return this.value; }
 
-    /** Called by commitMetrics on an already-needed shared frame, never by a private poll/rAF.
-     * RO/media/window notifications share one generation until this read consumes their batch.
-     * A repeated read freezes the same observation even if synchronous callbacks report more.
-     */
     readForFrame(frameId: number): PaneSizeObservation | null {
         if (!Number.isSafeInteger(frameId) || frameId < 0 || frameId < this.frameId) {
             throw new RangeError('Geometry frame ids must be monotonic nonnegative integers');
         }
         if (!this.active) return null;
         if (frameId === this.frameId) return this.frameValue;
-        // onSize may synchronously reenter this reader while a DPR check publishes.
         this.frameId = frameId;
         this.frameValue = this.value;
         this.readingFrame = true;
@@ -86,7 +79,6 @@ export class PaneSizeObserver {
         } catch (error) { this.dispose(); throw error; }
     }
 
-    /** Force a fresh native observation, not a transformed getBoundingClientRect measurement. */
     refresh(): void {
         if (!this.active || !this.host || !this.observer) return;
         this.observer.unobserve(this.host);

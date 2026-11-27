@@ -2,7 +2,6 @@ import { arcToCubics } from './path';
 import type { PathOp, Vec2 } from './path';
 import type { ConnectorBody } from './connectorTypes';
 
-/** Bend is the signed sagitta, not a saved centre or a pixel-space offset. */
 export function connectorBody(start: Vec2, end: Vec2, bend: number, straightTolerance: number): ConnectorBody {
     if (![start.x, start.y, end.x, end.y, bend, straightTolerance].every(Number.isFinite) || straightTolerance < 0) {
         throw new RangeError('Invalid connector body');

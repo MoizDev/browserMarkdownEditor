@@ -10,7 +10,6 @@ import type { NativeViewLease } from './nativeViewLease';
 const yes: CommandState = Object.freeze({ enabled: true });
 const no = (reason: string): CommandState => ({ enabled: false, reason });
 
-/** Uses only the session's command backends and its currently attached input/clipboard lease. */
 export function createNativeBoardOperations(options: {
     readonly runtime: BoardRuntime;
     readonly lease: NativeViewLease;
@@ -25,7 +24,6 @@ export function createNativeBoardOperations(options: {
     readonly actionLabel: (id: MainAction) => string;
     readonly actionShortcut: (id: MainAction) => string | undefined;
     readonly notice: (message: string) => void;
-    /** The document's pastes still on their way (NativeClipboardService `landing`), or null. */
     readonly pasteLanding: () => Promise<void> | null;
     readonly keptLockedNotice: (count: number) => string;
     readonly onError: (error: unknown) => void;
@@ -55,7 +53,6 @@ export function createNativeBoardOperations(options: {
         const select = lease.editing?.getTools()?.actualsubcontrollers.select;
         if (!select || !select.transform(id)) throw new Error('The selected content cannot be transformed');
     });
-    /** Fixed-width text becomes content-width text in one step; the layout then remeasures it. Never a per-glyph scale. */
     const toggleAutoSize = (): NativeCommandOperation => {
         const fixedText = () => {
             const doc = session.doc;

@@ -1,4 +1,3 @@
-// Builds a real production app (or a patched scratch copy), never a harness page.
 import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
@@ -35,8 +34,6 @@ if (scratch === worktree || scratch.startsWith(`${worktree}/`)) throw new Error(
 await mkdir(scratch, { recursive: true });
 const root = mutant ? await mkdtemp(resolve(scratch, 'source-')) : worktree;
 if (mutant) {
-  // A fresh independent copy, including dependency files. FICLONE is a
-  // copy-on-write optimization where supported, never a node_modules symlink.
   await cp(worktree, root, {
     recursive: true, mode: constants.COPYFILE_FICLONE, verbatimSymlinks: true,
     filter: path => !['.git', 'dist'].includes(relative(worktree, path).split('/')[0]),

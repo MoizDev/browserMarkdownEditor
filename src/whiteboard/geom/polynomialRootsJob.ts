@@ -5,7 +5,6 @@ export type PolynomialRootsResult = Readonly<{ status: 'pending' }> | Readonly<{
     | Readonly<{ status: 'uncertain'; reason: string }>;
 const PENDING: PolynomialRootsResult = Object.freeze({ status: 'pending' });
 
-/** Cooperative Sturm isolation, preserving exact dyadic cells and repeated roots. */
 export function createPolynomialRootsJob(coefficients: readonly Dyadic[], options: {
     readonly minDepth?: number; readonly maxDepth?: number; readonly maxNodes?: number; readonly maxBits?: number; readonly maxWork?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): PolynomialRootsResult; cancel(): void } {

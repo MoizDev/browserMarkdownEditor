@@ -22,12 +22,9 @@ export interface SheetMenuProps {
     readonly move: (id: string, destination: number) => void;
 }
 
-/** The structure controls refuse a fortieth sheet; the menu says so rather than offering a row that cannot run. */
 const MAX_SHEETS = 40;
-/** A pointer must travel this far before a press on a row becomes a drag, so a click still selects the sheet. */
 const DRAG_THRESHOLD = 5;
 
-/** Logical sheets are independent of the paper-page navigator on paged hosts. */
 export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, select, create, rename, duplicate, remove, move: moveSheet }: SheetMenuProps) {
     const panel = useRef<HTMLDivElement>(null);
     const list = useRef<HTMLDivElement>(null);
@@ -39,7 +36,6 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
     useEffect(() => { closeRef.current = close; }, [close]);
     const rect = anchor.getBoundingClientRect();
     const atLimit = sheets.length >= MAX_SHEETS;
-    // The drag state lives in a ref: pointer moves change nothing the render shows except the drop marker.
     const [drop, setDrop] = useState<{ from: number; to: number } | null>(null);
     const dragging = useRef<{ index: number; startY: number; active: boolean; to: number } | null>(null);
     const suppressClick = useRef(false);
@@ -48,8 +44,6 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
         panel.current?.querySelector<HTMLButtonElement>('button')?.focus();
         const escape = dismissOnEscape(() => { closeRef.current(); if (anchor.isConnected) anchor.focus(); });
         const outside = (event: PointerEvent) => {
-            // The app menu's root is `.context-menu`; only its submenus are `.context-menu-panel` (missing the root closed this
-            // menu before Rename could show its field).
             if (event.target instanceof Element && event.target.closest('.context-menu, .context-menu-panel')) return;
             if (event.target instanceof Node && !panel.current?.contains(event.target) && !anchor.contains(event.target)) closeRef.current();
         };
@@ -66,7 +60,6 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
         if (readOnly) return;
         cancelled.current = false; setName(sheet.name); setEditing(sheet.id);
     };
-    // Escape while a drag is live cancels the drag only: the window-capture listener stops the event before the menu's own Escape.
     const endDrag = () => { dragging.current = null; setDrop(null); };
     useEffect(() => {
         const cancelOnEscape = (event: KeyboardEvent) => {
@@ -78,7 +71,6 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
     }, []);
     const rowRects = () => [...(list.current?.querySelectorAll<HTMLElement>('.board-sheet-row') ?? [])];
     const onRowPointerDown = (event: ReactPointerEvent<HTMLDivElement>, index: number) => {
-        // Touch keeps its own handle (catalogue: the drag handle appears only on coarse pointers), so only a fine pointer drags rows.
         if (readOnly || event.button !== 0 || event.pointerType === 'touch' || editing !== null) return;
         dragging.current = { index, startY: event.clientY, active: false, to: index };
         const move = (moveEvent: PointerEvent) => {
@@ -104,7 +96,6 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
             const drag = dragging.current;
             endDrag();
             if (!drag?.active) return;
-            // The click that follows a real drag belongs to the drag, not to selecting the row under the pointer.
             suppressClick.current = true;
             setTimeout(() => { suppressClick.current = false; }, 0);
             if (drag.to !== drag.index) moveSheet(sheets[drag.index].id, drag.to);
@@ -113,7 +104,6 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
         window.addEventListener('pointerup', up);
         window.addEventListener('pointercancel', up);
     };
-    // The grip sets the list's height and persists it; a double-click gives the height back to the content.
     const onGripPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
         if (event.button !== 0 || !list.current) return;
         const start = event.clientY, startHeight = list.current.getBoundingClientRect().height;
@@ -127,7 +117,6 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
         const up = () => {
             window.removeEventListener('pointermove', drag);
             window.removeEventListener('pointerup', up);
-            // A press without a move is not a resize: only a dragged height is pinned.
             if (!moved) return;
             setPinned(height);
             updateBoardPreferences({ sheetListHeight: height });
@@ -157,13 +146,11 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
                     }} /> : <button type="button" role="menuitemradio" className="board-sheet-select" aria-checked={sheet.id === current}
                     aria-current={sheet.id === current ? 'page' : undefined}
                     onClick={() => {
-                        // Clicking the current sheet keeps the menu open, so its double-click can rename it.
                         if (suppressClick.current || sheet.id === current) return;
                         select(sheet.id); close();
                     }}
                     onDoubleClick={() => beginRename(sheet)}
                     onKeyDown={event => {
-                        // Enter on the current sheet renames it (catalogue: Enter on the current page), instead of selecting it again.
                         if (event.key === 'Enter' && sheet.id === current && !readOnly) { event.preventDefault(); beginRename(sheet); }
                     }}>{sheet.name}</button>}
                 <button type="button" className="board-sheet-more" role="menuitem" aria-haspopup="menu"

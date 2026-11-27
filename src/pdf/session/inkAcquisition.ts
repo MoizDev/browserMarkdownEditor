@@ -45,7 +45,6 @@ function policyReason(doc: PdfPoolDocument): string | null {
     return null;
 }
 
-/** Acquires only immutable, caller-owned snapshots. No filesystem access or writer is held during inspection. */
 export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Promise<PdfInkAcquisition> {
     if (!memoryBlob(options.outer)) throw new RangeError('PDF ink requires a nonempty memory-backed Blob below 2 GiB');
     const token = Object.freeze({ ...options.token }), controller = new AbortController();
@@ -63,8 +62,6 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         released = true;
         controller.abort();
         options.signal?.removeEventListener('abort', onAbort);
-        // These are this inspection's independent pool.open leases. The pool
-        // keeps App's reader source alive until its separate last lease closes.
         releasePromise = Promise.allSettled([original?.close(), outer?.close()]).then(() => {});
         return releasePromise;
     };
@@ -91,7 +88,6 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         guard();
         if (inspection.kind === 'read-only') {
             if (inspection.reason === 'inspection-failed') {
-                // Where it failed is for whoever reads the console; the person is told what it means (inkReadOnlyText.ts).
                 console.warn(`PDF ink inspection failed (${inspection.phase}; ${inspection.errorClass}).`);
                 return await readOnly(inkReadOnlyText('inspection-failed'), undefined, 'inspection-failed');
             }

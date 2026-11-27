@@ -3,15 +3,11 @@ import { CLICK_SLOP_CSS, type GestureOwner, type RealSample, type Tool } from '.
 export interface OneFingerZoomContext {
   toSurface(sample: RealSample): { readonly x: number; readonly y: number }
   zoomNow(): number
-  /** Live, unanimated zoom while the finger drags. */
   zoomTo(z: number, anchor: { readonly x: number; readonly y: number }): void
-  /** A release without a drag: one zoom step in, animated. */
   zoomIn(anchor: { readonly x: number; readonly y: number }): void
   clamp(z: number): number
 }
 
-/** Double tap and hold, then drag on touch: up zooms out, down zooms in, 200 px is a doubling, anchored at the press
- * point (catalogue T§2, OneFingerZooming). A release that never left the slop is the double tap's one step instead. */
 const PX_PER_DOUBLING = 200;
 class OneFingerZoomGesture implements GestureOwner {
   readonly kind = 'pan' as const

@@ -31,10 +31,7 @@ export interface PdfTiledFindOptions {
     selectedText(): string;
     readingPosition(): PdfFindStart;
     reveal(page: number, box: Readonly<Rect>): void;
-    /** Record search navigation, then animate to the approximate glyph over
-     * 150ms (instant for reduced motion). Return that navigation revision. */
     beginReveal?(page: number, box: Readonly<Rect>): number;
-    /** After animation, correct only when revision is unchanged and glyph is outside view. */
     correctReveal?(page: number, box: Readonly<Rect>, revision: number): void;
     closeFind(hit?: PdfFindHit): void;
     notify(message: string): void;
@@ -48,8 +45,6 @@ interface FindResource {
     highlights: PdfTiledFindHighlights;
 }
 
-/** The viewer mounts the returned chrome layer after its page layer and calls
- * onView from the same overlay frame that positions links and the mirror. */
 export function usePdfTiledFind(options: PdfTiledFindOptions) {
     const live = useRef(options), find = useRef<PdfFindBarHandle>(null), mounted = useRef(false);
     useLayoutEffect(() => { live.current = options; });
@@ -79,8 +74,6 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
             correctReveal: (page, box, revision) => live.current.correctReveal?.(page, box, revision),
             publish: rects => layer.setRects(rects),
             error: error => {
-                // Old highlight work can settle during a surface handoff, before
-                // passive resource disposal. It cannot notify the new document.
                 const owner = live.current;
                 if (!mounted.current || owner.session !== session || owner.document !== document || !owner.isVisible ||
                     !session.isCurrent() || document.closed || isCancellation(error)) return;

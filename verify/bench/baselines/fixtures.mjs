@@ -2,7 +2,6 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
-// Composition is explicit; oracle/manifest files never become user's vault notes.
 export async function loadScenarioFixture(prepared, scenario) {
     const files = {}, inputs = [];
     const add = async (record, path = record.file) => {
@@ -38,8 +37,6 @@ export async function loadScenarioFixture(prepared, scenario) {
 }
 
 export async function seedRestore(page, { name, id, target }) {
-    // Seed ONLY existing persistence keys, on an empty reset origin before app
-    // scripts run. Thus restored cold startup still has empty HTTP/code caches.
     await page.evaluate(async ({ name, id, target }) => {
         const handle = await (await navigator.storage.getDirectory()).getDirectoryHandle(name);
         await new Promise((resolve, reject) => {

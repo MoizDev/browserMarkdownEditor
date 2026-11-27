@@ -1,4 +1,3 @@
-// Geometry §2: intervals are outward rounded; topology never uses a visual epsilon.
 export interface Interval { readonly lo: number; readonly hi: number }
 const buffer = new ArrayBuffer(8);
 const bits = new DataView(buffer);

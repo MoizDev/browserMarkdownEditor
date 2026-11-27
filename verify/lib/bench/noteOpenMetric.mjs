@@ -5,10 +5,6 @@ const browserPin = JSON.parse(await readFile(new URL('../../browser-pin.json', i
 export const noteSentinel = 'Benchmark sentinel cedar seven forty two';
 export const noteFixtureText = `# ${noteSentinel}\n\nNon-default browser benchmark fixture.\n`;
 
-// These two functions ARE the metric definition: prep never dispatches the
-// measured gesture, and the page receives a real mouse pointerdown afterwards.
-// Hashing only this implementation + fixture keeps floor commits from changing
-// their own definition key; a logic/fixture change necessarily makes a new key.
 export function installNoteObservation({ sentinel }) {
     const data = { rafTimes: [], longTasks: [], hookEvents: [], start: null, end: null, hooked: false };
     window.__benchObservation = data;

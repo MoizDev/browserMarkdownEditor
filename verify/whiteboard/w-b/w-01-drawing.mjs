@@ -1,4 +1,3 @@
-// Browser-only gate: inputs and observations go through the real production app.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -80,8 +79,6 @@ const identify = async arm => {
   const response = await arm.page.request.get(new URL('w01-build.json', values.url).href);
   assert.equal(response.status(), 200, 'Missing build receipt');
   const receipt = await response.json();
-  // The expected tree and patch come from the reviewed local git checkout and
-  // committed patch file, not from anything the HTTP server says about itself.
   for (const [key, value] of Object.entries(expected)) assert.equal(receipt[key], value, `Wrong build ${key}`);
   const entry = arm.responses.filter(response => new URL(response.url()).pathname === `/${receipt.mainFile}`);
   assert.equal(entry.length, 1, 'Expected one identified entry response');
@@ -161,8 +158,6 @@ try {
     assert.equal(await page.locator('.cm-editor').count(), 0, 'A native drawing reached CodeMirror');
     assert.equal(await page.locator('.tl-container').count(), 0, 'A native drawing reached tldraw');
   });
-  // Observe search before attempted edits, so the write mutant cannot destroy
-  // its own search marker and accidentally pass the independent exclusion arm.
   await page.getByRole('button', { name: 'Search', exact: true }).click();
   const search = page.getByRole('textbox', { name: 'Search vault', exact: true });
   await search.fill('positivecontrol');
@@ -183,7 +178,6 @@ try {
   await page.keyboard.press('Meta+e');
   const slot = await page.locator('.editor-slot-body').boundingBox();
   assert.ok(slot, 'Drawing slot was not shown');
-  // The same click/keys go to the unsupported slot or the mutant's real editor.
   await page.mouse.click(slot.x + 100, slot.y + 140);
   for (let i = 0; i < 20; i++) {
     await page.keyboard.press('a');
@@ -205,8 +199,6 @@ try {
   });
   await page.screenshot({ path: resolve(out, 'unsupported.png') });
 
-  // Both fresh contexts have the same no-click observation window. In
-  // particular, the legacy control cannot fetch its renderer by opening it.
   const nativeArm = await createPage('W01-native-only');
   const legacyArm = await createPage('W01-legacy-only');
   const arms = [nativeArm, legacyArm];

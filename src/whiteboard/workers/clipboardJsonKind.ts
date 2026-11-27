@@ -3,8 +3,6 @@ import { JsonReadError, parseJsonIncremental, type JsonSpan } from '../format/js
 import { utf8LengthAsync } from '../format/writeTypes';
 import { SECURITY_LIMITS } from '../security/limits';
 
-// Provenance: clipboard classification order and native record wire grammar;
-// independent worker classifier, no upstream engine source.
 export type ClipboardJsonKind = 'excalidraw' | 'native-records' | null;
 const LIMIT = SECURITY_LIMITS.recordBytes;
 async function shortString(span: JsonSpan | undefined, limit: number, context: WorkerContext): Promise<string | null> {

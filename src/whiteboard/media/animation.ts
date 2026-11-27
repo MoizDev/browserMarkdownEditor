@@ -24,7 +24,6 @@ export interface AnimationHost {
 
 export function initialPicturePlaying(reducedMotion: boolean): boolean { return !reducedMotion; }
 
-// The layer's existing scheduler supplies the clock; playback never dirties the document.
 export class PictureAnimations {
     private readonly states = new Map<NodeId, AnimationState>();
     private active = new Set<NodeId>();

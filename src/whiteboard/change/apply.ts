@@ -23,9 +23,6 @@ import type { ChangeGeometry } from './coordinates';
 export { ApplyFailed, ApplyRefused } from './errors';
 const NO_CAPTURES = Object.freeze([]);
 
-// CH §3/R-W27: callbacks borrow the receipt for this call only. History or a
-// queued consumer calls retain() and releases that lease when it drops its work.
-// Save/session code must refuse serialization while isReadOnly is true (D-10).
 export interface ApplyConsumers {
     readonly history?: (applied: Applied, transaction: Transaction) => void;
     readonly scene?: (applied: Applied, impacts: ReadonlyMap<NodeId, number>) => void;
@@ -39,12 +36,10 @@ export interface ApplyController {
     apply(transaction: Transaction): Applied;
     preflight(transaction: Transaction): { readonly ops: readonly Op[]; release(): void };
     begin(origin: TransactionOrigin, label: string): TxBuilder;
-    /** Exact, validated rollback of latest committed receipts, newest first. */
     revert(receipts: readonly Applied[]): Applied;
     dispose(): void;
 }
 
-// Never reuse IDs: even a savepoint from another/expired builder is refused.
 let nextSavepoint = 1;
 
 function required<T>(value: T | undefined, reason: string): T {
@@ -52,8 +47,6 @@ function required<T>(value: T | undefined, reason: string): T {
     return value;
 }
 function setValue(id: NodeId, key: NodePropKey, value: PropValue): NodeSetOp {
-    // Both sides come from the same validated node property; TS cannot retain
-    // that union correlation through a dynamic lookup.
     return { t: 'set', id, key, value } as NodeSetOp;
 }
 function boardValue(doc: BoardDoc, key: BoardKey): BoardValue {
@@ -83,8 +76,6 @@ function invalidate(ext: ExtBag | null, keys: readonly string[]): ExtBag | null 
     }
     return raw ? raw.size || ext.fields.size ? { fields: ext.fields, raw } : null : undefined;
 }
-// Physical filenames are not history. Only actual undo/redo admission projects
-// them; rollback calls planOp directly and restores captured file/raw data exactly.
 function replayMediaLocation(op: Op, locations: MediaLocations | undefined): Op {
     if (!locations) return op;
     const id = op.t === 'media' && op.op === 'add' ? op.entry.id
@@ -128,9 +119,6 @@ interface Entry extends NormalizationStep {
     started: boolean;
 }
 
-// One physical lease per sample id in the receipt, regardless of how many ops
-// mention it. Live-node handles are independent, so dropping undo never frees a
-// sample still drawn by the document (and deleting a node does not free undo).
 class ReceiptSamples {
     private readonly refs = new Map<SampleRef, { readonly lease: SampleLease; uses: number }>();
     constructor(private readonly samples: SampleStoreReader) {}
@@ -150,7 +138,7 @@ class ReceiptSamples {
     ids(): readonly SampleRef[] { return Object.freeze(Array.from(this.refs.keys())); }
     release(): void {
         for (const entry of this.refs.values()) entry.lease.release();
-        this.refs.clear(); // Released receipts no longer pin chunks through handle closures.
+        this.refs.clear();
     }
 }
 function receipt(forward: readonly Op[], inverse: readonly Op[], inverseGroups: readonly (readonly Op[])[], touched: TouchedSet,
@@ -164,7 +152,7 @@ function receipt(forward: readonly Op[], inverse: readonly Op[], inverseGroups: 
             if (owners === 0) throw new ApplyFailed('released', 'The applied receipt has been released');
             let active = true;
             const lease = Object.freeze({ release() { if (active) { active = false; drop(); } } });
-            owners++; // Allocate/freeze BEFORE changing ownership, as for SampleStore.retain.
+            owners++;
             return lease;
         },
         release() { if (rootActive) { rootActive = false; drop(); } },
@@ -226,9 +214,6 @@ function touches(doc: BoardDoc, op: Op, delta: PreservedDelta): { touched: Touch
     return { touched, impacts };
 }
 
-// Planning holds all old values before the first write, including raw metadata
-// and its reference-count delta. Rollback uses these ordinary inverse ops through
-// the SAME prepared mutators; there is no slot journal or hidden restoration data.
 function planOp(doc: BoardDoc, input: Op): OpPlan | undefined {
     let forward = input, model: ModelOp;
     let extAfter: ExtBag | null | undefined;
@@ -395,8 +380,6 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
         try { consumers.reportError?.(error); } catch { /* Reporting cannot reopen or undo a commit. */ }
     };
     const publish = (applied: Applied, transaction: Transaction, impacts: ReadonlyMap<NodeId, number>) => {
-        // Lookup is protected too: a broken consumer must not prevent the other
-        // three from seeing an already committed version (R-W27).
         try { consumers.history?.(applied, transaction); }
         catch (error) { report(new ApplyFailed('consumer', 'History consumer failed after commit', false, error)); }
         try { consumers.scene?.(applied, impacts); }
@@ -493,7 +476,7 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                     rollback(0, unsafe);
                     if (cause instanceof ApplyRefused) throw cause;
                     const error = cause instanceof ApplyFailed ? cause : new ApplyFailed('apply', 'The board transaction failed', false, cause);
-                    report(error); // Still guarded while reportError executes.
+                    report(error);
                     throw error;
                 } finally { close(); }
             };
@@ -501,7 +484,6 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                 const opIndex = attempted++;
                 const historyReplay = origin === 'undo' || origin === 'redo';
                 const replay = historyReplay || origin === 'revert';
-                // History never rewinds physical names; receipt rollback stays exact.
                 if (historyReplay && input.t === 'media' && input.op === 'set-file') return;
                 let op = input;
                 const result = validateOp(context, op, opIndex);
@@ -570,8 +552,6 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                     let restoreRevision: PreparedMutation | undefined;
                     let revisionStarted = false;
                     try {
-                        // Undo/redo already contain the exact follow-on ops. In
-                        // particular imported long keys must be restored verbatim.
                         if (origin !== 'undo' && origin !== 'redo' && origin !== 'revert') normalizeChanges(doc, { push: stage }, entries, geometry);
                         const forward: Op[] = [], inverse: Op[] = [], inverseGroups: (readonly Op[])[] = [], touched = emptyTouched();
                         impacts = new Map();
@@ -590,8 +570,6 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                         }
                         applied = receipt(forward, inverse, inverseGroups, touched, dirtying, recorded && origin !== 'undo' && origin !== 'redo' && origin !== 'revert', resources);
                         transaction = { ops: applied.forward, origin, label };
-                        // Prepare both revision writes before either is run. An
-                        // empty/no-op transaction is not a new document version.
                         restoreRevision = prepareRevisionForApply(doc, beforeRevision);
                         const revision = prepareRevisionForApply(doc, beforeRevision + (entries.length ? 1 : 0));
                         revisionStarted = true;
@@ -599,8 +577,6 @@ export function createApplyController(doc: BoardDoc, samples: SampleStoreReader,
                         const result = validateCommit(context, touched, forward, attempted);
                         if (!result.ok) throw new ApplyRefused(result);
                     } catch (error) {
-                        // An unexpected staged-mutator failure already rolled back,
-                        // reported and closed this builder through fail().
                         if (closed) throw error;
                         try { restoreRevision?.write(); }
                         catch (restoreError) { return fail(restoreError, true); }

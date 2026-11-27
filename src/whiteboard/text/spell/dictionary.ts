@@ -6,7 +6,6 @@ export function validUserWord(value: unknown): value is string {
     return typeof value === 'string' && value.length > 0 && value.length <= MAX_USER_WORD_LENGTH && /^[\p{L}\p{M}'’-]+$/u.test(value);
 }
 
-/** Storage is user-editable. Preserve spelling and order, discarding invalid and duplicate entries. */
 export function normalizeUserDictionary(value: unknown): readonly string[] {
     if (!Array.isArray(value)) return [];
     const words: string[] = [], seen = new Set<string>();
@@ -20,7 +19,6 @@ export function normalizeUserDictionary(value: unknown): readonly string[] {
     return words;
 }
 
-/** The registered app storage owns persistence and cross-window notifications. */
 export interface UserDictionaryStorage {
     read(): unknown;
     write(words: readonly string[]): void;
@@ -35,7 +33,6 @@ export interface UserDictionary {
 }
 const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((word, index) => word === b[index]);
 
-/** One source for the settings list and every open board; no spelling worker is loaded here. */
 export function createUserDictionary(storage: UserDictionaryStorage): UserDictionary {
     let current = Object.freeze([...normalizeUserDictionary(storage.read())]) as readonly string[], disposed = false;
     const listeners = new Set<() => void>();
@@ -53,7 +50,6 @@ export function createUserDictionary(storage: UserDictionaryStorage): UserDictio
         if (add ? index >= 0 || before.length >= MAX_USER_WORDS : index < 0) { publish(before); return false; }
         const next = add ? [...before, word] : before.filter((_, position) => position !== index);
         storage.write(next);
-        // A storage adapter may synchronously notify or normalize its own write.
         const after = normalizeUserDictionary(storage.read());
         publish(after);
         const exists = after.some(item => item.toLocaleLowerCase('en-US') === key);

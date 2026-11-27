@@ -131,7 +131,6 @@ async function enumeration(span: JsonSpan, allowed: readonly string[], fallback:
     if (allowed.includes(value)) return value;
     await preserve();
     note(context, 'approximation', colour ? 'A newer colour is shown approximately' : 'A newer style is shown with a known fallback');
-    // The stored name is preserved above (ext.raw); only the drawn colour is resolved (owner ruling, §9.3).
     return colour ? resolveDrawnSwatch(value) : fallback;
 }
 async function prefix(span: JsonSpan, count: number, cooperate?: () => Promise<void>): Promise<{ values: JsonSpan[]; tail?: RawJson; }> {
@@ -140,8 +139,6 @@ async function prefix(span: JsonSpan, count: number, cooperate?: () => Promise<v
     for await (const item of items) {
         if (values.length < count) values.push(item);
         else {
-            // A future tuple may have millions of tiny extras. Retain one lexical array, not a
-            // span/object per extra; the complete tuple was grammar/depth checked before this walk.
             const text = '[' + span.source.slice(item.start, span.end - 1) + ']';
             const tail = cooperate ? await parseJsonIncremental(text, cooperate) : parseJson(text);
             return { values, tail: cooperate ? await tail.rawIncremental(cooperate) : tail.raw() };
@@ -150,7 +147,7 @@ async function prefix(span: JsonSpan, count: number, cooperate?: () => Promise<v
     return { values };
 }
 function tuple(span: JsonSpan, limit: number): JsonSpan[] {
-    span.length(limit); // Guard the allocation below, not merely the completed array.
+    span.length(limit);
     return [...span.items()];
 }
 async function normalizeRun(text: string, cooperate?: () => Promise<void>): Promise<string> {
@@ -204,7 +201,6 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
     // The depth check and block count precede every block/run allocation and every JSON.parse of text.
     const cooperate = context.options.cooperate;
     const source = cooperate ? await span.textIncremental(cooperate) : span.text();
-    // A carrier wraps an already permitted opaque tuple tail in one array level.
     const text = cooperate ? await parseJsonIncremental(source, cooperate, FORMAT_LIMITS.richTextDepth + 1)
         : parseJson(source, FORMAT_LIMITS.richTextDepth + 1);
     const fields = await fieldMap(text, cooperate), sourceBlocks = required(fields, 'b');
@@ -237,9 +233,6 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
             if (chars + blocks.length > FORMAT_LIMITS.textChars) fail('Text exceeds one million UTF-16 units', run[0], true);
             const markFields = run[1] ? await fieldMap(run[1], cooperate) : undefined;
             const marks: Record<string, unknown> = {};
-            // text.md §4.3 on load: an explicit false mark is the absence of the mark, an invalid link is
-            // dropped to plain text (formatting only), and a known mark holding anything else is kept in x
-            // verbatim rather than refusing the board. Structure that cannot be read stays read-only.
             const malformedMarks = new Set<string>();
             if (markFields) {
                 for (const key of MARKS) {
@@ -309,7 +302,6 @@ async function rich(span: JsonSpan, context: ModelReadContext): Promise<{ value:
     }
     if (sourceCarriers) await readBlockCarriers(sourceCarriers, blocks, ranges, starts, lengths, cooperate);
     if (!blocks.length) { blocks.push({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: '', marks: {} }] }); repaired = true; }
-    // A large loaded value is normalized in host-yielding slices, like the rest of its incremental read.
     const value = cooperate ? await normalizeRichTextCooperative({ blocks }, { cooperate }) : normalizeRichText({ blocks });
     if (value.blocks !== blocks) repaired = true;
     if (repaired) note(context, 'repair', 'Normalized rich text while retaining its unknown content');
@@ -356,7 +348,6 @@ async function node(root: JsonSpan, fields: ReadonlyMap<string, JsonSpan>, conte
         parent: identifier(required(fields, 'parent')) as ParentId,
         order: required(fields, 'order').string(256) as OrderKey,
         page: fields.has('page') ? number(fields.get('page')!) : -1,
-        // Known nodes are range-repaired by the admission pass; opaque bytes cannot be rewritten.
         x: number(required(fields, 'x'), !knownNode), y: number(required(fields, 'y'), !knownNode),
         rotation: fields.has('rot') ? number(fields.get('rot')!) : COMMON_NODE_DEFAULTS.rotation,
         locked: fields.has('locked') ? boolean(fields.get('locked')!) : COMMON_NODE_DEFAULTS.locked,

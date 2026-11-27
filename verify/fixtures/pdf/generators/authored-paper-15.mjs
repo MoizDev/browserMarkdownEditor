@@ -1,5 +1,3 @@
-// Entirely authored; proposed licence CC0-1.0 awaits the owner's approval.
-// Entirely authored fixture content. No external document, font program or app code.
 import { parseArgs as sharedArgs } from '../../lib/cli.mjs';
 import { sha256, jsonBytes, fixtureWriter } from '../../lib/output.mjs';
 export { sha256, jsonBytes, fixtureWriter };
@@ -9,7 +7,6 @@ import { deflateSync } from 'node:zlib';
 
 export const SEED = 0x50444631;
 export const literal = text => `(${text.replaceAll('\\', '\\\\').replaceAll('(', '\\(').replaceAll(')', '\\)')})`;
-// Preserve the published CLI's --key=value spelling while using the shared parser.
 export function parseArgs(argv, extra = []) {
     return sharedArgs(argv.flatMap(value => value.startsWith('--') && value.includes('=')
         ? [value.slice(0, value.indexOf('=')), value.slice(value.indexOf('=') + 1)] : [value]), extra.map(value => value.replace(/^--/u, '')));
@@ -21,8 +18,6 @@ export function seededRandom(seed = SEED) {
     return () => { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; return (state >>> 0) / 2 ** 32; };
 }
 
-// A deliberately small serializer, not a PDF reader. Input coordinates use a
-// top-left, point-sized page so the browser gestures can use the same landmarks.
 export function documentBuilder(title, identity) {
     const objects = [null, null];
     const add = value => { objects.push(Buffer.isBuffer(value) ? value : Buffer.from(value, 'ascii')); return objects.length; };
@@ -80,8 +75,6 @@ export async function emit(outDir, name, id, result, expected, seed) {
             const rows = [];
             for (const [index, line] of page.lines.entries()) {
                 const previous = page.lines[index - 1];
-                // The split-font word is two authored text operations, not two
-                // lines. This oracle comes only from their authored coordinates.
                 if (previous && Number.isFinite(line.y) && line.y === previous.y && Math.abs(line.x - previous.x - previous.text.length * previous.size * 0.6) < 0.001) rows[rows.length - 1] += line.text;
                 else rows.push(line.text);
             }

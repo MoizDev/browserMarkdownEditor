@@ -1,5 +1,3 @@
-// The origin's localStorage is shared with old windows/libraries. Its backup
-// deliberately lives in a separate database, not idb-keyval's vault handles.
 export interface LocalMirrorAccess {
     keys: readonly string[];
     get: (key: string) => string | null;
@@ -9,7 +7,7 @@ export interface LocalMirrorAccess {
     restored: (count: number) => void;
 }
 
-type Value = string | null; // null is a durable removal, not a missing backup
+type Value = string | null;
 interface Entry { key: string; value: Value }
 const DATABASE = 'bme-local-mirror';
 const STORE = 'entries';
@@ -23,10 +21,6 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
     let tail: Promise<void> = Promise.resolve();
     let generation = 0;
     let warned = false;
-    // Set when the startup restore missed its deadline (storage.ts): this page then neither restores nor backs up,
-    // and the next load tries again before it renders. A restore landing after the page has read its settings would
-    // put keys under stores that already cached the old ones, and the page's next write of such a store (a session
-    // record) would overwrite what was just put back.
     let abandoned = false;
 
     const warn = (error: unknown) => {
@@ -47,9 +41,6 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
                     if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE, { keyPath: 'key' });
                 };
                 request.onerror = () => { database = null; reject(request.error); };
-                // Another connection is holding the database through a version change (nothing in this app upgrades
-                // it, but an old tab or a pending deletion can): refuse rather than wait, and close the connection
-                // if it is granted after all, so nothing is left holding it.
                 request.onblocked = () => {
                     refused = true;
                     database = null;
@@ -109,12 +100,10 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
         warned = false;
     };
 
-    /** `include` limits which missing keys may be put back (the startup restore's preferences-only rule, storage.ts);
-     *  every key is still backed up from the live store. */
     const restore = async (include?: (key: string) => boolean) => {
         if (abandoned) return;
         const epoch = generation;
-        const values = await readAll(); // one getAll; present keys are checked individually below
+        const values = await readAll();
         if (epoch !== generation) return;
         const updates = new Map<string, Value>();
         for (const [key, value] of pending) { values.set(key, value); updates.set(key, value); }
@@ -174,7 +163,6 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
             const value = access.get(key);
             if (known.get(key) !== value && (value !== null || known.has(key))) differences.set(key, value);
         }
-        // A clear during the snapshot is NOT fifty individual removals.
         if (!access.hasSentinel()) { await restore(); return; }
         for (const [key, value] of differences) pending.set(key, value);
         await flush();
@@ -186,7 +174,6 @@ export function createLocalStorageMirror(access: LocalMirrorAccess) {
             if (!timer) timer = setTimeout(() => { timer = null; void enqueue(flush); }, 1000);
         },
         restore: (include?: (key: string) => boolean) => enqueue(() => restore(include)),
-        /** Stop restoring and backing up for this page (see `abandoned`); a restore in flight puts nothing more. */
         abandonRestore() {
             abandoned = true;
             generation++;

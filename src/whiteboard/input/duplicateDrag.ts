@@ -23,7 +23,6 @@ export interface DuplicateDragPreview {
     readonly ops: readonly Op[];
     readonly roots: readonly NodeId[];
     readonly guides: readonly BoardSnapGuide[];
-    /** Where the originals sat (top-left of their bounds): a drop that clones stores its offset from this (catalogue S§7.4). */
     readonly sourceOrigin: DuplicateSourceOrigin | null;
 }
 export interface DuplicateDragPlan {
@@ -32,8 +31,6 @@ export interface DuplicateDragPlan {
     cancel(): void;
 }
 
-/** Clone the complete selected hierarchy into an immutable preview. The source
- * geometry plan supplies every translated pose; originals are never mutated. */
 export async function createDuplicateDragPlan(options: BoardTranslationOptions): Promise<DuplicateDragPlan> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
@@ -76,8 +73,6 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
         for (let i = 0; i < values.length; i++) { order.set(values[i], keys[i]); await tick(); }
     }
     const translation = await createBoardTranslationPlan({ ...options, signal });
-    // The copy's bounds come from the encoder, which sits a stroke's width off the scene's logical box. The source is measured with
-    // the same bounds, so a Cmd+D after a clone drop repeats the drop's offset exactly (measured: 1 unit short with the logical box).
     const encoder = await createBoardEncoderBounds({ doc, sources: [], local: runtime.render.encoderLocal, realize: runtime.render.realize,
         cooperate, geometryEpoch: () => runtime.render.text.fonts.epoch });
     await encoder.prepare(roots.map(root => root.id), signal);
@@ -175,7 +170,6 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
                 if (value.ops.length) {
                     const applied = session.apply({ origin: 'tool', label: 'Duplicate and move', ops: value.ops });
                     try { runtime.selection.replace(value.roots); } finally { applied.release(); }
-                    // The clones are selected now: a Cmd+D repeats the offset the drop moved them by (catalogue S§7.4).
                     if (value.sourceOrigin) rememberDuplicate(session, value.roots, value.sourceOrigin);
                 }
             } finally { close(); }

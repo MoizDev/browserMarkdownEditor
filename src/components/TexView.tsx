@@ -1,31 +1,9 @@
-// Reading mode for a `.tex` file: what utils/texDoc.ts parsed, drawn.
-//
-// A .tex file used to open as markdown, which is the wrong reading of every line
-// in it — `$x_1$` italicised half a formula, `\section{…}` was a paragraph, and a
-// `verbatim` listing was reflowed prose. Now ⌘E is the seam: reading mode is this
-// (the document), edit mode is the source, plain and unstyled.
-//
-// MATHS IS RENDERED LAZILY, and that is the whole performance story. A problem
-// set is hundreds of formulae; KaTeX costs ~0.3ms each, and a 600-formula file
-// rendered eagerly blocks the frame the tab is opened on for a fifth of a second.
-// Each formula instead renders when it comes near the view, through ONE shared
-// IntersectionObserver, and shows its source until then — so opening a file costs
-// what is on screen, and scrolling stays at 60fps.
-//
-// No innerHTML anywhere: the maths goes through editor/mathWidget's renderMath,
-// which is KaTeX building DOM nodes, and everything else is React elements
-// (AGENTS.md — the app has exactly two innerHTML sinks and this is not a third).
-
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { renderMath } from '../editor/mathWidget';
 import { parseTex, type TexBlock, type TexDoc, type TexInline } from '../utils/texDoc';
 
-/** How far outside the view a formula is rendered, so scrolling never catches
- *  one mid-render. Two screens' worth at a typical pane height. */
 const MATH_MARGIN = '1200px';
 
-/** One observer for every formula in every open .tex pane: an observer per
- *  formula is what made the lazy path cost more than the eager one. */
 let observer: IntersectionObserver | null = null;
 const shown = new WeakMap<Element, () => void>();
 
@@ -62,9 +40,6 @@ function TexMath({ tex, display }: { tex: string; display: boolean }) {
         renderMath(el, tex, display);
     }, [visible, tex, display]);
 
-    // The source is the placeholder, so a formula waiting its turn still reads
-    // as the formula it is — and a reader scrolling fast sees text, not a gap
-    // that collapses the scroll height under them.
     return (
         <span ref={ref} className={display ? 'tex-math-display' : 'tex-math'}>
             {visible ? null : tex}
@@ -94,9 +69,6 @@ function Inline({ spans }: { spans: readonly TexInline[] }) {
     );
 }
 
-/** `\section` → h2, and so on down: h1 is the document's title, which is drawn
- *  once at the top. A `\part` and a `\chapter` share h2's level for the same
- *  reason a pane is not a printed book. */
 function Heading({ level, spans }: { level: number; spans: readonly TexInline[] }) {
     const inner = <Inline spans={spans} />;
     if (level <= 2) return <h2 className="tex-heading">{inner}</h2>;
@@ -142,11 +114,6 @@ function Blocks({ blocks }: { blocks: readonly TexBlock[] }) {
                             </div>
                         );
                     case 'env':
-                        // Unnamed = alignment only (`center`, `document`). A named
-                        // one keeps its name: `proof`, `theorem`, `figure` are what
-                        // the reader is looking for, and an environment this app
-                        // has no idea about still shows its contents rather than
-                        // vanishing.
                         return (
                             <div key={i} className={`tex-env${block.name ? '' : ' is-bare'}`}>
                                 {block.name && <span className="tex-env-name">{block.name}</span>}
@@ -172,9 +139,6 @@ function TexDocument({ doc }: { doc: TexDoc }) {
             )}
             <Blocks blocks={doc.blocks} />
             {doc.preamble && (
-                // Shut by default and kept: a preamble is instructions to the
-                // compiler, but it is also where a missing package turns out to
-                // be, so it is one click away rather than dropped.
                 <details className="tex-preamble">
                     <summary>Preamble</summary>
                     <pre className="tex-code"><code>{doc.preamble}</code></pre>
@@ -184,13 +148,6 @@ function TexDocument({ doc }: { doc: TexDoc }) {
     );
 }
 
-/**
- * Draw `source` as a LaTeX document.
- *
- * Parsed during render and memoized on the text: reading mode never edits, so
- * the parse happens once per open and once per save-from-elsewhere, not per
- * keystroke. Edit mode is the CodeMirror pane, which is where typing goes.
- */
 function TexView({ source }: { source: string }) {
     const doc = useMemo(() => parseTex(source), [source]);
 

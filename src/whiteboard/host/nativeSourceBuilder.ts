@@ -16,10 +16,6 @@ import { createBoardRenderServices } from '../render/services';
 import { SECURITY_LIMITS } from '../security/limits';
 import { createBoardEncoderBounds } from './encoderBounds';
 
-// Provenance: native source encoding from converted clipboard nodes, using the same
-// canonical encoder bounds, render services and encodeDocumentRecords as the worker
-// legacy preparation; no third-party source.
-
 export interface ExternalNativeSource {
     readonly sheet: SheetId;
     readonly nodes: readonly Node[];
@@ -29,7 +25,6 @@ export interface ExternalNativeSource {
 }
 export interface ExternalNativeEncodeOptions {
     readonly token: RenderToken;
-    /** Host's maximum CSS-px/world-unit scale, as the encoder requires. */
     readonly zMax: number;
     readonly signal: AbortSignal;
     cooperate(): Promise<void>;
@@ -40,7 +35,6 @@ function take<T>(result: WriteResult<T>): T {
     return result.value;
 }
 
-/** Points of one stroke, pinned from its own sample sequence; runs mark straight/curved segments. */
 function strokePoints(samples: SampleStore, node: StrokeNode): PointSamples {
     const sequence = samples.sequence(node.samples), count = sequence.count;
     const xy = new Float64Array(count * 2);
@@ -57,11 +51,6 @@ function strokePoints(samples: SampleStore, node: StrokeNode): PointSamples {
     return { xy, pressure, runs: kinds.length ? { starts: Uint32Array.from(starts), kinds: Uint8Array.from(kinds) } : null };
 }
 
-/**
- * Encode converted external nodes as one native clipboard file. The document is built from the
- * nodes themselves, every node's bounds come from the render services' canonical geometry, and
- * media blobs enter a store once. A node that cannot be measured or encoded fails the whole source.
- */
 export async function encodeExternalNativeSource(source: ExternalNativeSource, options: ExternalNativeEncodeOptions): Promise<Blob> {
     const { signal, cooperate } = options;
     signal.throwIfAborted();

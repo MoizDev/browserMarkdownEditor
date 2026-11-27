@@ -1,4 +1,3 @@
-/** Browser-only observations. No app import, no replacement worker implementation or result. */
 export async function installCounters(context) {
     await context.addInitScript(() => {
         const witness = window.__bmeCoreWitness = { workers: [], lifecycle: [], rejections: [] };
@@ -51,7 +50,6 @@ export async function installCounters(context) {
     };
 }
 
-/** Interim V-01b counters: actual worker targets, independent of our Worker.terminate wrapper. */
 export async function installWorkerTargets(page, { record = () => {} } = {}) {
     const session = await page.context().newCDPSession(page);
     const workers = [];

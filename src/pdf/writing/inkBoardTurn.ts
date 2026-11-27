@@ -1,18 +1,3 @@
-// Turning an annotated PDF's pages turns its board with them: the board.json attachment is rewritten
-// record by record, in the writer, without loading it into an editor.
-//
-// WHAT A TURN TOUCHES, and why nothing else: a mark on a PDF page lives in that page's displayed frame
-// (whiteboard/model/pages.ts: a root node's x, y are page-local, its rotation turns it about that point,
-// and everything inside it — stroke samples, a shape's size, a connector's free ends, a group's
-// children — is relative to it). So a quarter turn of the page is a rigid motion of each page's ROOT
-// nodes: a new position (quarterTurn.ts) and a quarter more rotation. Everything relative rides along
-// untouched, byte for byte. The one page-frame value below the roots is the drawn-bounds cache `b`,
-// which every node carries in its root page's frame; it turns as an axis-aligned box, exactly.
-//
-// Records are spliced, never re-encoded: unknown fields, preserved raw values and the spelling of every
-// value not turned survive as they were. A record this build cannot interpret (an opaque node, written by
-// a newer build) has no position this writer can vouch for, so the board is refused rather than guessed.
-
 import { parseJson, type JsonSpan } from '../../whiteboard/format/jsonRead';
 import { NODE_PROPERTY_ORDER } from '../../whiteboard/format/schema';
 import { turnAngle, turnBox, turnPoint } from './quarterTurn';
@@ -59,13 +44,10 @@ function box(span: JsonSpan | undefined): [number, number, number, number] | und
 }
 
 export interface BoardTurnInput {
-    /** Quarter turns clockwise per page, from the board as it is. */
     readonly quarters: readonly (0 | 1 | 2 | 3)[];
-    /** The new host record line (without its separator), given the board's host record. */
     host(record: ReadonlyMap<string, JsonSpan>, line: string): string;
 }
 
-/** The board text with every mark on a turned page turned with it. Throws BoardTurnRefused. */
 export async function turnBoardText(text: string, input: BoardTurnInput, cooperate: () => Promise<void>): Promise<string> {
     const { header, records, footer } = lines(text);
     const header0 = JSON.parse(header + ']}') as { kind?: unknown };
@@ -101,7 +83,6 @@ export async function turnBoardText(text: string, input: BoardTurnInput, coopera
         for (let depth = 0; current && depth < 64; depth++) {
             if (sheets.has(current.parent)) {
                 if (!Number.isSafeInteger(current.page) || current.page < 0) invalid();
-                // A node whose page is gone is drawn on the last page (model/pages.ts pageOrigin), so it turns with that one.
                 return Math.min(current.page, pageSizes.length - 1);
             }
             current = nodes.get(current.parent);
@@ -132,7 +113,6 @@ export async function turnBoardText(text: string, input: BoardTurnInput, coopera
                 const bounds = box(at('b'));
                 if (bounds) edits.push({ start: at('b')!.start, end: at('b')!.end, text: `[${turnBox(q, bounds, w, h).map(number).join(',')}]` });
                 next = splice(line.text, edits);
-                // The spliced record must still be one well-formed record of the same shape.
                 if (parseJson(next).fieldMap().get('id')?.string(256) !== id) invalid();
             }
         }

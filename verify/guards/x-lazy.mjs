@@ -2,8 +2,6 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fastGuard, generatedVault, documentFixtures, openDocument, saveNote } from '../lib/fast.mjs';
 
-// 4 s idle-prefetch timeout + 2 s index cap + 1 s margin. A functional
-// observation interval shared with the visible-PDF control, NOT a timing gate.
 const prefetchWait = 7000;
 await fastGuard('X-LAZY', async ({ session }) => {
     const base = await generatedVault(), documents = await documentFixtures();

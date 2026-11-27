@@ -5,8 +5,6 @@ import { closeWorkerResult, matchingIdentity, validBoardIdentity } from '../work
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { InspectedMedia } from './ingest';
 
-// Provenance: contained SVG transport, video admission budgets and C5 identity;
-// independent opaque video-frame transport, no third-party source.
 const CHUNK = 192 * 1024, LIMIT = 10 * 1024 * 1024;
 let serial = 0;
 export async function videoFrameInProfile(blob: Blob, info: Pick<InspectedMedia, 'mime' | 'width' | 'height'>,

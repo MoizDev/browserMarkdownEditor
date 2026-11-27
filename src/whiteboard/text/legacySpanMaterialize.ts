@@ -11,7 +11,6 @@ export interface LegacySpanValue {
     readonly fields: LegacyFields;
 }
 
-/** A scheduler failure is not corrupt source data and must not become a read-only repair notice. */
 export class RichImportSchedulerError extends Error {
     constructor(readonly original: unknown) { super('Rich import scheduler failed'); }
 }
@@ -22,10 +21,6 @@ type ObjectFrame = { readonly kind: 'object'; readonly target: Record<string, un
     readonly source: string; readonly fields: LegacyFieldSpan[]; previous: number };
 type Frame = ArrayFrame | ObjectFrame;
 
-/**
- * Build an independent JSON value without JSON.parse on the containing record.
- * The weak span table preserves every original unknown value for the mapper.
- */
 export async function materializeLegacySpan(root: JsonSpan, options: PlainTextOptions): Promise<LegacySpanValue> {
     const budget = options.sliceMilliseconds ?? 3;
     if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid rich import time slice');

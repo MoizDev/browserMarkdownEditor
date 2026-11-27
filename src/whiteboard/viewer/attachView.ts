@@ -40,10 +40,8 @@ class SelectionIds implements ReadonlySet<string> {
     }
 }
 
-/** What a view publish changed: the view's state, or only the paint progress its snapshot reports. */
 export type ViewChange = 'state' | 'paint';
 
-/** The scene units one frame may step (each a bounded generator step); the prepare deadline is the real bound. */
 const SCENE_STEP_UNITS = 1_000_000;
 
 /** Attaches view resources only. The admitted model, scene, selection/history and
@@ -59,38 +57,18 @@ export const attachView: AttachView = options => {
     let interaction: ViewerInteractionPorts | null = null, embedPort: EmbedPresentationPort | null = null;
     let embedProducer: NativeEmbedPresentationProducer | null = null;
     let lastSensitive: ReadonlySet<string> | undefined;
-    // Density mode and the index's candidate count drive which frame kind is requested; both are read
-    // by the layers, which never own a frame request of their own.
     let densityMode: DensityMode = 'direct', lastCandidates: number | null = null, paintWhenReady = false;
-    // The device's two-stage request (camera invariance, PLAN issue 1). The first picture asks for the view's world; once that
-    // frame is up, the whole scene is asked ONCE with no world (its strokes at the camera's band). While the scene is asked for the current
-    // key, a camera change asks for nothing: the composer's tiles follow the camera, the scene's item set does not.
-    // The ink band (the tile ladder's band top of the device scale, null off a device) is part of the key: a request is made again
-    // only when the camera crosses a band, so a zoom inside one band asks nothing, and the request is never rebuilt per frame.
     type SceneKey = { readonly revision: number; readonly sheet: string; readonly theme: string; readonly sensitive: unknown; readonly band: number | null };
     const sameSceneKey = (a: SceneKey | null, b: SceneKey): boolean => !!a && a.revision === b.revision && a.sheet === b.sheet
         && a.theme === b.theme && a.sensitive === b.sensitive && a.band === b.band;
     let viewAsked: SceneKey | null = null, sceneAsked: SceneKey | null = null, sceneDue = false;
-    // Whether the last stream asked for was a dense one (its frame holds only the live nodes): see onDensityMode.
     let streamDense = false;
-    // A refusal is for the whole sheet's size (revision, sheet, theme, sensitivity), not for the band: it latches across crossings.
     const sameSheetState = (a: SceneKey | null, b: SceneKey): boolean => sameSceneKey(a, { ...b, band: a?.band ?? null });
-    // The band the last request was made at, and the band the view held before the last crossing during a live zoom (carriedBand).
-    // The carry lasts for the whole move, every request of it: a request made later in the same move keeps the band, since the
-    // wanted band may not have built yet. At rest it is dropped and the request is made again, so the strokes settle on the wanted band.
     let liveBand: number | null = null, carriedBand: number | null = null;
-    // The key whose whole-scene request was refused for its size: not asked again for that key (sceneRefused stops the stage's re-arming),
-    // until the pane's CPU grant grows past the grant it was refused at (sceneRefusedGrant): the size test depends on the grant.
     let sceneRefused: SceneKey | null = null, sceneRefusedGrant = 0;
-    // The sheet's whole candidate count at a revision, read from a view pin once its stream has opened: a pin counts
-    // nothing before that, so the whole-scene decision waits for it (a probe pin would never answer).
     let wholeCount: { readonly revision: number; readonly sheet: string; readonly count: number } | null = null;
-    // The view request in force: its key, its device scale and the world it covers (1.5 viewports each side).
     let viewWorld: { key: SceneKey; world: Rect; z: number } | null = null;
-    /** canvas2d's standing view request (see requestPaint): its key, its world, the world its picture tiles cover and its exact scale. */
     let view2d: { key: SceneKey; world: Rect; tiles: Readonly<Rect>; scale: number } | null = null;
-    // The zoom settling of both routes (see requestPaint): the last device scale seen, when it was first seen, and the wake that asks
-    // for the exact ink band once it has held for ZOOM_SETTLE_MS.
     let zoom2d: { scale: number; at: number } | null = null, settle2d: ReturnType<typeof setTimeout> | null = null;
     const ZOOM_SETTLE_MS = 250;
     const cancelSettle2d = () => { if (settle2d !== null) { clearTimeout(settle2d); settle2d = null; } };
@@ -106,15 +84,9 @@ export const attachView: AttachView = options => {
     let previewLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
     let previewCoverage: (() => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string>; committed?: number }> | null) | null = null;
     let clearPreview: (() => void) | null = null;
-    /** 'paint': the paint progress moved (see onPaintProgress); anything else is a change to the view's state. */
     const listeners = new Set<(change?: ViewChange) => void>();
     const palettes = options.palette ?? DEFAULT_BOARD_PALETTES;
     const sheet = () => view.sheetId ?? runtime.selection.getSnapshot().sheet;
-    // The paper's revision is its own: it moves only when the paper's properties or its page count change. It was the document's
-    // revision, so every stroke made the paper a new revision: it re-staged its template and recomposed every paper tile, and until
-    // that finished it was not current, so no frame was complete (measured, notebook gesture kit on WebGL2: after the draw phase
-    // pan-sat 0/90, zoom-sat 0/77, draw-sat 0/91 complete, paper cov:not-current on every frame; wet ink unprepared 119 of 123
-    // draw frames, its budget spent by the paper's staging).
     let paperSnapshot: NotebookPaperSnapshot | null = null, paperSource: NotebookPaperSnapshot['host']['paper'] | null = null, paperRevision = 0;
     const paper = options.session.doc.host.kind === 'notebook' ? createNotebookPaperLayer({
         read() {
@@ -158,13 +130,8 @@ export const attachView: AttachView = options => {
     const previewOmission = (dry: PaintSource): ReadonlySet<string> | null => {
         if (!previewLayers || !view.visible || disposed) return null;
         const preview = previewCoverage?.();
-        // Audit only: why the base omits nothing while a preview is shown (a release frame's stale picture is traced to it).
         const none = (why: string): null => { if (renderAuditEnabled()) auditTape(`preview-omit:none:${why}`); return null; };
         if (!preview) return none('no-coverage');
-        // A committed overlay keeps its nodes until the base has presented the commit revision, and the base omits them until then,
-        // from its older paint frame and from the commit's: the picture is the base without them and the overlay with them. Omitting
-        // nothing at the commit drew the moved node at its old place and its new one for the frames the base's commit frame took,
-        // then twice at the new place (measured: 2 stand-in presents per release, coverage-not:revision).
         if (preview.committed !== undefined && options.session.doc.rev === preview.committed) {
             if (dry.sceneRevision !== preview.frame.sceneRevision && dry.sceneRevision !== preview.committed) return none('committed-dry');
         } else if (preview.frame.sceneRevision !== dry.sceneRevision || dry.sceneRevision !== options.session.doc.rev) {
@@ -185,12 +152,9 @@ export const attachView: AttachView = options => {
         }
         return result;
     };
-    // Requested embeds are live barriers too: a card the user asked for is drawn at its real paint position
-    // before its facts exist, so it is never baked into a tile or omitted early.
     const precisionNodeIds = (sensitive: ReadonlySet<string> | undefined) => union(selectionIds(), union(union(union(interaction?.liveNodeIds?.(),
         view.visible ? embedPort?.inlineNodeIds() : null), view.visible ? embedPort?.requestedNodeIds() : null), sensitive));
     const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
-    // The composer asks for the opaque world once per tile: the page list is rebuilt only when a layer's claim changes.
     const drawnPages = createDrawnPagesReader(), pageLayers: unknown[] = [];
     const opaqueWorld = (): readonly Rect[] => {
         const host = options.session.doc.host;
@@ -200,7 +164,6 @@ export const attachView: AttachView = options => {
         if (paper) pageLayers.push(paper);
         return opaqueWorldOf(host, view.inverted, drawnPages(pageLayers));
     };
-    // What a committed overlay drew, at the commit revision: the base's older picture omits those nodes and is current for them.
     const overlayDrawn = () => {
         const preview = previewLayers && view.visible && !disposed ? previewCoverage?.() : null;
         return preview?.committed !== undefined && options.session.doc.rev === preview.committed
@@ -210,17 +173,10 @@ export const attachView: AttachView = options => {
         overlayDrawn,
         changedNodesSince: (from, to) => runtime.scene?.changedNodesSince(from, to) ?? null,
         opaqueWorld,
-        // The live zoom's geometry pins (the composer holds the visible strokes at the band it draws and the band before it).
         geometryPins: {
             pinVisible: ids => runtime.render.pinVisible(ids as Iterable<NodeId>), releasePins: () => runtime.render.releasePins() },
         inputActive: () => interaction?.pointerDown?.() ?? false,
         liveNodeIds, liveDraws: (nodeId, band, view, canvas) => interaction?.liveDraws?.(nodeId, band, view, canvas) ?? false, candidates: () => lastCandidates,
-        // Back to 'direct' after a dense stream was asked for, the frame in hand holds only the live nodes, so the device requests that
-        // still stand (asked before it) no longer describe it and are forgotten, as a hide forgets them: kept, the scene asked before a
-        // context loss stood for the same key, the request returned early, and the restored WebGL2 board waited on its dense frame with
-        // 'Updating…' for good (measured, a 5,642-stroke board at DPR 2: 600 frames per 10 s after WEBGL_lose_context lose and restore;
-        // hide/show cured it). Only then: forgotten at every switch, each resize bridge asked the view and the whole scene again, and
-        // three dense panes on WebGL2 rested at quality 0.64 for the CPU those builds took.
         onDensityMode(mode) {
             if (densityMode === mode || disposed) return;
             densityMode = mode;
@@ -236,10 +192,6 @@ export const attachView: AttachView = options => {
         },
         beforePrepare(current, budget) {
             runtime.flushFrame(budget.frameId);
-            // A Scene still behind the document is stepped until the frame's prepare deadline, at least one unit: without another
-            // invalidation nothing would wake the view once the frame that began the work has been drawn. Eight units a frame
-            // whatever the time left kept 'Updating…' up with the main thread mostly idle (measured, select-all + Delete: 4,000
-            // strokes settled 13.3 s after the key, 5,600 strokes 20.0 s; stepped to the deadline, both settled by the save, 1.5 s and 2.0 s).
             if (runtime.scene && !runtime.scene.ready) {
                 runtime.scene.step(SCENE_STEP_UNITS, budget.prepareDeadline);
                 if (!runtime.scene.ready) layers.invalidate('board-scene-step');
@@ -254,19 +206,13 @@ export const attachView: AttachView = options => {
         },
         onPresented(revision, token, frame, context) {
             drawnFrame = { sceneRevision: revision, token, frame, context };
-            // A completed presentation is the layers working again: a failure reported before it no longer stands
-            // (the layer's own error clears on the same event, so the view must not keep showing one it does not hold).
             if (failed) { failed = null; publish(); }
-            // The view frame of the current key is up: the whole scene may now be asked for (once).
-            // The request is made by the next prepare, which a presentation alone does not schedule: ask for that frame.
-            // Armed once per key: while the stage is already due, a presented frame must not invalidate again (that re-presented forever).
             const refusedAtThisGrant = !!viewAsked && sceneRefused !== null && sameSheetState(sceneRefused, viewAsked) && grantNow() <= sceneRefusedGrant;
             if (layers.onDevice() && !sceneDue && viewAsked && revision === viewAsked.revision && !sameSceneKey(sceneAsked, viewAsked) && !refusedAtThisGrant) { sceneDue = true; layers.invalidate('board-scene-request'); }
             interaction?.presented?.(revision, token, frame, context);
             embedProducer?.presented(revision, token, frame, context);
         },
     });
-    // The producer reserves and releases through the layer host's canonical CPU allocator, which exists only once a host has drawn.
     const embedMemory: MemoryAllocator = {
         reserve: bytes => layers.memory()?.reserve(bytes) ?? null,
         release: lease => layers.memory()?.release(lease),
@@ -287,7 +233,6 @@ export const attachView: AttachView = options => {
             return result || node.kind;
         } });
     const previewUnderlay = createPreviewSlot('board-preview-underlay', layers[0]), previewContent = createPreviewSlot('board-preview-content', layers[1]);
-    // Readiness needs a completed, matching paint once; after that a pending revision keeps the last pixels, not a loading screen.
     let paintEverCurrent = false;
     let snapshot: ViewerSnapshot;
     function makeSnapshot(): ViewerSnapshot {
@@ -301,7 +246,6 @@ export const attachView: AttachView = options => {
         const definitions = snapshot?.layers.length === nextLayers.length && nextLayers.every((layer, i) => snapshot.layers[i] === layer)
             ? snapshot.layers : Object.freeze(nextLayers);
         const paint = layers.paintProgress();
-        // A presented frame of the current revision is drawn: refinement still pending is 'Updating…', not loading.
         if (paint.kind === 'current' || (paint.kind === 'pending' && paint.drawn)) paintEverCurrent = true;
         const state: ViewerReadiness = failed ? 'failed' : !runtime.scene ? 'loading'
             : !paintEverCurrent ? (paint.kind === 'failed' ? 'failed' : 'loading')
@@ -318,37 +262,24 @@ export const attachView: AttachView = options => {
             && a.appearance.background === b.appearance.background && a.appearance.inverted === b.appearance.inverted
             && JSON.stringify(a.paint) === JSON.stringify(b.paint);
     }
-    // The native view repaints on every listener call, so listeners hear only a change the snapshot can show. `force` is for a
-    // change the snapshot does not carry (the selection), which the caller has already seen change.
     function publish(change: ViewChange = 'state', force = false): void {
         if (disposed) return;
         const next = makeSnapshot();
-        // The accessibility mirror reads selection, session and scene only: a paint-progress change leaves it as it is, and
-        // its sync would otherwise request a frame for nothing (measured: 6 and 11 frames in the 3 s after a drag).
         if (change === 'state') accessibility.invalidate();
         if (!force && snapshot && sameSnapshot(snapshot, next)) return;
         snapshot = next;
         for (const listener of listeners) listener(change);
     }
-    // The whole-sheet world: board coordinates are bounded by the 1e12 world limit (as boardLayers' WHOLE_PLANE).
     const WHOLE_SHEET: Rect = { x: -1e12, y: -1e12, width: 2e12, height: 2e12 };
     const viewportOf = (view: { readonly camera: { readonly x: number; readonly y: number; readonly z: number };
         readonly viewport: { readonly width: number; readonly height: number } }): Rect =>
         ({ x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z });
     const containsRect = (outer: Rect, inner: Rect): boolean => inner.x >= outer.x && inner.y >= outer.y
         && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
-    // Whether a request's world still holds the viewport, with half a viewport to spare while the zoom is the request's (a pan): the
-    // next request is asked while the view is still inside the last one, so it has landed by the time the view leaves it. Asked only
-    // once the viewport left the world, a fast pan drew the items entering the view a frame late, the old frame not holding them
-    // (measured: 4 strokes at the edge on canvas2d, one on WebGL2, for a frame). Not while zooming: a zoom out to fit then asked a
-    // dense board's whole view again mid-animation, 'Updating…' for 4 s more (measured, the 5,642-stroke board at 1745% then ⇧1).
     const holdsView = (world: Rect, viewport: Rect, samezoom: boolean): boolean => {
         const lead = samezoom ? 0.5 * Math.max(viewport.width, viewport.height) : 0;
         return containsRect(world, { x: viewport.x - lead, y: viewport.y - lead, width: viewport.width + 2 * lead, height: viewport.height + 2 * lead });
     };
-    // The whole scene's estimated CPU cost: the owning band's CPU bytes for the current view, scaled from the view's item count
-    // to the sheet's. It must fit half the pane's CPU grant: the grant the host reports, or the grant's floor
-    // (cpuGrantMinBytes) while the host reports none. The floor is never above the true grant, so it stays the conservative test.
     const grantNow = (): number => { const reported = layers.cpuGrantBytes(); return reported > 0 ? reported : RENDER_CONSTANTS.cpuGrantMinBytes; };
     const sceneFits = (wholeItems: number): boolean => {
         const viewItems = Math.max(1, lastCandidates ?? 1);
@@ -362,24 +293,12 @@ export const attachView: AttachView = options => {
         if (disposed || !view.visible || !runtime.scene?.ready) return;
         const onDevice = layers.onDevice();
         const viewNow = lastView;
-        // The live camera's ink band: the tile ladder's band top, the same ladder the services key the strokes by. The band
-        // moves only at a crossing, so the request's identity does too.
         const band = onDevice && viewNow ? chooseTileScale(viewNow.camera.z * viewNow.viewport.dpr).scale : null;
         const moving = !!viewNow?.moving;
         if (carriedBand !== null && !moving) { carriedBand = null; viewWorld = null; viewAsked = null; sceneAsked = null; sceneDue = false; }
         const key: SceneKey = { revision: runtime.scene.revision, sheet: sheet(), theme: view.theme, sensitive, band };
-        // Every scale the camera shows starts the zoom's settle window, a request that stands included: tracked only past the standing
-        // checks, a wheel zoom alternating across a band let the settle wake fire mid-zoom and ask again (measured: 10 of 40 steps).
         if (onDevice && viewNow) { const scale = viewNow.camera.z * viewNow.viewport.dpr; if (zoom2d?.scale !== scale) zoom2d = { scale, at: performance.now() }; }
-        // The whole scene is already asked for this key: a camera change needs no request (checked before the abort below, so the
-        // scene asked in flight is not cancelled).
         if (onDevice && sameSceneKey(sceneAsked, key)) return;
-        // A request at a band up to one finer than the camera's stands while a zoom is still going (moving, or a new scale in the last
-        // ZOOM_SETTLE_MS: a wheel's steps never mark the camera moving); the camera's own band is asked once the scale has held that
-        // long. The GPU route draws a finer band's outline at a coarser scale (never a coarser one at a finer scale: a zoom in across a
-        // band still asks). Asked at each crossing, a paced wheel zoom whose steps alternate across the band at 100% asked the whole
-        // scene anew on every step and presented each step three times (measured, WebGL2, DPR 2, a drawing holding a 4000x3000
-        // picture: 40 scene requests and 120 presents for 40 steps).
         if (onDevice && viewNow && zoom2d && key.band !== null) {
             const now = performance.now();
             const held = (asked: SceneKey | null): boolean => !!asked && asked.band !== null && sameSceneKey(asked, { ...key, band: asked.band })
@@ -391,28 +310,14 @@ export const attachView: AttachView = options => {
                 return;
             }
         }
-        // A view request whose world still holds the viewport, at the same key (band), stands: a pan or a zoom inside the band asks nothing new.
         if (onDevice && !sceneDue && densityMode !== 'dense' && viewNow && viewWorld && sameSceneKey(viewWorld.key, key)
             && holdsView(viewWorld.world, viewportOf(viewNow), viewWorld.z === viewNow.camera.z)) return;
-        // canvas2d: a request stands while a new one would open the same stream. The 2D adapter flattens the frame's paths at the exact
-        // scale itself; the stream reads the scale only for its strokes' realisation band and its pictures' tiles (decoded for the screen
-        // and an eighth around it, pictureTileWorld). So a pan inside the world asks nothing new, nor, on a board without pictures, a zoom
-        // inside the ink bands. A zoom one band across keeps the request too while the zoom is still going (moving, or a new scale in
-        // the last ZOOM_SETTLE_MS: a wheel's steps are discrete and never mark the camera moving), as the GPU route carries its band
-        // for a move; the exact band is asked for once the scale has held that long.
-        // Asked anew on every step, each step built a new frame over two compositor frames and presented the same picture twice, once
-        // from the old frame at the new camera, once rebuilt, whichever of the two the step's camera reached first (drawing, forced
-        // canvas2d: pan 52 of 113 presents redundant, zoom 39 of 79, its 100%-122% wheel steps crossing a band at 100%; LARGE: 56-59
-        // of 60 pan steps).
         if (!onDevice && !sceneDue && densityMode !== 'dense' && viewNow && view2d && sameSceneKey(view2d.key, key)) {
             const scale = viewNow.camera.z * viewNow.viewport.dpr, screen = viewportOf(viewNow), now = performance.now();
             if (zoom2d?.scale !== scale) zoom2d = { scale, at: now };
             const pictures = runtime.session.doc.mediaRefs.size > 0;
             if (holdsView(view2d.world, screen, scale === view2d.scale) && (pictures ? scale === view2d.scale && containsRect(view2d.tiles, screen)
                 : inkRealisationNear(scale, view2d.scale, 0))) return;
-            // A board with pictures stands through a zoom too while its picture tiles still cover the screen (a zoom in): they draw scaled
-            // until the exact ask, as its ink does. Asked on every step, canvas2d presented each step twice (measured, a 4000x3000 picture
-            // at DPR 2: 40 view requests and 80 presents for 40 wheel steps).
             if (holdsView(view2d.world, screen, scale === view2d.scale) && (!pictures || containsRect(view2d.tiles, screen))
                 && (moving || now - zoom2d.at < ZOOM_SETTLE_MS) && inkRealisationNear(scale, view2d.scale, 1)) {
                 cancelSettle2d();
@@ -421,8 +326,6 @@ export const attachView: AttachView = options => {
             }
         }
         cancelSettle2d();
-        // The whole scene, once per key, and only when its estimated cost fits (sceneFits). A count not known yet waits: a fresh
-        // pin counts nothing until its first stream opens, so the stage stays due. A refusal is latched on this key.
         let scene = onDevice && sceneDue && sameSceneKey(viewAsked, key);
         if (scene) {
             const whole = wholeCount && wholeCount.revision === key.revision && wholeCount.sheet === key.sheet ? wholeCount.count : null;
@@ -435,56 +338,36 @@ export const attachView: AttachView = options => {
         paintJob = controller;
         const pin = runtime.scene.pin(), selectedSheet = sheet();
         const current = lastView;
-        // The frame covers the viewport plus two of its sides: a progressive coarse tile may extend one tile
-        // beyond the viewport, and every live item it meets must be in the frame to be drawn live.
         const world: Rect | undefined = current ? (() => {
             const width = current.viewport.width / current.camera.z, height = current.viewport.height / current.camera.z;
-            // 1.5 viewports each side: a pan inside this world asks nothing new (viewWorld), so the margin is generous.
             const margin = 1.5 * Math.max(width, height);
             return { x: current.camera.x - margin, y: current.camera.y - margin, width: width + 2 * margin, height: height + 2 * margin };
         })() : undefined;
         lastSensitive = sensitive;
-        // On a device the request's device scale is its band's top, so its strokes and tiles change only at a crossing; canvas2d keeps the exact scale.
         const deviceScale = current ? band ?? current.camera.z * current.viewport.dpr : undefined;
-        // A crossing while the camera moves carries the band the view held before it, for the rest of the move: a strokes' wanted band
-        // draws once it has built (the geometry's band-miss path holds the carried band until then), so a later request in the move keeps it.
         if (band !== null && liveBand !== null && band !== liveBand && moving) carriedBand = liveBand;
         liveBand = band;
         const previousDeviceScale = moving && carriedBand !== null ? carriedBand : undefined;
-        // The view's own scale beside its band's top: pictures the GPU route draws plan their tiles at it (PictureTileRequest.exactScale).
         const exact = band !== null && current ? { exactScale: current.camera.z * current.viewport.dpr } : {};
-        // The viewport is consumed as a bounded ordered stream: no whole-sheet node array is ever built.
         const open = pin.paintStream;
         if (!open) { pin.release(); report(new Error('Board scene has no bounded paint stream')); return; }
-        // A pin's cell index is built by its own first stream open, so a fresh pin counts nothing yet: the count is
-        // taken again when that stream lands. Keeping the last known count meanwhile (not nulling it) matters, since a
-        // null count never releases the dense latch.
         const counted = world ? pin.countCandidates?.(selectedSheet, world) ?? null : null;
         if (counted !== null) lastCandidates = counted;
-        // Dense mode keeps only the live nodes in its frame: selection, wet ink, embeds and previewed nodes.
-        // Their set is the frame's whole sensitivity set, so every barrier a tile meets is present.
         // An absent set is EMPTY here: an unset `only` would stream the whole sheet as the "live" frame.
         const dense = densityMode === 'dense';
         const liveSet = dense ? (union(precisionNodeIds(sensitive), previewCoverage?.()?.nodeIds ?? null) ?? new Set<string>()) as ReadonlySet<NodeId> : null;
         const sensitiveNodes = (dense ? liveSet : precisionNodeIds(sensitive)) as ReadonlySet<NodeId>;
-        // Tile streams reopened by the frame share this request's identity (precision, sensitivity), not its world.
-        // On a device, the view stage realises its strokes at the whole-scene stage's precision (scenePrecision): the two stages
-        // then share one realisation per stroke, and a stage switch re-keys nothing. Canvas2d keeps its request.
         const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes, ...exact,
             ...(deviceScale ? { deviceScale, allowInkLod: true } : {}), ...(onDevice ? { scenePrecision: true } : {}),
             ...(previousDeviceScale !== undefined ? { previousDeviceScale } : {}) };
-        // The whole-scene stage: asked once per key on a device, after the view frame it follows is up. No world, so the pin
-        // does not cull by the camera, so the scene's items do not change with the zoom; only its strokes' band does (at a crossing).
         const sceneShape = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes, ...exact,
             ...(deviceScale !== undefined ? { deviceScale } : {}), ...(previousDeviceScale !== undefined ? { previousDeviceScale } : {}) };
-        // The on-screen rect: picture tiles are decoded for it and a ring, not for the frame's whole margin (the large-picture fix).
         const screenWorld: Rect | undefined = current ? { x: current.camera.x, y: current.camera.y,
             width: current.viewport.width / current.camera.z, height: current.viewport.height / current.camera.z } : undefined;
         const shape = scene ? sceneShape : dense ? { ...identity, only: liveSet! }
             : { ...identity, ...(world ? { world } : {}), ...(screenWorld ? { viewWorld: screenWorld } : {}) };
         auditCount('board', scene ? 'request:scene' : 'request:view');
         if (onDevice) { if (scene) sceneAsked = key; else viewAsked = key; }
-        // The world this view request asks for, kept until the camera leaves it (the skip at the top of requestPaint).
         viewWorld = onDevice && !scene && !dense && world && deviceScale !== undefined && current ? { key, world, z: current.camera.z } : null;
         const tiles = screenWorld ? pictureTileWorld({ viewWorld: screenWorld }) : undefined;
         view2d = !onDevice && !scene && !dense && world && tiles && current ? { key, world, tiles, scale: current.camera.z * current.viewport.dpr } : null;
@@ -494,7 +377,6 @@ export const attachView: AttachView = options => {
                 void stream.release().catch(report).finally(() => pin.release());
                 return;
             }
-            // The stream's open has built this pin's index for the sheet: the count is current before the frame prepares.
             if (world) { const landed = pin.countCandidates?.(selectedSheet, world) ?? null; if (landed !== null) lastCandidates = landed; }
             if (!wholeCount || wholeCount.revision !== key.revision || wholeCount.sheet !== selectedSheet) {
                 const total = pin.countCandidates?.(selectedSheet, WHOLE_SHEET) ?? null;
@@ -514,8 +396,6 @@ export const attachView: AttachView = options => {
         void (async () => {
             const ready = await runtime.ready;
             let box: readonly [number, number, number, number] | null = null;
-            // One bounded realisation and one publication for every id; a node whose geometry changed meanwhile reveals the bounds
-            // the scene has for it (its own invalidation publishes the new ones), rather than failing the reveal.
             const exact = await ready.ensureExactBoundsMany([...ids], controller.signal);
             for (const id of ids) {
                 const next = exact.get(id)?.selectable;
@@ -535,8 +415,6 @@ export const attachView: AttachView = options => {
     let stopScene: (() => void) | undefined;
     void runtime.ready.then(ready => {
         if (disposed) return;
-        // A published scene can change what a stream resolves at the same revision (a font that loaded re-lays every text node), so
-        // canvas2d's standing request ends here (measured: a new frame's title stayed laid out in the fallback font, 2 px narrower).
         stopScene = ready.subscribe(() => { publish(); view2d = null; requestPaint(); });
         publish(); requestPaint(); layers.invalidate('board-scene-ready');
     }, report);
@@ -552,7 +430,6 @@ export const attachView: AttachView = options => {
         publish(); if (runtime.scene?.ready) requestPaint();
     });
     snapshot = makeSnapshot();
-    // The node count on the shown sheet, for the audit's node-count check. Registered only while the audit is on (no-op off).
     const dropNodeGauge = auditGauge(`board:nodes:${options.auditPane ?? options.token.documentId}`, () => options.session.doc.bySheet.get(sheet())?.size ?? 0);
     const dispose = () => {
         if (disposed) return;
@@ -579,8 +456,6 @@ export const attachView: AttachView = options => {
             if (old.theme !== view.theme) interaction?.paletteChanged?.();
             if (old.visible !== view.visible) { embedPort?.setVisible(view.visible); runtime.viewVisibilityChanged(); }
             if (view.visible && (old.theme !== view.theme || old.sheetId !== view.sheetId)) clearPreview?.();
-            // A hidden pane's frames and stream are gone, and its camera may change before it is shown again (a resize, a restored
-            // position): the request state that assumes the old stream and camera is dropped, so a show always asks for the current one.
             if (!view.visible) { clearPreview?.(); paintJob?.abort(); cancelReveal(); frames.clear(); drawnFrame = null; viewWorld = null; view2d = null; zoom2d = null; cancelSettle2d(); viewAsked = null; sceneAsked = null; liveBand = null; carriedBand = null; interaction?.finishGesture(); interaction?.finishComposition(); }
             publish();
             if (view.visible && (!old.visible || view.theme !== old.theme || view.sheetId !== old.sheetId)) requestPaint();
@@ -599,7 +474,6 @@ export const attachView: AttachView = options => {
             if (disposed) { if (port) void port.dispose().catch(report); return; }
             if (embedPort === port) return;
             const old = embedPort; embedPort = port;
-            // One port, one producer: the producer presents only through the same port the per-node Load/Unload uses.
             const oldProducer = embedProducer;
             embedProducer = port ? createNativeEmbedPresentationProducer({ port, memory: embedMemory, onError: report }) : null;
             oldProducer?.dispose();

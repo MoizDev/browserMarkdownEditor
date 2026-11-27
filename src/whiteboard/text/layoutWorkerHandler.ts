@@ -25,7 +25,6 @@ function getEngine(): BoardTextLayout {
     engine = new BoardTextLayout(new ReferenceMeasurer(context), fonts);
     return engine;
 }
-/** Handler for the shared parse worker; no text resources are allocated until first use. */
 export async function layout(args: unknown, context: WorkerContext) {
     if (!validLayoutRequest(args)) throw new TypeError('Invalid board text layout request');
     context.signal.throwIfAborted();

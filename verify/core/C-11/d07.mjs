@@ -66,8 +66,6 @@ try {
             const mark = await link.evaluate(element => ({ tag: element.tagName, href: element.getAttribute('href'), wiki: element.getAttribute('data-wikilink') }));
             const before = await activePath(page);
             await link.click();
-            // A bounded negative UI observation, not a disk-completion sleep:
-            // every sample must stay on this source after the real mark click.
             const until = Date.now() + 500;
             let observations = 0;
             while (Date.now() < until) {

@@ -1,5 +1,3 @@
-// Independent fresh-context settled render through the real UI, with no hold
-// armed. A logic mutant may never nominate itself as its pixel reference.
 import { installPdfObservations } from './observe.mjs';
 import { canvasFingerprint, publicGeometry, observedTrigger, waitForCanvasIdle } from './common.mjs';
 

@@ -6,7 +6,6 @@ export function indexTree(tree: FileTreeNode[]): IndexTreeFile[] {
     return collectFiles(tree).map(file => ({ path: file.path, kind: file.kind, handle: file.handle }));
 }
 
-/** Preserve the provider's order; a sidebar presentation sort is not identity. */
 export function indexTreeDelta(before: readonly IndexTreeFile[], after: readonly IndexTreeFile[],
     moves: readonly { from: string; to: string }[] = []): IndexTreeDelta | null {
     const old = new Map(before.map(file => [file.path, file]));

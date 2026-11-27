@@ -10,8 +10,6 @@ export interface PolygonPathLimits { readonly maxWork?: number; readonly maxVert
 type Polygon = Extract<RegionQuery, { kind: 'polygon' }>;
 const PENDING: PolygonPathResult = Object.freeze({ status: 'pending' });
 
-/** Resumable region/path intersection and containment. Boundary crossings use
- * the same certified swept job; disconnected subpaths each retain a witness. */
 export function createPolygonPathJob(paths: readonly (readonly PathOp[])[], query: Polygon, options: PathPickOptions,
     limits: PolygonPathLimits = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): PolygonPathResult; cancel(): void } {
     const maxWork = limits.maxWork ?? 3000000, maxVertices = limits.maxVertices ?? 131072;

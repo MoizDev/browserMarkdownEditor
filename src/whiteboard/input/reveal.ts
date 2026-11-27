@@ -5,8 +5,6 @@ function valid(rect: RevealBounds): boolean {
   return [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width >= 0 && rect.height >= 0
 }
 
-// A newer selection cancels both an unresolved geometry reply and any old
-// destination before visibility is considered. No independent animation clock.
 export function createSelectionReveal(services: RevealServices): SelectionReveal {
   let sequence = 0
   let latest: RevealIdentity | null = null

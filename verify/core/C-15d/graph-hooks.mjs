@@ -7,9 +7,6 @@ import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
 import { pinnedChrome, scratchDir } from '../../lib/paths.mjs';
 
-// Drives only the real app. An independent OPFS writer saves the link while
-// the graph stays mounted; the app's real observer/poll publishes the result.
-// Coordinates come from the screenshot/C9, never imported application modules.
 const args = Object.fromEntries(process.argv.slice(2).map(a => {
     const at = a.indexOf('=');
     return [a.slice(2, at), a.slice(at + 1)];
@@ -85,8 +82,6 @@ function observeScripts(context, manifest, url, name) {
         };
         for (const record of actual) check(record, 'app-request');
         if (manifest) {
-            // The manifest is only an inventory/hash identity, never the content
-            // oracle: even lazy chunks are fetched from this preview's origin.
             for (const file of Object.keys(manifest.files).filter(file => file.endsWith('.js') && !observed.has(file))) {
                 const response = await context.request.get(new URL(file, url).href);
                 check({ url: response.url(), bytes: await response.body(), status: response.status(), owner: 'supplemental' }, 'supplemental-browser-context-fetch');
@@ -102,7 +97,6 @@ async function prepare(context, url, scopeWitness = false) {
         return ['localhost', '127.0.0.1'].includes(requested.hostname) ? route.continue() : route.abort();
     });
     await context.addInitScript(({ stepMode, scopeWitness }) => {
-        // Init scripts also run in initial/opaque frames without a storage API.
         if (typeof FileSystemDirectoryHandle === 'undefined') return;
         let perf;
         window.__hookObservation = { rootWrites: 0, reports: 0, graphNowCalls: 0 };
@@ -141,8 +135,6 @@ async function prepare(context, url, scopeWitness = false) {
             return grant(await getDir.apply(this, a));
         };
         window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('C15Graph', { create: true });
-        // A draw observer at the platform boundary, independent of C9. It sees
-        // the actual canvas arguments; the screenshot remains the pixel oracle.
         const clear = CanvasRenderingContext2D.prototype.clearRect;
         CanvasRenderingContext2D.prototype.clearRect = function (...a) {
             if (this.canvas.closest('.graph-view')) {
@@ -308,7 +300,6 @@ async function arm(browser, name, url, manifest) {
             }, requireStepMs);
             assert.deepEqual(await readGraph(page), settled, 'a caller can mutate simulation/hook data through a read');
             const png = await page.locator('.graph-canvas-wrap canvas').screenshot({ path: path.join(out, `${name}-settled.png`) });
-            // A.md hashes to palette index 1, violet #8b5cf6 (hand counted).
             const centre = await pixelCentre(page, png, [139, 92, 246]);
             assert(centre.count > 20, 'sample node has no painted pixels in the screenshot');
             const projected = projectedA(settled.positions, centre);
@@ -316,8 +307,6 @@ async function arm(browser, name, url, manifest) {
             data.hook = { first: first.steps, later: later.steps, settled: settled.steps, publications: settled.publications, ring: settled.positions.ring.length, centre, projected };
         } else {
             if (await page.evaluate(() => window.__perf !== undefined)) fail(name === 'dev' ? 'D-hook' : 'P-hook', `${name} exposes __perf`);
-            // Production has no step surface. Observe the platform draw arguments
-            // stop changing, rather than assuming a fixed duration means settled.
             let stable = false;
             for (let i = 0; i < 30 && !stable; i++) {
                 const before = await page.evaluate(() => JSON.stringify(window.__graphPaint));
@@ -361,8 +350,6 @@ async function arm(browser, name, url, manifest) {
         Object.assign(report.arms[name], data);
         return data;
     } catch (error) {
-        // An anchor leak must keep its own reason even when runtime exposure
-        // would also fail. A setup/identity error is never a mutant kill.
         if (!error.reason || ['P-hook', 'D-hook'].includes(error.reason)) await scan();
         if (error.code === 'ERR_ASSERTION') fail(benchmark ? 'hand-count' : name === 'dev' ? 'D-render' : 'P-render', error.message);
         if (error.name === 'TimeoutError') fail(`${benchmark ? 'B' : name === 'dev' ? 'D' : 'P'}-flow`, error.message);
@@ -381,9 +368,6 @@ try {
     identity(report.browser === report.expectedBrowser, `Chrome ${report.browser} != ${report.expectedBrowser}`);
     const production = await buildIdentity('prod');
     const benchmark = await buildIdentity('bench');
-    // The dev server's live process (`--dev-pid`) is part of the setup identity, not an app
-    // diagnostic route. Its explicit positional Vite root must be this clean tree. argv is
-    // read from `ps` and split on spaces, so keep the root path space-free.
     const root = path.resolve(args['dev-root']);
     const dev = report.arms.dev = { identity: { root, commit: execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), status: execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }) }, scripts: [], loss: 'Dev serves source text with dead guarded hook code; text exclusion is not claimed.' };
     const pid = String(Number(args['dev-pid']));

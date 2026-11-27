@@ -1,6 +1,5 @@
 import type { LegacyShape } from './common';
 
-// A newly observed old-format field cannot be ignored just because its shape kind is known.
 const PROPS: Readonly<Record<string, readonly string[]>> = {
     draw: ['segments', 'color', 'fill', 'dash', 'size', 'isComplete', 'isClosed', 'isPen', 'scale', 'scaleX', 'scaleY'],
     highlight: ['segments', 'color', 'size', 'isComplete', 'isPen', 'scale', 'scaleX', 'scaleY'],

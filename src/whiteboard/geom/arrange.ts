@@ -57,8 +57,6 @@ export function stretch(items: readonly ArrangeItem[], axis: Axis): readonly Str
     const origin = axis === 'horizontal' ? box.x : box.y, extent = axis === 'horizontal' ? box.width : box.height;
     return items.map(({ id }) => ({ id, axis, origin, extent }));
 }
-/** Items stack in their spatial order along the axis, so the leftmost (or topmost) stays put and the rest follow it;
- *  selection order would make the result depend on the order the person clicked. */
 export function stack(items: readonly ArrangeItem[], axis: Axis, gap = 10): readonly ArrangeMove[] {
     validate(items); if (!Number.isFinite(gap) || gap < 0) throw new RangeError('Invalid stack gap');
     if (!items.length) return [];

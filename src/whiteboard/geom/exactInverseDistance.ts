@@ -4,8 +4,6 @@ import type { ExactCurvePoint } from './cubicRootCertificate';
 
 function add(a: Dyadic, b: Dyadic): Dyadic { return dyadicSubtract(a, { n: -b.n, e: b.e }); }
 
-/** Exact inverse distance space without division: every coordinate and local
- * radius is multiplied by the same nonzero affine determinant. */
 export function createExactInverseDistance(matrix: Affine): {
     map(point: ExactCurvePoint): ExactCurvePoint;
     radius(localRadius: number): Dyadic;

@@ -15,8 +15,6 @@ function middle(a: ExactPoint, b: ExactPoint): ExactPoint {
 }
 interface Classification { readonly point: ExactPoint; edge: number; winding: number; boundary: boolean }
 
-/** Closed segment clipped to a polygon using exact homogeneous intersections.
- * Each edge comparison, merge-sort move, and winding edge is a separate unit. */
 export function createExactSegmentClipJob(start: ExactPoint, end: ExactPoint, polygon: readonly ExactPoint[], options: {
     readonly maxEdges?: number; readonly maxIntersections?: number; readonly maxWork?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): ExactSegmentClipResult; cancel(): void } {

@@ -2,12 +2,9 @@ import { PdfEngineError } from '../types';
 import type { PdfiumRuntime } from './loader';
 import { heapView, readPdfiumUtf16, withPdfiumMemory } from './memory';
 
-/** PDFium's EmbeddedFiles inventory is not an exhaustive /AF union. Only
- * Filespec /Desc is a role marker; this list cannot prove attachment absence. */
 export interface PdfiumAttachment {
     index: number;
     name: string;
-    /** PDFium's public size query decodes the stream; unknown until demanded. */
     size: null;
     description?: string;
     descriptionKnown: boolean;

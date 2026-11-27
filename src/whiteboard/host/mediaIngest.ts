@@ -10,11 +10,8 @@ import type { TransactionOrigin } from '../change/ops';
 import type { BoardRuntime } from './runtime';
 import type { JobContext } from '../security/admission';
 
-// Provenance: session job authority, SEC-W4 inspection and atomic media-ingest
-// contracts; independent host wiring, no third-party source.
 export interface BoardMediaIngestOptions {
     readonly runtime: BoardRuntime;
-    /** Shared, app-governed CPU allocator; this view does not create another governor. */
     readonly memory: MemoryAllocator;
     current(): boolean;
     finishGesture(): void;
@@ -26,7 +23,6 @@ function snapshot(source: MediaSource): MediaSource {
     return { blob: new Blob([source.blob], { type: source.blob.type }), name: source.name,
         ...(source.pixelsPerWorldUnit === undefined ? {} : { pixelsPerWorldUnit: source.pixelsPerWorldUnit }) };
 }
-/** Uses the session's authority and media store; disposing this view never disposes either. */
 export function createBoardMediaIngestor(options: BoardMediaIngestOptions): MediaIngestor & { dispose(): void } {
     const { runtime } = options, lifetime = new AbortController(), leases = new Map<MediaId, MediaLease>();
     let disposed = false, inFlight = 0;

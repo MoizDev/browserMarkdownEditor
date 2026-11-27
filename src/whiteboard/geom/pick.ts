@@ -8,11 +8,8 @@ import { segmentIntersection, winding } from './predicates';
 import type { NarrowResult, PointQuery, RegionQuery } from './types';
 
 export interface PathPickOptions {
-    /** Canonical closed semantic contours, including a hollow figure's interior. */
     readonly interiorPaths?: readonly (readonly PathOp[])[];
-    /** Radius of the actual realised outline in node-local world units. */
     readonly strokeRadiusLocal: number;
-    /** Input-specific exterior margin in CSS pixels, separate from stroke width. */
     readonly marginCss: number;
     readonly errorCss: number;
     readonly maxSegments: number;

@@ -7,8 +7,6 @@ import type { PathOp } from './path';
 export type ContourBoxFillResult = Readonly<{ status: 'pending' | 'inside' | 'outside' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 const PENDING: ContourBoxFillResult = Object.freeze({ status: 'pending' });
 
-/** Classify every point of a closed box, first certifying that the contour
- * cannot cross the box and then classifying one exact representable witness. */
 export function createContourBoxFillJob(path: readonly PathOp[], transform: Affine, box: CertifiedClipBox, options: {
     readonly fillRule?: 'nonzero' | 'evenodd'; readonly maxCommands?: number; readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): ContourBoxFillResult; cancel(): void } {

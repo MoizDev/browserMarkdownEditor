@@ -1,13 +1,5 @@
 // Adapted from AICSS's ReasoningEffort (MIT, © 2026 AICSS — see
 // LICENSE-aicss; https://www.aicss.dev/components/reasoning-effort).
-//
-// Changed: controlled — `levels`, `value`, `onChange` replace the hard-coded
-// four stops and the fixed "4.7" model label (each agent CLI reports its own
-// effort levels per model, from 2 up to 6 of them); the label shows the level
-// alone; the theme comes from the panel's tokens instead of the component
-// sniffing the nearest [data-theme] with a MutationObserver; the fill, active
-// tick and focus ring follow the app's --interactive-accent (a custom accent
-// included) instead of #006aff. The shell geometry is the original's.
 
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
@@ -30,9 +22,7 @@ function easeOut(t: number) {
 }
 
 const LEFT_SHOULDER = 23.572;
-/** Space from each glyph edge to the foot of the label shoulder. */
 const TEXT_SIDE = 20;
-/** How far the outer foot walks down the cap once it passes the crown. */
 const PHI_MAX = 0.6;
 const PHI_REACH = 36;
 
@@ -83,8 +73,6 @@ function shellGeom(cx: number, plateauW: number) {
         }
     }
 
-    // The tilted shoulder is shorter in x, which would pull the text onto the
-    // outer edge. Grow the plateau inward by that loss and keep the label with it.
     const insetL = phiL > 0 ? LEFT_SHOULDER * (1 - Math.cos(phiL)) : 0;
     const insetR = phiR > 0 ? LEFT_SHOULDER * (1 - Math.cos(phiR)) : 0;
     topR += insetL;
@@ -93,7 +81,6 @@ function shellGeom(cx: number, plateauW: number) {
     return { topL, topR, phiL, phiR, insetL, insetR };
 }
 
-/** Reference shoulder. phi tilts the foot onto the cap tangent; 0 is the flat scoop. */
 function shoulderCmds(footX: number, footY: number, platX: number, platY: number, phi: number, dir: 1 | -1) {
     const xScale = Math.abs(platX - footX) / LEFT_SHOULDER;
     const yScale = Math.max(0.001, (footY - platY) / 20);
@@ -115,7 +102,6 @@ function shoulderCmds(footX: number, footY: number, platX: number, platY: number
     return `C${fmt(c4)} ${fmt(c3)} ${fmt(p1)}C${fmt(c2)} ${fmt(c1)} ${fmt(p0)}`;
 }
 
-/** One outline: the pill, with the label shoulder grown out of its top edge. */
 function shellPath(cx: number, open: number, plateauW: number) {
     const trackTop = BUMP_H;
     const trackBot = BUMP_H + HEIGHT;
@@ -162,11 +148,9 @@ function reducedMotion(): boolean {
 }
 
 export interface ReasoningEffortProps {
-    /** Low → high, as the CLI reports them. At least two. */
     levels: string[];
     value: string;
     onChange: (level: string) => void;
-    /** How a level reads ("xhigh" → "Extra high"). */
     format?: (level: string) => string;
     label?: string;
 }
@@ -197,8 +181,6 @@ export function ReasoningEffort({ levels, value, onChange, format = s => s, labe
     const onChangeRef = useRef(onChange);
     useEffect(() => { onChangeRef.current = onChange; });
 
-    // A value changed from outside (another chat selected) moves the thumb —
-    // but never under a finger that is dragging it.
     useEffect(() => {
         if (draggingRef.current || Math.round(valueRef.current) === indexOfValue) return;
         valueRef.current = indexOfValue;
@@ -249,8 +231,6 @@ export function ReasoningEffort({ levels, value, onChange, format = s => s, labe
         };
         raf = requestAnimationFrame(step);
         return () => cancelAnimationFrame(raf);
-        // Runs on drag start/end only, exactly as the original's; the
-        // levels/value read here are the ones current at that moment.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [dragging]);
 
@@ -373,7 +353,6 @@ export function ReasoningEffort({ levels, value, onChange, format = s => s, labe
     const fillW = Math.min(TRACK, thumbRight + EDGE_PAD);
     const active = clamp(Math.round(display), 0, stops - 1);
     const level = levels[active] ?? '';
-    // The original's four tick heights, spread over however many stops there are.
     const tickHeight = (i: number) => 4.8 + (stops > 1 ? (i / (stops - 1)) * 4.8 : 0);
     const plateau = shellGeom(center, plateauW);
     const labelX = (plateau.topL + plateau.topR) / 2 + (plateau.insetL - plateau.insetR) / 2;

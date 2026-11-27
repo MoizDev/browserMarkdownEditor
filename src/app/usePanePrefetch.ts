@@ -11,14 +11,6 @@ function whenIdle(run: () => void): void {
 }
 
 export function usePanePrefetch(fileTree: FileTreeNode[]): void {
-  /**
-   * Warm the heavy panes for the kinds of file this vault actually holds.
-   *
-   * Walks `fileTree`, which is already in memory — no disk reads — and only
-   * when the tree changes shape enough to matter. `prefetchPanes` itself is
-   * idle-scheduled and fetches each chunk once, so calling it after every
-   * refresh costs nothing.
-   */
   useEffect(() => {
     if (!fileTree.length) return;
     const kinds = { epub: false, pdf: false, drawing: false, nativeDrawing: false, notebook: false };
@@ -31,9 +23,6 @@ export function usePanePrefetch(fileTree: FileTreeNode[]): void {
       if (kinds.epub && kinds.pdf && kinds.drawing && kinds.nativeDrawing && kinds.notebook) break;
     }
     prefetchPanes(kinds);
-    // A PDF's gestures (rotate, print, unsigned copy) load on first use; warm
-    // them beside its pane, so a turn of the page never waits on a fetch and
-    // two quick clicks run in the order they were made.
     if (kinds.pdf) whenIdle(() => { void loadChunk(() => import('./pdfGestures')).catch(() => {}); });
   }, [fileTree]);
 }

@@ -1,13 +1,3 @@
-; VaultAgent-Setup.exe: unsigned, per-user (no admin prompt).
-;
-;   iscc /DAppVersion=1.2.3 /DBinaryPath=path\to\vaultagent.exe /DOutputDir=path\to\out helper\packaging\windows\VaultAgent.iss
-;
-; Installs %LOCALAPPDATA%\VaultAgent\vaultagent.exe, then `vaultagent.exe install`
-; (run from [Code], not [Run], so a failure is reported instead of ignored)
-; registers the per-user logon task "VaultAgent" and starts it. The panel's
-; Uninstall runs unins000.exe /VERYSILENT, whose [UninstallRun] drops the task and
-; stops the helper before the files go, so Apps & Features stays in step.
-
 #ifndef AppVersion
   #error Pass /DAppVersion=x.y.z
 #endif
@@ -17,7 +7,6 @@
 #ifndef OutputDir
   #define OutputDir "."
 #endif
-; File version info takes digits only: 1.2.3-rc.1 -> 1.2.3.
 #define NumericVersion Copy(AppVersion, 1, Pos("-", AppVersion + "-") - 1)
 
 [Setup]
@@ -35,7 +24,6 @@ DisableDirPage=yes
 DisableProgramGroupPage=yes
 DisableReadyPage=yes
 UsePreviousAppDir=no
-; An x64 binary; Windows on Arm runs it under emulation.
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
@@ -44,7 +32,6 @@ OutputBaseFilename=VaultAgent-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-; The running helper is stopped by PrepareToInstall below, not by Restart Manager prompts.
 CloseApplications=no
 RestartApplications=no
 UninstallDisplayName=VaultAgent
@@ -63,14 +50,11 @@ Filename: "{app}\vaultagent.exe"; Parameters: "uninstall-service"; Flags: runhid
 [UninstallDelete]
 Type: files; Name: "{app}\vaultagent.log"
 Type: files; Name: "{app}\vaultagent.log.1"
-; Self-update's leftovers (the replaced .exe, an interrupted download): normally
-; cleaned at the helper's next start, but one left behind must not keep {app} alive.
 Type: files; Name: "{app}\vaultagent.previous-*.exe"
 Type: files; Name: "{app}\vaultagent.update-*"
 Type: dirifempty; Name: "{app}"
 
 [Code]
-{ A reinstall must replace a running vaultagent.exe: stop the task and any helper first. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
@@ -80,7 +64,6 @@ begin
   Result := '';
 end;
 
-{ Registers the logon task and starts the helper. [Run] would ignore a failure and still say "running". }
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;

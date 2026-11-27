@@ -16,7 +16,6 @@ const isolate = (s: string) => oneOf(s, 'LRI', 'RLI', 'FSI');
 const direction = (level: number) => level % 2 ? 'R' : 'L';
 const strong = (s: string) => s === 'L' ? 'L' : oneOf(s, 'R', 'AN', 'EN') ? 'R' : '';
 
-/** Resolve one paragraph, retaining removed formatting characters for source mapping. */
 export function resolveBidi(text: string, dir: Direction = 'auto'): BidiParagraph {
     const chars: Item[] = [];
     let start = 0;
@@ -26,7 +25,6 @@ export function resolveBidi(text: string, dir: Direction = 'auto'): BidiParagrap
         chars.push({ cp, start, end: start + c.length, original: type, type, level: 0, match: -1, removed: oneOf(type, 'RLE', 'LRE', 'RLO', 'LRO', 'PDF', 'BN') });
         start += c.length;
     }
-    // Match isolates and find the first strong type in each isolate's own scope.
     const stack: number[] = [];
     const first = new Map<number, string>();
     for (let i = 0; i < chars.length; i++) {
@@ -175,7 +173,6 @@ function resolveBrackets(c: Item[], sos: string): void {
     }
 }
 
-/** L1/L2: visual order of source character indices for a wrapped line. */
 export function reorderBidiLine(paragraph: BidiParagraph, from: number, to: number): number[] {
     const chars = paragraph.characters;
     const order: number[] = [];

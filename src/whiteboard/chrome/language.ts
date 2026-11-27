@@ -9,7 +9,6 @@ export interface LanguageTable {
 
 export interface BoardLocale { readonly code: string; readonly name: string; readonly dir: 'ltr' | 'rtl'; readonly ready: boolean }
 export const boardLocales: readonly BoardLocale[] = locales as readonly BoardLocale[];
-// Each table is a typed module (see boardLanguageTable.ts): completeness and placeholder parity are compile-time facts.
 const files = import.meta.glob<{ default: LanguageTable }>('./i18n/*.ts');
 export function availableBoardLocales(): readonly BoardLocale[] {
     return boardLocales.filter(locale => locale.ready && !!files[`./i18n/${locale.code}.ts`]);
@@ -41,8 +40,6 @@ export function loadBoardLanguage(code: string): Promise<LanguageTable> {
 }
 
 export function translateBoard(table: LanguageTable, key: string, values: Readonly<Record<string, string | number>> = {}): string {
-    // Total: a complete table has no missing key (the type check guarantees it), and a stray dynamic key shows its id
-    // rather than unmounting the board.
     const template = table.strings[key] as string | undefined;
     if (template === undefined) return key;
     return template.replace(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g, (_, name: string) => {

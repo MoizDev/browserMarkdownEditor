@@ -1,5 +1,3 @@
-// External IPC/CDP fault: pause the unchanged production inventory at its
-// bounded stream read, then terminate the public Worker. Never call app code.
 import { createHash } from 'node:crypto';
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -15,7 +13,6 @@ export async function armRoleWorkerDeath(page, origin, artifact) {
     const point = source.lastIndexOf(';', matches[0].index) + 1;
     const readEnd = matches[0].index + matches[0][0].length;
     if (matches[0].index - point > 256) throw new Error('Read no longer occupies one bounded statement');
-    // V8 source positions count ALL JavaScript line terminators, not only LF.
     const starts = [0, ...[...source.matchAll(/\r\n|[\n\r\u2028\u2029]/g)].map(match => match.index + match[0].length)];
     const relativeLine = starts.findLastIndex(start => start <= point);
     const state = { url, sha256: artifact.sha256, targets: [], scripts: [], debuggerReady: false,
@@ -28,8 +25,6 @@ export async function armRoleWorkerDeath(page, origin, artifact) {
             window.__p09.roleRequestsForwarded = (window.__p09.roleRequestsForwarded ?? 0) + 1;
             nativePost.call(worker, message);
         };
-        // Playwright's debugger client may resume boot before our breakpoint
-        // exists. Hold the real IPC packet, unchanged, until we are ready.
         window.__p09ReleaseRoleTransport = () => {
             ready = true;
             for (const item of held) forward(item.worker, item.message);
@@ -124,8 +119,6 @@ export async function armRoleWorkerDeath(page, origin, artifact) {
         if (++state.readPauseCount > 2) { state.errors.push('One legacy read reached more than its source/snapshot pair'); return; }
         if (state.terminationRequested) return;
         state.terminationRequested = true;
-        // Stop JS before the asynchronous main-page Worker.terminate roundtrip;
-        // another attached debugger can otherwise resume the first pause.
         void send(sessionId, 'Runtime.terminateExecution').catch(error => { state.interruptReply = error.message; });
         void page.evaluate(() => {
             const worker = window.__p09.roleWorkers?.at(-1);

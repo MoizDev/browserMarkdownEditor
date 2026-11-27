@@ -45,7 +45,6 @@ async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
     return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-/** Reject dimensions before asking the browser decoder to allocate a bitmap. */
 export async function normalizeImage(bytes: Uint8Array, mime: 'image/png' | 'image/jpeg'): Promise<PdfImageData> {
     const info = dimensions(bytes, mime);
     const { width, height } = info;

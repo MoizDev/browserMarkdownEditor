@@ -20,22 +20,16 @@ export interface NormalizationStep {
 }
 const NO_ENDS: readonly CapturedEnd[] = Object.freeze([]);
 
-/** A connector end or a polyline end: both carry one Attachment per terminal, stored differently. */
 function attachmentOf(node: ConnectorNode | PolylineNode, terminal: 'start' | 'end'): Attachment | null | undefined {
     return node.kind === 'connector' ? node[terminal].attach : terminal === 'start' ? node.startAttach : node.endAttach;
 }
 
-// The last painted tip is captured WHILE the target still exists and its sheet
-// still agrees with the connector (geometry §8.5). Captures live on ordinary staged
-// entries, so savepoint rollback discards them without another restoration journal.
 export function captureBeforeChange(doc: BoardDoc, op: Op, geometry?: ChangeGeometry): readonly CapturedEnd[] {
     if (op.t !== 'delete' && !(op.t === 'set' && (op.key === 'parent' || op.key === 'page'))) return NO_ENDS;
     const root = doc.nodes.get(op.id);
-    if (!root) return NO_ENDS; // The validator supplies the actual refusal.
+    if (!root) return NO_ENDS;
     if (op.t === 'set') {
         if (op.key === 'parent' && sheetOf(doc, root.id) === sheetOf(doc, op.value)) return NO_ENDS;
-        // Accommodate paired page=-1, parent writes in either order. A negative
-        // root page is a temporary state, not an origin on page zero to capture.
         if (op.key === 'page' && !(doc.kind !== 'whiteboard' && isSheetParent(doc, root.parent) && op.value === -1)) return NO_ENDS;
     }
     const attached = new Set<NodeId>();
@@ -59,11 +53,6 @@ export function captureBeforeChange(doc: BoardDoc, op: Op, geometry?: ChangeGeom
     for (const id of attached) {
         const node = doc.nodes.get(id);
         if (!node || (node.kind !== 'connector' && node.kind !== 'polyline') || !usableOrigin(node)) continue;
-        // A tip is resolved from every shape the line is bound to. Once one of them is gone (deleted by an earlier op of this
-        // same change, which captured both tips while both shapes stood) the line has no geometry to read, and the read failed
-        // the whole change as a fault of the session: erasing the border of a frame that held two shapes joined by an arrow, or
-        // deleting such a frame or both shapes, put "Could not open canvas: Geometry unavailable … connector target is pending"
-        // in the board's place (measured: 3 of 3, also on the build before the eraser's rewrite). The earlier capture stands.
         if ((['start', 'end'] as const).some(terminal => { const bound = attachmentOf(node, terminal); return !!bound && !doc.nodes.has(bound.target); })) continue;
         for (const terminal of ['start', 'end'] as const) {
             const attachment = attachmentOf(node, terminal);
@@ -84,8 +73,6 @@ export function normalizeChanges(doc: BoardDoc, builder: OpSink, steps: readonly
     const ends = new Map<NodeId, { start?: CapturedEnd; end?: CapturedEnd }>();
     let index = 0;
     const scan = () => {
-        // steps is the builder's live append-only array. Normalization pushes its
-        // real follow-on ops through the same validator/inverse/sample path.
         for (; index < steps.length; index++) {
             const step = steps[index], op = step.op;
             for (const end of step.captured) {
@@ -132,8 +119,6 @@ export function normalizeChanges(doc: BoardDoc, builder: OpSink, steps: readonly
         }
         scan();
     }
-    // Both members of a relationship may have moved together. Decide against
-    // the FINAL sheet membership, never detach just because one moved first.
     for (const [id, pair] of ends) {
         const node = doc.nodes.get(id);
         if (node?.kind === 'connector') {
@@ -148,7 +133,6 @@ export function normalizeChanges(doc: BoardDoc, builder: OpSink, steps: readonly
         const point = worldToLocal(doc, node, captured.world);
         builder.push({ t: 'set', id: node.id, key: terminal, value: { x: point.x, y: point.y, attach: null } });
     }
-    // A polyline's ends live in its points array, so both moved ends share one points write.
     function detachPolyline(node: PolylineNode, pair: { start?: CapturedEnd; end?: CapturedEnd }): void {
         const points = node.points.map(point => ({ ...point }));
         let moved = false;

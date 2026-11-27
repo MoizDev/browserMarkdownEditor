@@ -1,6 +1,3 @@
-/* PDF-private CPU mirrors for the temporary platform preview. The classic canvas remains
- * the producer and is never transferred or cleared by this store. */
-
 import type { PreviewRect } from '../../utils/pdfPreviewTypes';
 
 interface BitmapLease { readonly id: number; readonly bytes: number }
@@ -27,7 +24,6 @@ interface PendingCopy {
     cancelled: boolean;
 }
 
-// The 512px interior plus one real texel per side fits the scheduler's one-tile progress admission.
 const CROP_SIDE = 512;
 
 function closeTiles(tiles: readonly PreviewTile[], allocator: BitmapAllocator): void {
@@ -37,7 +33,6 @@ function closeTiles(tiles: readonly PreviewTile[], allocator: BitmapAllocator): 
     }
 }
 
-/** Owns its copies, not the viewer canvases. All mutation is on the main thread. */
 export class PreviewBitmapStore {
     private readonly pages = new Map<number, PreviewPage>();
     private readonly pending = new Map<number, PendingCopy>();
@@ -59,8 +54,6 @@ export class PreviewBitmapStore {
         return bytes;
     }
 
-    /** The caller's current predicate checks document identity, request serial and source canvas.
-     * Check it after every await: createImageBitmap can finish after eviction, hide or a new blit. */
     async publish(index: number, key: string, canvas: HTMLCanvasElement, destination: PreviewRect, current: () => boolean, interest?: PreviewRect): Promise<boolean> {
         this.cancel(index);
         if (this.disposed || !this.visible || !current()) return false;

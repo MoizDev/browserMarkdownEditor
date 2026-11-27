@@ -23,7 +23,6 @@ const DEFAULT_BYTES = 16 * 1024 * 1024;
 const DEFAULT_ENTRIES = 1024;
 const emptyWords = new WordBlockIndex();
 
-/** A splice preserves every untouched block's wordless classification. */
 export function inheritWordBoundaries(before: RichText, after: RichText, first: number, removed: number, inserted: number): void {
     emptyWords.inherit(before, after, first, removed, inserted);
 }
@@ -52,13 +51,7 @@ function* blockStringSteps(block: Block): Generator<void, string> {
     return parts.join('');
 }
 
-/**
- * Navigation is indexed by immutable blocks: no joined document and no array of
- * per-character boundary objects. ICU's Segments supports indexed containing()
- * even when a grapheme spans several differently styled runs.
- */
 export class TextBoundaries {
-    // LRU values retain text/ICU views, not blocks and their potentially large opaque data.
     private readonly entries: WeakIdentityLru<Block, BlockEntry>;
 
     constructor(byteLimit = DEFAULT_BYTES, entryLimit = DEFAULT_ENTRIES) {
@@ -69,7 +62,6 @@ export class TextBoundaries {
         const cached = this.entries.get(block);
         if (cached) return cached;
         const text = yield* blockStringSteps(block);
-        // Charge for the retained string and both possible ICU segmentation views.
         const bytes = 512 + text.length * 12;
         const result: BlockEntry = { text, bytes };
         this.entries.set(block, result, bytes);
@@ -81,7 +73,6 @@ export class TextBoundaries {
         return Math.max(0, Math.min(projectionLength(text), Number.isFinite(offset) ? Math.floor(offset) : 0));
     }
 
-    /** A block separator participates in CRLF when the preceding block ends in CR. */
     *isBoundarySteps(text: RichText, offset: number): Generator<void, boolean> {
         if (!text.blocks.length || !Number.isSafeInteger(offset) || offset < 0) return false;
         yield* ensureProjectionSteps(text);
@@ -98,7 +89,6 @@ export class TextBoundaries {
         return finishTextStepsCooperative(this.isBoundarySteps(text, offset), options);
     }
 
-    /** One extended grapheme in projection order, including a CR+separator pair. */
     *adjacentSteps(text: RichText, offset: number, direction: BoundaryDirection): Generator<void, number> {
         yield* ensureProjectionSteps(text);
         const length = projectionLength(text), cursor = this.clamp(text, offset);
@@ -121,7 +111,6 @@ export class TextBoundaries {
         return finishTextSteps(this.adjacentSteps(text, offset, direction));
     }
 
-    /** Expand an arbitrary UTF-16 offset to the nearest stop in the requested direction. */
     *snapSteps(text: RichText, offset: number, direction: BoundaryDirection): Generator<void, number> {
         yield* ensureProjectionSteps(text);
         const cursor = this.clamp(text, offset);
@@ -150,12 +139,10 @@ export class TextBoundaries {
 
     selectBlock(text: RichText, offset: number): BoundarySelection {
         const point = projectionPosition(text, this.clamp(text, offset));
-        // A trailing CR belongs to the following separator, not to a partial selection.
         const end = point.start + point.length;
         return { anchor: point.start, focus: this.snap(text, end, 1) };
     }
 
-    /** Word motion skips non-word segments and the synthetic separators between blocks. */
     word(text: RichText, offset: number, direction: BoundaryDirection): number {
         const length = projectionLength(text), cursor = this.clamp(text, offset);
         if (direction < 0 && cursor === 0) return 0;
@@ -221,7 +208,6 @@ export class TextBoundaries {
         }
     }
 
-    /** Warm only proven wordless blocks; aborting leaves any prior proofs valid. */
     primeWords(text: RichText, options: PlainTextOptions): Promise<void> {
         return finishTextStepsCooperative(this.primeWordSteps(text), options);
     }
@@ -229,5 +215,4 @@ export class TextBoundaries {
     clear(): void { this.entries.clear(); }
 }
 
-/** Bounded shared cache for the synchronous, view-independent rich operation API. */
 export const textBoundaries = new TextBoundaries();

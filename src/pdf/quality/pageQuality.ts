@@ -27,7 +27,6 @@ interface PageRecord {
     samplers: Jbig2ImageSampler[];
 }
 
-/** Sampling uses only delivered tile interiors; no pixel buffer is retained. */
 export function createPdfPageQuality(): PdfPageQuality {
     const pages = new Map<string, Map<number, PageRecord>>();
     const lru = new Map<PageRecord, { docKey: string; page: number }>();

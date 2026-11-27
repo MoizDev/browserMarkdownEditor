@@ -1,4 +1,3 @@
-// CLI is quick UNQUALIFIED readings only. Accepted imports belong to post-K7 review.
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';

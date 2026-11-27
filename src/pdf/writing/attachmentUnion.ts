@@ -2,7 +2,6 @@ import type { AttachmentInput } from './protocol';
 import { WRITE_MARK_ATTACHMENT } from './writeIdentity';
 
 export interface PreservedAttachment {
-    /** The original name remains available when a collision needs an alias. */
     originalName: string;
     name: string;
     bytes: Blob;
@@ -15,8 +14,6 @@ function recoveredName(name: string, number: number): string {
     return dot > 0 ? `${name.slice(0, dot)} (recovered ${number})${name.slice(dot)}` : `${name} (recovered ${number})`;
 }
 
-/** Union by name+hash, never by hash alone. App-owned replacements reserve their
- * names before unknowns are assigned aliases; an outer-only attachment survives. */
 export function preserveAttachmentUnion(pristine: readonly AttachmentInput[], outer: readonly AttachmentInput[],
     appAttachments: readonly AttachmentInput[]): PreservedAttachment[] {
     const reserved = new Set(['original.pdf', 'board.json', 'tldraw-snapshot.json', WRITE_MARK_ATTACHMENT]);

@@ -27,7 +27,6 @@ function frameTag(value: unknown): CoverageFrame {
     } };
 }
 
-// This entry is never imported by production code; the build guard also removes its endpoint.
 if (__BME_BENCH__) serve({
     protocol: 1,
     buildId: 'coverage-count-1',
@@ -70,7 +69,6 @@ if (__BME_BENCH__) serve({
                     countMs += performance.now() - started;
                     if (y + bandRows < height) await context.slice();
                 }
-                // Nominal band canvas (12 B/px) and readback (4 B/px); source is accounted separately.
                 return { frame, outside, hole, standin, current, invalid, pixels, ownedScratchBytes: coverageScratchBytes(width, height), countMs };
             } finally {
                 bitmap.close();

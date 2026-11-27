@@ -41,8 +41,6 @@ export function segmentIntersection(a: Vec2, b: Vec2, c: Vec2, d: Vec2): Segment
         if (s === 0 && onSegment(u, v, p)) return { kind: 'point', point: p };
     }
     if (!(abC * abD < 0 && cdA * cdB < 0)) return { kind: 'none' };
-    // A floating determinant may contain zero even after exact orientation
-    // proves a proper crossing; homogeneous arithmetic has no such division.
     const intersection = exactIntersection(exactLineThrough(a, b), exactLineThrough(c, d));
     if (!intersection) throw new RangeError('Proper segments unexpectedly have parallel lines');
     const { x, y } = exactPointIntervals(intersection);

@@ -37,7 +37,6 @@ function points(value: CanvasPoint[], pressure: boolean, notes: string[]): Canva
     return result;
 }
 
-/** Validates all numeric/text constraints before an op can grow a notebook or stage edits. */
 export function validateAgentOp(op: CanvasOp): { readonly op: CanvasOp; readonly notes: readonly string[] } {
     const notes: string[] = [];
     if ('page' in op && op.page !== undefined && (!Number.isSafeInteger(op.page) || op.page < 1)) throw new AgentOpRefused('page must be a positive integer');

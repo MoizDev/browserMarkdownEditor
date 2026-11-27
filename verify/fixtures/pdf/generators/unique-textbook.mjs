@@ -1,4 +1,3 @@
-// Entirely authored; proposed licence CC0-1.0 awaits the owner's approval.
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { documentBuilder, emit, parseArgs, seededRandom } from './authored-paper-15.mjs';

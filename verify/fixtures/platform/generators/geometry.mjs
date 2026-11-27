@@ -65,8 +65,6 @@ for (const variant of variants) {
             inherited.push({ page, box, media: variant.media, rotation });
     }
 }
-// Put inherited attributes on a one-child Pages node after all pages have been inserted: the
-// library's append operation otherwise rewrites the parent while balancing its own page tree.
 const root = document.catalog.Pages();
 const kids = root.lookup(PDFName.of('Kids'), PDFArray);
 for (const { page, box, media, rotation } of inherited) {
@@ -87,7 +85,6 @@ await write('geometry.oracle.json', jsonBytes({
     schema: 1, id: identity.id, seed, coordinates: 'PDF default user space to page-local top-left points including UserUnit; clockwise rotation', pages,
 }));
 for (const [name, box] of [['zero-width', '[0 0 0 400]'], ['non-finite', '[0 0 NaN 400]']]) {
-    // Intentionally malformed tokens are separate refusal inputs, never members of the valid corpus.
     const bytes = Buffer.from(`%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox ${box} >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n`, 'ascii');
     await write(`geometry-invalid-${name}.pdf`, bytes);
 }

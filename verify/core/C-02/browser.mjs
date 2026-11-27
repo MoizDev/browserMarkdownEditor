@@ -82,8 +82,6 @@ export async function launch() {
 }
 
 export async function seed(page, name, files, directories = []) {
-    // This is outside the app path: the same native OPFS calls an external
-    // writer would make, with no app module imported or callback invoked.
     await page.evaluate(async ({ name, files, directories }) => {
         const root = await (await navigator.storage.getDirectory()).getDirectoryHandle(name, { create: true });
         const directory = async parts => {
@@ -128,9 +126,6 @@ export async function fullTree(page, manifest) {
         if (await collapse.isVisible()) await collapse.click();
         await page.getByRole('button', { name: 'Expand all', exact: true }).click();
     }
-    // An empty vault has no last row; its named switcher + absent welcome are
-    // its completion witness. Every nonempty fixture requires ALL rows and the
-    // final expected row, never a quiet enumeration counter or any early row.
     if (manifest.length) {
         await page.waitForFunction(length => document.querySelectorAll('.nav-files-container .tree-item[data-path]').length === length, manifest.length, { timeout: 60000 });
         await page.locator(`.tree-item[data-path="${manifest.at(-1)}"]`).waitFor({ state: 'attached' });

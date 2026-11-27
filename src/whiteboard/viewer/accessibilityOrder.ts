@@ -9,8 +9,6 @@ export interface AccessibilityOrderOptions {
     error(error: unknown): void;
 }
 
-/** Count eligible siblings without materializing an unbounded accessibility
- * mirror. A newer selection cancels the old scan before it can announce. */
 export function createAccessibilityOrder(options: AccessibilityOrderOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     let disposed = false, generation = 0, unschedule: (() => void) | undefined;

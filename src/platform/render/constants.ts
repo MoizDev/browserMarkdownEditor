@@ -1,8 +1,5 @@
 import type { RenderConstants } from './types';
 
-/** Fixed policy from rendering.md §4:115–132 and rendering-design.md §6. MiB are binary, not measurements.
- * Keep runtime values out of the type modules, and freeze nested policy records as well as the root.
- */
 export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     maxAppContexts: 8,
     reservedTerminalContexts: 1,
@@ -32,7 +29,6 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     tileGutterTexels: 1,
     mediaTileInteriorPixels: 1024,
     movingTileLevelsPerOctave: 2,
-    // Bounded tile motion, low coverage and request demand (rendering-design.md §5.1–5.7).
     motionLevelKeepMinDivisor: 1.15,
     motionLevelKeepMaxFactor: 1.6,
     versionBridgeDurationMs: 2000,
@@ -60,15 +56,10 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     gpuGrantBaseBytes: 33554432,
     gpuGrantPerVisiblePaneBytes: 16777216,
     gpuGrantPerVisiblePixelBytes: 24,
-    /** The DPR the GPU target's fixed terms scale to at most (by its square): a desktop's 2; a higher ratio adds only its pixels. */
     gpuGrantMaxDpr: 2,
     cpuGrantMinBytes: 33554432,
     cpuGrantPerVisiblePaneBytes: 8388608,
-    // 8 B per visible device pixel held the board's working canvases and nothing for a picture shown across the view: at DPR 2 a
-    // 4000x3000 picture's view tiles were refused beside them and quality stepped down forever with the picture never drawn
-    // (measured, canvas2d, 1872x1456 device px). 4 B more per pixel is one RGBA copy of the view for picture tiles.
     cpuGrantPerVisiblePixelBytes: 12,
-    // Governor policy from rendering-design.md §6.1–6.4; no thresholds are inferred from hardware.
     deviceMemoryLowGiB: 4,
     deviceMemoryMiddleGiB: 8,
     deviceMemoryHighGiB: 16,
@@ -79,22 +70,13 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     decodedRgbaBytesPerPixel: 4,
     memorySoftPressureRatio: 0.9,
     memoryTrimTargetRatio: 0.8,
-    /** Most of the GPU pool a live gesture's working set (wet ink) may hold; it is never trimmed while held. */
     liveInputGpuFraction: 0.25,
     qualityReductionFactor: 0.8,
     minInteractiveQualityScale: 0.5,
     memoryRecoveryDelayMs: 5000,
-    // The cool window after the governor made the room itself (it trimmed what no frame draws): the rest is already there, and the
-    // full window held a WebGL2 PDF at 0.8, its editing cover up, for 5 s after every such step (t21: back to 1 within 3 s).
     memoryMadeRoomRecoveryDelayMs: 1000,
-    // A memory notice describes a state the person can see, so it waits until that state has lasted. Measured on a 40-page PDF at
-    // DPR 2: the CPU floor moved with tile alignment as the view scrolled, a few KB either side of the grant, and announced at once
-    // the notice was raised 10-16 times per run; on a board, a notice shown at once stayed 16 ms (one soft zoom frame).
     memoryNoticeDelayMs: 1000,
     qualityStepSettleMs: 300,
-    // A real trouble at a level (a device limit, an allocation refusal) re-fires whenever the level is retried at once, a raise/drop
-    // cycle every ~5 s. The back-off spaces the retries 5, 10, 20, 40, 60 s and forgets them once the level holds 30 s. Measured with
-    // forced troubles at full quality (gpu-h13): retries 8.0, 12.1 and 20 s after each failure.
     qualityFailureBackoffMinMs: 5000,
     qualityFailureBackoffMaxMs: 60000,
     qualityFailureResetMs: 30000,

@@ -16,7 +16,6 @@ function routeValue(value: RouteSlot | PdfViewer | undefined): PdfViewer | undef
     return viewer === 'tiled' ? viewer : undefined;
 }
 
-/** App chooses once when the session is created; graph/pane remounts only read it (C7.3). */
 export function ensurePdfSessionRoute(session: PdfRouteSession, inherited?: PdfViewer): PdfViewer {
     const existing = session.getSlot<RouteSlot | PdfViewer>(pdfRouteSlot);
     const route = routeValue(existing) ?? routeValue(inherited) ?? routeEngines().pdfViewer;
@@ -29,7 +28,6 @@ export function readPdfSessionRoute(session: PdfRouteSession): PdfViewer | undef
     return routeValue(session.getSlot<RouteSlot | PdfViewer>(pdfRouteSlot));
 }
 
-/** The caller must bind this explicit choice to the live App session. */
 export function choosePdfSessionRoute(session: PdfRouteSession, viewer: PdfViewer): void {
     if (viewer !== 'tiled') throw new RangeError('The Classic PDF engine is no longer available');
     const existing = session.getSlot<RouteSlot | PdfViewer>(pdfRouteSlot);

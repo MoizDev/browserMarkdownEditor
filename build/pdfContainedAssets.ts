@@ -4,7 +4,6 @@ import { build } from 'esbuild';
 import type { Plugin } from 'vite';
 import { bundleContainedRuntime } from '../src/platform/containedFrameBuild.mjs';
 
-/** Generated in memory from fixed first-party sources, never a checked-in stale bootstrap. */
 export function pdfContainedAssets(): Plugin {
     const root = fileURLToPath(new URL('../', import.meta.url));
     const brokerId = '\0virtual:pdf-engine-broker', workerId = '\0virtual:pdf-engine-worker', metadataId = '\0virtual:pdf-engine-metadata';

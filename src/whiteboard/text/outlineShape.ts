@@ -85,7 +85,6 @@ function validGlyphPath(path: GlyphPath): boolean {
     return true;
 }
 
-/** Validate the whole fragment before exposing a path, so fallback never follows partial vector output. */
 export async function prepareTextOutline(fragment: PaintFragment, face: Face, baseline: number,
     context: WorkerContext): Promise<PreparedTextOutline | null> {
     current(context);
@@ -177,7 +176,6 @@ export async function prepareTextOutline(fragment: PaintFragment, face: Face, ba
     }
 }
 
-/** Legacy consumers receive one path; streaming sinks can consume the same path in bounded chunks. */
 export async function shapeTextFragment(fragment: PaintFragment, face: Face, baseline: number, context: WorkerContext): Promise<PathCommand[] | null> {
     const prepared = await prepareTextOutline(fragment, face, baseline, context);
     if (!prepared) return null;

@@ -11,7 +11,6 @@ import { copyText } from '../../../utils/clipboard';
 export interface CodeBlockProps {
     lang: string;
     code: string;
-    /** Cap the body's height (px) and scroll inside it. */
     maxHeight?: number;
     lineNumbers?: boolean;
 }

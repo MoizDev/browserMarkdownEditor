@@ -37,7 +37,6 @@ export function polylineSurfaceClips(doc: BoardDoc, node: Readonly<Node>): Attac
     return result.reverse();
 }
 
-/** Canonical terminal resolution shared by staged geometry and attachment gestures. */
 export async function resolvePolylinePoints(node: AttachedPolyline, doc: BoardDoc, surfaces: ReadonlyMap<NodeId, AttachmentSurface>, options: {
     readonly tolerance: number; readonly signal: AbortSignal; readonly cooperate?: () => Promise<void>; readonly check: () => void;
 }): Promise<readonly Point[]> {
@@ -55,7 +54,6 @@ export async function resolvePolylinePoints(node: AttachedPolyline, doc: BoardDo
     }
 }
 
-/** Resolve both bindings against one staged document and the renderer's actual attachment surfaces. */
 export async function resolvePolylineAttachments(node: AttachedPolyline, options: PolylineAttachmentOptions): Promise<ResolvedPolylineAttachments> {
     return resolvePolylineAttachmentChain(node, options, new Set());
 }

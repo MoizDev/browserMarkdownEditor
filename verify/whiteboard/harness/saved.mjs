@@ -1,6 +1,4 @@
 import { createRequire } from 'node:module';
-// Reference adapter ONLY: call the installed app's public decoder to observe today's user data.
-// The replacement engine/importer must contain/depend on none of this package's code.
 const req=createRequire(import.meta.url);
 const {b64Vecs}=req('@tldraw/tlschema');
 

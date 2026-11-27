@@ -1,4 +1,3 @@
-// Exploratory by default; an accepted timing also needs BME_BENCH_WINDOW_MINUTES (lib/bench/lock.mjs).
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runBenchmark } from '../lib/bench/runner.mjs';
@@ -18,7 +17,6 @@ const result = await runBenchmark({
     arms: { A: { dist: resolve(armA) }, B: { dist: resolve(armB) } },
     metric: { name: 'noteOpenToPaintMs', unit: 'ms', rule: 'no-regression',
         comparison: 'relative', threshold: 0.05, lowerIsBetter: true },
-    // Small runs exercise the app and reporting only, and can never receive a pass.
     exploratorySessions: 2,
     inputScript: ['fresh named OPFS vault; seed and read first-note.md once',
         'unmeasured Open Vault click; resolve/stabilise first-note row and coordinates',

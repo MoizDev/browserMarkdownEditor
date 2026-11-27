@@ -6,51 +6,33 @@ import type { ScenePaintNodeStream } from './scenePaintStream';
 import type { ResolvedNodeCache } from './resolvedNodeCache';
 import type { Rect } from '../../platform/types';
 
-/** A scene supplies a pinned source and owns its leases until release. The assembler never reads
- * mutable model data after admission; cancellation drops the partial frame rather than publishing. */
 export interface PinnedPaintSource {
     readonly source: PaintNodeSource;
     release(): void | Promise<void>;
 }
-/** A bounded async stream of one pinned scene. The assembler pulls one node at a time, so a
- * whole scene's nodes never exist as one array. `release` releases the owning snapshot; the
- * assembler drains and releases the stream itself before calling it. */
 export interface PinnedPaintStream {
     readonly stream: ScenePaintNodeStream;
-    /** Immutable source ownership survives exhaustion and retirement of its read cursor. */
     isCurrent(): boolean;
     release(): void | Promise<void>;
-    /** Opens another bounded stream of this same pin over `world`, with this frame's request
-     * identity (precision, sensitivity). Dense tiles use it; the pin stays owned by the frame. */
     open?(world: Readonly<Rect>, signal: AbortSignal, resolved?: ResolvedNodeCache | null): Promise<ScenePaintNodeStream>;
-    /** The frame holds only the live nodes named by `sensitiveNodes` (a dense frame). */
     readonly liveOnly?: true;
 }
 export interface PaintFrameAssembler extends PaintFrameSource {
     bindMemory?(allocator: MemoryAllocator): void;
     cpuWorkingSet?(): number;
     memoryBytes?(): number;
-    /** Superseding a request cancels and releases only the incomplete staging source. */
     request(source: PinnedPaintSource): void;
-    /** Same staging and atomic publication as `request`, fed by a bounded stream. */
     requestStream(pin: PinnedPaintStream): void;
     prepare(budget: FrameBudget): void;
     needsFrame(): boolean;
-    /** True while a staged frame waits for memory; a real capacity change wakes it, so the owner never polls. */
     blocked?(): boolean;
-    /** True while a newer frame is staged: the picture still on screen is then not the one requested, even while the
-     * staged stream's read is in flight (`needsFrame` is false then, since awaiting the stream is not executable work). */
     replacing?(): boolean;
-    /** Presentation uses the frame actually drawn, not the newest requested scene revision. */
     presented(frame: PaintSource): void;
     /** Retains this exact frame's source/metadata through asynchronous presentation-fact work.
      * Release only after its physical worker work retires; hide/dispose cannot reclaim it early. */
     retain(frame: PaintSource): () => void;
-    /** Called when the backend no longer holds this frame, including cancelled staging. */
     retire(frame: PaintSource): void;
-    /** Retire pins on hide; outstanding presentation-fact borrows still own their source. */
     clear(): void;
-    /** Resolves after retired sources, including outstanding borrows, physically release. */
     whenRetired(): Promise<void>;
     dispose(): void;
 }

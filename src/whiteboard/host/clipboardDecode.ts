@@ -7,8 +7,6 @@ import type { BoardJobIdentity } from '../workers/protocol';
 import type { DecodedBoardClipboard } from '../workers/clipboardDecode';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: private clipboard limits, C4 accounting and C5 worker contracts;
-// independent acquisition boundary, no third-party source.
 const JSON_LIMIT = SECURITY_LIMITS.clipboardExpandedBytes, INLINE_LIMIT = SECURITY_LIMITS.inlineMediaBytes;
 const ENCODED_LIMIT = SECURITY_LIMITS.clipboardHtmlBytes;
 export interface BoardClipboardDecodeLease extends DecodedBoardClipboard { release(): void }
@@ -86,7 +84,6 @@ async function validReply(value: unknown, check: () => void): Promise<boolean> {
     }
     return true;
 }
-/** Reserve before transport; release the returned lease only when all decoded data is unused. */
 export async function decodeBoardClipboard(options: {
     readonly encoded: Blob;
     readonly identity: BoardJobIdentity;
@@ -101,7 +98,6 @@ export async function decodeBoardClipboard(options: {
     const identity = Object.freeze({ ...options.identity });
     const check = () => { options.signal?.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard job became stale', 'AbortError'); };
     check();
-    // Measure deflate as a streaming worker pass before reserving its actual expanded size.
     const mode = await encoded.slice(0, 2).text(); check();
     if (mode !== 'u.' && mode !== 'd.') throw new TypeError('Unknown clipboard envelope');
     let expanded = Math.min(JSON_LIMIT, Math.ceil(Math.max(0, encoded.size - 2) * 3 / 4));

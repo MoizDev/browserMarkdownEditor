@@ -1,6 +1,5 @@
 import type { Priority } from './envelope';
 
-/** Library-scoped events: callers provide observed times and ledger values, never document data. */
 export interface WorkerPerfRecord {
     readonly worker: string;
     readonly generation: number;

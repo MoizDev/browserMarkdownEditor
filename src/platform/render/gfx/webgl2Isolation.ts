@@ -16,16 +16,10 @@ interface FrameSlots {
     readonly borrowed: Map<TargetLease, { slot: Slot; external: boolean }>;
 }
 
-/** An undeclared target is a runnable deferral, not a native allocation during draw. */
 export class IsolationShortfall extends ArenaError {
     constructor(readonly request: TargetRequest, readonly simultaneous: number, readonly external: boolean) { super('out-of-budget'); }
 }
 
-/** The target pool owns physical storage; a frame owns its private aliases and a prepaid
- * zero-byte metadata lease for aliases with each borrow's used rectangle. Aliases are revoked at
- * matching pop or frame end; encoded commands retain their pinned resources. Underlying
- * storage remains charged and cannot be reused before its submitted fence (C4.3).
- */
 export class Webgl2IsolationPool {
     #prepared: Slot[] = [];
     readonly #frames = new Map<object, FrameSlots>();
@@ -52,8 +46,6 @@ export class Webgl2IsolationPool {
                     (request.stencil ? request.samples * 8 : 0);
                 count += request.count;
                 bytes += request.width * request.height * pixelBytes * request.count;
-                // No grant can exceed this governor ceiling; reject impossible inventories before
-                // issuing any per-target reservations, which still decide the actual available budget.
                 if (!Number.isSafeInteger(count) || !Number.isSafeInteger(bytes) || bytes > POLICY.memoryCeilings.high.gpuBytes) {
                     throw new ArenaError('out-of-budget');
                 }

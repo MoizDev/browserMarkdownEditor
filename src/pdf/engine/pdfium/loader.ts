@@ -7,7 +7,6 @@ import type { PdfEngineRole } from '../types';
 export type PdfiumCallback = (...args: number[]) => number | void;
 export interface PdfiumLoadOptions {
     wasm: WebAssembly.Module;
-    /** A verified glue blob minted in the same opaque realm as this worker. */
     glueUrl: string;
     abi: unknown;
     role: PdfEngineRole;
@@ -32,9 +31,7 @@ export interface PdfiumRuntime {
     free(pointer: number): void;
     addFunction(callback: PdfiumCallback, signature: string): number;
     removeFunction(pointer: number): void;
-    /** Initialize exactly once with an ABI-validated FPDF_LIBRARY_CONFIG. */
     initLibrary(configPointer: number): void;
-    /** Only names in the canonical operation map are callable. */
     call(name: string, ...args: number[]): number;
     /** Caller closes all documents first; this releases library and callbacks. */
     dispose(): void;

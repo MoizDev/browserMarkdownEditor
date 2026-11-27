@@ -1,4 +1,3 @@
-/** Searches over source ranges sorted by position and disjoint (touching is OK). */
 export interface CharRange { from: number; to: number }
 
 export function firstRangeEndingAfter(ranges: readonly CharRange[], from: number): number {
@@ -16,7 +15,6 @@ export function overlapsRange(ranges: readonly CharRange[], from: number, to: nu
     return !!range && range.from < to;
 }
 
-/** Containment includes the edges; a table containing inline code is not code. */
 export function containsRange(ranges: readonly CharRange[], from: number, to: number): boolean {
     let lo = 0, hi = ranges.length;
     while (lo < hi) {
@@ -28,7 +26,6 @@ export function containsRange(ranges: readonly CharRange[], from: number, to: nu
     return !!range && range.to >= to;
 }
 
-/** Keystroke pairing excludes both delimiters, unlike range containment. */
 export function straddlesPoint(ranges: readonly CharRange[], pos: number): boolean {
     const range = ranges[firstRangeEndingAfter(ranges, pos)];
     return !!range && range.from < pos;

@@ -6,8 +6,6 @@ import type { SelectionState } from '../selection';
 import type { BoardSession } from '../session/BoardSession';
 import type { ViewerAccessibilityItem, ViewerAccessibilitySnapshot, ViewerAccessibilitySource } from './types';
 
-// Provenance: viewer accessibility window, session selection and scene contracts;
-// independent bounded projection without third-party source.
 function labelText(value: string): string {
     if (value.length <= 1000) return value;
     let end = 1000;

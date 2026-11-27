@@ -6,11 +6,8 @@ export interface ToolStateView {
     subscribe(listener: () => void): () => void;
     setTool(id: string, variant?: string): void;
     toggleLocked(): void;
-    /** Only single-use tools can be locked: the tool lock keeps them chosen after each use. */
     lockable(id: string): boolean;
-    /** The tools the bar shows now, in order; the number keys press them. */
     setBarTools(choices: readonly { readonly id: string; readonly variant?: string }[]): void;
-    /** A press on a bar tool that is dragged onto the board; the board takes it or not. */
     beginDrag?(choice: { readonly id: string; readonly variant?: string; readonly label?: string }, event: PointerEvent, bar: Element): boolean;
 }
 

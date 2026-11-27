@@ -5,8 +5,6 @@ import { SECURITY_LIMITS } from '../security/limits';
 import type { CopySnapshot } from './snapshot';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: clipboard §2.4 native-record JSON and C2 job ownership;
-// independent incremental JSON-string serialization, no upstream engine source.
 function utf8Bytes(value: string): number {
     let bytes = 0;
     for (let i = 0; i < value.length; i++) {
@@ -19,8 +17,6 @@ function utf8Bytes(value: string): number {
     }
     return bytes;
 }
-/** The JSON records of a capture as one blob, built chunk by chunk in a job under the memory governor.
- * The caller owns the result and releases it. The capture is the real C2 in-job snapshot. */
 export async function buildBoardJson(options: {
     readonly runtime: BoardRuntime; readonly memory: MemoryAllocator; readonly signal: AbortSignal;
     current(): boolean;
@@ -81,7 +77,6 @@ export async function buildBoardJson(options: {
     }, { signal, deadlineMs: 120_000 });
 }
 
-/** Copy as JSON: the same producer as file export, its blob written to the clipboard while the click is live. */
 export async function copyBoardJsonFresh(options: {
     readonly runtime: BoardRuntime; readonly memory: MemoryAllocator; readonly signal?: AbortSignal;
     current(): boolean;

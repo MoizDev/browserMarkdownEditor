@@ -3,7 +3,6 @@ import type { PathOp, Vec2 } from './path';
 import { styleGeometryMetrics } from './styleMetrics';
 import type { HeadGeometry, HeadGeometryRequest } from './connectorTypes';
 
-/** Limit combined reserved head length to 80% of the available body, without reversing ends. */
 export function connectorHeadScale(startReserve: number, endReserve: number, available: number): number {
     if (![startReserve, endReserve, available].every(Number.isFinite) || startReserve < 0 || endReserve < 0 || available < 0) {
         throw new RangeError('Invalid connector head extent');
@@ -13,7 +12,6 @@ export function connectorHeadScale(startReserve: number, endReserve: number, ava
     return total === 0 ? 1 : Math.min(1, .8 * available / total);
 }
 
-/** Independent head primitives, positioned by the forward body-to-tip direction. */
 export function headGeometry(request: HeadGeometryRequest): HeadGeometry {
     const { tip, tangent, width, scale, tolerance, maxPieces, kind } = request;
     if (![tip.x, tip.y, tangent.x, tangent.y, width, scale, tolerance].every(Number.isFinite) || width < 0 || scale < 0

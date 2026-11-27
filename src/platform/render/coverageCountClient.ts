@@ -75,7 +75,6 @@ function validCount(result: CoverageCount, pixels: number, scratchBytes: number)
     return counts.every(value => Number.isSafeInteger(value) && value >= 0) && counts.reduce((sum, value) => sum + value, 0) === pixels;
 }
 
-/** Benchmark-only ownership boundary: the caller gives up the bitmap even on refusal. */
 export function createCoverageCounter(options: CoverageCounterOptions): CoverageCounter {
     let disposed = false;
     let client: WorkerClient | null = null;

@@ -8,7 +8,6 @@ export function baseName(pathOrName: string): string {
     return noteDisplayName(segment);
 }
 
-/** Canonical provider order, not the sidebar's independently sorted copy. */
 export function collectMarkdownFiles(fileTree: FileTreeNode[]): FileTreeFileNode[] {
     return collectFiles(fileTree).filter(file => isMarkdownFile(file.name));
 }
@@ -21,8 +20,6 @@ export interface NoteResolver {
 
 const byTree = new WeakMap<FileTreeNode[], NoteResolver>();
 
-/** The same resolver revision for graph publication and the stable App callback.
- *  A save or a presentation-only sort must not rebuild or retarget this index. */
 export function getNoteResolver(fileTree: FileTreeNode[]): NoteResolver {
     const cached = byTree.get(fileTree);
     if (cached) return cached;
@@ -37,8 +34,6 @@ export function getNoteResolver(fileTree: FileTreeNode[]): NoteResolver {
         paths.push(file.path);
         nodesByPath.set(file.path, file);
     }
-    // The click has always used the first canonical match. Keeping every path
-    // in order makes that policy explicit instead of an accidental last Map.set.
     const resolve = (target: string) => pathsByName.get(baseName(target).toLowerCase())?.[0];
     const resolver: NoteResolver = {
         files,

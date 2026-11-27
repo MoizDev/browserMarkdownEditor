@@ -1,52 +1,23 @@
-// How code is coloured, and nothing else about how a pane looks.
-//
-// THE RULE THIS FILE KEEPS: the app's chrome does not change for a code file.
-// Same background, same gutter-less margins turned back on in the app's own
-// greys, same scrollbars, same caret. The ONLY thing that differs from a note is
-// the colour of the text itself, which is the whole point of opening a `.py` in
-// a code editor rather than in a markdown one.
-//
-// THE PALETTE IS THE USER'S OWN. Read off `~/.config/zed/themes/one-dark-darker.json`
-// — the custom "One Dark Darker" this vault's owner edits code in — so a Racket
-// file in this app and the same file in Zed are colour for colour the same
-// thing. Zed names its tokens after tree-sitter captures and CodeMirror names
-// its own after Lezer tags, so the mapping below is by MEANING, written out once
-// rather than guessed per language. The light side is One Light, Zed's companion
-// theme, since this app follows the OS/app theme and Zed's dark theme on a white
-// page would be unreadable.
-
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
 import { EditorView } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
 import { CODE_DARK, CODE_LIGHT, type CodePalette } from './codePalette';
 
-// The palettes live in codePalette.ts (import-free), shared with the terminal.
 const DARK = CODE_DARK;
 const LIGHT = CODE_LIGHT;
 
 type Palette = CodePalette;
 
-/**
- * The six nesting colours, in cycle order, drawn from the SAME palette as the
- * syntax — so a bracket never introduces a hue the file does not already use.
- * Ordered for contrast between neighbours: no two adjacent depths are close in
- * hue, which is the whole job.
- */
 function bracketCycle(c: Palette): string[] {
     return [c.type, c.keyword, c.func, c.string, c.number, c.operator];
 }
 
-/**
- * One mapping for both palettes: a tag that means "a name being defined" should
- * not drift between themes because the list was written out twice.
- */
 function styleFor(c: Palette) {
     return HighlightStyle.define([
         { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], color: c.comment, fontStyle: 'italic' },
 
         { tag: [t.keyword, t.controlKeyword, t.moduleKeyword, t.definitionKeyword, t.operatorKeyword, t.self, t.null], color: c.keyword },
-        // A preprocessor line (#include, #define) is a keyword in Zed's theme too.
         { tag: [t.meta, t.processingInstruction, t.annotation], color: c.keyword },
 
         { tag: [t.string, t.special(t.string), t.character, t.docString], color: c.string },
@@ -58,8 +29,6 @@ function styleFor(c: Palette) {
         { tag: [t.typeName, t.className, t.namespace, t.standard(t.name)], color: c.type },
 
         { tag: [t.variableName, t.propertyName, t.attributeName, t.labelName, t.tagName], color: c.variable },
-        // A name being DEFINED is the one the eye hunts for; Zed gives it the
-        // type colour (`variable.special`), not the plain variable red.
         { tag: [t.definition(t.variableName), t.definition(t.propertyName)], color: c.type },
 
         { tag: [t.operator, t.derefOperator, t.arithmeticOperator, t.logicOperator, t.bitwiseOperator, t.compareOperator, t.updateOperator, t.definitionOperator], color: c.operator },
@@ -67,24 +36,12 @@ function styleFor(c: Palette) {
 
         { tag: t.invalid, color: c.invalid, textDecoration: 'underline wavy' },
         { tag: t.link, color: c.func, textDecoration: 'underline' },
-        // Markdown and other prose grammars reach these; keep them readable
-        // rather than loud, since a code pane shows them inside comments.
         { tag: t.heading, color: c.variable, fontWeight: '600' },
         { tag: t.strong, color: c.base, fontWeight: '700' },
         { tag: t.emphasis, color: c.keyword, fontStyle: 'italic' },
     ]);
 }
 
-/**
- * What a code pane changes about the editor's chrome: the text is monospace,
- * the gutter the note theme hides comes back, and the base colour is the one the
- * user's own editor uses for plain code. Everything else — the background, the
- * caret, the selection, the scrollbars — is inherited from the note theme, which
- * is what keeps a `.py` tab looking like the rest of the app.
- *
- * The gutter is painted in the app's own variables, not the palette's: a line
- * number is chrome, and chrome does not change per theme file.
- */
 function chromeFor(dark: boolean, c: Palette): Extension {
     // `&.cm-editor`, not `&`: the note theme styles the same elements, both
     // themes are one generated class deep, and with equal specificity the
@@ -95,21 +52,13 @@ function chromeFor(dark: boolean, c: Palette): Extension {
     return EditorView.theme({
         '&.cm-editor': {
             color: c.base,
-            // Fira Code with its ligatures on, which is what the user writes
-            // code in elsewhere. index.html already loads it (400/500) for the
-            // LaTeX source view, so this costs no new request, and the stack
-            // falls back to the app's own monospace if it has not landed.
             fontFamily: "'Fira Code', var(--font-monospace)",
             fontVariantLigatures: 'contextual',
             fontFeatureSettings: '"calt" 1, "liga" 1',
-            // Settings → Appearance → Code font size (App sets the variable).
             fontSize: 'var(--code-font-size, 14px)',
         },
         '&.cm-editor .cm-content': {
             lineHeight: '1.55',
-            // The horizontal frame is index.css's (`.view-content.is-code`),
-            // which has to win over the prose measure anyway; only the top air
-            // is this theme's business.
             paddingTop: '12px',
         },
         '&.cm-editor .cm-gutters': {
@@ -117,8 +66,6 @@ function chromeFor(dark: boolean, c: Palette): Extension {
             backgroundColor: 'transparent',
             border: 'none',
             color: 'var(--text-faint)',
-            // Ligatures deliberately off here: `11` in a line number is two
-            // digits, not a glyph.
             fontVariantLigatures: 'none',
             fontSize: '0.88em',
             lineHeight: '1.55',
@@ -137,23 +84,11 @@ function chromeFor(dark: boolean, c: Palette): Extension {
             color: 'var(--text-faint)',
             cursor: 'pointer',
         },
-        // The bracket under the caret and its partner: the one piece of "where
-        // am I" that colour alone cannot give.
         '&.cm-editor .cm-matchingBracket, &.cm-editor.cm-focused .cm-matchingBracket': {
             backgroundColor: dark ? 'rgba(255, 255, 255, 0.11)' : 'rgba(0, 0, 0, 0.09)',
             outline: `1px solid ${c.punctuation}66`,
         },
         '&.cm-editor .cm-nonmatchingBracket': { color: c.invalid },
-        // ── Nesting colours (editor/rainbowBrackets.ts) ──
-        // THE DESCENDANT SELECTOR IS THE WHOLE TRICK. A mark decoration WRAPS
-        // the span the syntax highlighter already made, so the DOM is
-        // `<span class="cm-bracket-depth-0"><span class="ͼ2i">(</span></span>`
-        // — and the inner span is the one holding the text, so it is the one
-        // that paints. Colouring only the outer element left every bracket in
-        // the punctuation grey while `getComputedStyle` on that element happily
-        // reported the rainbow colour: the bug reported from a screenshot that
-        // three rounds of my own measuring missed, because I measured the
-        // wrapper and not the element the text node hangs off.
         ...Object.fromEntries(bracketCycle(c).flatMap((colour, i) => [
             [`&.cm-editor .cm-bracket-depth-${i}`, { color: colour }],
             [`&.cm-editor .cm-bracket-depth-${i} span`, { color: colour }],
@@ -164,15 +99,9 @@ function chromeFor(dark: boolean, c: Palette): Extension {
             textDecorationThickness: '1px',
             textUnderlineOffset: '3px',
         },
-        // Every other occurrence of whatever is selected.
         '&.cm-editor .cm-selectionMatch': {
             backgroundColor: dark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.07)',
         },
-        // ── The completion list ──
-        // Drawn like the app's own menus, not like a terminal's: the selected
-        // row was the raw accent with white text on it, which on a green or
-        // yellow accent is unreadable (and was). A tint of the accent over the
-        // panel colour keeps the row legible whatever the accent is.
         '.cm-tooltip.cm-tooltip-autocomplete': {
             border: '1px solid var(--background-modifier-border)',
             borderRadius: '10px',
@@ -199,8 +128,6 @@ function chromeFor(dark: boolean, c: Palette): Extension {
             backgroundColor: 'color-mix(in srgb, var(--interactive-accent) 26%, var(--background-secondary))',
             color: 'var(--text-normal)',
         },
-        // The part of the label that matched what was typed. CodeMirror
-        // underlines it by default, which on a monospace list reads as a link.
         '.cm-completionMatchedText': {
             color: 'var(--interactive-accent)',
             fontWeight: '600',

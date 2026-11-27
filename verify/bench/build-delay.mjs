@@ -1,5 +1,3 @@
-// A source mutant, never a production flag or an injected browser timer.
-// Preparation only (no browser): copies tracked sources and installs its OWN deps.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile, mkdir, mkdtemp, realpath } from 'node:fs/promises';
@@ -19,8 +17,6 @@ if (control.metricDefinition?.id !== noteOpenDefinition.id || control.metricDefi
     throw new Error('New note-input definition required; the retired picker/125.3ms calibration cannot size this mutant');
 }
 if (control.identities.A.sha256 !== control.identities.B.sha256 || !(controlMedianMs > 0)) throw new Error('A same-build control recording is required');
-// Exploration sizes the source wait only; acceptance still needs the measured
-// shift within10% +/-3pp of the QUIET window's control, never this pilot alone.
 const delayMs = controlMedianMs * 0.10;
 const root = await realpath(fileURLToPath(new URL('../../', import.meta.url)));
 const parent = join(scratch, 'v-c/mutants'); await mkdir(parent, { recursive: true });
@@ -44,7 +40,6 @@ await writeFile(path, modified);
 const dist = join(folder, 'dist');
 const config = join(folder, 'vite.config.mjs');
 await writeFile(config, `import original from ${JSON.stringify(join(source, 'vite.config.ts'))};\nexport default { ...original, root: ${JSON.stringify(source)}, cacheDir: ${JSON.stringify(join(folder, 'vite-cache'))}, build: { ...original.build, outDir: ${JSON.stringify(dist)}, emptyOutDir: true } };\n`);
-// execFile's buffered output is retained beside the mutant, including a failed build.
 for (const [name, executable, args] of [
     ['install', 'npm', ['ci', '--no-audit', '--no-fund']],
     ['build', join(source, 'node_modules/.bin/vite'), ['build', '--config', config]],

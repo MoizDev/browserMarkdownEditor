@@ -11,7 +11,6 @@ import type { EmbedClippedCoverage, EmbedCoveragePath, EmbedDrawnPaint, EmbedHos
 import type { LayerHost } from './compositor.types';
 
 const SLOT_BYTES = 65_536;
-/** The smallest CPU raster ceiling any device gets (memoryGovernor's low tier): a clip estimate above it cannot be admitted. */
 const CLIP_NEVER_FITS_BYTES = RENDER_CONSTANTS.memoryCeilings.low.cpuRasterBytes;
 class InlineIds implements ReadonlySet<string> {
     readonly #values: Set<string>;
@@ -39,14 +38,10 @@ function sameRectOrNull(a: Rect | null, b: Rect | null): boolean {
     if (a === null || b === null) return a === b;
     return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
-/** The view an overlay was drawn for: the camera positions every slot's transform, and the epoch and viewport gate what is shown. */
 type DrawnView = { epoch: number; x: number; y: number; z: number; width: number; height: number; dpr: number };
 function drawnViewOf(view: ViewState): DrawnView {
     return { epoch: view.epoch, x: view.camera.x, y: view.camera.y, z: view.camera.z, width: view.viewport.width, height: view.viewport.height, dpr: view.viewport.dpr };
 }
-/** The camera and viewport the overlay was placed for, and the epoch while it shows any slot (a stale epoch hides them). An empty overlay
- * ignores the epoch: it also moves when the moving flag flips at a gesture's start and end, and an overlay with nothing in it answered
- * changed for that alone (measured: 2 redundant presents per stroke). */
 function sameDrawnView(view: ViewState, drawn: DrawnView | null, shown: boolean): boolean {
     return !!drawn && (!shown || view.epoch === drawn.epoch) && view.camera.x === drawn.x && view.camera.y === drawn.y && view.camera.z === drawn.z &&
         view.viewport.width === drawn.width && view.viewport.height === drawn.height && view.viewport.dpr === drawn.dpr;
@@ -99,34 +94,24 @@ type Slot = {
     externalSignal?: AbortSignal; externalAbort?: () => void;
 };
 
-/** Owns only DOM overlay resources; accepted presentation packets remain the geometry authority. */
 export function createEmbedPresentationPort(options: EmbedPresentationOptions): EmbedPresentationPort {
     let host: LayerHost | null = null, layer: Layer | null = null, packet: EmbedPresentationFrame | null = null;
     let visible = true, disposed = false, requestBlocked = false, revision = 0;
     let prepared: { token: FrameToken; epoch: number; cameraEpoch: number; frameId: number } | null = null;
     let witness: EmbedDrawnPaint | null = null;
-    // Every change that can alter what the overlay shows, or what a prepare would admit, bumps `mutations`. `draw` records the
-    // count it wrote the overlay at (`drawnAt`); a completed prepare with nothing since answers unchanged (types.ts, Layer.prepare).
-    // The overlay is DOM, so "presented" here is "drawn": the DOM is the picture, and a skipped frame leaves it as it was.
     let mutations = 0, drawnAt = -1;
-    // A camera move changes what the overlay shows without any counted mutation: the slots' transforms follow the camera, and
-    // a stale epoch hides them. Measured on zoom-sat: 91 of 91 zoom input ticks answered unchanged, so the answer compares the view too.
     let drawnView: DrawnView | null = null;
     const touch = () => { mutations++; };
     let inlineRevision: number | null = null, inlineCache: ReadonlySet<string> = EMPTY_INLINE;
     const slots = new Map<string, Slot>(), requests = new Set<Request>(), retiring = new Set<Promise<void>>();
     const report = (error: unknown) => { try { options.onError?.(error); } catch { /* reporting cannot break teardown */ } };
     const wake = () => host?.invalidate('embed-presentation');
-    // A refused reserve parks the port (needsFrame is false while blocked). One sized waiter wakes it when the bytes fit,
-    // so a blocked embed retries on real capacity instead of never, and never registers a second waiter meanwhile.
     let memoryWaiting = false, memoryWaitBytes = 0;
     const awaitMemory = (bytes: number): void => {
         if (memoryWaiting || !host?.allocator.cpu.whenAvailable) return;
         memoryWaiting = true; memoryWaitBytes = bytes;
         host.allocator.cpu.whenAvailable(() => { memoryWaiting = false; wake(); }, bytes);
     };
-    /** A parked waiter for at most these bytes means a reserve of `bytes` is refused again. Each refused reserve reclaims and
-     * trims the pool (measured: a parked embed retried every frame), so the retry waits for the waiter instead. */
     const parkedFor = (bytes: number): boolean => memoryWaiting && bytes >= memoryWaitBytes;
     const requestsChanged = () => {
         touch(); wake();
@@ -162,10 +147,6 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         slot.containment = null; clearClip(slot); slot.node = null; hide(slot); slot.root.remove();
         slot.allocator.release(slot.base); slots.delete(slot.id); slot.listeners.clear();
     };
-    // The packet places the nodes for the camera its draw was made at. The view epoch also moves when the moving flag flips at a gesture's
-    // end with the camera unchanged, and no new board draw (so no new packet) follows a board answering unchanged: compared by epoch, the
-    // last packet stayed one epoch behind and a loaded embed was hidden for good after a pan or a zoom (measured on both backends, and on
-    // the canvas2d feature build after a pan). The same camera and viewport place every node the same, whatever the epoch.
     const validFrame = (view: ViewState, token: FrameToken): boolean => !!packet && visible && !disposed &&
         sameToken(packet.presentation.token, token) && (packet.presentation.viewEpoch === view.epoch ||
             packet.camera.x === view.camera.x && packet.camera.y === view.camera.y && packet.camera.z === view.camera.z) &&
@@ -186,8 +167,6 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             bind(value) {
                 if (slot.closed || !isEmbedContainmentApproved(value) || value.element.parentElement !== container || !container.isConnected) throw new Error('Invalid embed containment binding');
                 if (slot.containment && slot.containment !== value) throw new Error('Embed containment already bound');
-                // The real 800×450 node otherwise hosted the browser's default 304×154 iframe.
-                // Geometry belongs to the stable container, including its outside-board interaction mode.
                 value.element.style.display = 'block'; value.element.style.width = '100%';
                 value.element.style.height = '100%'; value.element.style.border = '0';
                 slot.containment = value; slot.estimate = estimates(slot.node!); touch(); wake();
@@ -197,13 +176,11 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             setInteractionRect(rect) {
                 if (slot.closed) return;
                 if (rect && (![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0)) throw new RangeError('Invalid interaction rectangle');
-                // The overlay reports its rectangle on each pointer update; only a different rectangle changes what is drawn.
                 if (sameRectOrNull(slot.interaction, rect)) return;
                 slot.interaction = rect ? { ...rect } : null; touch(); hide(slot); wake();
             },
             async dispose() { close(slot); },
         };
-        // The id stays in the requested set (now as a slot), so this is no change to repaint for.
         touch(); slots.set(slot.id, slot); requests.delete(request); request.signal?.removeEventListener('abort', request.abort);
         if (request.signal) {
             slot.externalSignal = request.signal; slot.externalAbort = () => close(slot);
@@ -213,19 +190,15 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         request.resolve(slot.lease);
         return slot;
     };
-    /** The Layer answer: `false` only for a whole prepare (no budget cut) that left the overlay exactly as the last draw wrote it,
-     * for the same view (camera and viewport included) that draw was made for. */
     const prepare = (view: ViewState, budget: FrameBudget): boolean => {
         prepared = null;
         let whole = true;
-        // A budget cut anywhere in this prepare means the work is unproven, so the answer is changed.
         const yielded = (): boolean => { if (budget.shouldYield()) { whole = false; return true; } return false; };
         const answer = (): boolean => !(whole && mutations === drawnAt && sameDrawnView(view, drawnView, slots.size > 0));
         if (!host || !validFrame(view, budget.token)) {
             if ((slots.size || requests.size) && renderAuditEnabled()) auditCount('embed', 'prepare-invalid:' + (!host ? 'host' : !packet ? 'no-packet' : !visible ? 'hidden' : !sameToken(packet.presentation.token, budget.token) ? 'token'
                 : packet.presentation.viewEpoch !== view.epoch ? 'view-epoch' : 'viewport'));
             for (const slot of slots.values()) hide(slot);
-            // Requests wait for a packet that names their node; present() wakes only for that packet.
             for (const request of requests) request.waitingForFacts = true;
             return answer();
         }
@@ -259,8 +232,6 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                         continue;
                     }
                     const need = Math.max(1, slot.estimated);
-                    // No pool can ever admit a clip beyond the smallest CPU raster ceiling: this embed keeps its true-order poster and
-                    // claims nothing, instead of waiting for a fit that cannot come. Counted once per estimate.
                     if (need > CLIP_NEVER_FITS_BYTES) {
                         slot.blocked = true;
                         if (!slot.unfit) { slot.unfit = true; auditCount('embed', 'fallback:embed:clip-never-fits', 1, { bytes: need }); }
@@ -278,9 +249,6 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                         const step = slot.job.next();
                         if (step.done) {
                             slot.job = null; slot.clips = step.value; slot.root.prepend(step.value.definitions); slot.root.append(step.value.shield);
-                            // The embed is now inline-eligible (inlineNodeIds), so the board omits its poster. The board prepared before this
-                            // layer in this frame and saw no omission; without a frame asked for it, a board answering unchanged kept
-                            // drawing the poster and the live frame stayed hidden (measured, WebGL2 DPR 2: 'slot-hidden:poster-painted' for good).
                             requestsChanged();
                             break;
                         }
@@ -291,7 +259,6 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         return answer();
     };
     const paintOverlay = (view: ViewState) => {
-        // Each reason is counted (audit only): a hidden live frame names the check that hid it.
         const stale = !prepared ? 'unprepared' : !validFrame(view, prepared.token) ? 'invalid-frame' : prepared.epoch !== view.epoch ? 'view-epoch'
             : !witness ? 'no-witness' : !sameToken(witness.token, prepared.token) ? 'witness-token' : witness.frameId !== prepared.frameId ? 'witness-frame'
             : witness.cameraEpoch !== prepared.cameraEpoch ? 'witness-camera' : witness.sceneRevision !== packet!.sceneRevision ? 'witness-revision' : null;
@@ -299,8 +266,6 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         for (const slot of slots.values()) {
             const node = slot.node, cap = slot.containment;
             if (!node || !cap || !isEmbedContainmentApproved(cap) || !slot.clips) { if (renderAuditEnabled()) auditCount('embed', 'slot-hidden:' + (!node ? 'no-node' : !cap ? 'no-containment' : !slot.clips ? 'no-clips' : 'unapproved')); hide(slot); continue; }
-            // Owner adopted the plan's translucent-above interaction exception; its old extra confirmation step is cut.
-            // Unknown facts never show live content: the true-order poster stands, and nothing is claimed.
             if (node.laterPaint.some(item => item.opacity === 'unknown')) { if (renderAuditEnabled()) auditCount('embed', 'slot-hidden:unknown-later'); hide(slot); continue; }
             const interaction = node.laterPaint.some(item => item.opacity === 'translucent');
             const omitted = witness.omittedNodeIds?.has(slot.id) ?? false;
@@ -333,7 +298,6 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             layer = { prepare, drawGpu: (_pass, view) => draw(view), draw2d: (_ctx, view) => draw(view),
                 releaseGpu(reason) { prepared = null; touch(); if (reason === 'hidden') for (const slot of [...slots.values()]) close(slot); else for (const slot of slots.values()) hide(slot); },
                 memory() { let cpuBytes = 0; for (const slot of slots.values()) cpuBytes += slot.base.bytes + (slot.clipLease?.bytes ?? 0); return { gpuBytes: 0, cpuBytes }; },
-                // Asked by the scheduler on its frames: loops, not spread arrays, so a board with no embed allocates nothing here.
                 needsFrame() {
                     if (disposed || !visible) return false;
                     if (!requestBlocked && prepared) for (const request of requests) if (!request.waitingForFacts) return true;
@@ -359,9 +323,6 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             if (disposed || !visible) { releasePacket(frame); return; }
             if (packet === frame) return;
             const old = packet; packet = frame;
-            // Every presented board frame publishes a packet, so waking for each one presented every tick at rest while an
-            // embed existed. Only a packet that changes what this port draws wakes a frame: a slot that was hidden or closed,
-            // a request whose node has just arrived. An identical packet keeps the prepared state and draws as before.
             let changed = false;
             for (const request of requests) {
                 if (request.waitingForFacts && frame.nodes.some(item => item.nodeId === request.id)) changed = true;
@@ -375,7 +336,6 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                 const oldPoster = slot.node?.poster, oldOrder = slot.node?.order, oldOpacity = slot.node?.opacity;
                 if (!preserve) clearClip(slot);
                 slot.node = node;
-                // order (z) and opacity are drawn but not part of the geometry comparison, so a change to either is a change here too.
                 if (!preserve || !old || !sameToken(old.presentation.token, frame.presentation.token) || oldOrder !== node.order || oldOpacity !== node.opacity ||
                     old.presentation.viewEpoch !== frame.presentation.viewEpoch || old.sceneRevision !== frame.sceneRevision || oldPoster !== node.poster) {
                     hide(slot); changed = true;
@@ -390,7 +350,6 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             wake();
         },
         drawn(paint) {
-            // A slot's omission decides whether its poster or its live copy shows, and the board's draw is where that arrives.
             for (const slot of slots.values()) {
                 if ((witness?.omittedNodeIds?.has(slot.id) ?? false) !== (paint.omittedNodeIds?.has(slot.id) ?? false)) { touch(); break; }
             }
@@ -406,7 +365,6 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             });
         },
         requestedNodeIds() {
-            // Read by the board's live-node union on its prepares: a board with no embed must not build a Set for nothing.
             if (disposed || (slots.size === 0 && requests.size === 0)) return EMPTY_INLINE;
             const ids = new Set<string>(slots.keys());
             for (const request of requests) ids.add(request.id);

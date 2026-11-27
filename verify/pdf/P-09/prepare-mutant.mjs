@@ -1,4 +1,3 @@
-// Scratch SOURCE builds, never serve-time replacement of role/guard logic.
 import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -6,12 +5,11 @@ import path from 'node:path';
 const [destination, mutant] = process.argv.slice(2);
 if (!destination || !mutant) throw new Error('Usage: prepare-mutant.mjs NEW_SCRATCH_DIR no-guard|null-plain|legacy-wins|entry-only|entry-and-funnel');
 const root = new URL('../../../', import.meta.url).pathname;
-await mkdir(destination); // Must be new; never patch a shared tree in place.
+await mkdir(destination);
 for (const name of ['src', 'shared', 'public', 'index.html', 'package.json', 'package-lock.json', 'vite.config.ts', 'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json']) {
   try { await cp(path.join(root, name), path.join(destination, name), { recursive: true, errorOnExist: true }); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
 }
-// macOS APFS clone: independent writable files, never a symlink/shared install.
 if (process.platform === 'darwin') execFileSync('/bin/cp', ['-cR', path.join(root, 'node_modules'), path.join(destination, 'node_modules')]);
 else await cp(path.join(root, 'node_modules'), path.join(destination, 'node_modules'), { recursive: true, verbatimSymlinks: true });
 const patches = {

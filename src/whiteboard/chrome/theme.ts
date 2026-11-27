@@ -16,7 +16,6 @@ export interface BoardThemeSnapshot {
     readonly systemDark: boolean;
 }
 
-/** Theme is session/browser state. It changes palette consumers, never board transactions. */
 export class BoardThemeState {
     private readonly listeners = new Set<() => void>();
     private snapshot: BoardThemeSnapshot;

@@ -3,8 +3,6 @@ import { execFileSync } from 'node:child_process';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-// Build metadata, not a gate: the browser later checks the identity of every
-// served body it scans. This file supplies paths/hashes, never asserted content.
 const args = Object.fromEntries(process.argv.slice(2).map(arg => {
     const at = arg.indexOf('=');
     return [arg.slice(2, at), arg.slice(at + 1)];

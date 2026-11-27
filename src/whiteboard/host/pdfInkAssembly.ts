@@ -12,12 +12,9 @@ function sameGeometry(a: PageGeometry, b: PageGeometry): boolean {
 }
 
 export interface PinnedPdfInkAssembly extends PinnedPdfAssembly {
-    /** The same pinned writer sequence without the board's attachments: the current PDF with its ink, for printing. */
     printable(signal: AbortSignal): Promise<Uint8Array>;
 }
 
-/** Stage every physical page from pristine bytes, preserving the outer attachment inventory.
- * The PDF writer returns bytes only; App alone authorizes and performs the versioned write. */
 export function pinPdfInkAssembly(snapshot: PinnedPdfInkSnapshot, openWriter: OpenPdfInkWriter): PinnedPdfInkAssembly {
     if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0 || !/^[0-9a-f]{32}$/u.test(snapshot.writeId)
         || snapshot.source.formatId !== NATIVE_FORMAT_ID || !/^[0-9a-f]{64}$/u.test(snapshot.source.pristineFingerprint)
@@ -31,7 +28,6 @@ export function pinPdfInkAssembly(snapshot: PinnedPdfInkSnapshot, openWriter: Op
         signal.throwIfAborted();
         if (released || !snapshot.isCurrent()) throw new DOMException('PDF board session ended', 'AbortError');
     };
-    // A null board prints: the same pinned PDF and ink, with no board file embedded in it.
     const annotate = async (board: Uint8Array | Blob | null, signal: AbortSignal): Promise<Uint8Array> => {
         check(signal);
         const writer = await openWriter(signal);

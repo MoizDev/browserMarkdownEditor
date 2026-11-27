@@ -29,11 +29,6 @@ function union(a: Rect | null, b: Rect): Rect {
 function closedHead(kind: Arrowhead): boolean { return !['none', 'arrow', 'pipe'].includes(kind); }
 
 const EDGE_EPSILON = 1e-9;
-/** A precise end anchored on its target's outline is an edge end: it is reached from outside, never through the shape. Its
- * direction is the outward normal of the box edge it sits on, as a world axis (the dominant one, for a rotated target). A corner
- * sits on two edges and has no single direction. An interior anchor (the centre, an imprecise end) is null and is reached through
- * the shape, as a closed shape's centre binding is. The normal is the inverse transpose of the target's linear part, so it stays
- * perpendicular to its edge under rotation and scale. */
 function edgePort(end: ConnectorEnd, surface: AttachmentSurface): { readonly direction: Vec2 | undefined } | null {
     const attach = end.attach;
     if (!attach || attach.exact || !attach.precise) return null;
@@ -87,7 +82,6 @@ function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolea
                 for (const [target, terminal, edge] of [[startTarget, 'start', startEdge], [endTarget, 'end', endEdge]] as const) {
                     if (!target || node[terminal].attach?.exact) continue;
                     const value = yield* connectorSurfaceIntervals(target, points, error, maxPieces);
-                    // An edge end is reached from outside: a run through its shape, however short it ends, passes the outline first.
                     if (edge) {
                         if (value.parts.some(part => part.to - part.from > error)) return true;
                         continue;
@@ -100,8 +94,6 @@ function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolea
         if (selected.status === 'unroutable') return { status: 'unroutable', connector: node.id, reason: 'Every received elbow candidate crosses a target or leaves an invalid port' };
         route = selected.points;
     }
-    // Only the observed default threshold bracket is available; v1 chooses its
-    // lower straight endpoint (6 at width2), without rewriting stored bend.
     const metric = styleGeometryMetrics.bendThreshold(node.size, node.width);
     const threshold = metric.status === 'bracket' ? metric.min : metric.status === 'provisional' ? metric.value : node.width * 3;
     const bodies: ConnectorBody[] = route && route.length > 1 ? route.slice(1).map((point, i) => connectorBody(route![i], point, 0, error))
@@ -128,7 +120,6 @@ function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolea
     if (startTarget && !node.start.attach!.exact) {
         const values = yield* crossings(startTarget), first = values[0];
         startConnected = yield* connectorSurfaceContains(startTarget, a, maxPieces);
-        // Only the component connected to the terminal may be removed.
         if (first && !first.entering) { startBoundary = first.distance; startConnected = true; }
         else if (!values.length && total > 0 && startConnected && (yield* connectorSurfaceContains(startTarget, point(total / 2), maxPieces))) {
             startBoundary = total; startConnected = true;
@@ -143,7 +134,6 @@ function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolea
         }
     }
     const span = Math.max(0, endBoundary - startBoundary);
-    // v1 uses the recorded default rectangular gap, scaled only by actual width.
     let startGap = startConnected ? 6 * node.width : 0;
     let endGap = endConnected ? 6 * node.width : 0;
     const gapScale = startGap + endGap > span ? span / (startGap + endGap) : 1;
@@ -167,7 +157,6 @@ function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolea
     const exclusions: { outline: readonly PathOp[]; localToWorld: Affine }[] = [];
     if (label) {
         const { w, h } = label.paint.box;
-        // The plan leaves halo calibration open; v1 pads each label by four units.
         exclusions.push({ outline: [{ op: 'M', p: { x: -4, y: -4 } }, { op: 'L', p: { x: w + 4, y: -4 } },
             { op: 'L', p: { x: w + 4, y: h + 4 } }, { op: 'L', p: { x: -4, y: h + 4 } }, { op: 'Z' }], localToWorld: label.localToWorld });
     }

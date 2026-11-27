@@ -18,13 +18,11 @@ import { yieldToHost } from '../../platform/yieldToHost';
 export interface BoardSelectionCommandOptions {
     readonly runtime: BoardRuntime;
     readonly current: () => boolean;
-    /** Current presented zoom; frame selection padding is measured in CSS pixels. */
     readonly zoom: () => number;
     readonly cooperate?: () => Promise<void>;
 }
 export type SelectionOrder = 'front' | 'back' | 'forward' | 'backward';
 
-/** The structural scope rule every restructuring command enforces before it prepares: same sheet, inside focus, unlocked, no opaque content below. */
 export type SelectionBlock = 'no-selection' | 'not-groups' | 'other-sheet' | 'outside-focus' | 'locked' | 'opaque';
 export type UngroupBlock = SelectionBlock;
 export function structuralRootsBlock(doc: BoardDoc, roots: readonly Node[], state: { readonly sheet: SheetId; readonly focus: ParentId }): SelectionBlock | undefined {
@@ -43,7 +41,6 @@ export function structuralRootsBlock(doc: BoardDoc, roots: readonly Node[], stat
     return undefined;
 }
 
-/** Why ungroup would refuse this selection; the same rules the ungroup command enforces before it prepares. */
 export function ungroupEligibility(doc: BoardDoc, ids: Iterable<NodeId>, state: { readonly sheet: SheetId; readonly focus: ParentId }):
     { readonly enabled: boolean; readonly reason?: SelectionBlock } {
     let roots: Node[];
@@ -53,8 +50,6 @@ export function ungroupEligibility(doc: BoardDoc, ids: Iterable<NodeId>, state: 
     return block ? { enabled: false, reason: block } : { enabled: true };
 }
 
-/** One real session/builder is the sole mutation authority. Geometry preparation
- * completes before opening that builder, and its lease outlives commit/rollback. */
 export function createBoardSelectionCommands(options: BoardSelectionCommandOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     const cooperate = options.cooperate ?? yieldToHost;
@@ -205,7 +200,6 @@ export function createBoardSelectionCommands(options: BoardSelectionCommandOptio
                     const pose = worldPose(doc, parent), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
                     world = { x: pose.x + c * left - s * top, y: pose.y + s * left + c * top, rotation: pose.rotation };
                 } else {
-                    // The frame uses one physical page origin, not one per corner.
                     world = { x: box[0] - padding, y: box[1] - padding, rotation: 0 };
                     width = box[2] - box[0] + 2 * padding; height = box[3] - box[1] + 2 * padding;
                 }

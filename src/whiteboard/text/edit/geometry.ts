@@ -2,7 +2,6 @@ import type { Rect } from '../../../platform/types';
 
 export interface TextTransform { readonly a: number; readonly b: number; readonly c: number; readonly d: number; readonly e: number; readonly f: number }
 
-// EditContext accepts axis-aligned client rectangles even for rotated text.
 export function clientBounds(rect: Rect, transform: TextTransform): DOMRect {
     const point = (x: number, y: number) => ({
         x: transform.a * x + transform.c * y + transform.e,

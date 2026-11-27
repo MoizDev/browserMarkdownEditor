@@ -13,13 +13,11 @@ export interface ShortcutsDialogProps {
     readonly direction: 'ltr' | 'rtl';
     readonly closeLabel: string;
     readonly groups: readonly ShortcutGroup[];
-    /** Shown above the list while the keyboard-shortcuts preference is off: the rows still document the keys, but none of them fires. */
     readonly offNotice?: string;
     readonly returnFocus: HTMLElement | null;
     readonly onClose: () => void;
 }
 
-/** Groups are derived by the caller from the board's dispatch keymap. */
 export function ShortcutsDialog({ label, locale, direction, closeLabel, groups, offNotice, returnFocus, onClose }: ShortcutsDialogProps) {
     const labelId = useId();
     const closeButton = useRef<HTMLButtonElement>(null);

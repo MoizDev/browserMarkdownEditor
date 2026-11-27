@@ -2,8 +2,6 @@ import type { BlockCarrier } from '../text/richText';
 
 export interface ProjectedBlockCarrier { readonly index: number; readonly carrier: BlockCarrier; }
 
-// Both native admission and model repair split embedded newlines. Keep their
-// range/anchor mapping identical, including a range covering only a removed break.
 export function* projectBlockCarrier(carrier: BlockCarrier, first: number, last: number,
     starts: readonly number[], lengths: readonly number[]): Generator<ProjectedBlockCarrier | null> {
     let low = first, high = last;

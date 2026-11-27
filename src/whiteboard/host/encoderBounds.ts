@@ -10,8 +10,6 @@ import type { Node } from '../model/nodes';
 import type { LocalGeometryBounds } from '../scene/bounds';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: native b R-W38, scene local bounds and model world-pose contracts;
-// independently implemented conservative encoding bridge, no third-party source.
 type Fields = Readonly<Record<string, unknown>>;
 type Realized = { readonly fields: Fields; readonly epoch: unknown; readonly local: LocalGeometryBounds };
 function fields(node: Readonly<Node>): Fields {
@@ -112,11 +110,6 @@ export async function createBoardEncoderBounds(options: {
         }
         return undefined;
     };
-    // A group's box is exactly the union of its children's boxes, so it is read here from the same synchronous
-    // resolver as every other node. The prepared group cache is only a shortcut: it is keyed to the revision it
-    // was measured at, and a group created by a duplicate, paste or group command is never prepared, so the
-    // save path (which cannot await) would otherwise refuse a group the board already holds. Measured: a Select
-    // All + duplicate over a group threw "Geometry unavailable" from encodeNode on save.
     const groupUnion = (node: Node, depth: number): Bounds => {
         if (depth >= 64) throw new Error('Encoder bounds group depth exceeded');
         const children = doc.children.get(node.id) ?? [];

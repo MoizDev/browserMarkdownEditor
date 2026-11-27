@@ -8,8 +8,6 @@ import type { PathOp } from './path';
 export type ContourBoxClearResult = Readonly<{ status: 'pending' | 'clear' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 const PENDING: ContourBoxClearResult = Object.freeze({ status: 'pending' });
 
-/** Prove a closed box misses every line/cubic fill boundary. Hull overlap is
- * subdivided, never treated as an intersection or as an empty result. */
 export function createContourBoxClearJob(path: readonly PathOp[], transform: Affine, box: CertifiedClipBox, options: {
     readonly maxCommands?: number; readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): ContourBoxClearResult; cancel(): void } {

@@ -1,4 +1,3 @@
-// Measurement only. No CPU/load bound or pass/invalid decision is defined here.
 import os from 'node:os';
 import { basename } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -10,9 +9,6 @@ function cpuMilliseconds(text) {
     const [day, time] = text.includes('-') ? text.split('-') : ['0', text];
     return (Number(day) * 86400 + time.split(':').reverse().reduce((sum, value, i) => sum + Number(value) * 60 ** i, 0)) * 1000;
 }
-/** Interactive processes the person running the bench knows about and accepts as background
- * (an editor, a coding agent), named as `BME_BENCH_AGENT_PIDS=label:pid,label:pid`. Their CPU is
- * reported under their label instead of as unknown load. Only labels and PIDs are kept, never argv. */
 export async function collectAgentRoots() {
     const roots = (process.env.BME_BENCH_AGENT_PIDS ?? '').split(',').filter(Boolean).map(entry => {
         const [agent, pid] = entry.includes(':') ? entry.split(':') : ['agent', entry];
@@ -58,8 +54,6 @@ export async function sampleCPU(agentRoots, previousBench = new Map()) {
             || (previous?.comm === proc.comm && proc.cpuMs >= previous.cpuMs);
         if (registered.has(proc.pid)) proc.benchAssociation = registered.get(proc.pid);
         const agent = ancestor(proc, pid => agents.has(pid));
-        // A declared agent root keeps its label. Another runtime/build/browser
-        // never inherits an agent label merely because an agent launched it.
         proc.role = bench ? 'bench' : agents.has(proc.pid) ? `agent:${agents.get(proc.pid).agent}`
             : runtimeClass(proc.comm) ?? (agent ? `agent-tree:${agents.get(agent).agent}` : 'system/other');
     }
@@ -95,8 +89,6 @@ export async function startCPUMeasurement(agentRoots, inspect = null) {
     return { async stop(measurement) {
         stopped = true; clearTimeout(timer); await pending;
         await observe(await sampleCPU(agentRoots, known));
-        // CDP sampled these BEFORE the adapter closed its fresh Chrome. Recover
-        // renderer/GPU CPU that ps can miss at exit; unseen work stays outside.
         for (const memory of [measurement?.memoryBefore, measurement?.memoryAfter]) {
             for (const proc of memory?.processes ?? []) {
                 if (!Number.isFinite(proc.cpuTime)) continue;

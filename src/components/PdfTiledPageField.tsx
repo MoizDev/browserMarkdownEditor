@@ -1,14 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 
 interface Props {
-    /** Zero-based physical page, never a PDF PageLabels index. */
     page: number;
     pageCount: number;
     onNavigate: (page: number) => void;
 }
 
-/** An unfinished page number is not a navigation. Keep scrolling from
- * replacing the reader's draft, and restore the actual page on blur. */
 export default function PdfTiledPageField({ page, pageCount, onNavigate }: Props) {
     const [draft, setDraft] = useState(String(page + 1));
     const editing = useRef(false);

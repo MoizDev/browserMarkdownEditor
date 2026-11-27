@@ -8,10 +8,6 @@ const sourcePaths = ['src', 'shared', 'helper', 'public', 'config', 'configs', '
     'vite.config.ts', 'eslint.config.ts', 'eslint.rules.ts', ':(glob)*.config.*', ':(glob)tsconfig*.json',
     ':(glob).env*', ':(glob).babelrc*', ':(glob).postcssrc*'];
 
-/** Verification identity (verification.md:77–89, VER-06/10/13), not an app hook.
- * treeClean excludes run scripts/docs, but includes untracked source and configs.
- * @param {{worktree: string, distDir?: string, patch?: string | Uint8Array | object}} options
- */
 export async function buildIdentity({ worktree, distDir, patch }) {
     worktree = resolve(worktree);
     const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).trim();
@@ -34,16 +30,6 @@ export async function buildIdentity({ worktree, distDir, patch }) {
     return { ...identity, manifestSha256: sha256(JSON.stringify(identity)) };
 }
 
-/** p-d measured response.body() re-encoding CSS fetched by fetch(), but not the
- * same CSS loaded as a stylesheet (CfT157: 110219→110223 bytes). Thus functional
- * binding uses raw APIResponse bytes; timing never intercepts/disables the cache.
- * Attach before goto; await check before EVERY assertion and before finishing.
- * @param {import('playwright').BrowserContext} context
- * @param {{identity: Awaited<ReturnType<typeof buildIdentity>>, origin: string,
- *   mode?: 'raw-route'|'node-refetch', buildMode?: 'dev'|'production'|'benchmark',
- *   report?: {data: object}, blockExternalOrigins?: string[],
- *   moduleOverrides?: {name: string, pattern: RegExp, body: string, contentType: string, onServe?: Function}[]}} options
- */
 export async function bindServedBodies(context, { identity, origin, mode = 'raw-route', buildMode = 'production', report, blockExternalOrigins = [], moduleOverrides = [] }) {
     origin = new URL(origin).origin;
     if (!['raw-route', 'node-refetch'].includes(mode)) throw new Error(`Unknown binding mode: ${mode}`);
@@ -110,8 +96,6 @@ export async function bindServedBodies(context, { identity, origin, mode = 'raw-
         }
         if (mode !== 'raw-route' || requestOrigin !== origin) { await route.fallback(); return; }
         const task = (async () => {
-            // Raw-route is deliberately uncached. A conditional 304 has no body
-            // to bind, so send unconditional requests in this functional arm.
             const override = moduleOverrides.find(override => override.pattern.test(url));
             if (override) {
                 bind(url, request.resourceType(), 200, Buffer.from(override.body));
@@ -150,8 +134,6 @@ export async function bindServedBodies(context, { identity, origin, mode = 'raw-
         async check() {
             while (pending.size) await Promise.all([...pending]);
             if (mode === 'node-refetch') {
-                // Defer refetches until the caller's assertion boundary, never
-                // add network work to the action whose duration is being timed.
                 for (const [url, type] of urlsToRefetch) {
                     if (refetched.has(url)) continue;
                     refetched.add(url);

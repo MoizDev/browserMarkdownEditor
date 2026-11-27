@@ -6,7 +6,6 @@ const opposite = (value: { readonly n: bigint; readonly e: number }) => ({ n: -v
 function addDyadic(a: ReturnType<typeof dyadic>, b: ReturnType<typeof dyadic>) { return dyadicSubtract(a, opposite(b)); }
 function square(value: number): Interval { return multiply(interval(value), interval(value)); }
 
-/** Exact dyadic test, not a tolerance on an almost-similarity matrix. */
 export function isUniformDistanceMatrix(matrix: Affine): boolean {
     const [a, b, c, d] = matrix.map(dyadic), aa = dyadicMultiply(a, a), bb = dyadicMultiply(b, b);
     const cc = dyadicMultiply(c, c), dd = dyadicMultiply(d, d);
@@ -14,9 +13,6 @@ export function isUniformDistanceMatrix(matrix: Affine): boolean {
         && addDyadic(dyadicMultiply(a, c), dyadicMultiply(b, d)).n === 0n;
 }
 
-/** Enclose the affine image of a local round stroke between concentric CSS
- * disks. Similarities use their exact uniform norm; other matrices use the
- * Frobenius upper and determinant/Frobenius lower singular-value bounds. */
 export function strokeRadiusBounds(matrix: Affine, localRadius: number): Interval | null {
     if (!matrix.every(Number.isFinite) || !Number.isFinite(localRadius) || localRadius < 0) throw new RangeError('Invalid stroke transform');
     if (!localRadius) return interval(0);
@@ -27,8 +23,6 @@ export function strokeRadiusBounds(matrix: Affine, localRadius: number): Interva
     if (!uniform) {
         const determinant = dyadicSubtract(dyadicMultiply(dyadic(matrix[0]), dyadic(matrix[3])), dyadicMultiply(dyadic(matrix[1]), dyadic(matrix[2])));
         const absolute = { n: determinant.n < 0n ? -determinant.n : determinant.n, e: determinant.e };
-        // The exact quadratic singular-value formula tightens Frobenius when
-        // its interval arithmetic is finite; otherwise Frobenius stays safe.
         if (determinant.n) try {
             const det = dyadicRatioInterval(absolute, dyadic(1));
             const discriminant = subtract(multiply(squared, squared), multiply(interval(4), multiply(det, det)));

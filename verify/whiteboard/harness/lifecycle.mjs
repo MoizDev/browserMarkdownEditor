@@ -1,4 +1,3 @@
-// A real browser close, not a synthetic beforeunload event and not a close-flush shortcut.
 import{until}from'./runtime.mjs';
 export function lifecycleHelpers(h){
  h.closeReceipts=[];h.ui.closeWindow=async({decision='stay',timeout=5000}={})=>{

@@ -6,12 +6,12 @@ export class AgentOpError extends Error {
 }
 export interface AgentCommandResult<T> {
     readonly value: T;
-    readonly notes?: readonly string[]; // Existing errors channel, prefixed "op N: note: ...".
+    readonly notes?: readonly string[];
 }
 export interface AgentCommandContext<T> {
-    readonly builder: CommandBuilder; // No commit: a command cannot publish part of its batch.
-    readonly opNumber: number; // 1-based, matching $N aliases and wire error labels.
-    readonly prior: ReadonlyMap<number, T>; // Successful original op numbers only, never renumbered.
+    readonly builder: CommandBuilder;
+    readonly opNumber: number;
+    readonly prior: ReadonlyMap<number, T>;
 }
 export type AgentBatchResult<T> =
     | { readonly ok: true; readonly applied: Applied; readonly accepted: ReadonlyMap<number, T>; readonly errors: readonly string[] }
@@ -21,9 +21,6 @@ function message(error: unknown): string {
     return error instanceof ApplyRefused ? error.reason : error instanceof Error ? error.message : 'Unexpected operation failure';
 }
 
-// CH §2.5: external I/O/readiness finishes BEFORE begin. execute is synchronous,
-// reads session.doc's staged values, and publishes aliases/results only on success.
-// The successful caller owns applied and must release its receipt after use.
 export function runAgentBatch<Input, Result>(session: BatchSession, inputs: readonly Input[],
     execute: (input: Input, context: AgentCommandContext<Result>) => AgentCommandResult<Result>): AgentBatchResult<Result> {
     const accepted = new Map<number, Result>(), errors: string[] = [];
@@ -51,7 +48,7 @@ export function runAgentBatch<Input, Result>(session: BatchSession, inputs: read
                 errors.push(`op ${i + 1}: ${message(error)}`);
             }
         }
-        const applied = builder.commit(); // Normalization refusal takes back the WHOLE batch.
+        const applied = builder.commit();
         return { ok: true, applied, accepted, errors };
     } catch (caught) {
         let error: unknown = caught;

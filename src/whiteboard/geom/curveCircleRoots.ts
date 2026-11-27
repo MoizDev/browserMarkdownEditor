@@ -36,9 +36,6 @@ function same(a: Readonly<{ x: Dyadic; y: Dyadic }>, b: Readonly<{ x: Dyadic; y:
     return dyadicSubtract(a.x, b.x).n === 0n && dyadicSubtract(a.y, b.y).n === 0n;
 }
 
-/** Isolate all curve/circle boundary intersections by exact Bernstein signs.
- * A sign variation of one certifies exactly one open-interval root; unresolved
- * repeated roots or coincident arcs remain explicit uncertainty. */
 export function createCurveCircleRootsJob(curve: ExactCurve, centre: Vec2, radius: number, options: {
     readonly width: number; readonly maxDepth?: number; readonly maxNodes?: number; readonly maxWork?: number; readonly maxRoots?: number;
 }): { step(budget: { readonly deadline: number; readonly maxWork: number }): CircleRootResult; cancel(): void } {

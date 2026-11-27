@@ -1,12 +1,5 @@
 // Adapted from AICSS's ThinkingReasoning (MIT, © 2026 AICSS — see
 // LICENSE-aicss; https://www.aicss.dev/components/thinking-reasoning).
-//
-// Changed: the original replays six canned sentences on a timer; this one
-// shows the agent's REAL reasoning as it streams. While streaming the viewport
-// follows the newest text behind the soft top fade; once done it folds into
-// "Thought for Ns" and unfolds on click into a scrollable, faded viewport —
-// the same two phases and motion as the original. Paragraphs replace the
-// fixed two-line sentence rows, since real reasoning has no fixed length.
 
 import { useLayoutEffect, useRef, useState } from 'react';
 
@@ -26,7 +19,6 @@ function sameFade(prev: Fade, next: Fade): Fade {
 export interface ThinkingReasoningProps {
     text: string;
     streaming: boolean;
-    /** How long the agent thought, when known (not for history). */
     durationMs: number | null;
 }
 

@@ -1,8 +1,6 @@
-// Offsets in the text model are UTF-16, as are the indices returned by Segmenter.
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 type Segments = ReturnType<Intl.Segmenter['segment']>;
 
-/** ASCII except LF and CR: a code-unit scan, so no control characters appear in a regular expression. */
 function isSimpleAscii(text: string): boolean {
     for (let index = 0; index < text.length; index++) {
         const unit = text.charCodeAt(index);
@@ -11,12 +9,10 @@ function isSimpleAscii(text: string): boolean {
     return true;
 }
 
-/** Indexed point queries do not require a per-grapheme JavaScript array. */
 export class GraphemeNavigator implements Iterable<number> {
     private readonly simple: boolean;
     private segments?: Segments;
     constructor(readonly text: string) {
-        // All these ASCII code units are separate clusters; CR/LF need UAX #29 handling.
         this.simple = isSimpleAscii(text);
     }
     private valid(offset: number): boolean {
@@ -49,7 +45,6 @@ export class GraphemeNavigator implements Iterable<number> {
         this.require(offset);
         return this.isBoundary(offset) ? offset : direction < 0 ? this.previous(offset) : this.next(offset);
     }
-    /** The grapheme containing a code unit; the end offset has no containing grapheme. */
     range(offset: number): { readonly from: number; readonly to: number } | null {
         this.require(offset);
         if (offset === this.text.length) return null;
@@ -68,10 +63,8 @@ export class GraphemeNavigator implements Iterable<number> {
     }
 }
 
-/** All grapheme boundaries, including both endpoints, in ascending UTF-16 order. */
 export function graphemeBoundaries(text: string): number[] { return Array.from(new GraphemeNavigator(text)); }
 
-/** Whether an offset is safe for a text splice or caret stop. */
 export function isGraphemeBoundary(text: string, offset: number): boolean {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > text.length) return false;
     if (offset === 0 || offset === text.length) return true;

@@ -11,14 +11,10 @@ import { createBoardRenderServices } from '../render/services';
 
 export interface AgentGeometryReader {
     readonly geometry: AgentGeometry;
-    /** Prepare only the next row (and its actual geometric dependency closure). */
     prepare(node: Node): Promise<void>;
     dispose(): void;
 }
 
-/** Live frozen scenes and C5-admitted closed files use the SAME logical geometry.
- * Keeping one row's scope avoids retaining the entire vault file's geometry just
- * to return a 200-row page. No persisted b or Scene hit AABB authorizes a summary. */
 export function createAgentGeometryReader(options: {
     readonly doc: BoardDoc;
     readonly samples: SampleStore;
@@ -59,7 +55,6 @@ export function createAgentGeometryReader(options: {
         },
         resolvedPolylineTip(candidate, polyline, end) {
             guard();
-            // The scope fences every polyline it resolved; an unresolved attached end throws instead of guessing.
             return scope!.geometry.resolvedPolylineTip(candidate, polyline, end);
         },
     });
@@ -70,8 +65,6 @@ export function createAgentGeometryReader(options: {
             if (doc.nodes.get(node.id) !== node) throw new Error('Agent row is not part of the captured document');
             const request = ++generation;
             scope?.release(); scope = undefined; row = undefined; empty = undefined;
-            // Empty groups have no painted rectangle. Their real local origin
-            // is a zero-extent semantic point, not a guessed native b rectangle.
             if (node.kind === 'group') {
                 const pending: Node[] = [node];
                 let leaf = false, work = 0;

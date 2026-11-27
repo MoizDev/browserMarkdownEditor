@@ -17,7 +17,6 @@ function translated(matrix: Affine, x: number, y: number, scale = 1): Affine {
     return [matrix[0] * scale, matrix[1] * scale, matrix[2] * scale, matrix[3] * scale,
         matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
 }
-/** A decoded picture's own size, scaled to fit a box and centred in it; the box's origin offsets the result. */
 export interface PreviewMedia { readonly image?: MediaEntry; readonly favicon?: MediaEntry }
 function fitted(entry: MediaEntry, w: number, h: number, origin = { x: 0, y: 0 }): { x: number; y: number; width: number; height: number } {
     const scale = Math.min(w / entry.w, h / entry.h), width = entry.w * scale, height = entry.h * scale;
@@ -34,8 +33,6 @@ function textItem(node: Readonly<Node>, geometryKey: string, label: PositionedFi
         material: textPaintMaterial(label.paint, palette, context.opacity, node.kind === 'sticky' ? resolveSwatch(palette, node.color, 'fill') : undefined) };
 }
 
-/** A canonical stroke is one item in each prescribed band. All chunk coverage is
- * unioned by the backend before applying colour, including overlapping chunks. */
 export function paintStrokeNode(node: Readonly<StrokeNode>, coverage: readonly InkCoverage[], geometryKey: string,
     context: SceneResolveContext, palette: PaintPalette): PaintNode {
     const base = { kind: 'ink' as const, key: `${node.id}:${palette.revision}`, nodeId: node.id, geometryKey,
@@ -52,9 +49,7 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
     context: SceneResolveContext, palette: PaintPalette, faces: FaceTable, options: {
         readonly media?: MediaEntry;
         readonly signal: AbortSignal;
-        /** The request's scale and view: a picture at a reduced mip draws its visible tiles; absent, it draws its whole image. */
         readonly tiles?: PictureTileRequest;
-        /** A link card's stored preview picture and favicon, when their media are present. */
         readonly preview?: PreviewMedia;
     }): Generator<void, PaintNode> {
     const content: PaintItem[] = [], color = 'color' in node && node.color !== null ? node.color : 'grey';
@@ -75,16 +70,11 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
         let clips = context.clips;
         if (crop?.circle && geometry.attachments) clips = [...clips, { key: `${geometry.key}:crop`,
             d: [...pathCommands(geometry.attachments.outline)], fillRule: 'nonzero', localToWorld: context.world }];
-        // A cropped picture tiles too: untiled, a large one was one whole-image decode however small its crop or its view.
         const tiles = node.kind === 'picture' && options.tiles ? planPictureTiles(node, { id: node.media, w: media.w, h: media.h,
             mime: media.mime, animated: media.animated }, imageWorld, options.tiles, crop) : null;
         if (tiles) {
-            // A whole-mip item (the stand-in, or the whole picture at the level a worldless request could hold) names its picture, so
-            // the GPU composer plans the finer tiles of each tile it composes itself: the board settles on a whole-scene request with
-            // no world, which held a 4000x3000 picture at its 1000x750 level at 100% (measured, sharpness 0.19 vs canvas2d's 0.66).
             const facts = options.tiles?.deviceScale !== undefined ? { media: { id: node.media, w: media.w, h: media.h, mime: media.mime,
                 animated: media.animated }, box: { w: node.w, h: node.h }, crop: crop ?? null } : null;
-            // Each tile is its own image item, keyed by its tile key, so the paint pipeline acquires exactly the tiles it draws.
             for (const tile of tiles) {
                 const parsed = facts && !tile.underlaid ? parseMediaTileKey(tile.key) : null;
                 content.push({ ...base, kind: 'image', key: `${node.id}:tile:${tile.key}`, imageKey: tile.key,
@@ -106,8 +96,6 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
             const fillRole = 'fill' in part ? part.fill : node.kind === 'sticky' ? 'fill' : 'none';
             const hatched = node.kind === 'figure' && part.role === 'fill' && (fillRole === 'pattern' || fillRole === 'lined-fill');
             if (hatched) {
-                // The plan leaves hatch calibration open: v1 uses an 8-unit 45°
-                // local lattice, clipped by the same contour used for geometry.
                 const d: PathCommand[] = [];
                 let count = 0;
                 for (const line of figureHatch(geometry as FigureGeometry, node, { x: 0, y: 0, width: node.w, height: node.h + node.growY },
@@ -122,18 +110,14 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
             }
         }
         if (isImage) {
-            // A missing asset remains a visible retained node, not an omitted item.
             content.push(path(rectangle(node.w, node.h), 1, resolveSwatch(palette, 'grey', 'semi'), 'grey'));
             content.push(path([['M', 0, 0], ['L', node.w, node.h], ['M', node.w, 0], ['L', 0, node.h]], 1, undefined, 'grey'));
         }
         if (node.kind === 'linkcard' || node.kind === 'embed') {
-            // Preview fetching/activation is explicit; the inert card always has
-            // a body even before any optional preview media is admitted.
             content.push(path(rectangle(node.w, node.h), 1, palette.background, 'grey'));
         }
     }
     if (node.kind === 'linkcard' && options.preview) {
-        // A stored preview picture fills the card's top band, fitted and centred; its favicon sits on the title's line, left of the text.
         const band = posterImageHeight(node), image = options.preview.image, favicon = options.preview.favicon, title = geometry.text[0];
         if (image && band > 0) {
             content.push({ ...base, kind: 'image', key: `${node.id}:preview:image:${image.id}`, imageKey: image.id, localToWorld: context.world,
@@ -150,8 +134,6 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
     return { content };
 }
 
-/** Geometry has already resolved draw/dash/crop contours; painting assigns
- * material roles and captured transforms, without decoding media. */
 export async function paintVectorNode(node: Readonly<Node>, geometry: BoardVectorGeometry,
     context: SceneResolveContext, palette: PaintPalette, faces: FaceTable, options: {
         readonly media?: MediaEntry; readonly signal: AbortSignal; readonly cooperate?: () => Promise<void>;

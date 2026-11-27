@@ -34,8 +34,6 @@ function visible(doc: BoardDoc, frame: Readonly<FrameNode>, point: Vec2): boolea
     return true;
 }
 
-/** One bounded Scene traversal serves every moved root. Centres are grouped by
- * destination parent and x-sorted so a large frame does not rescan the board. */
 export async function findFrameMembershipTargets(options: {
     readonly runtime: BoardRuntime; readonly scene: NonNullable<BoardRuntime['scene']>; readonly doc: BoardDoc; readonly sheet: SheetId;
     readonly centres: readonly FrameMembershipCentre[]; readonly selected: ReadonlySet<NodeId>; readonly signal: AbortSignal;

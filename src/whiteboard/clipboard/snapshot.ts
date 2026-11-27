@@ -38,7 +38,6 @@ export interface CopySnapshotHost {
     readonly board: string;
     readonly encoder: EncoderContext;
     bounds(node: Node): ClipboardBounds;
-    /** Root geometry is baked into sheet/page coordinates; the live node is never mutated. */
     detachRoot(node: Node, sheet: SheetId): Node;
     retainSample(node: Extract<Node, { kind: 'stroke' }>): ClipboardLease;
     retainMedia(id: MediaId): ClipboardLease;
@@ -180,7 +179,6 @@ export function snapshotSelection(host: CopySnapshotHost, selection: readonly No
     }
 }
 
-/** The asynchronous and synchronous entry points consume the same snapshot algorithm. */
 export async function snapshotSelectionAsync(host: CopySnapshotHost, selection: readonly NodeId[], options: {
     readonly signal: AbortSignal; readonly cooperate?: () => Promise<void>;
 }): Promise<CopySnapshot> {

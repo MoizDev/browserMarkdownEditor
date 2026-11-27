@@ -1,66 +1,35 @@
 import type { ContentSource, DocumentBuffer, SourceOwner, SourceReportOptions } from './documentBuffers';
 import type { JournalCapture } from './recoveryFunnel';
 
-// Share the source types without a runtime dependency; App's bindings are the
-// only runtime bridge, so two stores cannot drift into separate ownership rules.
-
-/** Every engine implements this same contract, even when no pane is attached. */
 export interface SessionAdapter {
-    /** Only the engine's own unreported work; the entry adds the buffer ledger's dirty state. */
     hasPendingEdits(): boolean;
-    /** Synchronous, revision-pinned capture; may cost O(document), but never awaits work. */
     checkpoint(): ContentSource;
-    /** Outcomes describe attempted writes only; an older acknowledgement never cleans a newer edit.
-     *  A read-only role, foreign write mark or encrypted-file refusal is not acknowledged at all:
-     *  the revision stays dirty and App's disk state holds the reason. */
     acknowledge(revision: number, outcome: 'written' | 'conflict' | 'failed'): void;
-    /** Closing/hide coordinator only, with its 2-second deadline; autosave/Save never await this.
-     *  Before E4's journal, a miss keeps the edit in the buffer, the tab dirty and the leave prompt
-     *  armed; a later save retries. It never abandons the edit or marks it saved. */
     drain?(): Promise<void>;
-    /** Resolves once the edits the person has already made have landed: a pressed key or a released gesture whose change
-     *  is still being prepared (a nudge, a paste, a delete), and a contact still held. At once when there is none. The
-     *  caller bounds the wait (unloadCoordinator `settle`). */
     settle?(): Promise<void>;
-    /** Current resolved asset names, or undefined while the engine cannot provide them. */
     mediaReferences?(): readonly string[] | undefined;
-    /** Unresolved media ids conservatively block asset retirement. */
     mediaReferenceIssues?(): readonly string[] | undefined;
-    /** Immutable, structured-cloneable unsaved changes, pinned to this session and revision. */
     journalDelta?(): JournalCapture | undefined;
-    /** Apply a validated, matching-baseline recovery as one undoable change. */
     recover?(payload: unknown): void | Promise<void>;
-    /** False while a recovery would be refused for now (a board whose editing view has not opened yet). */
     canRecover?(): boolean;
-    /** Entry release only, after detaching; never called when a pane hides or unmounts. */
     dispose?(): void | Promise<void>;
-    /** App subscribes once when the session is created; reload metadata stays with its source. */
     onChange(listener: (source: ContentSource, options?: SourceReportOptions) => void): () => void;
-    /** Synchronous notification when unreported engine work changes pending state. */
     onPending?(listener: () => void): () => void;
 }
 
-/** One identity and one pending predicate, shared by editors and canvas engines. */
 export interface SessionEntry<A extends SessionAdapter = SessionAdapter> {
     readonly documentId: string;
-    /** Page-unique, nonzero, never reused, including after release or a vault switch. */
     readonly serial: number;
-    /** App's engine/configuration kind, not a path or a diskRev. */
     readonly kind: string;
     readonly adapter: A;
-    /** App bumps this only for reload, rotation or a byte swap, never rename/move/text save. */
     bytesGeneration: number;
-    /** Opaque engine-owned state follows the session, not its panes. */
     getSlot<T>(key: symbol): T | undefined;
     setSlot<T>(key: symbol, value: T, dispose?: (value: T) => void | Promise<void>): void;
-    /** Defined here: buffer.revision > savedRevision OR adapter.hasPendingEdits(). */
     hasPendingEdits(): boolean;
 }
 
-/** Structural buffer view: a cold tab needs no editor/engine session to retain or checkpoint text. */
 export type SessionBufferState = Pick<DocumentBuffer, 'source' | 'revision' | 'savedRevision'>;
 
-/** Both callbacks are App-lifetime; the report callback resolves the current path by documentId. */
 export interface SessionStoreBindings {
     bufferState(documentId: string): SessionBufferState | undefined;
     reportChange(documentId: string, source: ContentSource, options?: SourceReportOptions): void;
@@ -74,15 +43,9 @@ export interface DocumentSessionStore {
     get(documentId: string): SessionEntry | undefined;
     entries(): IterableIterator<SessionEntry>;
     subscribe(listener: () => void): () => void;
-    /** Update byte identity in place and notify only when it changes. */
     setBytesGeneration(documentId: string, generation: number): boolean;
-    /** Wait for every slot teardown started for this document, including replacements. */
     settled(documentId: string): Promise<void>;
 
-    /** Called only on first pane mount/visibility or first programmatic edit, never on tab restore.
-     *  Existing same-kind entries are reused (including StrictMode); create receives its live owner.
-     *  App's onChange subscription is attached once, after the entry is registered.
-     *  bytesGeneration initializes a new entry only; App updates an existing entry's field. */
     ensure<A extends SessionAdapter>(
         documentId: string,
         kind: string,
@@ -90,9 +53,6 @@ export interface DocumentSessionStore {
         create: (owner: SourceOwner) => A,
     ): SessionEntry<A>;
 
-    /** Canvas disk reload only: detach the old subscription and replace with a fresh serial,
-     *  synchronously with App's baseline/buffer update. Markdown instead dispatches externalReload
-     *  into its existing adapter and keeps its serial; this method is not used for Markdown reload. */
     replace<A extends SessionAdapter>(
         documentId: string,
         kind: string,
@@ -100,19 +60,14 @@ export interface DocumentSessionStore {
         create: (owner: SourceOwner) => A,
     ): SessionEntry<A>;
 
-    /** Owner check used by the path-explicit funnel after resolving the tab's current document id. */
     isLiveOwner(documentId: string, owner: SourceOwner): boolean;
 
-    /** Entry's one pending predicate, or just the ledger when the tab has no session yet. */
     hasPendingEdits(documentId: string): boolean;
 
-    /** Entry's pinned capture, or the cold tab's latest source; undefined for an unknown document. */
     checkpoint(documentId: string): ContentSource | undefined;
 
-    /** App only, after the closing barrier; never caused by hide, pane unmount, rename or diskRev. */
     release(documentId: string, cause: SessionReleaseCause): boolean;
 
-    /** Called after all outgoing-vault barriers settle; never resets the page's serial allocator. */
     clear(cause: 'vault-switch'): void;
 }
 
@@ -127,8 +82,6 @@ interface RegisteredSession {
     disposeSlots(): void;
 }
 
-/** App owns exactly one instance for its life; bindings keep the stores runtime-independent.
- *  Still unwired: C-20 owns barriers, baseline updates, lazy creation and bytesGeneration changes. */
 export function createDocumentSessions(bindings: SessionStoreBindings): DocumentSessionStore {
     const sessions = new Map<string, RegisteredSession>();
     const listeners = new Set<() => void>();
@@ -213,8 +166,6 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
             const unsubscribe = adapter.onChange((source, options) => {
                 if (sessions.get(documentId) === registered) bindings.reportChange(documentId, source, options);
             });
-            // onChange may emit synchronously and a caller may release/replace
-            // in that callback. Do not retain its subscription after that edge.
             if (sessions.get(documentId) === registered) registered.unsubscribe = unsubscribe;
             else { unsubscribe(); return entry; }
             const pending = adapter.onPending?.(() => {
@@ -260,8 +211,6 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
             const existing = sessions.get(documentId)?.entry;
             if (existing) {
                 if (existing.kind !== kind) throw new Error('A kind change must release the old session after its barrier');
-                // A stable kind identifies the engine/configuration that owns
-                // this adapter; a second pane never constructs another one.
                 return existing as SessionEntry<A>;
             }
             return register(documentId, kind, bytesGeneration, create);
@@ -289,8 +238,6 @@ export function createDocumentSessions(bindings: SessionStoreBindings): Document
             const outgoing = [...sessions.values()];
             sessions.clear();
             const errors: unknown[] = [];
-            // All old callbacks are stale before any unsubscribe runs. One
-            // broken adapter must not keep the rest of the vault subscribed.
             for (const registered of outgoing) {
                 try { unsubscribeSession(registered); }
                 catch (error) { errors.push(error); }

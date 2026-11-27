@@ -96,8 +96,6 @@ await page.addInitScript(() => {
         const path = childPath(this, name);
         const appRemove = !witness.external;
         if (appRemove) witness.attempts.push({ path, t: performance.now() });
-        // Invoke the real removal immediately: the wrapper must not introduce
-        // an await between the app's final guard and the native call.
         const result = await remove.call(this, name, ...args);
         if (appRemove) witness.removed.push({ path, t: performance.now() });
         return result;
@@ -196,7 +194,6 @@ try {
     }
     await writeFile(join(artifacts, 'observation.json'), JSON.stringify({ ...identity, state, errors, scripts }, null, 2));
     assert.deepEqual(errors, []);
-    // Heading input preserves its terminal blank line, as in the planning run.
     assert.equal(state.saved, '# removed\n\n');
     assert.equal(state.neighbour, '# neighbour\n![[x.png]]\n');
     assert(state.witness.removed.some(event => event.path === 'A/.Assets/x.png'), 'The native source removal must actually complete');

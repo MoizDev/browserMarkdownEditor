@@ -6,10 +6,8 @@ export interface PrintFallbackPages {
 }
 export interface BoardPrintRequest {
     readonly pdf: Blob;
-    /** App/session identity and any source revision still valid at the handoff. */
     readonly valid: () => boolean;
     readonly signal: AbortSignal;
-    /** 200 dpi, no more than the requested number of pages. */
     readonly renderFallback: (limit: number, signal: AbortSignal) => Promise<PrintFallbackPages>;
     readonly noticeTruncated: (printed: number, total: number) => void;
     readonly onError: (error: unknown) => void;

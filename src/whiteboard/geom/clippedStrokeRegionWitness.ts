@@ -19,8 +19,6 @@ function inside(u: number, v: number, radius: number): boolean {
     return dyadicSubtract(add(dyadicMultiply(x, x), dyadicMultiply(y, y)), dyadicMultiply(r, r)).n <= 0n;
 }
 
-/** Visible points of a stroked source can prove overlap with a sweep or lasso;
- * a finite sample search never claims an empty intersection. */
 export function createClippedStrokeRegionWitnessJob(curve: ExactCurve, matrix: Affine, radius: number,
     frames: readonly CertifiedClipRegion[], exclusions: readonly CertifiedClipRegion[], query: Query, options: {
         readonly maxSamples?: number; readonly maxWork?: number;

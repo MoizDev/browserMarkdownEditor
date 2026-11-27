@@ -1,5 +1,4 @@
 import { CurveReach } from '../ink/reach';
-// FMT-2; native-format §4. R-W2 fixes the pressure ceiling; R-W3 fixes coordinate ties.
 export const POINT_LIMITS = Object.freeze({
     count: 1_000_000,
     encodedChars: 48 * 1024 * 1024,
@@ -17,13 +16,13 @@ export interface PointRefusal { code: PointErrorCode; reason: string; offset?: n
 export type PointResult<T> = { ok: true; value: T; } | { ok: false; error: PointRefusal; };
 
 export interface SegmentRuns {
-    readonly starts: Uint32Array; // R-W31: run at s controls OUTGOING spans i→i+1 from i=s.
-    readonly kinds: Uint8Array; // 0 freehand, 1 straight; first start 0 has the first span's kind.
+    readonly starts: Uint32Array;
+    readonly kinds: Uint8Array;
 }
 export interface PointChannel { readonly id: number; readonly data: Uint8Array; }
 export interface PointSamples {
-    readonly xy: Float64Array; // interleaved local x,y; no per-point objects
-    readonly pressure?: Float64Array | null; // raw 0..16, not normalized or clamped
+    readonly xy: Float64Array;
+    readonly pressure?: Float64Array | null;
     readonly runs?: SegmentRuns | null;
     readonly unknownChannels?: Iterable<PointChannel>;
 }
@@ -40,11 +39,11 @@ export interface PointHeader {
     readonly count: number;
     readonly k: number;
     readonly hasPressure: boolean;
-    readonly runCount: number; // 0 = channel 3 absent; otherwise the exact explicit run count (R-W29).
+    readonly runCount: number;
 }
 export interface PointInspectionHeader extends PointHeader {
-    readonly localBounds: readonly [number, number, number, number]; // R-W39: point min/max after /2^k, before node transforms.
-    readonly curveBounds: readonly [number, number, number, number]; // The curve's enclosure (ink/reach.ts), same space.
+    readonly localBounds: readonly [number, number, number, number];
+    readonly curveBounds: readonly [number, number, number, number];
     readonly maxReach: number;
     readonly maxPressure: number | null;
 }
@@ -74,8 +73,6 @@ export function pointExponent(zMax: number, sx = 1, sy = 1): PointResult<number>
         if (!Number.isFinite(zMax) || zMax <= 0 || !Number.isFinite(sx) || !Number.isFinite(sy) || sx === 0 || sy === 0) {
             refuse('input', 'Zoom and stroke scales must be finite, positive zoom and nonzero scales');
         }
-        // R-W36: stroke-local quantization must account for its transform. Summing logarithms
-        // avoids overflowing the product before the specified exponent-20 cap is applied.
         const needed = Math.ceil(Math.log2(6 * Math.SQRT2) + Math.log2(zMax) + Math.log2(Math.max(Math.abs(sx), Math.abs(sy), 1)));
         return Math.min(POINT_LIMITS.exponent, Math.max(7, needed));
     });
@@ -177,7 +174,6 @@ function* base64Steps(text: string): Generator<void, Uint8Array> {
         || (padding === 1 && ALPHABET.indexOf(text[end - 1]) % 4 !== 0)) refuse('base64', 'Non-zero base64 padding bits');
     const bytes = new Uint8Array(text.length / 4 * 3 - padding);
     let offset = 0;
-    // Each atob call is bounded too: one 48 MiB call cannot cooperate with the governor.
     for (let start = 0; start < text.length; start += 4096) {
         let binary: string;
         try { binary = atob(text.slice(start, Math.min(start + 4096, text.length))); }
@@ -201,7 +197,6 @@ async function runStepsIncremental<T>(steps: Generator<void, T>, cooperate: () =
 function* base64TextSteps(bytes: Uint8Array): Generator<void, string> {
     if (Math.ceil(bytes.length / 3) * 4 > POINT_LIMITS.encodedChars) refuse('limit', 'Point string exceeds 48 MiB');
     const parts: string[] = [];
-    // 3072 is divisible by three, so concatenating these bounded btoa results is exact.
     for (let start = 0; start < bytes.length; start += 3072) {
         const part = bytes.subarray(start, Math.min(start + 3072, bytes.length));
         parts.push(btoa(String.fromCharCode(...part)));
@@ -399,8 +394,6 @@ function* readPayloadSteps(pts: string, materialize: boolean): Generator<void, P
         }, hasUnknownChannels
     };
     if (!materialize) return { inspection };
-    // No per-channel expansion at load, and no backing-byte lease for a decoded payload that
-    // has no unknown channels. Unknown blocks are exposed lazily only to materializing callers.
     const unknownChannels: Iterable<PointChannel> = hasUnknownChannels ? {
         *[Symbol.iterator]() {
             const scan = new Cursor(bytes, channelStart);
@@ -416,8 +409,6 @@ function* readPayloadSteps(pts: string, materialize: boolean): Generator<void, P
 }
 
 export function inspectPoints(pts: string): PointResult<PointInspection> {
-    // R-W28: all numeric/length checks share the decoder's walk; no coordinate, pressure or run
-    // arrays are created. The lazy store can trust admission without eagerly retaining samples.
     return result(() => runSteps(readPayloadSteps(pts, false)).inspection);
 }
 export function decodePoints(pts: string): PointResult<DecodedPoints> {

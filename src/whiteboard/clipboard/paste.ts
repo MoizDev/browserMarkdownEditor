@@ -30,8 +30,6 @@ import type { ClipboardInput, ClipboardIntent, ClipboardTarget } from './types';
 import { missingPictureSentence } from '../media/missingMedia';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: clipboard classification order, C5 external-source admission and
-// one session job; independent composition, no upstream engine source.
 export type ExternalClipboardSource =
     | { readonly kind: 'native-records'; readonly bytes: Blob }
     | { readonly kind: 'legacy'; readonly decoded: LegacyClipboardDecodeLease }
@@ -39,7 +37,6 @@ export type ExternalClipboardSource =
     | { readonly kind: 'html'; readonly source: HtmlClipboardSource };
 export interface ExternalClipboardAdmission {
     readonly acquisition: BoardClipboardAcquisition;
-    /** Actual canonical geometry of the admitted external source, in source world coordinates. */
     readonly bounds: Readonly<{ x: number; y: number; w: number; h: number }>;
 }
 export interface BoardClipboardPasteHost {
@@ -56,7 +53,6 @@ export interface BoardClipboardPasteHost {
     current(target: Readonly<ClipboardTarget>): boolean;
     readBlob(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     readonly storeMedia: StoreMedia;
-    /** Must encode actual source records and run native C5 before returning. */
     admitExternal(source: ExternalClipboardSource, context: JobContext, identity: BoardJobIdentity): Promise<ExternalClipboardAdmission>;
     resolveBinding(request: ExcalidrawBindingRequest, context: { readonly actualDraftDoc: BoardDoc; readonly signal: AbortSignal }): Promise<Attachment>;
     notice(message: string): void;
@@ -72,7 +68,6 @@ function copyInput(input: ClipboardInput): ClipboardInput {
         files: Object.freeze(input.files.map(file => ({ name: file.name, directory: file.directory, blob: new Blob([file.blob], { type: file.blob.type }) }))),
         privatePng: input.privatePng ? new Blob([input.privatePng], { type: input.privatePng.type }) : null });
 }
-/** One job covers classification, conversion, all media storage and the single transaction. */
 export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: ClipboardInput, target: Readonly<ClipboardTarget>,
     intent: ClipboardIntent, signal?: AbortSignal): Promise<readonly NodeId[]> {
     const copied = copyInput(input), captured = Object.freeze({ ...target, viewport: Object.freeze({ ...target.viewport }),
@@ -86,7 +81,6 @@ export function pasteBoardClipboard(host: BoardClipboardPasteHost, input: Clipbo
         return pasteBoardClipboardInJob(host, copied, captured, intent, context, cachePin ?? undefined);
     }, { signal, deadlineMs }).finally(() => cachePin?.release());
 }
-/** Uses an existing session job, including when a text editor hands non-text content to the board. */
 export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, input: ClipboardInput, target: Readonly<ClipboardTarget>,
     intent: ClipboardIntent, context: JobContext, cache?: Pick<ClipboardCopy, 'match'>): Promise<readonly NodeId[]> {
     const copied = copyInput(input), captured = Object.freeze({ ...target, viewport: Object.freeze({ ...target.viewport }),
@@ -94,7 +88,6 @@ export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, in
     const runtime = host.runtime, session = runtime.session, doc = session.doc, revision = doc.rev;
         const check = () => {
             runtime.jobs.assertContext(context); context.assertCurrent();
-            // No revision fence: a gesture committed while the paste is prepared is no reason to drop it (change/insertionLanding.ts).
             if (!host.current(captured) || runtime.session !== session || session.doc !== doc || session.isReadOnly) {
                 throw new DOMException('Clipboard target became stale', 'AbortError');
             }
@@ -106,7 +99,6 @@ export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, in
         const classification = await classifyClipboard(copied, intent, host.classifier, context.signal);
         try {
         check();
-        // Called once the paste is in, so the records it names are this board's own (a paste into another folder keeps their names).
         const noticeMissing = (ids: readonly MediaId[]) => {
             const entry = ids.length === 1 ? runtime.session.doc.media.get(ids[0]) : undefined;
             host.notice(entry ? missingPictureSentence(entry, 'it was pasted as a grey box')

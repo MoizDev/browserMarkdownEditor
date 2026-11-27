@@ -1,8 +1,5 @@
 import type { ReactNode } from 'react';
 
-// Drawn for the style panel in the tool bar's own style: a 24-unit grid, a 1.5 stroke, round caps and `currentColor`.
-// Nothing here is copied from tldraw; these are our glyphs for the same controls.
-
 function Glyph({ children }: { readonly children: ReactNode }) {
     return <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}
         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">{children}</svg>;
@@ -24,7 +21,6 @@ const DASH_ICONS: Readonly<Record<string, ReactNode>> = {
     dotted: <Glyph><path d="M3 12h.01M8 12h.01M13 12h.01M18 12h.01M21 12h.01" strokeWidth={2.4} /></Glyph>,
 };
 
-/** Stroke thickness stands for the size: the same line, heavier at each step. */
 const SIZE_ICONS: Readonly<Record<string, ReactNode>> = {
     s: <Glyph><path d="M4 12h16" strokeWidth={1} /></Glyph>,
     m: <Glyph><path d="M4 12h16" strokeWidth={2.2} /></Glyph>,
@@ -32,14 +28,12 @@ const SIZE_ICONS: Readonly<Record<string, ReactNode>> = {
     xl: <Glyph><path d="M4 12h16" strokeWidth={5.4} /></Glyph>,
 };
 
-/** Text alignment: the same three lines, set to the start, the middle and the end of their column. */
 const TEXT_ALIGN_ICONS: Readonly<Record<string, ReactNode>> = {
     start: <Glyph><path d="M4 7h14M4 12h9M4 17h11" /></Glyph>,
     middle: <Glyph><path d="M5 7h14M7.5 12h9M6.5 17h11" /></Glyph>,
     end: <Glyph><path d="M6 7h14M11 12h9M9 17h11" /></Glyph>,
 };
 
-/** Label alignment vertically: a box with its label line at the top, the middle or the bottom. */
 const VERTICAL_ALIGN_ICONS: Readonly<Record<string, ReactNode>> = {
     start: <Glyph><rect x="4" y="4" width="16" height="16" rx="2.5" /><path d="M8 8.5h8" /></Glyph>,
     middle: <Glyph><rect x="4" y="4" width="16" height="16" rx="2.5" /><path d="M8 12h8" /></Glyph>,
@@ -56,7 +50,6 @@ const SPLINE_ICONS: Readonly<Record<string, ReactNode>> = {
     cubic: <Glyph><path d="M4 18c3-9 6-9 8-3s5 6 8-7" /></Glyph>,
 };
 
-/** An arrowhead is drawn at the right end of a line; `none` is the bare line. */
 const ARROWHEAD_ICONS: Readonly<Record<string, ReactNode>> = {
     none: <Glyph><path d="M4 12h15" /></Glyph>,
     arrow: <Glyph><path d="M4 12h15" /><path d="m15 7 5 5-5 5" /></Glyph>,
@@ -69,20 +62,17 @@ const ARROWHEAD_ICONS: Readonly<Record<string, ReactNode>> = {
     bar: <Glyph><path d="M4 12h15" /><path d="M19.5 6.5v11" strokeWidth={2.2} /></Glyph>,
 };
 
-/** The panel's button in the tool bar: a palette, tinted by the colour the next shape or the selection has. */
 const PALETTE_ICON: ReactNode = <Glyph>
     <path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.7-.8 1.7-1.8 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4C21 6.2 17 3 12 3Z" />
     <circle cx="7.5" cy="11" r="1" fill="currentColor" /><circle cx="10.5" cy="7.5" r="1" fill="currentColor" />
     <circle cx="15" cy="8" r="1" fill="currentColor" />
 </Glyph>;
 
-/** A selection whose colours differ: the palette ring with a dashed outline. */
 const MIXED_ICON: ReactNode = <Glyph>
     <circle cx="12" cy="12" r="8.5" strokeDasharray="3 2.5" />
     <path d="M12 3.5v17" strokeWidth={1} />
 </Glyph>;
 
-/** Chevron that opens a disclosure picker. */
 const CARET_ICON: ReactNode = <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2}
     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6" /></svg>;
 
@@ -94,7 +84,6 @@ const GLYPHS: Readonly<Record<GlyphKind, Readonly<Record<string, ReactNode>>>> =
 
 export type GlyphKind = 'fill' | 'dash' | 'size' | 'align' | 'valign' | 'route' | 'spline' | 'head' | 'palette' | 'mixed' | 'caret';
 
-/** One of the panel's drawn glyphs: a `kind` and, for the option kinds, the value it stands for. */
 export function StyleGlyph({ kind, value = '' }: { readonly kind: GlyphKind; readonly value?: string }) {
     return <>{GLYPHS[kind][value] ?? null}</>;
 }

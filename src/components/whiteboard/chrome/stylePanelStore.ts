@@ -4,7 +4,6 @@ import { writeStoredValue } from '../../../utils/storage';
 const collapsedKey = 'canvasStylePanelCollapsed';
 const listeners = new Set<() => void>();
 let collapsed = read();
-// Each mounted surface (the docked panel, the popover's button) offers focus; the first that can take it wins.
 const focusers = new Set<() => boolean>();
 
 function read(): boolean {
@@ -36,7 +35,6 @@ export function setStylePanelCollapsed(value: boolean): void {
     for (const listener of listeners) listener();
 }
 
-/** Ctrl/Cmd+Enter moves focus into the panel. False when no surface can take it (read-only, or no styles here). */
 export function registerStylePanelFocus(focus: () => boolean): () => void {
     focusers.add(focus);
     return () => { focusers.delete(focus); };

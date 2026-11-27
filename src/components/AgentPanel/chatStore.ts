@@ -1,15 +1,3 @@
-// The agent panel's state and every action on it, as ONE module-level store.
-//
-// Not React state, for the reason agentBridge is not: the panel is a lazy
-// React tree that App mounts and unmounts as the user toggles it, and a run in
-// flight must outlive that — it keeps streaming, and above all keeps answering
-// the agent's `tool.call`s (an unanswered call hangs the CLI until the helper's
-// 90 s timeout). The store holds the run; the panel is a view onto it.
-//
-// It is also what makes StrictMode's double effects harmless here: `attach`
-// is idempotent, index loads are keyed by vault, and the one run is a field,
-// not something an effect starts.
-
 import { agentBridge, BridgeError, helperReady, isTerminalEvent } from '../../utils/agentBridge';
 import type { HelperEvent, HelperInfo } from '../../utils/agentBridge';
 import { executeTool } from '../../utils/vaultAgentTools';
@@ -28,15 +16,10 @@ import {
 import { readOpenChat, rememberOpenChat } from './openChatMemory';
 import { writeJSON } from '../../utils/storage';
 
-/* ───────────────────────── shapes ───────────────────────── */
-
-/** An image the user attached, already re-encoded (see imagePrep.ts). */
 export interface PreparedImage {
     id: string;
     mimeType: RunImage['mimeType'];
-    /** base64, no data: prefix. */
     data: string;
-    /** Object URL for the thumbnail. */
     url: string;
     name: string;
     bytes: number;
@@ -49,26 +32,14 @@ export type ChatItem =
     | {
         kind: 'tool'; id: string; callId: string; name: string; input: unknown;
         status: 'running' | 'done' | 'error'; output?: string;
-        /** One of OUR vault_/canvas_ tools (a `tool.call`), vs the agent's own
-         *  (web search, fetch, a skill) reported as a `tool` event. */
         own: boolean;
         change?: AgentChange;
     }
     | { kind: 'notice'; id: string; tone: 'info' | 'warning' | 'error'; message: string };
 
 export interface Conversation {
-    /** What the panel draws: the active branch, plus whatever is streaming. */
     items: ChatItem[];
-    /**
-     * The durable transcript, WITH its branches (utils/chatTree.ts).
-     *
-     * The app owns this now. A CLI session is a line, so a conversation that
-     * forks cannot be read back out of one — `session.history` survives as the
-     * fallback for chats made before this, and as a repair when a tree file is
-     * lost.
-     */
     tree: ChatTree;
-    /** Where the transcript came from: this session, or the CLI's own store. */
     history: 'none' | 'loading' | 'loaded' | 'missing' | 'error';
     historyError?: string;
 }
@@ -96,9 +67,7 @@ export interface ChatStoreState {
     vaultKey: string | null;
     indexStatus: 'idle' | 'loading' | 'ready' | 'error';
     indexError?: string;
-    /** This vault's chats, most recent first. */
     chats: ChatMeta[];
-    /** null = a new chat not yet sent (the draft). */
     activeChatId: string | null;
     draft: ChatConfig;
     conversations: Record<string, Conversation>;
@@ -106,26 +75,13 @@ export interface ChatStoreState {
     agentsStatus: 'idle' | 'loading' | 'ready' | 'error';
     agents: AgentStatus[];
     models: Partial<Record<AgentId, ModelsEntry>>;
-    /**
-     * Chats with a lesson under way (conversation keys, the draft included).
-     *
-     * In memory only: "yes", "no idea" and "why?" carry no learning cues of
-     * their own, so `auto` has to remember that the last message was taught —
-     * but a reload starting the chat neutral is the right failure, since the
-     * next real question re-decides it anyway. The panel reads it to light the
-     * cap while `auto` is the pinned mode.
-     */
     teaching: Record<string, boolean>;
 }
 
-/** The draft's conversation key (a chat id is a UUID, so no clash). */
 export const DRAFT_KEY = 'draft';
 
 const EMPTY_CONVERSATION: Conversation = { items: [], tree: emptyTree(), history: 'none' };
 
-/* ───────────────────────── remembered choices (localStorage) ───────────────────────── */
-
-/** The last agent, and each agent's last model/effort — the defaults for a new chat. */
 const CHOICE_KEY = 'vaultAgentChoice';
 
 interface StoredChoice {
@@ -137,7 +93,6 @@ function readChoice(): StoredChoice {
     const fallback: StoredChoice = { agent: 'claude', perAgent: {} };
     try {
         const raw = JSON.parse(localStorage.getItem(CHOICE_KEY) ?? 'null') as Partial<StoredChoice> | null;
-        // Shape-guarded: localStorage is user-editable.
         if (!raw || typeof raw !== 'object') return fallback;
         const agent = AGENT_IDS.includes(raw.agent as AgentId) ? raw.agent as AgentId : 'claude';
         const perAgent: StoredChoice['perAgent'] = {};
@@ -168,8 +123,6 @@ function draftFor(agent: AgentId): ChatConfig {
     return { agent, model: remembered?.model ?? null, effort: remembered?.effort ?? null };
 }
 
-/* ───────────────────────── helpers ───────────────────────── */
-
 function uid(): string {
     return crypto.randomUUID();
 }
@@ -189,9 +142,6 @@ function byRecent(a: ChatMeta, b: ChatMeta): number {
     return b.updatedAt - a.updatedAt;
 }
 
-/** The user's words and, IN DEVELOPMENT ONLY, the context block that preceded
- *  them: a stored message carries both, and the block is always stripped for
- *  display — it is only kept, and only in dev, for the "Context sent" fold. */
 function splitContext(text: string): { words: string; context: string | null } {
     const words = stripAgentContext(text);
     if (words === text || !import.meta.env.DEV) return { words, context: null };
@@ -208,7 +158,6 @@ function resultText(result: ToolResult): string {
     return text.length > OUTPUT_PREVIEW_CHARS ? `${text.slice(0, OUTPUT_PREVIEW_CHARS)}\n… (${text.length - OUTPUT_PREVIEW_CHARS} more characters)` : text;
 }
 
-/** What each run error means to the user. */
 function runErrorMessage(reason: RunErrorReason, message: string, agent: AgentId): string {
     const name = AGENT_LABELS[agent];
     switch (reason) {
@@ -222,28 +171,21 @@ function runErrorMessage(reason: RunErrorReason, message: string, agent: AgentId
     }
 }
 
-/** A model to judge a config by: the chosen one, else the CLI's default. */
 export function resolveModel(models: ModelInfo[] | undefined, id: string | null): ModelInfo | null {
     if (!models?.length) return null;
     return (id && models.find(m => m.id === id)) || models.find(m => m.isDefault) || null;
 }
 
-/** The active chat, or null for the draft. */
 export function activeChatOf(state: ChatStoreState): ChatMeta | null {
     const id = state.activeChatId;
     return id ? state.chats.find(c => c.id === id) ?? null : null;
 }
 
-/** The agent/model/effort the NEXT message in `state`'s active chat goes with. */
 export function configOf(state: ChatStoreState): ChatConfig {
     const chat = activeChatOf(state);
     return chat ? { agent: chat.agent, model: chat.model, effort: chat.effort } : state.draft;
 }
 
-/* ───────────────────────── the store ───────────────────────── */
-
-/** Only a helper the chat may use counts: an outdated one is connected just
- *  to be updated or uninstalled, and is never asked for agents or history. */
 function readyHelper(): HelperInfo | null {
     const state = agentBridge.getState();
     return helperReady(state) ? state.helper : null;
@@ -266,10 +208,7 @@ class ChatStore {
     private readonly listeners = new Set<() => void>();
     private notifyFrame = 0;
     private host: AgentHost | null = null;
-    /** The user message the live run answers: where its reply is committed in
-     *  the tree when it finishes. */
     private runUserNode: { key: string; nodeId: string } | null = null;
-    /** Captured when the current run started (host.toolHost.vaultToken()). */
     private runVaultToken: object | null = null;
     private runAbort: AbortController | null = null;
     private runImageHash: string | null = null;
@@ -284,29 +223,19 @@ class ChatStore {
      *  index when the vault was switched with the panel closed. */
     private indexVaultToken: object | null = null;
     private releaseRun: (() => void) | null = null;
-    /** Mirror payload hash per vault uuid, for this connection. */
     private readonly mirrorHashes = new Map<string, string>();
     private indexLoadSeq = 0;
-    /** The chat-ready helper last seen. An object per connection, so a new
-     *  one is told apart from the same one re-announced with a fresh update
-     *  status. */
     private lastHelper: HelperInfo | null = null;
 
     constructor() {
         const offEvents = agentBridge.subscribe(event => this.onHelperEvent(event));
         const offState = agentBridge.subscribeState(() => this.onBridgeState());
-        // This module loads with the panel, but the page-load update check can
-        // have connected the bridge first: a helper already there is announced
-        // now, or its agents are never asked for (measured: "Checking agents…"
-        // for good when the panel opened inside the check's grace).
         this.onBridgeState();
         // Dev only: a hot update re-runs this module and builds a second
         // store. Both listening would answer every tool.call TWICE — a
         // doubled edit in the user's note — so the old one lets go first.
         import.meta.hot?.dispose(() => { offEvents(); offState(); });
     }
-
-    /* ── store plumbing ── */
 
     getState = (): ChatStoreState => this.state;
 
@@ -315,8 +244,6 @@ class ChatStore {
         return () => { this.listeners.delete(listener); };
     };
 
-    /** Coalesced to one notification per frame: text deltas arrive every few
-     *  characters, and each notification re-renders the message list. */
     private set(patch: Partial<ChatStoreState>): void {
         this.state = { ...this.state, ...patch };
         if (this.notifyFrame) return;
@@ -324,8 +251,6 @@ class ChatStore {
             this.notifyFrame = 0;
             for (const listener of this.listeners) listener();
         };
-        // A hidden tab runs no frames; a run there still has to show when the
-        // user comes back, and a timer keeps the store's clock moving.
         this.notifyFrame = document.hidden ? window.setTimeout(fire, 50) : requestAnimationFrame(fire);
     }
 
@@ -350,13 +275,6 @@ class ChatStore {
         this.pushItem(key, { kind: 'notice', id: uid(), tone, message });
     }
 
-    /* ── the vault and the host ── */
-
-    /**
-     * Called by the panel on every render that may have changed them. A vault
-     * switch cancels a run (its tools would act on the wrong vault; the
-     * executor also refuses by token) and starts the index over.
-     */
     attach(host: AgentHost, vault: { key: string; name: string } | null): void {
         this.host = host;
         const key = vault?.key ?? null;
@@ -385,11 +303,6 @@ class ChatStore {
             const index = await host.readChatIndex();
             if (seq !== this.indexLoadSeq || vaultKey !== this.state.vaultKey) return;
             this.set({ chats: [...index.chats].sort(byRecent), indexStatus: 'ready', indexError: undefined });
-            // Put back the chat this vault was left in — the rest of what the
-            // editor already restores (tabs, reading places, canvas cameras),
-            // now for the panel. Only when nothing is open yet: a chat picked,
-            // or a run started, while the index was still loading is the user's
-            // own choice and outranks the remembered one.
             if (!this.state.activeChatId) {
                 const remembered = readOpenChat(vaultKey);
                 if (remembered && this.state.chats.some(c => c.id === remembered)) this.openChat(remembered);
@@ -406,28 +319,22 @@ class ChatStore {
         const vaultKey = this.state.vaultKey;
         if (host.toolHost.vaultToken() !== this.indexVaultToken) return;
         const next = await host.updateChatIndex(update);
-        // The write was serialized behind others; a vault switch since then
-        // means these chats are no longer the ones on screen.
         if (vaultKey !== this.state.vaultKey) return;
         this.set({ chats: [...next.chats].sort(byRecent) });
     }
 
     private patchChat(id: string, patch: Partial<ChatMeta>): Promise<void> {
-        // The same object back when the chat is not in this index: no write.
         return this.writeIndex(index => !index.chats.some(c => c.id === id) ? index : {
             ...index,
             chats: index.chats.map(c => c.id === id ? { ...c, ...patch } : c),
         });
     }
 
-    /* ── the connection ── */
-
     private onBridgeState(): void {
         const helper = readyHelper();
         const was = this.lastHelper;
         this.lastHelper = helper;
         if (helper && helper !== was) {
-            // A new helper process may have a fresh sessions folder.
             this.mirrorHashes.clear();
             this.set({ models: {} });
             void this.refreshAgents(false);
@@ -455,7 +362,6 @@ class ChatStore {
         return this.state.agents.find(a => a.agent === agent) ?? null;
     }
 
-    /** Whether `agent` can take a message now; the panel shows why not. */
     agentUsable(agent: AgentId): boolean {
         const status = this.agentStatus(agent);
         return !!status && status.installed && status.loggedIn !== false;
@@ -479,13 +385,10 @@ class ChatStore {
         }
     }
 
-    /* ── chats ── */
-
     activeChat(): ChatMeta | null {
         return activeChatOf(this.state);
     }
 
-    /** The agent/model/effort the NEXT message goes with. */
     config(): ChatConfig {
         return configOf(this.state);
     }
@@ -494,7 +397,6 @@ class ChatStore {
         return this.state.activeChatId ?? DRAFT_KEY;
     }
 
-    /** Changing agent starts a new chat — a chat's session belongs to one CLI. */
     selectAgent(agent: AgentId): void {
         const draft = draftFor(agent);
         writeChoice(draft);
@@ -503,13 +405,10 @@ class ChatStore {
         const teaching = { ...this.state.teaching };
         delete teaching[DRAFT_KEY];
         this.set({ draft, activeChatId: null, conversations, teaching });
-        // A new chat has nothing to come back to, and leaving the last id
-        // remembered would reopen a conversation the user just stepped out of.
         rememberOpenChat(this.state.vaultKey, null);
         void this.ensureModels(agent);
     }
 
-    /** Remember whether a lesson is under way in `key` (see ChatStoreState). */
     private setTeaching(key: string, on: boolean): void {
         if (!!this.state.teaching[key] === on) return;
         const teaching = { ...this.state.teaching };
@@ -517,7 +416,6 @@ class ChatStore {
         this.set({ teaching });
     }
 
-    /** Is a lesson under way in the chat on screen? The cap reads this. */
     isTeaching(): boolean {
         return !!this.state.teaching[this.conversationKey()];
     }
@@ -536,15 +434,6 @@ class ChatStore {
         if (!conversation || conversation.history === 'error') void this.loadHistory(chat);
     }
 
-    /**
-     * Put a chat on screen.
-     *
-     * The TREE first: it is the app's own transcript, and the only thing that
-     * knows about branches. A chat made before trees existed has none, so the
-     * CLI's history is read instead and becomes a straight-line tree — from
-     * which that chat can be edited and branched like any other, without
-     * anything being written until the user actually does so.
-     */
     async loadHistory(chat: ChatMeta): Promise<void> {
         const host = this.host;
         if (!host) {
@@ -554,7 +443,7 @@ class ChatStore {
         this.setConversation(chat.id, { ...this.conversation(chat.id), items: [], history: 'loading' });
 
         const tree = await host.readChatTree(chat.id);
-        if (this.conversation(chat.id).history !== 'loading') return;   // a run started meanwhile
+        if (this.conversation(chat.id).history !== 'loading') return;
         if (!isEmpty(tree)) {
             this.setConversation(chat.id, { items: itemsFromTree(tree), tree, history: 'loaded' });
             return;
@@ -584,23 +473,14 @@ class ChatStore {
         }
     }
 
-    /* ── editing the past ── */
-
-    /**
-     * Send `text` as another version of the message `nodeId`.
-     *
-     * Everything below it on this branch stays where it is; the panel shows the
-     * new version, and the arrows under the message walk between them.
-     */
     editMessage(nodeId: string, text: string): void {
         const trimmed = text.trim();
         const node = this.conversation(this.conversationKey()).tree.nodes[nodeId];
         if (!trimmed || !node || node.role !== 'user' || this.state.run) return;
-        if (trimmed === node.text.trim()) return;   // nothing was changed
+        if (trimmed === node.text.trim()) return;
         void this.send(trimmed, [], nodeId);
     }
 
-    /** The arrows under a message: show its version `index` instead. */
     selectVersionAt(nodeId: string, index: number): void {
         const tree = this.conversation(this.conversationKey()).tree;
         const node = tree.nodes[nodeId];
@@ -610,7 +490,6 @@ class ChatStore {
         if (target) this.selectVersion(target);
     }
 
-    /** Show another version of a message (its own newest line below it). */
     selectVersion(nodeId: string): void {
         const key = this.conversationKey();
         const conversation = this.conversation(key);
@@ -620,15 +499,11 @@ class ChatStore {
         this.persistTree(key, tree);
     }
 
-    /** Write a chat's transcript out. Fire and forget: a tree that cannot be
-     *  saved still shows, and the next write tries again. */
     private persistTree(key: string, tree: ChatTree): void {
         if (key === DRAFT_KEY || !this.host) return;
         void this.host.writeChatTree(key, tree);
     }
 
-    /** Permanent, after the app's own confirm: the index entry AND the CLI's own
-     *  record, so it also leaves the terminal's resume list. */
     async deleteChat(id: string): Promise<void> {
         const host = this.host;
         const chat = this.state.chats.find(c => c.id === id);
@@ -646,16 +521,12 @@ class ChatStore {
                 const vaultId = await host.ensureVaultUuid();
                 if (vaultId) await agentBridge.request('session.delete', { vaultId, agent: chat.agent, sessionId: chat.sessionId });
             } catch (e) {
-                // Keep the index entry: removing it would orphan a session the
-                // user asked to have deleted, with nothing left to retry from.
                 const message = e instanceof BridgeError ? e.message : String(e);
                 this.notice(this.conversationKey(), 'error', `Couldn't delete “${chat.title}”: ${message}`);
                 return;
             }
         }
         await this.writeIndex(index => ({ ...index, chats: index.chats.filter(c => c.id !== id) }));
-        // The transcript goes with it: a chat deleted on purpose should not
-        // leave its branches behind in .VaultAgent/chats/.
         await host.deleteChatTree(id).catch(() => {});
         const conversations = { ...this.state.conversations };
         revokeThumbs(conversations[id]);
@@ -670,8 +541,6 @@ class ChatStore {
         });
     }
 
-    /** Model/effort apply from the next message, and become the default for
-     *  new chats with this agent. */
     setModel(model: string | null, effort: string | null): void {
         const config = { ...this.config(), model, effort };
         writeChoice(config);
@@ -688,16 +557,6 @@ class ChatStore {
         return this.state.run;
     }
 
-    /* ── sending ── */
-
-    /** One run at a time; the composer is disabled while one is live. */
-    /**
-     * `editOf` re-sends an earlier message with new words: it becomes another
-     * VERSION of that message (a sibling in the tree), the thread under the old
-     * one is kept, and the run starts a fresh CLI session carrying the turns
-     * above as a transcript — the old session holds the words that were edited
-     * away (utils/chatTree.ts).
-     */
     async send(text: string, images: PreparedImage[], editOf?: string): Promise<void> {
         const host = this.host;
         if (!host || !this.state.vaultKey || this.state.run || !helperReady(agentBridge.getState())) return;
@@ -706,12 +565,6 @@ class ChatStore {
         const runId = uid();
         let key = this.conversationKey();
 
-        // Shown at once; everything below is async and may take a moment
-        // (the mirror read, the canvas capture).
-        // The message goes into the TREE first, and the panel is redrawn from
-        // it: an edit replaces the thread below with its own branch, a new
-        // message extends the one on screen. The node's id is the item's id, so
-        // everything downstream addresses one message by one name.
         const userItemId = uid();
         const before = this.conversation(key);
         const tree = editOf
@@ -723,12 +576,9 @@ class ChatStore {
             history: 'loaded',
             items: [
                 ...itemsFromTree(tree).slice(0, -1),
-                // The live item keeps its thumbnails, which the tree cannot hold.
                 { kind: 'user', id: userItemId, text, thumbs: images.map(i => i.url), imageCount: images.length, context: null },
             ],
         });
-        // Decided here, from the words just typed, not by the model: the cap in
-        // the composer lights on this same answer (see utils/agentReplyMode.ts).
         const mode = resolveReplyMode(getReplyModePref(), text, !!this.state.teaching[key]);
         this.setTeaching(key, mode === 'teach');
 
@@ -744,7 +594,6 @@ class ChatStore {
             if (!vaultUuid) throw new Error("Couldn't create the vault's .VaultAgent folder, so the agent has nowhere to keep its chats.");
             if (!stillOurs()) return;
 
-            // The draft becomes a chat on its first message.
             let chat = existing;
             if (!chat) {
                 const now = Date.now();
@@ -755,7 +604,6 @@ class ChatStore {
                 const created = chat;
                 const conversations = { ...this.state.conversations, [created.id]: { ...this.conversation(DRAFT_KEY), history: 'loaded' as const } };
                 delete conversations[DRAFT_KEY];
-                // The lesson was decided against the draft's key a moment ago.
                 const teaching = { ...this.state.teaching, [created.id]: !!this.state.teaching[DRAFT_KEY] };
                 delete teaching[DRAFT_KEY];
                 key = created.id;
@@ -766,8 +614,6 @@ class ChatStore {
                     chats: [created, ...this.state.chats],
                     run: { ...this.state.run!, chatId: created.id },
                 });
-                // The draft just became a real chat: it is the one to come back
-                // to, and until now there was nothing to remember.
                 rememberOpenChat(this.state.vaultKey, created.id);
                 await this.writeIndex(index => ({ ...index, chats: [...index.chats.filter(c => c.id !== created.id), created] }));
                 if (!stillOurs()) return;
@@ -789,7 +635,6 @@ class ChatStore {
             const runImages: RunImage[] = [];
             if (imagesSupported) {
                 for (const image of images) runImages.push({ mimeType: image.mimeType, data: image.data });
-                // The view image is extra; the user's own pictures come first.
                 if (context.image && runImages.length < MAX_IMAGES_PER_MESSAGE) {
                     runImages.unshift({ mimeType: context.image.mimeType, data: context.image.data });
                     this.runImageHash = context.image.hash;
@@ -798,29 +643,17 @@ class ChatStore {
                 this.notice(key, 'warning', `${model?.label ?? 'This model'} can't see images, so ${images.length === 1 ? 'the image was' : 'the images were'} left out.`);
             }
 
-            // DEV ONLY, and deliberately not a setting: the block is a
-            // diagnostic — how the editor described the user's screen to the
-            // agent — and in the app it is a fold of machine text under every
-            // message the reader did not write. It is also up to 60k characters
-            // a message, all of it held for the life of the chat.
             if (import.meta.env.DEV) {
                 this.updateItems(key, items => items.map(item =>
                     item.id === userItemId && item.kind === 'user' ? { ...item, context: context.text.trim() || null } : item));
             }
 
-            // The session belongs to the BRANCH, not to the chat: a fork starts
-            // its own, and is handed the turns above it as a transcript because
-            // the other version's session holds the words that were edited away.
             const shown = this.conversation(key);
             const sessionId = activeSessionId(shown.tree);
             const prefix = sessionId ? '' : transcriptPrefix(shown.tree, userItemId);
-            // Marked as part of that session before the run, not after the reply:
-            // a stopped or failed run leaves no reply, but the CLI kept the words.
             const branchTree = sessionId ? tagSession(shown.tree, userItemId, sessionId) : shown.tree;
             if (branchTree !== shown.tree) this.setConversation(key, { ...shown, tree: branchTree });
             this.runUserNode = { key, nodeId: userItemId };
-            // Saved before the run, not only after it: a window closed mid-reply
-            // should still have the question, and the branch it was asked on.
             this.persistTree(key, branchTree);
 
             await agentBridge.request('run.start', {
@@ -833,10 +666,6 @@ class ChatStore {
                 text: context.text + prefix + text,
                 images: runImages,
             });
-            // Stopped while run.start was on the wire: the helper started it
-            // anyway, so cancel it there too rather than let the CLI run on.
-            // (Read through currentRun(): TS keeps `this.state.run` narrowed
-            // across the awaits above, which is exactly what may have changed.)
             const after = this.currentRun();
             if (after?.runId !== runId) {
                 agentBridge.request('run.cancel', { runId }).catch(() => {});
@@ -858,9 +687,6 @@ class ChatStore {
         }
     }
 
-    /** Copy the vault's CLAUDE.md / AGENTS.md / skills into the agent's working
-     *  folder — skipped when nothing changed since the last copy this session
-     *  (the read happens either way; the write and the transfer do not). */
     private async syncMirror(host: AgentHost, vaultId: string): Promise<void> {
         const files = await host.collectMirrorFiles();
         const sorted = [...files].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
@@ -875,7 +701,6 @@ class ChatStore {
         if (!run) return;
         this.runAbort?.abort();
         if (run.phase === 'preparing') {
-            // Nothing reached the helper yet: just stop here.
             this.finishRun(run.chatId);
             this.notice(run.chatId, 'info', 'Stopped.');
             return;
@@ -884,7 +709,6 @@ class ChatStore {
         try {
             await agentBridge.request('run.cancel', { runId: run.runId }, 10_000);
         } catch {
-            // The helper is gone or the run already ended; either way it is over.
             if (this.state.run?.runId === run.runId) {
                 this.finishRun(run.chatId);
                 this.notice(run.chatId, 'info', 'Stopped.');
@@ -892,8 +716,6 @@ class ChatStore {
         }
     }
 
-    /** Stop listening to a run without waiting for the helper (vault switch,
-     *  lost connection). Its late events are ignored by runId. */
     private abandonRun(message: string): void {
         const run = this.state.run;
         if (!run) return;
@@ -904,7 +726,6 @@ class ChatStore {
         this.notice(run.chatId, 'warning', message);
     }
 
-    /** Close whatever is still streaming, and free the run slot. */
     private finishRun(key: string): void {
         this.runAbort?.abort();
         this.runAbort = null;
@@ -920,15 +741,6 @@ class ChatStore {
         this.releaseRun = null;
     }
 
-    /**
-     * Write what the run produced into the tree, and save it.
-     *
-     * One assistant node per run, holding its reply, its thinking and its tool
-     * calls — so the branch reads the same after a reload as it did live. A run
-     * that produced nothing at all (stopped before the first token) leaves no
-     * empty bubble behind: its node is dropped and the branch ends at the
-     * message that asked.
-     */
     private commitRun(key: string, sessionId: string | null): void {
         const pending = this.runUserNode;
         this.runUserNode = null;
@@ -950,10 +762,7 @@ class ChatStore {
         this.persistTree(key, tree);
     }
 
-    /* ── the helper's events ── */
-
     private onHelperEvent(event: HelperEvent): void {
-        // The terminal shares the bridge's listener list but not a byte of state.
         if (isTerminalEvent(event)) return;
         if (event.type === 'tool.call') { void this.onToolCall(event); return; }
         const run = this.state.run;
@@ -975,7 +784,6 @@ class ChatStore {
             }
             return;
         }
-        // run.error
         this.finishRun(key);
         this.commitRun(key, null);
         const agent = chat?.agent ?? this.config().agent;
@@ -990,7 +798,6 @@ class ChatStore {
         if (run.phase === 'preparing') this.set({ run: { ...run, phase: 'running' } });
         switch (event.type) {
             case 'session': {
-                // The question is in this session now, reply or not.
                 const pending = this.runUserNode;
                 if (pending?.key === key) {
                     const conversation = this.conversation(key);
@@ -1001,8 +808,6 @@ class ChatStore {
                     }
                 }
                 const chat = this.state.chats.find(c => c.id === key);
-                // Written at once, not at the end: a reload mid-reply must
-                // still be able to find this chat's transcript.
                 if (chat && chat.sessionId !== event.sessionId) {
                     this.set({ chats: this.state.chats.map(c => c.id === key ? { ...c, sessionId: event.sessionId } : c) });
                     void this.patchChat(key, { sessionId: event.sessionId }).catch(() => {});
@@ -1103,8 +908,6 @@ class ChatStore {
         } catch (e) {
             result = { content: [{ type: 'text', text: `The editor failed to run ${call.name}: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
         }
-        // A still-stopping helper may need the partial result. After run.done it does not, but
-        // the card must still record any change a mutating tool committed before the run closed.
         if (this.state.run?.runId === call.runId) reply(result);
         const output = resultText(result);
         this.updateItems(key, items => items.map(item =>
@@ -1113,7 +916,6 @@ class ChatStore {
                 : item));
     }
 
-    /** The helper removed itself: whatever was running is gone with it. */
     onUninstalled(): void {
         if (this.state.run) this.finishRun(this.state.run.chatId);
         releaseAgentMatcher();
@@ -1129,7 +931,6 @@ function closeReasoning(items: ChatItem[]): ChatItem[] {
     return items;
 }
 
-/** A tool call or thought between two runs of text splits the reply in two. */
 function endAssistant(items: ChatItem[]): ChatItem[] {
     const last = items[items.length - 1];
     if (last?.kind === 'assistant' && last.streaming) {
@@ -1138,25 +939,12 @@ function endAssistant(items: ChatItem[]): ChatItem[] {
     return items;
 }
 
-/* ───────────────────────── the tree ⇄ what is drawn ───────────────────────── */
-
-/**
- * The branch on screen, as panel items.
- *
- * Node ids become item ids on purpose: the edit button, the version arrows and
- * the streaming updates all address the same message by one id, so nothing has
- * to map between "the third item" and "the node it came from". A node's extras
- * (its thinking, its tool calls) become their own items, as they were when they
- * streamed — a reloaded chat should not look different from a live one.
- */
 export function itemsFromTree(tree: ChatTree): ChatItem[] {
     const items: ChatItem[] = [];
     for (const node of activePath(tree)) {
         if (node.role === 'user') {
             items.push({
                 kind: 'user', id: node.id, text: node.text,
-                // Thumbnails are object URLs; they die with the page, and the
-                // count is what survives to say pictures went with it.
                 thumbs: [], imageCount: node.images ?? 0, context: null,
             });
             continue;
@@ -1180,13 +968,6 @@ export function itemsFromTree(tree: ChatTree): ChatItem[] {
     return items;
 }
 
-/**
- * Fold everything a run produced into the one assistant node that records it.
- *
- * The live items are the source — they are what the user watched arrive — and
- * `after` is the user item the run answered, so a chat with several turns
- * commits only the newest one.
- */
 export function foldRunIntoNode(items: ChatItem[], afterId: string): Partial<ChatNode> {
     const start = items.findIndex(item => item.id === afterId);
     const tail = start < 0 ? items : items.slice(start + 1);
@@ -1204,8 +985,6 @@ export function foldRunIntoNode(items: ChatItem[], afterId: string): Partial<Cha
                 ...(item.change ? { change: item.change } : {}),
             });
         } else if (item.kind === 'notice' && item.tone === 'error') {
-            // A run that ended badly is kept as the turn's text: a branch whose
-            // answer failed should say so when it is come back to, not be blank.
             text.push(item.message);
             error = true;
         }
@@ -1218,19 +997,8 @@ export function foldRunIntoNode(items: ChatItem[], afterId: string): Partial<Cha
     };
 }
 
-/** How much of a branch's history is replayed into a new CLI session. */
 const PREFIX_BUDGET = 40_000;
 
-/**
- * The turns above this message, as text for an agent that has not seen them.
- *
- * A BRANCH IS A NEW CLI SESSION, and it has to be: the session the other
- * version ran in holds the very message the user edited away, and resuming it
- * would have the agent answer with that still in mind. So the kept turns are
- * handed over as a transcript instead. Oldest turns are dropped first when it
- * does not fit, with a line saying so — the recent ones are what the next
- * message is actually about.
- */
 export function transcriptPrefix(tree: ChatTree, upTo: string | null): string {
     const path = activePath(tree);
     const end = upTo ? path.findIndex(node => node.id === upTo) : path.length;
@@ -1258,13 +1026,6 @@ export function transcriptPrefix(tree: ChatTree, upTo: string | null): string {
     ].join('\n');
 }
 
-/**
- * A straight-line tree from what the CLI remembers.
- *
- * For chats that predate the tree file. Consecutive non-user items fold into
- * the one assistant turn they belonged to, which is the shape the rest of this
- * module expects — and gives the old chat working edit arrows from then on.
- */
 export function treeFromItems(items: ChatItem[], sessionId: string | null): ChatTree {
     let tree = emptyTree();
     let pendingUser: string | null = null;
@@ -1311,5 +1072,4 @@ function revokeThumbs(conversation: Conversation | undefined): void {
     }
 }
 
-/** The panel's one store. */
 export const chatStore = new ChatStore();

@@ -3,7 +3,6 @@ import { PDF_FONT_CATALOGUE, type PdfFontId } from './catalogue';
 const BUDGET = 64 * 1024 * 1024;
 interface Pending { controller: AbortController; promise: Promise<Blob>; waiters: number; size: number }
 
-/** Own one cache per app, not per document or worker. Cached Blobs are immutable. */
 export class PdfFontCache {
     private readonly cached = new Map<PdfFontId, Blob>();
     private readonly pending = new Map<PdfFontId, Pending>();
@@ -85,5 +84,4 @@ export class PdfFontCache {
     }
 }
 
-/** Shared across all PDF documents and render workers. */
 export const pdfFontCache = new PdfFontCache();

@@ -27,20 +27,10 @@ import type { SearchController } from '../utils/searchController';
 import type { FileTreeNode, FileTreeFileNode, TextRange } from '../types';
 import { orderListFor, type EntryOrder, type IconNode } from '../utils/entryStyle';
 
-/**
- * True when the drag carries OS files rather than a tree node being moved.
- * `types` is readable during dragover (where `files` is deliberately empty for
- * privacy), so it's the only reliable signal at that point.
- */
 function isExternalFileDrag(e: React.DragEvent): boolean {
     return Array.from(e.dataTransfer.types).includes('Files');
 }
 
-/** The sort menu's rows, in Obsidian's wording and order (image 8). Its two
- *  "Created time" rows are left out on purpose: the File System Access API
- *  exposes no creation time at all, so they could only lie. Custom is ours —
- *  Obsidian has none — the user's own drag-arranged order, in its own group
- *  at the bottom (the menu below slices this list by position). */
 const SORT_ROWS: { id: TreeSortOrder; label: string }[] = [
     { id: 'name-asc', label: 'File name (A to Z)' },
     { id: 'name-desc', label: 'File name (Z to A)' },
@@ -49,11 +39,8 @@ const SORT_ROWS: { id: TreeSortOrder; label: string }[] = [
     { id: 'custom', label: 'Custom' },
 ];
 
-/** The order snapshot while Custom is NOT chosen: constant, so an order or icon
- *  change never re-renders the explorer of someone sorting another way. */
 const NO_ORDER: EntryOrder = Object.freeze({}) as EntryOrder;
 
-/** localStorage is user-editable: anything but a known order reads as the default. */
 function readSortOrder(): TreeSortOrder {
     const stored = readJSON<unknown>('fileTreeSortOrder', 'name-asc');
     return TREE_SORT_ORDERS.includes(stored as TreeSortOrder) ? stored as TreeSortOrder : 'name-asc';
@@ -71,28 +58,18 @@ interface FileExplorerProps {
     onCreateFile: (parentHandle: FileSystemDirectoryHandle | null, name: string, parentPath?: string) => void | Promise<void>;
     onCreateFolder: (parentHandle: FileSystemDirectoryHandle | null, name: string) => void | Promise<void>;
     onCollapse: () => void;
-    /** Whether the search panel replaces the tree — the Search tab is on, as
-     *  opposed to Files. Owned by App; both toggles below are stable. */
     searchOpen: boolean;
     onOpenSearch: () => void;
     onCloseSearch: () => void;
     onTrash: (node: FileTreeNode) => void;
-    /** Open a folder row as the vault. Directories only — App ignores the rest. */
     onOpenAsVault: (node: FileTreeNode) => void | Promise<void>;
-    /** Give a folder an icon and colour, or clear them. Stable for the app's
-     *  life: this component is memoized and TreeNode is too. */
     onStyleEntry: (path: string, icon: string | undefined, color: string | undefined, nodes?: IconNode[]) => void;
     onToggleExpand: (path: string) => void;
-    /** Open all of these folders in one update (Expand all, auto-reveal). */
     onExpandPaths: (paths: string[]) => void;
-    /** Close all of these folders in one update (Collapse all). */
     onCollapsePaths: (paths: string[]) => void;
     onMoveFile: (sourceNode: FileTreeNode, targetDirHandle: FileSystemDirectoryHandle, targetPath?: string) => Promise<boolean>;
-    /** Store one folder's custom order (`null` forgets it). Stable per vault,
-     *  like onStyleEntry: this component is memoized. */
     onSetTreeOrder: (folderPath: string, names: readonly string[] | null) => void;
     onRenameFile: (node: FileTreeNode, newName: string) => unknown;
-    /** Copy files dragged in from the OS into `targetDir`. */
     onImportFiles: (files: FileList | File[], targetDir: FileSystemDirectoryHandle) => Promise<string[]>;
     onOpenSearchResult: (node: FileTreeFileNode, range: TextRange | null) => void;
 }
@@ -121,9 +98,6 @@ function FileExplorer({
     onImportFiles,
     onOpenSearchResult,
 }: FileExplorerProps) {
-    /* The name box at the vault ROOT. Driven by the same store the tree rows
-       use, so the header's buttons can open it either here or inside a folder
-       without two implementations of one control. */
     const creatingInRoot = useSyncExternalStore(
         subscribeCreateRequest,
         useCallback(() => getCreateKindFor(''), []),
@@ -133,17 +107,11 @@ function FileExplorer({
 
     const treeRef = useRef<HTMLDivElement | null>(null);
 
-    /** Which of the action row's dropdowns is open, for its pressed look. Set
-     *  only AFTER openContextMenu reports the menu open, and cleared by the
-     *  menu's onClose — which also runs when another menu replaces it. */
     const [openMenu, setOpenMenu] = useState<'create' | 'sort' | null>(null);
     const clearOpenMenu = useCallback(() => setOpenMenu(null), []);
 
-    // ── View preferences (global, like expandedPaths) ───────────────────────
     const [sortOrder, setSortOrder] = useState<TreeSortOrder>(readSortOrder);
     useEffect(() => { writeJSON('fileTreeSortOrder', sortOrder); }, [sortOrder]);
-    // Hands a dragged tree node's drop to the container's handlers below
-    // instead of the folder rows' (TreeNode reads it at event time).
     const reordering = sortOrder === 'custom';
     useEffect(() => {
         setTreeReorderMode(reordering);
@@ -153,18 +121,6 @@ function FileExplorer({
     const [autoReveal, setAutoReveal] = useState<boolean>(() => readJSON<unknown>('fileTreeAutoReveal', false) === true);
     useEffect(() => { writeJSON('fileTreeAutoReveal', autoReveal); }, [autoReveal]);
 
-    // ── Sorted display tree ─────────────────────────────────────────────────
-    /* The canonical tree stays in buildFileTree's order (folders first, A→Z) —
-       graph, search and every collectFiles caller read it. What the rows show
-       is a display copy, structurally shared (utils/treeSort.ts) so a re-sort
-       that moves one file re-renders only the folders on its way.
-
-       The file times are an external store, and this subscribes to them ONLY
-       while a time order is chosen: the snapshot is a constant 0 otherwise, so
-       a save's stamp (App.flushTab → recordFileWritten) never re-renders the
-       explorer of a user sorting by name. The custom order is subscribed the
-       same way, only while Custom is chosen: `.appearance.json` also changes
-       with every icon pick. */
     const [sortCache] = useState(createSortCache);
     const timesVersion = useSyncExternalStore(
         subscribeFileTimes,
@@ -180,17 +136,11 @@ function FileExplorer({
         return sortTree(fileTree, sortOrder, getFileTimes(), sortCache, customOrder);
     }, [fileTree, sortOrder, timesVersion, customOrder, sortCache]);
 
-    /** What a Custom-order drag measures against — only built under Custom, and
-     *  once per display tree, not per `dragover`. */
     const dropIndex = useMemo<TreeIndex | null>(
         () => (reordering ? indexTree(displayTree) : null),
         [reordering, displayTree],
     );
 
-    /* Stat every file while a time order is chosen, re-run whenever the tree
-       changes shape (a refresh hands out new handles, and a moved file is a new
-       file on disk). Never per keystroke: saves stamp their own path instead.
-       The cleanup discards a walk the tree or the order has since outdated. */
     useEffect(() => {
         if (!isTimeSort(sortOrder) || indexTimesReady) return;
         let current = true;
@@ -198,9 +148,6 @@ function FileExplorer({
         return () => { current = false; };
     }, [fileTree, sortOrder, readSnapshot, indexTimesReady]);
 
-    // ── Expand all / Collapse all ───────────────────────────────────────────
-    /** Every folder in the tree — the REAL ones, so a stale expandedPaths
-     *  entry (a folder since deleted) cannot hold the toggle on Collapse. */
     const folderPaths = useMemo(() => {
         const paths: string[] = [];
         const walk = (nodes: FileTreeNode[]) => {
@@ -211,10 +158,6 @@ function FileExplorer({
         walk(fileTree);
         return paths;
     }, [fileTree]);
-    // The whole set, from the store (utils/expandedPaths.ts): this component
-    // re-rendering on a toggle is fine and the ROWS are what must not, which is
-    // why they subscribe to their own path instead of taking a prop. The
-    // snapshot's identity changes exactly when the set does.
     const expandedPaths = useSyncExternalStore(subscribeExpandedPaths, getExpandedPaths);
     const anyExpanded = useMemo(
         () => folderPaths.some(p => expandedPaths.has(p)),
@@ -291,22 +234,13 @@ function FileExplorer({
         if (row) { row.focus(); focusPathRef.current = null; }
     }, [start, end, visibleRows]);
 
-    // ── Auto-reveal ─────────────────────────────────────────────────────────
     const filePathSet = useMemo(() => new Set(collectFiles(fileTree).map(f => f.path)), [fileTree]);
-    /** The last path revealed. A tree refresh re-runs the effect below, and
-     *  without this every create or rename elsewhere would re-open and scroll
-     *  back to the active file — undoing a folder the user had just closed. */
     const revealedRef = useRef<string | null>(null);
     useEffect(() => { revealedRef.current = null; }, [autoReveal, searchOpen]);
-    /* Subscribed inside an effect, not through useSyncExternalStore: a tab
-       switch then costs this component nothing unless it actually reveals —
-       the row highlight already rides each row's own boolean subscription. */
     useEffect(() => {
         if (!autoReveal || searchOpen) return;
         const reveal = () => {
             const path = getActiveFilePath();
-            // The Help tab's bare pseudo-path, and anything not in the tree yet
-            // (a file just created — the refresh that brings it re-runs this).
             if (!path || !filePathSet.has(path) || path === revealedRef.current) return;
             revealedRef.current = path;
             const slash = path.lastIndexOf('/');
@@ -333,19 +267,7 @@ function FileExplorer({
         }
     }, [creatingInRoot]);
 
-    /**
-     * Where the header's New-something buttons put things.
-     *
-     * THE FOLDER OF THE FILE YOU HAVE OPEN, not the vault root. Making a note
-     * while reading one almost always means making it next to that one, and
-     * having it land at the root instead means moving it by hand every time.
-     * With nothing open — or a file whose folder cannot be resolved — the root
-     * is still the answer.
-     */
     const createTarget = () => {
-        // Read at CLICK time rather than memoized per render: as a memo this
-        // re-ran on every tab switch, which meant subscribing the explorer to
-        // the active file for a value only a button press ever looks at.
         const active = getActiveFilePath();
         if (!active) return '';
         const node = collectFiles(fileTree).find(f => f.path === active);
@@ -354,20 +276,13 @@ function FileExplorer({
         return slash === -1 ? '' : node.path.slice(0, slash);
     };
 
-    /** Open the inline "new file/folder" name box in `createTarget`, leaving
-     *  search mode if needed (the box lives in the tree view, which search
-     *  temporarily replaces). */
     const startCreateInRoot = (kind: CreateKind) => {
         onCloseSearch();
         const target = createTarget();
-        // Every folder on the way down has to be open, or the row that renders
-        // the box is not mounted to see the request. One update for the lot.
         onExpandPaths(ancestorsOf(target));
         requestCreate(target, kind);
     };
 
-    /** Hung off the button's bottom-left corner, like the tab strip's ⌄, and
-     *  `anchor`ed so a second press on the same button closes it. */
     const raiseMenu = (
         e: React.MouseEvent<HTMLButtonElement>,
         which: 'create' | 'sort',
@@ -389,7 +304,6 @@ function FileExplorer({
     };
 
     const openCreateMenu = (e: React.MouseEvent<HTMLButtonElement>) => raiseMenu(e, 'create', 'New drawing or notebook', [
-        // The user's own wording and order.
         { kind: 'command', id: 'new-drawing', label: 'New Drawing', run: () => startCreateInRoot('drawing') },
         { kind: 'command', id: 'new-notebook', label: 'New Notebook', run: () => startCreateInRoot('notebook') },
     ]);
@@ -410,7 +324,7 @@ function FileExplorer({
 
     const handleSearchResult = (node: FileTreeFileNode, range: TextRange | null) => {
         onOpenSearchResult(node, range);
-        onCloseSearch();      // picking a result returns the sidebar to the tree
+        onCloseSearch();
     };
 
     const handleRootCreate = async (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -421,9 +335,6 @@ function FileExplorer({
                 return;
             }
             if (creatingInRoot === 'notebook' || creatingInRoot === 'drawing') {
-                // Empty on disk until the first stroke: a notebook created and
-                // never written in still opens as a blank one-page notebook,
-                // exactly as a drawing opens as a blank canvas.
                 await onCreateFile(rootHandle, nameForKind(creatingInRoot, name), '');
             } else if (creatingInRoot === 'file') {
                 await onCreateFile(rootHandle, name, '');
@@ -443,28 +354,10 @@ function FileExplorer({
         clearCreateRequest();
     };
 
-    /**
-     * The app's own menu for the empty tree area — the vault root.
-     *
-     * A right-click on a row raises that row's own menu and stops propagating,
-     * so in principle this never sees one. It checks anyway: either mechanism
-     * alone is one refactor away from silently raising two menus, and the cost
-     * of the check is a `closest` call on a right-click. Returning WITHOUT
-     * preventing is deliberate on that path — for a row we want the row's menu,
-     * and for the inline input row (which also carries `.tree-item`) we want the
-     * browser's own, because a text field wants its native Paste.
-     *
-     * `openContextMenu` is imported rather than passed in, so FileExplorerProps
-     * — every entry of which is referentially stable across a keystroke — is
-     * untouched and the memo below still holds.
-     */
     const handleRootContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
         if ((e.target as HTMLElement).closest('.tree-item')) return;
         e.preventDefault();
         const container = e.currentTarget;
-        // Present-and-disabled with the reason stated, never absent: a row that
-        // does nothing and says nothing is indistinguishable from a broken one
-        // (VaultMenu.messageFor states the rule for the vault list).
         const noVault = rootHandle ? undefined : 'Open a vault first';
         const entries: ContextMenuEntry[] = [
             {
@@ -528,17 +421,6 @@ function FileExplorer({
         if (element) { element.focus(); focusPathRef.current = null; }
     };
 
-    // ── Custom order: placing a dragged tree node ──────────────────────────
-    /**
-     * Under Custom, EVERY drop of a tree node is decided here, from the row
-     * under the pointer and where on it the pointer sits: the top or bottom
-     * half of a file means before or after it; a folder splits in quarters —
-     * top before it, middle into it (appended), bottom after it, or, when it is
-     * open with children, first inside it, since the line under an open
-     * folder's header is visually its first child's slot. Below every row is the
-     * end of the vault root. Null when the drag is not a Custom reorder at all
-     * (OS files, editor tabs, another order), which leaves today's paths alone.
-     */
     const resolveReorder = (e: React.DragEvent<HTMLDivElement>): { path: string | null; spot: TreeDropSpot; plan: TreeDropPlan | null } | null => {
         if (!dropIndex || isTabDrag(e.dataTransfer)) return null;
         const dragged = peekDraggedNode();
@@ -567,7 +449,6 @@ function FileExplorer({
         setRootDragOver(false);
     };
 
-    /** The folder handle a plan's destination resolves to. */
     const handleForFolder = (folderPath: string): FileSystemDirectoryHandle | null => {
         if (!folderPath) return rootHandle;
         const node = dropIndex?.byPath.get(folderPath);
@@ -593,16 +474,11 @@ function FileExplorer({
         if (!moved) onSetTreeOrder(plan.parentPath, previous);
     };
 
-    // Root-level drop handlers — use a counter to reliably track enter/leave
     const dragCounterRef = useRef(0);
 
     const handleRootDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
-        // An editor tab on its way to the split view has no meaning here (see
-        // utils/tabDrag.ts) — leave the container inert rather than inviting a
-        // drop it would silently ignore.
         if (isTabDrag(e.dataTransfer)) return;
         e.preventDefault();
-        // A Custom reorder draws its own target on every dragover instead.
         if (reordering && peekDraggedNode()) return;
         dragCounterRef.current++;
         setRootDragOver(true);
@@ -619,15 +495,11 @@ function FileExplorer({
             e.dataTransfer.dropEffect = plan ? 'move' : 'none';
             return;
         }
-        // Files dragged from the OS are copied in, not moved out of the vault —
-        // showing 'move' would promise Explorer we're removing their original.
         e.dataTransfer.dropEffect = isExternalFileDrag(e) ? 'copy' : 'move';
     };
 
     const handleRootDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
         if (reordering && peekDraggedNode()) {
-            // Only leaving the container clears it; row-to-row crossings are
-            // the next dragover's to redraw.
             if (!e.currentTarget.contains(e.relatedTarget as Node | null)) clearReorderTarget();
             return;
         }
@@ -650,7 +522,6 @@ function FileExplorer({
         dragCounterRef.current = 0;
         setRootDragOver(false);
 
-        // Dragged in from the OS (Explorer/Finder) — copy into the vault root.
         if (isExternalFileDrag(e) && e.dataTransfer.files?.length && rootHandle) {
             await onImportFiles(e.dataTransfer.files, rootHandle);
             return;
@@ -663,7 +534,6 @@ function FileExplorer({
         }
     };
 
-    // Failsafe: clear the highlight when any drag operation ends
     useEffect(() => {
         const resetDrag = () => {
             dragCounterRef.current = 0;
@@ -676,8 +546,6 @@ function FileExplorer({
 
     return (
         <div className="file-explorer">
-            {/* Obsidian's two rows: the view tabs with the collapse toggle,
-                then (on the Files tab only, as there) the tree's own actions. */}
             <div className="nav-tabs-header">
                 <div className="nav-tabs" role="group" aria-label="Sidebar view">
                     <button
@@ -756,9 +624,6 @@ function FileExplorer({
                     >
                         <GalleryVertical size={18} strokeWidth={1.75} />
                     </button>
-                    {/* One toggle, as in Obsidian: it offers whichever of the
-                        two would change something — Collapse once any folder
-                        is open, Expand when none is. */}
                     <button
                         className="nav-action-btn"
                         data-tooltip={anyExpanded ? 'Collapse all' : 'Expand all'}
@@ -820,13 +685,6 @@ function FileExplorer({
                             depth={depth}
                             createRow={createRow}
                             onFileClick={onFileClick}
-                            // Straight through — no wrapper. The two that used
-                            // to sit here each raised a window.prompt() for the
-                            // name; a folder row now opens the app's own inline
-                            // input instead and hands the name it collected to
-                            // these, which are already stable useCallbacks from
-                            // App (a fresh arrow here would defeat TreeNode's
-                            // memo for every row).
                             onCreateFile={onCreateFile}
                             onCreateFolder={onCreateFolder}
                             onTrash={onTrash}
@@ -846,6 +704,4 @@ function FileExplorer({
     );
 }
 
-// Memoized: its props are referentially stable across editor keystrokes, so the
-// whole file tree stops re-rendering while the user types in a note.
 export default React.memo(FileExplorer);

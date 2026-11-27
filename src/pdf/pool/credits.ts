@@ -3,8 +3,6 @@ import type { PageTileArgs, PageTileResult } from '../worker/protocol';
 const MAX_REPLIES = 8;
 const MAX_BYTES = 16 * 1024 * 1024;
 
-/** Credits cover posted requests AND arrived buffers until the bitmap consumer
- * explicitly releases them, so fast workers cannot outrun the upload budget. */
 export class TileCredits {
     private count = 0;
     private bytes = 0;

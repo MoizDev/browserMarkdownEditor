@@ -1,14 +1,3 @@
-/* =============================================================
-   The terminal dock's content. Loaded with the terminal's lazy chunk
-   (index.tsx), never from index.css. The dock's container and its resize handle
-   are main-chunk CSS (index.css, "Terminal dock").
-
-   The header is the tab strip's own language — --tab-container-background, the
-   same bottom rule, the active tab flowing into the page below — at the
-   pane header's height. Both themes come from the app's variables; nothing here
-   is themed by hand.
-   ============================================================= */
-
 .terminal-panel {
   display: flex;
   flex-direction: column;
@@ -21,7 +10,6 @@
   line-height: 1.4;
 }
 
-/* ── Header ── */
 .terminal-header {
   display: flex;
   align-items: stretch;
@@ -30,8 +18,6 @@
   height: var(--pane-header-height);
   padding: 0 4px 0 0;
   background: var(--tab-container-background);
-  /* The strip's rule, as an inset shadow: the active tab's own background
-     paints over it and flows into the terminal, as the editor's tabs do. */
   box-shadow: inset 0 -1px 0 var(--tab-rule-color);
   user-select: none;
 }
@@ -68,8 +54,6 @@
   color: var(--text-normal);
 }
 
-/* A shell that ended or moved away keeps its tab (its scrollback is still
-   there to read), quieter. */
 .terminal-tab.is-gone .terminal-tab-title {
   opacity: 0.6;
 }
@@ -172,7 +156,6 @@
   cursor: default;
 }
 
-/* ── Notices (clipboard refused, Full Disk Access) ── */
 .terminal-notice {
   display: flex;
   flex: none;
@@ -216,7 +199,6 @@
   text-decoration: underline;
 }
 
-/* ── Body ── */
 .terminal-body {
   position: relative;
   flex: 1;
@@ -230,8 +212,6 @@
   overflow: hidden;
 }
 
-/* One persistent host per shell, adopted into the surface. xterm's FitAddon
-   reads this element's padding when it counts rows and columns. */
 .terminal-host {
   position: absolute;
   inset: 0;
@@ -239,20 +219,14 @@
   padding: 6px 4px 4px 12px;
 }
 
-/* xterm paints its own background; the host's must match it while it loads. */
 .terminal-host .xterm {
   height: 100%;
 }
 
-/* The rows rarely fill the host exactly, and the remainder below the last row
-   is the viewport's: xterm.css paints it #000 (measured: a 3 px black strip under
-   the last row, in both themes). The dock behind it already is the theme's
-   background, which is the terminal's. */
 .terminal-host .xterm .xterm-viewport {
   background-color: transparent;
 }
 
-/* The connection screens (HelperGate) on the setup surface the agent panel uses. */
 .terminal-gate {
   flex: 1;
   min-height: 0;

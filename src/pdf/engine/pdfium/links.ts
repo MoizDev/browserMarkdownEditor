@@ -9,7 +9,6 @@ import { heapView, withPdfiumMemory } from './memory';
 const VIEWS: ReadonlyArray<PdfLinkView | undefined> = [undefined, 'XYZ', 'Fit', 'FitH', 'FitV', 'FitR', 'FitB', 'FitBH', 'FitBV'];
 const fallback = (page: number): PdfLinkDestination => ({ page, view: 'XYZ', params: [] });
 
-/** PDFium destinations carry user-space coordinates; the reader gets page space. */
 export function pdfiumDestination(runtime: PdfiumRuntime, document: number, destination: number, pageCount: number,
     geometryFor: (page: number) => PageGeometry): PdfLinkDestination | undefined {
     if (!destination) return undefined;
@@ -45,8 +44,6 @@ export function pdfiumDestination(runtime: PdfiumRuntime, document: number, dest
             const box = pdfiumTransformBox(transform, params[0], params[1], params[2], params[3]);
             return box[2] > box[0] && box[3] > box[1] ? { page, view, params: [...box] } : fallback(page);
         }
-        // PDFium's public API cannot distinguish a null FitH/FitV coordinate
-        // from a numeric zero. Prefer a page-only jump in that ambiguous case.
         if (params.length !== 1 || params[0] === 0) return fallback(page);
         const horizontal = view === 'FitH' || view === 'FitBH', bounding = view === 'FitBH' || view === 'FitBV';
         const point = horizontal ? pdfiumTransformPoint(transform, 0, params[0]) : pdfiumTransformPoint(transform, params[0], 0);

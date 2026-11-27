@@ -18,7 +18,6 @@ export interface AsyncTransformGestureHost {
     hold(): () => void;
     registerPending(cancel: () => void): () => void;
     current(): boolean;
-    /** `live`: a pointer move (the preview moves its picture); absent for the commit's own preview. */
     show(ops: readonly Op[], live?: boolean): void;
     waitUntilReady(signal: AbortSignal): Promise<void>;
     armCommit(): void;
@@ -35,7 +34,6 @@ interface Plan<Preview extends { readonly ops: readonly Op[] }> {
     cancel(): void;
 }
 
-/** The latest pointer owns publication; a release waits for its exact final plan. */
 class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> implements GestureOwner {
     readonly kind = 'node-edit' as const;
     readonly pointerIds: ReadonlySet<number>;
@@ -141,8 +139,6 @@ export function translationHandleGesture(sample: RealSample, modifiers: Modifier
                     if (request.aborted || signal.aborted) { grown?.release(); throw new DOMException('Notebook move cancelled', 'AbortError'); }
                     notebook = grown;
                 }
-                // Frame membership is planned for the commit only: a live parent change left the original picture drawn at its
-                // start during the drag (measured; ESCALATION in gap.md), so the in-progress preview keeps the plain move.
                 if (commit && base.ops.length) {
                     const prepared = await prepareFrameDrop({ runtime: options.runtime, ids: options.ids, preview: notebook?.preview ?? base,
                         signal: request, current: active, cooperate: options.cooperate });
@@ -228,8 +224,6 @@ export function leafResizeHandleGesture(sample: RealSample, modifiers: Modifiers
                 const active = () => !signal.aborted && !request.aborted && options.current() && session.owner === owner
                     && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection
                     && runtime.render.text.fonts.epoch === font;
-                // Object snapping only where the rotation is a right angle (a rotated box's features are not its edges), and the
-                // grid whenever Cmd/Ctrl is not held. Neither is gated by velocity.
                 const quarter = plan.startBox.rotation / (Math.PI / 2), rightAngle = Math.abs(quarter - Math.round(quarter)) < 1e-9;
                 const objects = !!snap && snap.alwaysSnap() !== keys.accel && rightAngle, grid = !!snap && !keys.accel;
                 if (!snap || (!objects && !grid) || Math.hypot(point.x - sample.x, point.y - sample.y) * snap.zoom() < 1) {
@@ -260,7 +254,6 @@ export function leafResizeHandleGesture(sample: RealSample, modifiers: Modifiers
                     result = await plan.preview({ x: point.x + dx, y: point.y + dy }, { shift: keys.shift, alt: keys.alt }, request, signX, signY);
                     remember(result);
                 }
-                // A side handle cannot claim a guide that its constrained movement did not reach.
                 const actualX = (c * localX - s * localY) * factor, actualY = (s * localX + c * localY) * factor;
                 guides.set(result, target.guides.filter(guide => Math.abs((guide.axis === 'x' ? actualX - target.delta.x : actualY - target.delta.y) * snap.zoom()) <= 0.5));
                 return result;

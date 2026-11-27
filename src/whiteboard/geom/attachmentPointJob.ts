@@ -7,8 +7,6 @@ import type { PointQuery } from './types';
 export type AttachmentPointResult = Readonly<{ status: 'pending' | 'hit' | 'miss' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 const PENDING: AttachmentPointResult = Object.freeze({ status: 'pending' });
 
-/** Attachments use the closed coverage, not the selection halo. An approximate
- * contour is usable only when the query is provably farther than its error. */
 export function createAttachmentPointJob(outline: readonly PathOp[], query: PointQuery, options: {
     readonly boundaryErrorLocal?: number; readonly maxCommands?: number; readonly maxWork?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): AttachmentPointResult; cancel(): void } {

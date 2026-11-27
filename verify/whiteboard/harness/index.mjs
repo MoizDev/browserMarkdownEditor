@@ -16,7 +16,6 @@ export async function launch(options={}) {
   const h=await launchRuntime({...options,afterInstrumentation:[installProbe,...(options.afterInstrumentation||[])]});
   h.referenceOnly=true;
   try {
-  // Install interception before the panel can attempt a connection to the user's helper.
   h.agent=await installToolTransport(h.page,{modKey:h.modKey});
   h.vault=vaultHelpers(h);h.probe=probeHelpers(h);h.input=inputHelpers(h);transferHelpers(h);h.screen=screenHelpers(h);h.pdf={seed:seedPDF,inspect:inspectPDF};
   const {page}=h;
@@ -31,7 +30,6 @@ export async function launch(options={}) {
     createCanvas:async(name,label)=>{
       await page.locator('[data-tooltip="New drawing or notebook"]').click();
       await page.getByRole('menuitem',{name:label,exact:true}).click();
-      // The app's focused inline name box is a plain input; no internal create callback is invoked.
       await page.locator('input:focus').fill(name);
       await page.locator('input:focus').press('Enter');
       await h.probe.ready(name);return name;

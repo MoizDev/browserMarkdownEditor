@@ -14,13 +14,9 @@ export interface GpuPaneServicesOptions {
     onFenceAge(ageMs: number): void;
     onFramebufferFailure?(): void;
     onGpuTiming(p95Ms: number, samples: number, disjoint: boolean): void;
-    /** The pane's answer to a device cache's eviction request: the bytes it frees now (0 when none). */
     evict(bytes: number, pool: 'gpu' | 'cpu'): number;
 }
 
-/** Each cache receives the exact lease objects the arena returns. Closing a cache stops
- * new admissions; submitted resources keep their charges until the arena reports retirement.
- */
 export class GpuPaneServices {
     readonly services: Webgl2Services;
     private readonly handles: readonly MemoryCacheHandle[];
@@ -32,7 +28,6 @@ export class GpuPaneServices {
         const opened: MemoryCacheHandle[] = [];
         try {
             const register = (suffix: string, pool: 'gpu' | 'cpu', kind: 'working' | 'program', foreground = false): MemoryCacheHandle => {
-                // Leases remain charged as queued/retiring until the arena returns them; no free is inferred.
                 const handle = options.governor.register({ ...common, id: `${options.id}:${suffix}`, pool, kind, ...(foreground ? { foreground } : {}),
                     memory: () => ({ live: 0, retiring: 0 }), evict: bytes => options.evict(bytes, pool) });
                 opened.push(handle);
@@ -42,8 +37,6 @@ export class GpuPaneServices {
             const program = register('program', 'gpu', 'program');
             const gpuStaging = register('gpu-staging', 'gpu', 'working');
             const cpuStaging = register('cpu-staging', 'cpu', 'working');
-            // The ring's CPU scratch and its GPU slots are what the frame's draws read now: foreground, so they are admitted while the
-            // pool fits (1c081cd4 for the CPU pool; the GPU pool follows the same rule).
             const uniformCpu = register('uniform-cpu', 'cpu', 'working', true);
             const uniformGpu = register('uniform-gpu', 'gpu', 'working', true);
             this.services = {

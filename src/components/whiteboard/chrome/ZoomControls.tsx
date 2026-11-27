@@ -16,11 +16,8 @@ export interface ZoomControlsProps {
     readonly commands: Pick<MainMenuSource, 'actionLabel' | 'actionShortcut' | 'actionState' | 'runAction'>;
 }
 
-/** The zoom menu's rows, in tldraw's order. They keep the menu open, so each one is re-read when the zoom moves. */
 const zoomRows: readonly MainAction[] = ['zoomTo100', 'zoomToFit', 'zoomToSelection'];
 
-/** The navigation panel: zoom out and in, the zoom menu and the minimap chevron. Zoom out and in show only while the
- * minimap is open, so a collapsed map leaves the bar as a single percentage and its chevron (the default look). */
 export function ZoomControls({ zoom, locale, direction, zoomLabel, minimapLabel, minimapVisible, commands }: ZoomControlsProps) {
     const anchor = useRef<HTMLButtonElement | null>(null);
     const percent = Math.round(zoom * 100);
@@ -32,13 +29,11 @@ export function ZoomControls({ zoom, locale, direction, zoomLabel, minimapLabel,
             run: () => commands.runAction(id) };
     };
     const zoomMenu = (): ContextMenuEntry[] => [row('zoomIn'), row('zoomOut'), ...zoomRows.map(row)];
-    // An open zoom menu reads its rows live: Zoom to 100% is offered only away from 100%, and a zoom step changes that.
     useEffect(() => {
         const element = anchor.current;
         if (element && getContextMenu()?.anchor === element) replaceContextMenuEntries(element, zoomMenu());
     });
     const minimapState = commands.actionState('toggleMinimap');
-    // The chevron points where the map would go: right while collapsed on a left-to-right board, and mirrored on RTL.
     const pointsRight = !minimapVisible !== (direction === 'rtl');
     const minimap = <button key="minimap" type="button" className="board-chrome-tool board-chrome-icon" aria-label={minimapLabel}
         data-tooltip={minimapState.enabled ? minimapLabel : minimapState.reason} disabled={!minimapState.enabled}
@@ -59,13 +54,9 @@ export function ZoomControls({ zoom, locale, direction, zoomLabel, minimapLabel,
         onClick={event => {
             const element = event.currentTarget;
             const rect = element.getBoundingClientRect();
-            // The menu sits above the control with an 8px gap, as tldraw's zoom popover does. Closed, it hands the keyboard to the
-            // board, not to this button, which is outside the board's keyboard root (measured: Escape or a chosen row left
-            // ⌘A selecting 192 and 252 characters of the app's own text).
             openContextMenu({ x: rect.left, y: rect.top - 8, anchor: element, opener: boardInteractionRoot(element) ?? element, label: zoomLabel, lang: locale,
                 dir: direction, above: true, entries: zoomMenu() });
         }}>{percent}%</button>;
-    // The minimap chevron stands at the outer end (left on RTL). Zoom out and in flank the percentage while the map is open.
     const rtl = direction === 'rtl';
     const items = !minimapVisible ? (rtl ? [minimap, percentButton] : [percentButton, minimap])
         : rtl ? [minimap, step('zoomOut'), percentButton, step('zoomIn')] : [step('zoomOut'), percentButton, step('zoomIn'), minimap];

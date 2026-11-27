@@ -85,8 +85,6 @@ export async function runBenchmark(config, adapterFactory) {
     const id = `${new Date().toISOString().replaceAll(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
     const gateRoot = join(scratch, 'v-c/reports', config.gate), dir = join(gateRoot, id);
     const schedule = sessionSchedule(Boolean(config.metric.percentile));
-    // vr-lead ruling: one fixed-size confirmation, decided before its first new
-    // session, analyzed once after pooling. Its size equals the first final count.
     const plannedLooks = schedule.length + 1;
     const policy = { memoryFloorBytes: 6 * 1024 ** 3, maxLoad: 3, maxInvalidPerSlot: 3, ...config.machinePolicy };
     if (!Number.isFinite(policy.memoryFloorBytes) || !Number.isFinite(policy.maxLoad)
@@ -108,7 +106,7 @@ export async function runBenchmark(config, adapterFactory) {
     }
     try {
         await mkdir(dir, { recursive: true });
-        await persist(); // even a fatal browser/Node crash leaves a visible incomplete attempt
+        await persist();
         report.machine = await machineIdentity();
         const scriptFiles = [...new Set([...(config.scriptFiles ?? []), ...['runner.mjs', 'stats.mjs', 'machine.mjs', 'lock.mjs', 'cpuMeasurement.mjs', 'environment.mjs', 'windowCalibration.mjs', 'metricFloors.mjs', 'benchProcesses.mjs']
             .map(name => fileURLToPath(new URL(name, import.meta.url)))])];
@@ -127,9 +125,6 @@ export async function runBenchmark(config, adapterFactory) {
         const sameBuild = adapter.identities.A.sha256 === adapter.identities.B.sha256;
         report.purpose = config.purpose ?? (sameBuild ? 'noise' : 'gate');
         if (!['noise', 'gate'].includes(report.purpose) || (report.purpose === 'noise' && !sameBuild)) throw new Error('Noise phase requires identical builds');
-        // A baseline need not meet the future target, and same-build arms cannot
-        // demonstrate improvement. Noise therefore ALWAYS uses no-regression,
-        // while retaining the intended gate metric for matching the later run.
         const analysisMetric = report.purpose === 'noise' && config.metric.rule !== 'no-regression'
             ? config.noiseMetric ?? { ...config.metric, rule: 'no-regression', comparison: 'relative', threshold: 0.05 }
             : config.metric;
@@ -137,8 +132,6 @@ export async function runBenchmark(config, adapterFactory) {
         if (report.purpose === 'noise' && analysisMetric.rule !== 'no-regression') throw new Error('Noise phase must use no-regression');
         report.analysisMetric = analysisMetric;
         if (config.mode === 'accepted') windowCheck = await windowCalibration(lock, config, adapter.identities);
-        // Noise is a mandatory prerequisite for a comparison, never inferred from
-        // the changed-arm run's spread. It must match this metric, fixture and cache policy.
         if (config.mode === 'accepted' && report.purpose === 'gate') {
             if (!config.noiseReport) throw new Error('Comparison requires an accepted same-build noise report first');
             const noise = JSON.parse(await readFile(config.noiseReport, 'utf8'));
@@ -159,9 +152,6 @@ export async function runBenchmark(config, adapterFactory) {
             for (const arm of ['A', 'B']) accepted[arm].push(...previous.sessions.filter(s => s.arm === arm && s.validity.valid && s.measurement).map(s => ({ values: s.measurement.values })));
             report.previousSessions = previous.sessions;
         }
-        // A durable per-gate ledger prevents a failed accepted run from quietly
-        // disappearing behind another attempt. Invalid runs may be retried; a failed
-        // one needs the explicit, eligible confirmation above or a new build/script.
         if (config.mode === 'accepted' && !config.confirmReport && history.some(x => x.key === historyKey && x.mode === 'accepted' && x.status === 'fail')) {
             throw new Error('This build/metric already failed; only an eligible explicit confirmation may re-run it');
         }
@@ -171,8 +161,6 @@ export async function runBenchmark(config, adapterFactory) {
         for (const count of targets) {
             const desired = previous ? count * 2 : count;
             while (accepted.A.length < desired || accepted.B.length < desired) {
-                // Completing a balanced block gives A B B A A B B A ... . Invalidity
-                // re-runs that slot immediately, without changing the arm order.
                 const position = accepted.A.length + accepted.B.length;
                 const arm = ['A', 'B', 'B', 'A'][position % 4];
                 const chosen = accepted[arm].length < desired ? arm : arm === 'A' ? 'B' : 'A';
@@ -220,10 +208,6 @@ export async function runBenchmark(config, adapterFactory) {
                     .filter(s => s.arm === arm && s.validity.valid && s.measurement).map(s => ({ values: s.measurement.values }))]));
                 report.confirmationIndependent = summarize(independent, analysisMetric, { looks: plannedLooks });
                 report.confirmationIndependentUncorrected = summarize(independent, analysisMetric, { looks: 1 });
-                // The pooled count was selected using the first run's data, so
-                // its ordinary fixed-n CI alone does NOT carry honest coverage.
-                // vr-lead ruling: independent fixed-n confirmation must pass too;
-                // pooled pass is an additional plan condition, never the guarantee.
                 result.inference = 'Pooled interval is an additional condition, not the coverage guarantee; independent confirmation must also pass.';
             }
             report.result = result; report.uncorrected = uncorrected;

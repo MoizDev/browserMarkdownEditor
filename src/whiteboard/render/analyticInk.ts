@@ -7,8 +7,6 @@ import { inkCoverageChunks } from './paintStream';
 const block = `layout(std140) uniform GfxUniforms0 {
     vec4 viewport; vec4 endpoints; vec4 metrics; vec4 colour;
 };`;
-/** Exact circle/polygon boundary integrals, not a distance-AA width floor. The capsule is
- * partitioned into its rectangle and two disjoint half-discs BEFORE resolving pixel area. */
 export function analyticInkShader(fragmentInputs = block): ShaderModule { return {
     id: 'board-analytic-capsule', revision: 1,
     layout: { uniforms: [{ binding: 0, byteSize: 64 }], textures: [], attributes: [] },
@@ -114,12 +112,8 @@ export interface AnalyticInkPaint {
 export interface AnalyticCapsule {
     readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number;
     readonly radius: number;
-    /** The uniform length scale of localToWorld; the capsule's device radius is radius × stretch × device scale. */
     readonly stretch: number;
 }
-/** The one shape the analytic shader is exact for: a single convex capsule or disc, which cannot overlap itself and so
- * needs no union. Curves, pressure, clips, multiply and multi-primitive ink return null. Shared by the route choice
- * (inkRouteFor) and by the device packing below, so the two can never disagree about what is analytic. */
 export function analyticCapsule(item: PaintInkItem): AnalyticCapsule | null {
     if (item.clips.length || item.material.blend !== 'normal') return null;
     const chunks = inkCoverageChunks(item.coverage);
@@ -133,13 +127,10 @@ export function analyticCapsule(item: PaintInkItem): AnalyticCapsule | null {
     } else return null;
     const [a, b, c, d] = item.localToWorld;
     const stretch = Math.hypot(a, b), other = Math.hypot(c, d);
-    // No tolerance-based admission of a sheared ellipse as a circle.
     if (!(stretch > 0) || stretch !== other || a * c + b * d !== 0) return null;
     if (!(radius > 0)) return null;
     return { x0, y0, x1, y1, radius, stretch };
 }
-/** Device packing of an analytic capsule. Only an `analyticCapsule` item can take it; a null here is a precision or
- * device-scale refusal, which the route reports as unsupported rather than drawing the item another way. */
 export function analyticInkPaint(item: PaintInkItem, view: ViewState): AnalyticInkPaint | null {
     const capsule = analyticCapsule(item);
     if (!capsule) return null;
@@ -159,7 +150,6 @@ export function analyticInkPaint(item: PaintInkItem, view: ViewState): AnalyticI
         item.material.color[0] * alpha, item.material.color[1] * alpha, item.material.color[2] * alpha, alpha];
     if (values.some(value => !Number.isFinite(value))) return null;
     const data = new Float32Array(values);
-    // Packing owns half of the shared 1/16-pixel allowance, not another error budget.
     if (values.slice(4, 10).some((value, i) => Math.abs(data[i + 4] - value) > 1 / 32)) return null;
     const left = Math.max(0, Math.floor(Math.min(p[0], q[0]) - r - 1));
     const top = Math.max(0, Math.floor(Math.min(p[1], q[1]) - r - 1));
@@ -176,7 +166,6 @@ export function createAnalyticInk(host: LayerHost, report: (error: unknown) => v
             if (device !== next) { this.release(); device = next; }
             if (!device || pipeline || pending || failed) return;
             const owner = device, incarnation = ++serial; pending = true;
-            // Exact coverage is the default; A2C adoption requires a separate owner decision.
             owner.createPipeline({ shader: ANALYTIC_INK_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
                 blend: 'source-over', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } })
                 .then(result => {

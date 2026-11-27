@@ -1,12 +1,3 @@
-// The terminal dock's content: a header of tabs over the active shell's xterm.
-//
-// Only a view. The shells, their xterms and the connection live in
-// `terminalStore` (outside React), so hiding the dock — or switching vaults —
-// takes none of them down. `data-terminal` on the root is load-bearing: App's
-// ⌘E and EditorPane's Alt chords skip events that start inside it, so the keys
-// reach the shell instead of flipping a note's mode behind it (⌘S, ⌘N, ⌘\ and
-// ⌃` stay app-wide, as in the agent panel).
-
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { HELPER_NAME } from '../../../shared/vaultAgentProtocol';
@@ -22,9 +13,6 @@ import { ChevronDown, Plus, SquareTerminal, X } from '../icons';
 import { terminalStore } from './terminalStore';
 import type { SessionView } from './terminalStore';
 
-/** How long after opening the terminal may still take the keyboard from where it
- *  was, while the connection and the first shell come up. Past it, a reader who
- *  went on typing in their note keeps it (the agent panel's rule). */
 const OPEN_FOCUS_WINDOW_MS = 1500;
 const FDA_DISMISSED_KEY = 'terminalFdaNoticeDismissed';
 
@@ -32,13 +20,9 @@ function readDismissed(): boolean {
     try { return localStorage.getItem(FDA_DISMISSED_KEY) === '1'; } catch { return false; }
 }
 
-/** One shell's terminal, adopted into the body. Keyed by the session, so a tab
- *  switch is an unmount (release the old host) and a mount (adopt the new). */
 function Surface({ sessionKey, onOpened }: { sessionKey: string; onOpened: (key: string) => void }) {
     const ref = useRef<HTMLDivElement>(null);
 
-    // A layout effect: the host must be in the DOM before the first paint, or the
-    // body flashes empty on every tab switch.
     useLayoutEffect(() => {
         const el = ref.current;
         if (!el) return;
@@ -50,8 +34,6 @@ function Surface({ sessionKey, onOpened }: { sessionKey: string; onOpened: (key:
         };
     }, [sessionKey, onOpened]);
 
-    // Every size change — the window, the dock's drag, the sidebar — is a re-fit,
-    // at most one per frame: the terminal's rows and columns follow the box.
     useEffect(() => {
         const el = ref.current;
         if (!el) return;
@@ -80,9 +62,6 @@ function Tab({ session, active, onSelect, onKill }: {
     onKill: (key: string) => void;
 }) {
     const gone = session.status === 'exited' || session.status === 'ended' || session.status === 'detached';
-    // The strip scrolls sideways with no scrollbar: a tab that becomes active
-    // past its edge (a new one, or ←/→) must be brought into view (measured: at
-    // 9 tabs in a narrow dock the active one sat outside the strip).
     const ref = useRef<HTMLDivElement>(null);
     useEffect(() => {
         if (active) ref.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -121,28 +100,17 @@ export default function TerminalPanel({ takeFocus, onHide }: { takeFocus: boolea
     const [fdaDismissed, setFdaDismissed] = useState(readDismissed);
     const rootRef = useRef<HTMLDivElement>(null);
 
-    // Restored shells (a reload) must be in the first paint, not appear a frame
-    // late: init() reads them, and a layout effect's state change re-renders
-    // before the browser paints.
     useLayoutEffect(() => { terminalStore.init(); }, []);
 
-    // ── The keyboard in and out (AgentPanel's pattern) ──
-    // Opening hands the keyboard to the terminal; closing hands it back to
-    // whatever had it, or else to the focused note. Only an open the reader
-    // asked for takes it: a dock restored open with the page leaves the
-    // keyboard to the note being restored.
     const wantsFocus = useRef(takeFocus);
     const returnFocusTo = useRef<Element | null>(null);
     const openedAt = useRef(0);
-    // A layout effect so its cleanup runs while the dock is still in the
-    // document — after removal, focus inside it has already fallen to <body>.
     useLayoutEffect(() => {
         const before = document.activeElement;
         returnFocusTo.current = before && before !== document.body ? before : null;
         openedAt.current = performance.now();
         return () => {
             const active = document.activeElement;
-            // Hidden from outside (the footer button) with the keyboard elsewhere: leave it there.
             if (active && active !== document.body && !active.closest('[data-terminal]')) return;
             const back = returnFocusTo.current;
             if (back instanceof HTMLElement && back.isConnected && !back.closest('[data-terminal]')) {
@@ -163,9 +131,6 @@ export default function TerminalPanel({ takeFocus, onHide }: { takeFocus: boolea
         if (unmoved) terminalStore.focus(key);
     }, []);
 
-    // Hold the connection while the dock is open, and dial by itself only where
-    // agentBridge.autoConnect says that cannot raise Chrome's prompt. (A click on the
-    // button already dialled: terminalLaunch.)
     useEffect(() => {
         if (!supported) return;
         const release = agentBridge.retain();
@@ -181,8 +146,6 @@ export default function TerminalPanel({ takeFocus, onHide }: { takeFocus: boolea
     }, [os]);
 
     const passes = supported && gatePasses(bridge, 'terminal');
-    // Opening the dock with no shell starts one — never in the moment after the
-    // reader killed the last (the store knows), and not before the helper is there.
     useEffect(() => {
         if (passes) terminalStore.ensureOne();
     }, [passes, state.sessions.length]);
@@ -218,18 +181,14 @@ export default function TerminalPanel({ takeFocus, onHide }: { takeFocus: boolea
 
     const select = useCallback((key: string) => {
         if (terminalStore.getState().activeKey === key) {
-            // Already the active tab: its surface does not remount, so nothing else would give it the keyboard.
             terminalStore.focus(key);
             return;
         }
-        // The new tab's surface mounts next and takes the keyboard when it is open.
         wantsFocus.current = true;
         terminalStore.select(key);
     }, []);
     const kill = useCallback((key: string) => {
         terminalStore.close(key);
-        // Killing the last shell hides the dock, as in VS Code; otherwise the
-        // neighbour that takes over gets the keyboard the × button just lost.
         if (terminalStore.getState().sessions.length === 0) onHide();
         else wantsFocus.current = true;
     }, [onHide]);
@@ -239,19 +198,12 @@ export default function TerminalPanel({ takeFocus, onHide }: { takeFocus: boolea
     }, []);
 
     const activeKey = state.activeKey;
-    // The gate stands in for the terminal only while there is nothing to show: once a
-    // shell has been live, a dropped connection is the dock's "Reconnecting…" line,
-    // not a setup screen that would hide a running session.
     const showGate = !passes && !state.sessions.some(s => s.status !== 'starting');
 
     const onContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
-        // The browser's own menu never shows here (AGENTS.md: the app draws every
-        // one), whatever happens next.
         e.preventDefault();
         const key = activeKey;
         if (!key || !(e.target as Element).closest('.terminal-body')) return;
-        // A program that asked for mouse events owns the right-click — unless Shift is held,
-        // the terminal convention for "I mean the terminal's menu".
         if (terminalStore.mouseTracking(key) && !e.shiftKey) return;
         const selected = terminalStore.hasSelection(key);
         const entries: ContextMenuEntry[] = [
@@ -274,7 +226,6 @@ export default function TerminalPanel({ takeFocus, onHide }: { takeFocus: boolea
             x: e.clientX,
             y: e.clientY,
             label: 'Terminal',
-            // The keyboard goes back to the shell, not to a canvas that cannot take it.
             opener: rootRef.current?.querySelector<HTMLElement>('.xterm-helper-textarea') ?? null,
             entries,
         });
@@ -296,9 +247,6 @@ export default function TerminalPanel({ takeFocus, onHide }: { takeFocus: boolea
     };
     const showFda = state.privacy?.backend === 'ptyhost' && state.privacy.fullDiskAccess === false && !fdaDismissed && !showGate;
     const reconnecting = !showGate && bridge.status !== 'connected' && state.sessions.some(s => s.status === 'live');
-    // A failure the bridge will NOT redial by itself (something else on the port,
-    // a refused permission): "Reconnecting…" would be a promise nobody keeps
-    // (measured: it sat there 40 s after the helper was back). The reader retries.
     const stalled = reconnecting && bridge.status === 'failed' && bridge.retryAt === null;
 
     return (

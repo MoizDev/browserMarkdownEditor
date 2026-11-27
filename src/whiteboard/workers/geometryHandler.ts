@@ -4,7 +4,6 @@ import { PackedBuildJob, type PackedSnapshot } from '../scene/packedBuild';
 import { SECURITY_LIMITS } from '../security/limits';
 import { reportBoardMemory } from './boardMemory';
 
-/** The worker receives only owned numeric slabs; it never reads a live scene. */
 export async function buildPackedWithMemory(payload: unknown, context: WorkerContext): Promise<unknown> {
     if (!payload || typeof payload !== 'object') throw new TypeError('Invalid packed scene request');
     const input = payload as PackedSnapshot;

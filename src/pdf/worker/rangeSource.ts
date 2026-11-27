@@ -4,10 +4,6 @@ import type { ByteSource } from '../engine/types';
 const BLOCK = 64 * 1024, CACHE = 8 * 1024 * 1024;
 interface SyncReader { readAsArrayBuffer(blob: Blob): ArrayBuffer }
 
-/** One immutable Blob reference per worker document; bounded synchronous ranges
- * satisfy the native callback without a parent round trip or whole-file copy. The first may be a slice of the disk
- * snapshot: a read of it after the file changed on disk fails (NotReadableError) rather than returning other bytes, so
- * pages are the snapshot's or a FileError, never a mix. `adopt` moves the reads onto the memory-backed copy. */
 export class PdfBlobSource implements ByteSource {
     readonly size: number;
     private readonly blocks = new Map<number, Uint8Array>();

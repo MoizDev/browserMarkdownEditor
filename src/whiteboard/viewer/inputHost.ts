@@ -16,14 +16,10 @@ import { createInkRoutes, inkRouteFor } from '../render/gpu/routeInk';
 import { withClips } from '../render/gpu/routePath';
 import { NO_SENSITIVE_IDS } from './sensitiveTargets';
 
-// Provenance: input routing, presented mapping, viewer interaction and shared
-// scheduler contracts; independent view-owned wiring, no third-party source.
-/** The host's own mapping and scheduling ports, handed to the services factory once per attachment. */
 export interface BoardInputHostPorts {
     readonly mappings: MappingHistory;
     sampleToSurface(sample: RealSample): Point;
     clientToSurface(x: number, y: number): Point;
-    /** `onDrop` runs, and `callback` does not, when the host discards the request without an input frame (disable, cancel, dispose). */
     schedule(callback: () => void, onDrop?: () => void): () => void;
 }
 export interface BoardInputHostOptions {
@@ -41,11 +37,8 @@ export interface BoardInputHostOptions {
     readonly a11y: BoardInputView['a11y'];
     readonly paged: boolean;
     services(surface: HTMLElement, overlay: HTMLElement, wet: BoardWetLayer, ports: BoardInputHostPorts): BoardInputServices;
-    /** Called after an attachment's listeners are removed, so per-attachment services can release. */
     released?(): void;
-    /** Composable observer of each actual presented frame; the wet layer always runs first. */
     presented?(revision: number, token: RenderToken, frame?: PaintSource, context?: ViewerPaintPresentation): void;
-    /** The view has presented a frame since it was last shown; until then a press on the surface is held back. */
     readonly framePresented?: () => boolean;
     invalidate(): void;
     onError(error: unknown): void;
@@ -55,7 +48,6 @@ export interface BoardInputHostOptions {
         captureText?: ViewerInteractionPorts['captureText'];
         restoreText?: ViewerInteractionPorts['restoreText'];
         beforeHistoryReplay?: ViewerInteractionPorts['beforeHistoryReplay'];
-        /** Hover and edit targets from the tool set bound to this attachment. */
         sensitiveNodeIds?(): ReadonlySet<string>;
         dispose?(): void;
     };
@@ -89,9 +81,6 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         invalidate: options.invalidate, onError: report, gpuRoutes: { createInkRoutes, inkRouteFor, withClips } });
     options.engine.setInteractionLayers(wet.layers);
     const mappings = new MappingHistory(undefined, () => options.framePresented?.() ?? true);
-    // The surface's busy cursor while a press is held back for want of a presented frame (pointer.ts `down`). It is the one sign
-    // of that wait: the chrome, tools and keys stay live, so the board must not look read-only for a frame (it flashed faded
-    // on every tab switch when the whole input waited).
     const syncWaiting = () => {
         const surface = binding?.surface;
         if (!surface) return;
@@ -170,8 +159,6 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         catch (error) { removeListeners(); throw error; }
         attached = () => { try { detach(); } finally { removeListeners(); } };
         syncWaiting();
-        // Constructing services is not input readiness: the browser listeners,
-        // router and session gesture bridge must all have attached successfully.
         notifyAttachment();
     };
     const attachInput = (surface: HTMLElement, overlay: HTMLElement): (() => void) => {
@@ -192,8 +179,6 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
             if (!current() || !enabled || !attached || !binding || !pointerClient) return null;
             const rect = binding.surface.getBoundingClientRect(), viewport = options.viewport();
             if (rect.width <= 0 || rect.height <= 0 || viewport.width <= 0 || viewport.height <= 0) return null;
-            // Actual browser coordinates survive camera/layout changes. An old
-            // world point is not a certificate of the cursor's physical position.
             const point = clientToSurface(pointerClient.x, pointerClient.y);
             return point.x >= 0 && point.y >= 0 && point.x <= viewport.width && point.y <= viewport.height ? point : null;
         },

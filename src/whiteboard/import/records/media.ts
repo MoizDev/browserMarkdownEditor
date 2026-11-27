@@ -5,25 +5,17 @@ import { object } from './envelope';
 import { preserveMetadata } from './sheets';
 
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
-// The entry only: the picture's bytes are the Blob the admission hashed. Kept here too, every picture of an old board stayed
-// decoded in the import worker's heap until the whole import was done.
 export interface ImportedMedia { readonly entry: MediaEntry }
-// SEC-W4 owns sniffing, bounded headers, isolated decode and streamed hashing.
-// A picture written inline is admitted from its decoded bytes, one kept beside the board from its file's Blob.
 export type AdmitLegacyMedia = (media: Blob | Uint8Array, options: { readonly signal?: AbortSignal }) => Promise<{
     readonly id: MediaId; readonly mime: MediaMime; readonly width: number; readonly height: number;
     readonly duration: number | null; readonly animated: boolean;
 }>;
 
 export interface DecodedLegacyAsset { readonly bytes: Uint8Array<ArrayBuffer>; readonly blob: Blob; readonly name: string; readonly mimeHint: string }
-/** Pure extraction only: successful decoding does not authorize dimensions, type or identity. */
 export function decodeInlineAsset(asset: LegacyObject): DecodedLegacyAsset {
     const decoded = decodeInlineBytes(asset);
     return { ...decoded, blob: new Blob([decoded.bytes], { type: decoded.mimeHint }) };
 }
-/** `decodeInlineAsset` without its Blob: the import only hashes a picture's bytes (the host holds the scan's Blob), and a Blob made
- * of each held its bytes in the worker, where no garbage collection sees them, until the browser took them (measured, 55 photos:
- * the page's memory climbed ~370 MB over the import's last two seconds; without the Blobs it does not). */
 export function decodeInlineBytes(asset: LegacyObject): Omit<DecodedLegacyAsset, 'blob'> {
     const props = object(asset.props);
     if (asset.typeName !== 'asset' || !props || (asset.type !== 'image' && asset.type !== 'video')) {
@@ -38,7 +30,6 @@ export function decodeInlineBytes(asset: LegacyObject): Omit<DecodedLegacyAsset,
     let binary: string;
     try { binary = atob(encoded); } catch { throw new Error('Invalid inline media encoding'); }
     if (binary.length > MAX_MEDIA_BYTES) throw new Error('Media exceeds the size limit');
-    // A plain loop: Uint8Array.from with a mapping callback calls it once per byte (2.9 M calls for one photo).
     const bytes = new Uint8Array(binary.length), mimeHint = match[1].toLowerCase();
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return { bytes, name: typeof props.name === 'string' ? props.name : '', mimeHint };

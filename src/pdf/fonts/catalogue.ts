@@ -1,7 +1,5 @@
 import type { FontSpec } from '../engine/types';
 
-// Pinned upstream byte inventory: planning/00-evidence/planning-run/pdf/pdf-build/font-inventory.json.
-// The actual assets and their OFL notices must be supplied by the build; missing files fail closed.
 const entries = {
     'sans-regular': ['NotoSans-Regular.ttf', 569208, 'b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5'],
     'sans-bold': ['NotoSans-Bold.ttf', 575740, 'c976e4b1b99edc88775377fcc21692ca4bfa46b6d6ca6522bfda505b28ff9d6a'],
@@ -26,8 +24,6 @@ export const PDF_FONT_CATALOGUE: Readonly<Record<PdfFontId, Readonly<{ path: str
 
 type Region = 'jp' | 'kr' | 'sc' | 'tc' | 'hk';
 
-// Exact, bounded family aliases only; these select a regional fallback, not an
-// assertion that it reproduces the requested font or covers every character.
 const REGIONAL_FAMILIES: Readonly<Record<string, Region | 'zh'>> = Object.freeze(Object.fromEntries([
     ...['notosansjp', 'notosanscjkjp', 'notoserifjp', 'notoserifcjkjp', 'sourcehansansjp', 'msgothic', 'mspgothic', 'msmincho', 'mspmincho',
         'meiryo', 'meiryoui', 'yugothic', 'yumincho', 'hiraginokakugothic', 'hiraginokakugothicpro',
@@ -58,7 +54,6 @@ function languageRegion(language: string | undefined): Region | undefined {
     return 'sc';
 }
 
-/** null means PDFium's built-in Base-14 face or an unsupported charset, not a network URL. */
 export function resolvePdfFont(spec: FontSpec, language: string | undefined = spec.language): PdfFontId | null {
     if (typeof spec.family !== 'string' || !spec.family.length || spec.family.length > 128 ||
         !Number.isFinite(spec.weight) || spec.weight < 1 || spec.weight > 1000 || typeof spec.italic !== 'boolean' ||
@@ -71,7 +66,7 @@ export function resolvePdfFont(spec: FontSpec, language: string | undefined = sp
     const sans: PdfFontId = bold ? (spec.italic ? 'sans-bold-italic' : 'sans-bold') : (spec.italic ? 'sans-italic' : 'sans-regular');
     let region: Region | undefined;
     switch (spec.charset) {
-        case 128: region = 'jp'; break; // SHIFTJIS_CHARSET
+        case 128: region = 'jp'; break;
         case 129: case 130: region = 'kr'; break;
         case 134: region = 'sc'; break;
         case 136: region = 'tc'; break;
@@ -82,8 +77,6 @@ export function resolvePdfFont(spec: FontSpec, language: string | undefined = sp
     const familyKey = family.toLowerCase().replace(/[-_ ]/g, '');
     const familyRegion = Object.hasOwn(REGIONAL_FAMILIES, familyKey) ? REGIONAL_FAMILIES[familyKey] : undefined;
     const languageHint = languageRegion(language);
-    // Big5 covers both Traditional-Chinese regional fonts; HK is the one
-    // specific compatible refinement. A conflicting JP/KR/SC hint cannot override it.
     if (region === 'tc' && (familyRegion === 'hk' || languageHint === 'hk' && familyRegion !== 'tc')) region = 'hk';
     if (!region) region = familyRegion === 'zh'
         ? languageHint === 'hk' || languageHint === 'tc' ? languageHint : 'sc'

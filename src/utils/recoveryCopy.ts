@@ -12,8 +12,6 @@ export interface RecoveryMediaAsset {
 type Serializer = (payload: unknown, signal: AbortSignal, mediaFiles?: ReadonlyMap<string, string>) => Promise<CopyData>;
 type MediaGetter = (payload: unknown) => readonly RecoveryMediaAsset[];
 
-// Registration belongs to the document kind, not a particular session: journal
-// entries can outlive the session that captured them.
 const serializers = new Map<string, { serialize: Serializer; media?: MediaGetter }>();
 
 export function registerRecoveryCopySerializer(kind: string, serialize: Serializer, media?: MediaGetter): () => void {

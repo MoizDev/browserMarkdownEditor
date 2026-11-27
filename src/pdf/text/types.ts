@@ -1,7 +1,5 @@
 import type { PdfItemInterval, PdfPageGeometry, PdfPageText } from '../../utils/pdfPageText';
 
-/** Worker-owned copies; never views into engine memory. All geometry is in
- * page space. Generated characters may have empty boxes. */
 export interface RawPageText {
     n: number;
     truncated: boolean;
@@ -20,7 +18,6 @@ export interface RawPageText {
         roles: Uint8Array;
         lang: Array<[number, string]>;
         alt: Array<[number, string]>;
-        /** Optional structure-object bounds when the backend can supply them. */
         figures?: Array<{ mcid: number; box: readonly [number, number, number, number]; charIndex?: number }>;
     };
 }

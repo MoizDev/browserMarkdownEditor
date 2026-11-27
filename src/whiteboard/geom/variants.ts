@@ -2,7 +2,6 @@ import { splitCubicAt } from './flatten';
 import { cubicLengthTable, invertCubicLength } from './metrics';
 import type { Cubic, PathOp, Vec2 } from './path';
 
-// geometry.md §3.1: node identity and segment identity, never revision or camera, seed draw variation.
 function hash(text: string): number {
     let value = 2166136261;
     for (let i = 0; i < text.length; i++) value = Math.imul(value ^ text.charCodeAt(i), 16777619);
@@ -22,7 +21,6 @@ export interface DrawVariant {
 
 export interface DashInterval { readonly from: number; readonly to: number; readonly painted: boolean }
 
-/** A cursor carries world-space phase between independently leased path chunks. */
 export class DashWalker {
     private readonly lengths: readonly number[];
     private index = 0;
@@ -57,7 +55,6 @@ export class DashWalker {
     }
 }
 
-/** Bounded-memory realization of a straight semantic segment. */
 export function* drawSegment(start: Vec2, end: Vec2, segment: number, style: DrawVariant): Generator<PathOp> {
     const { width, referenceWidth, boxWidth, boxHeight } = style;
     if (![start.x, start.y, end.x, end.y, width, referenceWidth, boxWidth, boxHeight].every(Number.isFinite)
@@ -108,7 +105,6 @@ function tangent(curve: Cubic, t: number): Vec2 {
 }
 function add(p: Vec2, offset: Vec2): Vec2 { return { x: p.x + offset.x, y: p.y + offset.y }; }
 
-/** Realize curves by offsetting exact cubic slices; consumers share the yielded path. */
 export function* drawCubic(curve: Cubic, segment: number, style: DrawVariant, lengthError: number,
     maxPieces: number): Generator<PathOp> {
     const { width, referenceWidth, boxWidth, boxHeight } = style;
@@ -179,7 +175,6 @@ export function* drawPath(ops: readonly PathOp[], style: DrawVariant, lengthErro
     }
 }
 
-/** Split by the shared arc-length table once; paint and hit testing consume the same output. */
 export function* dashPath(ops: readonly PathOp[], walker: DashWalker, lengthError: number,
     maxPieces: number): Generator<PathOp> {
     if (!Number.isFinite(lengthError) || lengthError <= 0 || !Number.isSafeInteger(maxPieces) || maxPieces < 1) {
@@ -229,7 +224,6 @@ export function* dashPath(ops: readonly PathOp[], walker: DashWalker, lengthErro
     }
 }
 
-/** Round caps on these zero-length subpaths are the dot motifs, not tiny painted dashes. */
 export function* dotPath(ops: readonly PathOp[], walker: DotWalker, lengthError: number,
     maxDots: number): Generator<PathOp> {
     if (!Number.isFinite(lengthError) || lengthError <= 0 || !Number.isSafeInteger(maxDots) || maxDots < 1) {

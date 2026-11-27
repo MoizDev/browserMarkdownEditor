@@ -4,13 +4,11 @@ import type { EmphasisCell } from './composite';
 export interface EmphasisInk {
     glyph: number;
     box: Rect;
-    /** Conservative page-space extent of that object's stroke expansion. */
     strokeRadius: number;
 }
 
 interface IndexedInk { glyph: number; left: number; top: number; right: number; bottom: number }
 
-/** Bounded spatial index: rejecting a word is safer than painting a suffix or overprint. */
 export class EmphasisInkIndex {
     private readonly buckets = new Map<string, IndexedInk[]>();
     private readonly cellSize: number;
@@ -48,7 +46,6 @@ export class EmphasisInkIndex {
         for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) callback(x, y);
     }
 
-    /** True means a nonselected glyph can contribute pixels inside the selected cell. */
     overlaps(cell: EmphasisCell, selectedGlyphs: ReadonlySet<number>): boolean {
         if (cell.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) throw new RangeError('Invalid emphasis cell');
         const left = Math.min(...cell.map(p => p.x)), top = Math.min(...cell.map(p => p.y));

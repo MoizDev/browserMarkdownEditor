@@ -5,7 +5,6 @@ import type { SampleSequence } from '../ink/samples';
 import { DOT_METRIC_PROVISIONAL } from '../ink/width';
 import type { InkCoverageRequest } from './geometryProtocol';
 
-/** One chunk's coverage from its sample slabs. `memory` hears the job's working bytes at each cooperation point. */
 export async function computeInkCoverage(request: InkCoverageRequest, context: WorkerContext, memory: (bytes: number) => void): Promise<InkCoverage> {
     if (!request || typeof request !== 'object') throw new TypeError('Invalid ink coverage request');
     const { samples, parameters, style, range, options } = request;

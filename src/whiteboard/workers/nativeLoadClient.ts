@@ -11,8 +11,6 @@ import { boardEnvelope, closeWorkerResult, matchingIdentity, validBoardIdentity 
 import type { BoardJobIdentity } from './protocol';
 const parseWorker = workerScript(parseWorkerUrl, { keep: false });
 
-// Provenance: worker-host C5, board envelope and load admission contracts;
-// independent session client, no third-party source.
 let serial = 0;
 function validReply(value: unknown): value is NativeLoadReply {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;

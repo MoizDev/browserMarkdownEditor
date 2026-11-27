@@ -6,11 +6,9 @@ export interface BoardQuestion {
     readonly body: string;
     readonly confirmLabel: string;
     readonly danger?: boolean;
-    /** A short list shown under the body, such as the providers an embed link may come from. */
     readonly list?: { readonly label: string; readonly items: readonly string[] };
 }
 export interface BoardTextQuestion extends BoardQuestion {
-    /** A second answer drawn beside the confirm button (for example Remove link), reported as `alt`. */
     readonly altLabel?: string;
     readonly input: {
         readonly label: string;
@@ -75,13 +73,11 @@ export function useNativeBoardDialogs(options: {
         const answer = await ask({ ...value, kind: 'text' });
         return answer.accepted && !answer.alt ? answer.value ?? '' : null;
     }, [ask]);
-    /** The typed answer, or `alt` when the second button was chosen; null when backed out. */
     const requestTextChoice = useCallback(async (value: BoardTextQuestion): Promise<{ readonly value: string } | 'alt' | null> => {
         const answer = await ask({ ...value, kind: 'text' });
         if (!answer.accepted) return null;
         return answer.alt ? 'alt' : { value: answer.value ?? '' };
     }, [ask]);
-    /** Two answers to one question in the app's own dialog: the confirm button ("confirm") or the second button ("alt"), null when backed out. */
     const chooseOne = useCallback(async (value: BoardQuestion & { readonly altLabel: string }): Promise<'confirm' | 'alt' | null> => {
         const answer = await ask({ ...value, kind: 'confirm' });
         if (!answer.accepted) return null;

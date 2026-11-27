@@ -1,4 +1,3 @@
-// Served only as a prelude to the real matcher worker. Never imported by the app.
 {
     const config = /* BME_FAULT_CONFIG */ null;
     const crash = () => {
@@ -24,8 +23,6 @@
         self.postMessage = (message, transfer = []) => {
             if (message.hello) { post(message, transfer); crash(); }
             else if (!('id' in message)) post(message, transfer);
-            // The kept red reproduction suppresses handler replies: four recovery workers should
-            // reach the host's crash cutoff without another tool call (charter §0: proof deferred).
         };
     }
 }

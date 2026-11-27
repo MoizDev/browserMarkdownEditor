@@ -49,7 +49,6 @@ export interface NativePdfBackdrop {
     readonly pages: readonly { readonly width: number; readonly height: number }[];
     captureSnapshot(request: CaptureRequest, memory: MemoryAllocator): CaptureSnapshot;
     assertCaptureCurrent(): void;
-    /** Source-bound fields are supplied by the PDF owner; a changed source revokes this backdrop. */
     readonly sourceToken?: RenderToken;
     isCurrentSource?(): boolean;
     setVisible(visible: boolean, focused: boolean): void;
@@ -86,9 +85,7 @@ function claimCamera(handoff: NativeCameraHandoff, runtime: BoardRuntime, limits
 }
 
 export interface NativeNavigationSnapshot { readonly page: number; readonly zoom: number }
-/** This view's playback of its video pictures. Playback never dirties the document; only the view's frames carry it. */
 export interface NativeVideoPlayback {
-    /** True once a drawn frame has shown this picture, so starting playback is offered only after its image is on screen. */
     shown(node: NodeId): boolean;
     playing(node: NodeId): boolean;
     play(node: NodeId): void;
@@ -104,20 +101,15 @@ export interface NativeViewLease extends BoardViewLease<object> {
     jump(page: number): void;
     zoomBy(factor: number): void;
     zoomAt(point: { x: number; y: number }, factor: number): void;
-    /** One rung of the zoom ladder in `direction`, anchored at `anchor` (the view centre when absent). */
     zoomStep(direction: 1 | -1, anchor?: { x: number; y: number }): void;
-    /** Zoom to 100%: on a paged host this toggles between natural 1 and fit-width (camera.md F-CAM-008). */
     resetZoom(): void;
-    /** The keys a view without editing runs through its own chrome (zoom, fit, sheets); null while it has none. */
     setViewCommands(run: ((id: string) => boolean) | null): void;
-    /** A camera glide to `target` over durationMs, in the pane's own motion; zero jumps. */
     glideTo(target: Camera, durationMs: number): void;
     cancelGlide(): void;
     reveal(rect: Rect): void;
     captureRegion(rect: Rect, maxSide: number, signal: AbortSignal): Promise<ImageBitmap>;
     captureBlob(rect: Rect, maxSide: number, signal: AbortSignal): Promise<Blob>;
     changed(): void;
-    /** An outer source owner can fence input while its real view is covered or rebinding. */
     setInputPermitted(permitted: boolean): void;
     canMutateView(): boolean;
     isCurrent(): boolean;
@@ -128,16 +120,8 @@ export interface NativeViewLease extends BoardViewLease<object> {
 }
 let serial = 0;
 const detached = (): never => { throw new Error('The board platform is not attached'); };
-/**
- * The motion of a view with no platform pane: none runs, so cancelling it is done, while starting one still throws. Hiding the
- * view detaches the pane before its tools dispose, and their camera commands cancel any glide as they go: thrown, it cut the
- * select services' dispose short (the camera commands' own surface listeners and everything disposed after them) and put
- * 'The board platform is not attached' on the board after every hide and show (measured: every run, on both backends).
- */
 const DETACHED_MOTION = Object.freeze({ cancelMotion() {}, animateZoom: detached, animatePan: detached, glideTo: detached, startFling: detached });
 
-/** The viewer route owns only this view's camera, input and paint leases. Editing
- * remains a separate capability until the real tool/chrome host is attached. */
 export function createNativeViewLease(options: {
     board: ComposedBoardSession;
     parameters: BoardViewParameters;
@@ -146,24 +130,20 @@ export function createNativeViewLease(options: {
     limits: ZoomLimits;
     insets: ViewportInsets;
     pdfBackdrop?: NativePdfBackdrop;
-    /** A board's read-only view mirrors its objects for screen readers, with the skip link and live region the editing view has. */
     readonlyAccessibility?: boolean;
     cameraHandoff?: NativeCameraHandoff;
     readPdfMedia?(id: MediaId, signal: AbortSignal): Promise<Blob>;
     editing?: {
         readonly clipboard: NativeClipboardService;
-        /** Ctrl/Cmd+P's route: the board's Print, which asks Selection or Sheet first. */
         readonly print: () => boolean;
         readonly ui: NativeEditingToolOptions['ui'];
         readonly commands: NativeEditingToolOptions['commands'];
-        /** Actual per-view services, not the document-wide promotion, authorize input. */
         canMutate(): boolean;
         onEmbedInfrastructure(value: NativeEmbedInfrastructure | null): void;
         onAttachment(attached: boolean): void;
     };
     onError(error: unknown): void;
     onNotice(message: string): void;
-    /** A memory notice describes a state: it is withdrawn (this message) once a sharp frame presents. */
     onNoticeCleared?(message: string): void;
 }): NativeViewLease {
     const { board, host, identity, limits, insets } = options;
@@ -192,11 +172,7 @@ export function createNativeViewLease(options: {
         session: identity.session, bytesGeneration: identity.bytesGeneration });
     const viewLease = ++serial, listeners = new Set<(change?: string) => void>();
     let parameters = { ...options.parameters }, disposed = false, platformPane: PlatformPane | null = null;
-    // Without editing, the board's input is the navigation host, whose keyboard moves only the camera it holds (pan, pages); the
-    // zoom, fit and sheet rows it hands to the view's chrome, which runs them as its zoom panel does. Unbound, "=" and ⌘= did
-    // nothing on an old notebook or drawing (measured: camera unchanged for =, -, ⌘=, ⌘-, ⇧0, ⇧1 and ⌥→ on a two-sheet drawing).
     let viewCommands: ((id: string) => boolean) | null = null;
-    /** The read-only outline of the chosen object, while this view is attached to an input surface. */
     let readonlyOutline: ReturnType<typeof createSelectionHandles> | null = null;
     let inputPermitted = true;
     let backdrop = options.pdfBackdrop;
@@ -211,9 +187,6 @@ export function createNativeViewLease(options: {
         catch (error) { options.onError(error); return false; }
     }
     const current = () => !disposed && host.isCurrent(identity) && sourceCurrent();
-    /** The one certificate that a presentation is complete, sharp and belongs to this live view, its platform
-     * frame and its PDF source. The backdrop and the embed presentation both act only on it, so neither can
-     * accept a frame the other refuses. */
     const certifyPresentation = (presentation: PlatformPresentation): boolean => {
         const source = backdrop?.sourceToken, actualFrame = platformPane?.currentFrameToken();
         return !!actualFrame && presentation.token.deviceGeneration === actualFrame.deviceGeneration &&
@@ -226,21 +199,13 @@ export function createNativeViewLease(options: {
                 presentation.token.session === source.session && presentation.token.vaultEpoch === source.vaultEpoch &&
                 presentation.token.bytesGeneration === source.bytesGeneration));
     };
-    // The viewer's 'paint' (paint progress) reaches this lease's listeners, and the board's own listener, but it does not redraw
-    // the native pane: the pane's picture did not change.
     const publish = (change?: string) => { if (!disposed) for (const listener of [...listeners]) listener(change); };
-    // What the platform pane last drew, as the viewer snapshot it was drawn from. A viewer 'state' publish repaints the pane only
-    // when a field the pane draws from has moved since then (layers, scene revision, layout, palette, appearance, readiness,
-    // backend, paint progress). Selection, accessibility and the read-only reason are state-only: the picture of a selection
-    // is drawn by the interaction layers, which invalidate themselves, so a selection publish here repaints nothing new.
-    // The viewer is attached below; until then no snapshot exists and every invalidation is taken as a change.
     let snapshotNow: () => ViewerSnapshot | null = () => null;
     let drawn: ViewerSnapshot | null = null;
     const invalidatePane = () => { drawn = snapshotNow(); platformPane?.invalidate('native-view'); };
     const drawsChanged = (): boolean => {
         const next = snapshotNow();
         if (!next || !drawn) { if (renderAuditEnabled()) auditCount('native', `draws-changed:${!next ? 'no-snapshot' : 'no-drawn'}`); return true; }
-        // gh14 audit: each field that the pane draws from, counted when it is the reason a publish repaints (draws-changed:<field>).
         const fields: Array<[string, boolean]> = [
             ['state', drawn.state !== next.state], ['scene-revision', drawn.sceneRevision !== next.sceneRevision],
             ['layout', drawn.layout !== next.layout], ['palette', drawn.palette !== next.palette],
@@ -257,10 +222,8 @@ export function createNativeViewLease(options: {
         if (!changed && renderAuditEnabled()) auditCount('native', 'draws-unchanged');
         return changed;
     };
-    // Direct callers (navigation, camera, the lease's own refreshes) always repaint; only the viewer's state publishes are filtered.
     const invalidate = (change?: string) => { if (change !== 'paint') invalidatePane(); publish(change); };
     const viewerChanged = (change?: string) => { if (change !== 'paint' && drawsChanged()) { if (renderAuditEnabled()) auditCount('native', 'hint:viewer'); invalidatePane(); } publish(change); };
-    // gh14 audit: each caller of the unconditional invalidate is named (hint:<source>), so a native-view present is traced to its caller.
     const hintFrom = (source: string) => () => { if (renderAuditEnabled()) auditCount('native', `hint:${source}`); invalidate(); };
     const cameraPorts: CameraPorts = { currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
         invalidate: hintFrom('camera'), onError: options.onError };
@@ -281,9 +244,6 @@ export function createNativeViewLease(options: {
         if (key !== viewportKey) { viewportKey = key; cameraOwner.resize(viewport); }
         return camera.viewport;
     };
-    // A picture whose file is not in `.Assets` (the board moved without that folder, a sync not finished, a file deleted)
-    // keeps its place and its reference; the screen and every export draw its placeholder, and the person is told once per
-    // view which file to put back. The bare id read as a fault, and the notice came back on every repaint after Dismiss.
     const toldMissing = new Set<MediaId>();
     const missingPicture = (id: MediaId): MissingMediaError => {
         const entry = board.doc.media.get(id);
@@ -309,16 +269,10 @@ export function createNativeViewLease(options: {
             if (!found) throw missingPicture(id);
             return found.blob;
         }, invalidate: hintFrom('media'),
-        // A picture that cannot be decoded is drawn as a placeholder and named in the app's notice; it is never the board's failure
-        // (it was: 'Could not open canvas: Insufficient memory for full-frame image', on every reopen of a board holding the picture).
-        // A transient failure (a cancelled or retired decode, a deadline, a memory refusal) is retried by the painter and is not the
-        // person's news: naming it said 'could not be shown' over a picture that appeared a moment later.
         onError: error => {
             if (isMissingMedia(error)) tellMissing(error);
             else if (!isTransientPictureFailure(error)) options.onNotice(`A picture could not be shown: ${error instanceof Error ? error.message : String(error)}`);
         } });
-    // This view's own playback: it stops when the view hides and when the view is torn down, and it closes its presented frames
-    // before the source it came from is released.
     const video = new BoardVideoPlayback({ memory: images.memory, frames: images.frames,
         source(id) {
             const node = board.doc.nodes.get(id);
@@ -329,8 +283,6 @@ export function createNativeViewLease(options: {
         current: () => current() && parameters.visible,
         invalidate: hintFrom('video'),
         error: (_id, message) => options.onNotice(message) });
-    // Animated pictures: the picture's own playing choice (its default follows the reduced-motion preference), and one clock
-    // that decodes only the frame it is on. Their frames are presented through the same registry as a video's.
     const pictures = new PicturePlayback(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     const pictureMedia = (node: NodeId): MediaId | null => {
         const value = board.doc.nodes.get(node);
@@ -348,11 +300,8 @@ export function createNativeViewLease(options: {
         },
         current: () => current() && parameters.visible,
         invalidate: hintFrom('animation'),
-        // The viewer exists once attachView returns; a deadline set before that has no layer to wake yet, and the first paint re-arms it.
         wakeAt: deadline => { if (viewer) viewer.wakeAt(deadline); },
         error: (_id, message) => options.onNotice(message) });
-    // The world rectangle this view shows; a sheet's picture counts for its overlap with it, and a picture inside a frame
-    // counts for its whole box (its frame's transform is not resolved here, and only the overlap ranks which animate).
     const shownWorld = () => {
         const corner = (x: number, y: number) => surfaceToWorld({ x, y }, camera.camera);
         const a = corner(0, 0), b = corner(camera.viewport.width, camera.viewport.height);
@@ -372,7 +321,6 @@ export function createNativeViewLease(options: {
         }
         return demands;
     };
-    // The view's draw is the animation clock's sync point: it reads what is on the sheet and shown right now.
     const syncAnimation = () => animation.sync(animationDemands(), performance.now());
     const videoPort: NativeVideoPlayback = {
         shown: node => images.frames.drawn(node),
@@ -507,7 +455,6 @@ export function createNativeViewLease(options: {
                         }
                         return result;
                     },
-                    // One bounded export tile at a time, so a PNG never holds a whole page of PDF tiles plus a full canvas.
                     async prepareTile(tile, signal) {
                         let result: 'exact' | 'standin' | 'incomplete' = 'exact';
                         for (const child of children) {
@@ -538,8 +485,6 @@ export function createNativeViewLease(options: {
     };
     const captureRegion = (rect: Rect, maxSide: number, request: CompositorCaptureOptions) =>
         withCapturer(capturer => capturer.captureRegion(rect, maxSide, request));
-    // A PNG streams through bounded tiles: one single canvas for a 6x page plus every PDF tile of that page
-    // did not fit the memory grant (a one-page agent view of a small PDF failed; the whole view fitted).
     const captureBlob = (rect: Rect, maxSide: number, request: CompositorCaptureOptions) =>
         withCapturer(capturer => capturer.captureExportBlob(rect, maxSide, request));
     const captureLayers = () => board.doc.kind === 'notebook' ? ['notebook-paper', 'board-underlay', 'board-content']
@@ -559,18 +504,13 @@ export function createNativeViewLease(options: {
                 presentedFrame = presentation && current() && presentation.token.documentId === token.documentId &&
                     presentation.token.session === token.session && presentation.token.vaultEpoch === token.vaultEpoch &&
                     presentation.token.bytesGeneration === token.bytesGeneration ? presentation.frameId : null;
-                // A null presentation is pane lifecycle (suspend, dispose, hide), not a new mapping: the last frame shown
-                // stays until a frame is presented. Only a presentation this lease refuses clears it (hiding clears it in setView).
                 if (presentation && presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
-                // Audit only: why a presentation the embeds and backdrop act on was refused.
                 if (presentation && renderAuditEnabled() && !certifyPresentation(presentation)) auditCount('embed', 'uncertified:' + (!presentation.complete ? 'incomplete'
                     : !presentation.sharp ? 'not-sharp' : presentation.staleVersion ? 'stale' : 'identity'));
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.(presentation.backend);
                 if (presentation && certifyPresentation(presentation)) recordBoardPresentation(performance.now(), presentation.backend);
-                // A sharp, complete frame at full quality ends reduced quality: that notice is withdrawn. A refused CPU floor can hold
-                // under a sharp frame, so the platform alone withdraws it (cleared here, it flashed for one frame).
                 if (qualityNotice === noticeText('memory-pressure') && presentation && presentedFrame !== null && presentation.complete && presentation.sharp
                     && !presentation.staleVersion && certifyPresentation(presentation)) clearQualityNotice();
             }, onError: options.onError,
@@ -581,8 +521,6 @@ export function createNativeViewLease(options: {
             onNotice: (code, cause) => {
                 const text = code === 'gpu-unavailable' ? gpuUnavailableText(cause) : noticeText(code);
                 if (code !== 'memory-pressure' && code !== 'cpu-floor-denied') { options.onNotice(text); return; }
-                // The platform raises a memory notice only once this pane's own grant has kept it below full quality (or refused its
-                // floor) for memoryNoticeDelayMs, and withdraws it when that ends; a cache trim is never one.
                 if (disposed || qualityNotice === text) return;
                 if (qualityNotice) clearQualityNotice();
                 qualityNotice = text; options.onNotice(text);
@@ -591,8 +529,6 @@ export function createNativeViewLease(options: {
         if (!qualityNotice) return;
         const shown = qualityNotice; qualityNotice = null; options.onNoticeCleared?.(shown);
     }
-    // The platform receives the same controller as pointer input, including its
-    // actual constraints and measured viewport; motion never uses a second pose.
     const platform = { ...services, camera, readCamera: () => { refreshViewport(); return camera.camera; } };
     let snapshot: BoardViewSnapshot<object> | undefined, priorLayers: ReturnType<typeof viewer.getSnapshot>['layers'], priorProgress = '';
     let navigationSnapshot: NativeNavigationSnapshot = { page: 0, zoom: 1 };
@@ -665,7 +601,6 @@ export function createNativeViewLease(options: {
         },
         cancelGlide() { platformPane?.cancelMotion(); },
         zoomStep(direction, anchor) {
-            // Paged hosts step their ladder from fit-width, so "1" is the page filling the viewport, not 100%.
             const stack = boardPageStack(board.doc.host);
             const base = stack ? fitWidthZ(camera.viewport, stack, insets) : 1;
             if (!(base > 0)) return;
@@ -685,7 +620,6 @@ export function createNativeViewLease(options: {
             accessibility: viewer.accessibility, subscribe: listener => lease.subscribe(listener),
             setView(next) {
                 if (parameters.visible && (!next.visible || (parameters.focused && !next.focused))) recordViewport();
-                // The camera may move while hidden; the frame shown before hiding no longer describes it.
                 if (parameters.visible && !next.visible) presentedView = null;
                 parameters = { ...parameters, ...next };
                 backdrop?.setVisible(parameters.visible && current(), parameters.focused && parameters.visible && current());
@@ -703,8 +637,6 @@ export function createNativeViewLease(options: {
             },
             attachInput(interaction, overlay) {
                 detachSurface(); surface = interaction;
-                // Only a view with no editing lease builds this mirror; editing builds the full one in its own input host.
-                // A read-only view has no selection frame of its own (the editing services draw it), so a chosen object gets its outline alone.
                 const outline = options.readonlyAccessibility && !edit ? createSelectionHandles({ runtime, overlay, current, visible: () => parameters.visible,
                     invalidate: invalidatePane, error: options.onError, outlineOnly: true }) : null;
                 readonlyOutline = outline;
@@ -714,8 +646,6 @@ export function createNativeViewLease(options: {
                     reveal: id => { if (id) viewer.focusNode(id); }, error: options.onError, readOnly: true }) : null;
                 const measure = () => {
                     if (surface !== interaction || disposed) return;
-                    // Platform metrics remain authoritative once attached. This
-                    // initial measure only lets a pre-frame notebook restore fit.
                     if (camera.viewport.width === 0 || camera.viewport.height === 0) cameraOwner.resize({ width: interaction.clientWidth,
                         height: interaction.clientHeight, dpr: window.devicePixelRatio || 1 });
                 };
@@ -739,8 +669,6 @@ export function createNativeViewLease(options: {
             navigation.dispose(); if (!cameraTransferred) cameraOwner.dispose(); viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null; viewCommands = null;
         },
     };
-    // A mounted board answers the agent from its own live camera, inversion and frame, under the path it shows; dispose withdraws it.
-    // The App's last real view answers only while this view has no measured viewport (see nativeAgentView).
     const livePath = host.identity(identity.documentId)?.path;
     if (livePath) {
         const live = createNativeLiveView({ runtime: boardRuntime,
@@ -750,7 +678,6 @@ export function createNativeViewLease(options: {
                 const viewport = camera.viewport;
                 return viewport.width > 0 && viewport.height > 0 ? { camera: camera.camera, viewport, insets, inverted: parameters.inverted } : null;
             },
-            // The capture contract is canonical light paint only; a view's inversion is reported by describe, never captured.
             captureRect: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
             current });
         // The save boundaries (Save, close, a disk conflict's Reload) ask the view for its unsaved edits. Without
@@ -766,13 +693,9 @@ export function createNativeViewLease(options: {
     } catch (error) { cameraClaim?.rollback(); throw error; }
 }
 
-/** The mounted board's answer to the agent: its own live camera, inversion and source, never a second store. The lease
- * supplies the frame it shows and its capture; the runtime supplies the document and the jobs. */
 interface NativeLiveSource {
     readonly runtime: BoardRuntime;
-    /** The camera this view shows now, or null while its pane has no measured viewport. */
     frame(): NativeAgentViewInput | null;
-    /** This view's own capture of `rect`, at its live inversion, long side ≤ maxSide. */
     captureRect(rect: Rect, maxSide: number, signal: AbortSignal): Promise<Blob>;
     current(): boolean;
 }
@@ -808,7 +731,6 @@ function createNativeLiveView(source: NativeLiveSource): NativeLiveView {
     };
 }
 
-/** The platform reports codes; the bar shows sentences (the codes reached the owner as raw words). */
 function noticeText(code: string): string {
     return code === 'memory-pressure' ? 'Rendering quality was reduced to fit memory.'
         : code === 'cpu-floor-denied' ? 'Rendering is limited by available memory.'

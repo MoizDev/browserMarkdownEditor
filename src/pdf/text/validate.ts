@@ -11,8 +11,6 @@ function box(values: ArrayLike<number>, at: number, width: number, height: numbe
     return [x0, y0, x1, y1].every(Number.isFinite) && x0 <= x1 && y0 <= y1 &&
         x0 >= -width / 2 && x1 <= width * 1.5 && y0 >= -height / 2 && y1 <= height * 1.5;
 }
-/** Worker replies are untrusted even after worker-side validation. Validate
- * before caching, drawing, copying, or letting offsets enter the app. */
 export async function validatePdfTextReply(reply: PageTextReply, geometry: Readonly<PageGeometry> | undefined, detail: PdfTextDetail, signal?: AbortSignal): Promise<void> {
     let deadline = performance.now() + 4;
     const checkpoint = async () => {

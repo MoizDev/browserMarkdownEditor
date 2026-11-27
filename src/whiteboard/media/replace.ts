@@ -12,10 +12,6 @@ import { inspectMedia } from './inspect';
 import { resolveMediaStorage } from './storage';
 import type { StoreMedia } from './storage.types';
 
-// Provenance: media MD-1, replace-picture centre/long-side rule and C4/C5
-// session authority; independent transaction composition, no upstream source.
-// The stored bytes go through the same proof-carrying receipt as ingest: one
-// apply commits the picture's media and geometry, and only then the receipt.
 export function replacePicture(options: {
     readonly runtime: BoardRuntime; readonly memory: MemoryAllocator; readonly id: NodeId;
     readonly bytes: Blob; readonly name: string; readonly signal?: AbortSignal;
@@ -48,7 +44,6 @@ export function replacePicture(options: {
             const stored: MediaEntry = { ...entry, file: oldFile }, proof = { runtime, context, inspection: info };
             const result = await options.storeMedia(stored, bytes, context.signal, proof);
             // Resolved before any other check, so an issued receipt is always owned and released by the finally below.
-            // A receipt is the only embedded authority; resolveMediaStorage rejects null and unsafe names. Until commit, releasing it rolls back.
             storage = resolveMediaStorage(result, { ...proof, entry: stored, blob: bytes });
             check();
             const file = storage.file;

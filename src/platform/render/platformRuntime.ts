@@ -9,7 +9,6 @@ import { surfaceBroker } from './surfaceBroker';
 
 export type MemoryNotice = 'memory-pressure' | 'cpu-floor-denied';
 
-/** One pane's memory notice: since when its state holds (the timer that raises it once it has lasted) and whether it is shown. */
 interface MemoryNoticeTrack { timer: ReturnType<typeof setTimeout> | null; shown: boolean }
 
 export interface RuntimePane {
@@ -17,18 +16,14 @@ export interface RuntimePane {
     interacting(): boolean;
     windowVisibility?(visible: boolean): void;
     notice(message: MemoryNotice): void;
-    /** The state a notice described is over (quality back to full, the floor granted, the pane hidden or gone). */
     noticeCleared(message: MemoryNotice): void;
     error(error: unknown): void;
 }
 
-/** Whether two demand lists plan the same: the same panes in the same order, each with the same fields the governor reads.
- * A NaN field compares unequal, which only ever means one extra plan. */
 function sameDemands(a: readonly PaneMemoryDemand[], b: readonly PaneMemoryDemand[]): boolean {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
         const x = a[i], y = b[i];
-        // Every field the governor plans from (samePaneDemand): a demand that moved only its pinned bytes or its DPR was dropped here.
         if (x.paneId !== y.paneId || x.visible !== y.visible || x.focused !== y.focused || x.requestedPixels !== y.requestedPixels ||
             x.devicePixelRatio !== y.devicePixelRatio || x.gpuPinnedBytes !== y.gpuPinnedBytes || x.gpuNeedBytes !== y.gpuNeedBytes || x.cpuNeedBytes !== y.cpuNeedBytes || x.cpuMandatoryBytes !== y.cpuMandatoryBytes ||
             x.cpuPinned !== y.cpuPinned) return false;
@@ -36,7 +31,6 @@ function sameDemands(a: readonly PaneMemoryDemand[], b: readonly PaneMemoryDeman
     return true;
 }
 
-/** Private app-lifetime services. Creating a session mirror does not start a view or listeners. */
 export class PlatformRuntime {
     readonly governor = new MemoryGovernor((navigator as Navigator & { deviceMemory?: number }).deviceMemory,
         () => this.queueMemoryAdvance());
@@ -53,7 +47,6 @@ export class PlatformRuntime {
     private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
     private recoveryAt: number | null = null;
     private motion: MediaQueryList | null = null;
-    /** The inputs of the last plan: every pane's demand as it was planned, and the live-gesture flag. Null until the first plan. */
     private planned: { demands: readonly PaneMemoryDemand[]; liveGesture: boolean } | null = null;
 
     constructor() {
@@ -62,8 +55,6 @@ export class PlatformRuntime {
             id: 'platform:native-contexts', pool: 'gpu', kind: 'context', class: 'scene-cache',
             hiddenAt: null, lastVisibleAt: 0, lastUsedAt: 0,
             memory: () => ({ live: surfaceBroker.contextBudget.platform * POLICY.keptContextReserveBytes, retiring: 0 }),
-            // Returns the bytes it revoked, not nothing: a void return is counted by the governor as the whole ask, so a trim
-            // with no hidden context to revoke claimed 4 MB freed on every pass (36 passes, 149 MB) and never reached the tiles.
             evict: bytes => surfaceBroker.revokeHiddenContexts(Math.ceil(bytes / POLICY.keptContextReserveBytes)) * POLICY.keptContextReserveBytes,
         });
         surfaceBroker.configure({ contextAllocator: context });
@@ -117,11 +108,6 @@ export class PlatformRuntime {
         };
     }
 
-    /** Re-plans only when a plan input changed: the pane set, any pane's demand (visibility, focus, viewport, needs) or whether
-     * a live gesture is running. Grants are the plan's output, not an input, so they are not compared. The demands themselves are
-     * still read from each pane, because only the pane knows whether they moved; an unchanged refresh then costs no governor
-     * plan and no budget pass. Checked by reading: advance's time-based progress runs from its recovery timer, and a live gesture
-     * is compared here because it is an input to advancePressure. Not measured (no runs). */
     refresh(): void {
         const demands: PaneMemoryDemand[] = [];
         let liveGesture = false;
@@ -139,19 +125,14 @@ export class PlatformRuntime {
         else this.reconcileMemoryNotices();
     }
 
-    /** Whether a pane's own grant shows the state a memory notice describes, from the demand last planned. A pane that is hidden,
-     * gone or not yet sized shows neither. */
     private memoryState(paneId: string, notice: MemoryNotice): boolean {
         const demand = this.planned?.demands.find(demand => demand.paneId === paneId);
         if (!demand?.visible || demand.requestedPixels <= 0) return false;
         const grant = this.governor.grant(paneId);
         if (!grant) return false;
-        // Reduced quality is this pane's quality scale below 1: its surface really draws fewer pixels than asked. Never the
-        // governor's app-wide state, nor a quality another pane lost.
         return notice === 'memory-pressure' ? grant.qualityScale < 1 : grant.cpuBytes < (demand.cpuMandatoryBytes ?? 0);
     }
 
-    /** Raises a pane's memory notice once its state has lasted memoryNoticeDelayMs and withdraws it when the state ends. */
     private reconcileMemoryNotices(): void {
         for (const paneId of this.panes.keys()) {
             for (const notice of ['memory-pressure', 'cpu-floor-denied'] as const) {
@@ -183,7 +164,6 @@ export class PlatformRuntime {
         if (track.shown) this.panes.get(paneId)?.noticeCleared(notice);
     }
 
-    /** A removed pane takes its pending notices with it; nothing is withdrawn from a pane that is gone. */
     private dropMemoryNotices(paneId: string): void {
         for (const track of this.memoryNotices.get(paneId)?.values() ?? []) if (track.timer !== null) clearTimeout(track.timer);
         this.memoryNotices.delete(paneId);
@@ -196,7 +176,6 @@ export class PlatformRuntime {
         this.advance();
     }
 
-    /** Real GPU timer samples only; disjoint intervals cannot establish either recovery or trouble. */
     observeGpuTiming(paneId: string, p95Ms: number, intervalMs: number, samples: number, disjoint: boolean): void {
         if (disjoint) return;
         if (!Number.isFinite(p95Ms) || p95Ms < 0 || !Number.isFinite(intervalMs) || intervalMs <= 0 ||
@@ -210,7 +189,6 @@ export class PlatformRuntime {
         } else if (!slow) this.slowGpu.delete(paneId);
     }
 
-    /** One unsupported device is a normal fallback; repeated qualification failures are pressure evidence. */
     observeCapabilityFailure(paneId: string): void {
         if (!this.panes.has(paneId)) return;
         const previous = this.capabilityFailures.get(paneId) ?? 0;
@@ -221,13 +199,11 @@ export class PlatformRuntime {
 
     clearCapabilityFailure(paneId: string): void { this.capabilityFailures.delete(paneId); }
 
-    /** A retired device cannot keep a symptom latched across its replacement generation. */
     clearDeviceTrouble(paneId: string): void {
         this.slowGpu.delete(paneId);
         this.stalledFence.delete(paneId);
     }
 
-    /** Only the backend's oldest genuinely unsignalled fence and host input health qualify. */
     observeFence(paneId: string, oldestPendingMs: number, mainThreadInputHealthy: boolean): void {
         if (!Number.isFinite(oldestPendingMs) || oldestPendingMs < 0) throw new RangeError('Invalid pending fence age');
         const stalled = mainThreadInputHealthy && oldestPendingMs > POLICY.stalledFenceMs;
@@ -250,8 +226,6 @@ export class PlatformRuntime {
     private advance(): void {
         this.lifecycles.advancePressure(performance.now(), [...this.panes.values()].some(pane => pane.interacting()));
         this.reconcileMemoryNotices();
-        // The governor says when it next needs an advance that no event will bring (a deferred degrade, a recovery's held
-        // window). Only that deadline is armed: nothing polls while the memory is idle.
         const at = this.governor.wakeAt();
         if (at === null) {
             if (this.recoveryTimer !== null) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
@@ -270,12 +244,10 @@ export class PlatformRuntime {
 
 let runtime: PlatformRuntime | null = null;
 
-/** Only lazy engine/pane code calls this. Importing the module does not initialize the platform. */
 export function getPlatformRuntime(): PlatformRuntime {
     if (!runtime) {
         runtime = new PlatformRuntime();
         const created = runtime;
-        // Audit only: the measured inventory reads memory beside its counters (renderAudit.ts).
         if (renderAuditEnabled() && typeof window !== 'undefined') {
             const audit = (window as unknown as { __bmeRenderAudit?: Record<string, unknown> }).__bmeRenderAudit;
             if (audit) { audit.memory = () => created.governor.readout(); audit.caches = () => created.governor.auditCaches(); audit.degrade = () => created.trouble('slow-gpu'); }

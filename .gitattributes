@@ -1,7 +1,4 @@
-# Preserve pinned upstream bytes: archive.js contains a literal whitespace table,
-# and the bundled license notice retains upstream line endings/spaces.
 src/epub/vendor/archive.js whitespace=-blank-at-eol
 src/epub/vendor/THIRD_PARTY_NOTICES.txt whitespace=-blank-at-eol
 
-# The committed PDFium engine is checked byte-for-byte against its manifest at build time (build/pdfiumAssets.ts).
 src/pdf/vendor/pdfium/** -text whitespace=-blank-at-eol,-blank-at-eof,-trailing-space

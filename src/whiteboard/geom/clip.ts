@@ -83,7 +83,6 @@ function parse(paths: readonly (readonly PathOp[])[], maxSegments: number): read
     return curves;
 }
 
-/** Nonzero-rule clipping against canonical closed cubic paths; no shape AABB substitute. */
 export class ContourClipper {
     private readonly curves: readonly ContourSegment[];
     constructor(paths: readonly (readonly PathOp[])[], maxSegments: number) { this.curves = parse(paths, maxSegments); }
@@ -156,7 +155,6 @@ export class ContourClipper {
 export interface HatchLine { readonly start: Vec2; readonly end: Vec2 }
 export interface HatchOrientation { readonly angle: number; readonly phase: number }
 
-/** Reflect the line family along with a figure, rather than re-anchoring it to its new bounds. */
 export function reflectHatch(angle: number, phase: number, width: number, height: number,
     flipX: boolean, flipY: boolean): HatchOrientation {
     if (![angle, phase, width, height].every(Number.isFinite) || width < 0 || height < 0) throw new RangeError('Invalid hatch transform');
@@ -168,7 +166,6 @@ export function reflectHatch(angle: number, phase: number, width: number, height
     return { angle: Math.atan2(dy * ySign, dx * xSign), phase: translated };
 }
 
-/** The phase is local to the node, so camera motion does not re-seed the pattern. */
 export function* hatchLines(clipper: ContourClipper, bounds: Rect, angle: number, spacing: number,
     phase: number, maxLines: number): Generator<HatchLine> {
     const { x, y, width, height } = bounds;

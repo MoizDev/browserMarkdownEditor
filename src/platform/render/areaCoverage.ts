@@ -1,27 +1,3 @@
-/** Exact-area coverage kit: path shapes drawn by the exact area of their outline, the GPU route's answer to 4x MSAA's quarter
- * steps (FAULT-GPU.md: the yardstick is the truth, measured 1-3 levels from it against canvas2d's 44-99).
- *
- * Geometry: an outline is its closed contours as EDGES (x0, y0, x1, y1), item-local and origin-relative, uploaded once as one
- * shared edge set per content and tolerance band (the caller caches the array; the kit keys its buffer on that array). A view
- * is a uniform: the edges are transformed on the GPU, so a pan or a zoom inside a band uploads nothing and computes nothing on
- * the CPU. Measured before this design (CPU-cut cells, one upload per admission): 1,024 shapes in a saturated zoom took 0.94 ms
- * of board prepare per frame against the MSAA route's 0.21.
- *
- * Drawing accumulates into one SCRATCH r32f target per device, shared by every kit there. A batch packs a run's areas into regions
- * of the scratch (shelf packing) and accumulates them all in ONE pass; then each area is composited from its region in paint order.
- * In a region, the area clears it, then every edge instance covers the strip from its leftmost pixel to the region's right side of
- * each row it crosses, and the fragment adds
- * the exact signed area that the edge leaves to its right inside that pixel (font-rs's accumulation, integrated per pixel rather
- * than prefix-summed). Summed, |acc| clamped to 1 is the outline's nonzero coverage, exact where the contours cross and touch
- * nothing and nest with opposite signs (the caller's areaNestingExact). The composite paints min(1, |acc|) with the output.
- *
- * Uploads are resumable: an edge set's pieces persist across a deferral, so no byte is uploaded twice, and a refused piece halves
- * down to MIN_PIECE_INSTANCES before the admission defers. An edge set lives while an admission holds it; idle sets are kept up to
- * IDLE_EDGE_BYTES, least recently used first out, and re-uploaded if drawn again.
- *
- * The kit only takes the device's own float targets: a device without EXT_color_buffer_float and EXT_float_blend is refused as
- * 'unsupported', and its caller keeps the coverage route, counted. Leases are handed to the device at creation (it returns them
- * on destroy), so nothing is released twice. */
 import type { Affine } from '../types';
 import type { AreaOutput, AreaTarget, BufferHandle, ByteLease, GfxDevice, GpuPass, PipelineHandle, RectI, ShaderModule } from './gfx/api';
 import type { LayerHost } from './compositor.types';
@@ -30,10 +6,8 @@ import type { FrameBudget } from './types';
 import { ArenaError } from './resourceArena';
 import { auditCount, PerDeviceMap } from './renderAudit';
 
-/** One uploaded piece of an edge set: a vertex buffer of `count` edges (16 bytes each). */
 interface EdgePiece { readonly buffer: BufferHandle; readonly count: number; readonly bytes: number }
 
-/** One content's edges on one device: uploaded once, shared by every admission that draws them. */
 interface EdgeSet {
     readonly key: Float32Array;
     readonly device: GfxDevice;
@@ -46,7 +20,6 @@ interface EdgeSet {
     usedFrame: number;
 }
 
-/** What one area draws: its edge sets, each under its own item-local to band-local device affine, summed in one accumulation. */
 export interface AreaPart { readonly edges: Float32Array; readonly affine: Affine }
 
 export interface PreparedArea {
@@ -54,57 +27,39 @@ export interface PreparedArea {
     readonly generation: number;
     readonly sets: readonly EdgeSet[];
     readonly affines: readonly Affine[];
-    /** The band rectangle in device px: the area's texels in the scratch, which is at least the band's size. */
     readonly bounds: RectI;
 }
 
 export type AreaAdmission =
     | { readonly status: 'ready'; readonly value: PreparedArea }
     | { readonly status: 'empty' }
-    /** Retry with the same parts: the uploads resume where they stopped. */
     | { readonly status: 'deferred' }
     | { readonly status: 'denied'; readonly pool: 'gpu' | 'cpu'; readonly bytes: number }
     | { readonly status: 'unsupported'; readonly why: string };
 
 export interface AreaKit {
-    /** Admits the parts (each an edge array the caller keeps alive and unchanged, and its affine to band-local px) over `bounds`. */
     admit(host: LayerHost, parts: readonly AreaPart[], bounds: RectI, budget: FrameBudget, viewport: { readonly width: number; readonly height: number }): AreaAdmission;
-    /** Starts a batch: the areas placed until endBatch share one accumulation pass on the scratch, each in its own region. */
     beginBatch(host: LayerHost): void;
-    /** Places and accumulates these areas (one item's fill and stroke) in the open batch, all or none: false when they do not all fit
-     * in what is left of the scratch (end the batch, composite what it holds, and start another). Throws an out-of-budget ArenaError
-     * from the uniform ring after closing nothing: the caller ends the batch. */
     place(host: LayerHost, pass: GpuPass, areas: readonly PreparedArea[]): boolean;
     endBatch(pass: GpuPass): void;
-    /** Paints a placed area's coverage with the output, in the current scope (after endBatch). False when it was not placed. */
     composite(pass: GpuPass, prepared: PreparedArea, output: AreaOutput): boolean;
     retire(prepared: PreparedArea): void;
-    /** The caller no longer keeps this edge array: its buffer goes once no admission holds it. */
     forget(edges: Float32Array): void;
-    /** Destroys edge sets no admission holds and the current frame did not use (`keepRecent`: nor the kit's previous frame), least
-     * recently used first, until `bytes` are freed. Returns the bytes freed (their leases return as the buffers retire). */
     evictIdle(bytes: number, keepRecent?: boolean): number;
-    /** Starts compiling the device's shared pipelines (at the route's creation), so the first area admitted on this device does not
-     * wait a frame for them: the first drag's preview did (its ink-union route is the first area user, as the board draws ink by the
-     * analytic route). */
     warm(host: LayerHost): void;
     beginFrame(frame: number): void;
     release(): void;
     memory(): { readonly gpuBytes: number };
 }
 
-/** An upload piece is 4096 edges (64 KiB) at most; a refused piece halves down to 256 (4 KiB) before the admission defers. */
 const PIECE_INSTANCES = 4096;
 const MIN_PIECE_INSTANCES = 256;
 const INSTANCE_BYTES = 16;
-/** GPU bytes of edge sets no admission holds. A shape's tiles share its set, so a few megabytes is thousands of shapes' worth. */
 const IDLE_EDGE_BYTES = 8 * 2 ** 20;
-/** viewport, band, matrix, translation: four vec4. */
 const UNIFORM_BYTES = 64;
 
 interface Placed { x: number; y: number; readonly rect: { x: number; y: number; width: number; height: number } }
 
-/** One instance per edge: a strip from its leftmost pixel to the band's right edge over the rows it crosses. */
 const EDGE_SHADER: ShaderModule = {
     id: 'platform-area-edge', revision: 4,
     layout: {
@@ -160,7 +115,6 @@ void main() {
     },
 };
 
-/** The band's clear pass: a band-sized quad written with zero, so the area starts from nothing without clearing the scratch. */
 const CLEAR_SHADER: ShaderModule = {
     id: 'platform-area-clear', revision: 3,
     layout: { uniforms: [{ binding: 0, byteSize: UNIFORM_BYTES }], textures: [], attributes: [] },
@@ -181,25 +135,11 @@ void main() { accumulated = 0.0; }`,
 };
 const NO_STENCIL = { enabled: false } as const;
 
-/** Where a scratch's bytes are charged: the kit that reports them, the GPU allocator (its layer's cache) the lease is on, and the lease. */
 interface ScratchCharge { readonly holder: object; readonly gpu: MemoryAllocator; readonly lease: ByteLease }
-/** The shared scratch of one device: one r32f target at least as large as every viewport an area kit there has drawn into, used by
- * every area kit on the device. `users` are the kits holding it, each with the allocator it reserves from. Only `charge.holder`
- * reports its bytes, and the charge's lease is on that kit's allocator: the report and the lease always name the same cache.
- * They did not when the report followed whichever kit was asked next while the lease stayed where the scratch was made: a
- * 158-stroke board's underlay published the 10,902,528-byte scratch (1872 x 1456 x 4) against a lease another layer held, and
- * the governor logged "GPU accounting ... published 23902224 bytes against 12999696 reserved" and charged it twice.
- * `targetLease` is attached to the target and goes back when the target is destroyed. */
 interface Scratch { readonly target: AreaTarget; readonly bytes: number; readonly users: Map<object, MemoryAllocator>; charge: ScratchCharge;
     readonly targetLease: ByteLease }
 const scratchOf = new PerDeviceMap<GfxDevice, Scratch>();
 
-/** One edge + clear pipeline pair per device incarnation, shared by every area kit on it (no per-kit parameter) and kept while the device
- * lives: two programs, no governed bytes. Each kit compiled its own and destroyed it with the kit, and the drag preview's kits are made
- * per drag, so every drag's first preview frame waited on the compile and drew the dragged stroke nowhere (measured, round 8 e41e02d2,
- * every doc: ink-union live:dropped:deferred 2 in each drag with the path-coverage set already shared-ready; the input went unanswered
- * where canvas2d answered it). pathCoverage.ts shares its set the same way. A restored context compiles a new pair; the old one is
- * destroyed once its last kit lets go. */
 interface SharedAreaPipelines { users: number; edge: PipelineHandle | null; clear: PipelineHandle | null; failed: boolean; dead: boolean; readonly generation: number }
 const areaPipelinesOn = new PerDeviceMap<GfxDevice, SharedAreaPipelines>();
 function acquireAreaPipelines(owner: GfxDevice): SharedAreaPipelines {
@@ -221,7 +161,6 @@ function destroyAreaPipelines(owner: GfxDevice, entry: SharedAreaPipelines): voi
     if (entry.clear) owner.destroy(entry.clear);
     entry.edge = null; entry.clear = null;
 }
-/** A kit lets go of its pair: the current incarnation's stays for the next kit; a superseded one goes with its last user. */
 function releaseAreaPipelines(owner: GfxDevice, entry: SharedAreaPipelines): void {
     if (--entry.users === 0 && entry.dead) destroyAreaPipelines(owner, entry);
 }
@@ -230,28 +169,19 @@ export function createAreaKit(): AreaKit {
     let device: GfxDevice | null = null;
     let edgePipeline: PipelineHandle | null = null;
     let clear: PipelineHandle | null = null;
-    // The kit's current frame and the one before it: idle sets either used are kept (trimIdle).
     let pipelineSet: SharedAreaPipelines | null = null, frame = 0, previous = -1;
-    /** Every edge set on the device, by its edge array; idle ones (refs 0) are the least recently used first. */
     const sets = new Map<Float32Array, EdgeSet>();
     const live = new Set<PreparedArea>();
-    /** Whether this kit holds a reference on the device's scratch (taken at its first ready area, returned at release). */
     let holding = false;
     let setBytes = 0, idleBytes = 0;
     const uniformScratch = new Float32Array(UNIFORM_BYTES / 4);
-    /** The open batch: its scratch, its accumulation token (opened by the first placement), the shelf cursor, and where each placed
-     * area sits. Reused across batches: nothing is allocated per frame once the map has grown. */
     let batchScratch: Scratch | null = null, batchToken: ReturnType<GpuPass['beginArea']> | null = null;
     let shelfX = 0, shelfY = 0, shelfH = 0;
     const placed = new Map<PreparedArea, Placed>();
     const spare: Placed[] = [];
     const tentative: Placed[] = [];
-    /** The scissor of every accumulation draw: the whole scratch (each draw stays inside its region by its own geometry). */
     const whole = { x: 0, y: 0, width: 0, height: 0 };
-    /** One draw's uniforms: the scratch size, the region (x0, y0, x1, y1), and the item-local to scratch affine (null for the clear). */
-    /** A placed region: `at` in the scratch, `rect` the part of the area's bounds it accumulates (on the pass, device px). */
     const regionUniforms = (host: LayerHost, W: number, H: number, at: Placed, bounds: RectI, affine: Affine | null) => {
-        // The affine maps to bounds-local px; the region starts `rect - bounds` into them.
         const sx = at.x - (at.rect.x - bounds.x), sy = at.y - (at.rect.y - bounds.y);
         uniformScratch[0] = W; uniformScratch[1] = H; uniformScratch[2] = 0; uniformScratch[3] = 0;
         uniformScratch[4] = at.x; uniformScratch[5] = at.y; uniformScratch[6] = at.x + at.rect.width; uniformScratch[7] = at.y + at.rect.height;
@@ -260,17 +190,10 @@ export function createAreaKit(): AreaKit {
         uniformScratch[12] = affine ? affine[4] + sx : 0; uniformScratch[13] = affine ? affine[5] + sy : 0; uniformScratch[14] = 0; uniformScratch[15] = 0;
         return host.uniforms(uniformScratch);
     };
-    /** This kit's identity as a scratch holder. */
     const kitToken = {};
 
-    /** Whether the area pipelines are ready: false while they compile, 'failed' after a refused compile, which the caller takes as
-     * unsupported (the coverage route draws the shape, counted) rather than a wait that never ends. */
     const ensurePipelines = (owner: GfxDevice): boolean | 'failed' => {
         if (edgePipeline && clear && device === owner) return true;
-        // Only another device's state is released. A kit without a device yet (its first admit) has just uploaded this admission's edge
-        // sets, and releasing then destroyed them under the area it returned ready: with the pipelines already compiled (shared), the
-        // board's first ink-union cover at pen-up drew nothing and stayed (round 9, kinds pen on drawing and PDF: the stroke gone until
-        // the next input). A per-kit compile had always deferred that first admit, which hid it.
         if (device !== owner) { if (device) release(); device = owner; }
         pipelineSet ??= acquireAreaPipelines(owner);
         if (pipelineSet.failed) return 'failed';
@@ -279,10 +202,6 @@ export function createAreaKit(): AreaKit {
         return true;
     };
 
-    /** The device's scratch, large enough for `viewport`: created at its size on first use, and grown to the larger of each side when a
-     * larger viewport arrives (a tile's composer and a pane-sized preview share it). An area larger than its scratch is refused by
-     * beginArea as invalid input, so a scratch kept at the first viewport's size failed every later, larger one. Growth replaces the
-     * target: draws look the scratch up at draw time, and the device retires the old target's lease. A refused growth keeps the old one. */
     const acquireScratch = (host: LayerHost, owner: GfxDevice, viewport: { width: number; height: number }): Scratch | 'denied' => {
         const existing = scratchOf.get(owner);
         if (existing && existing.target.width >= viewport.width && existing.target.height >= viewport.height) return existing;
@@ -308,15 +227,10 @@ export function createAreaKit(): AreaKit {
         scratchOf.set(owner, scratch);
         return scratch;
     };
-    /** Destroys a scratch's target and returns its charge: the target's own lease goes back with the target (a release is
-     * idempotent), and a charge moved to another kit's allocator is returned there. */
     const destroyScratch = (owner: GfxDevice, scratch: Scratch): void => {
         owner.destroy(scratch.target.target); owner.destroy(scratch.target.texture);
         if (scratch.charge.lease !== scratch.targetLease) scratch.charge.gpu.release(scratch.charge.lease);
     };
-    /** The charge's holder has let go while other kits still draw with the scratch: the charge moves to one of them, reserved there
-     * before it is returned where it was, so a refusal leaves it on the old (possibly closed) cache, still reserved exactly once,
-     * and the next admit or report retries. Nobody reports it meanwhile: a cache holding a lease it does not publish is not a fault. */
     const rehome = (owner: GfxDevice, scratch: Scratch): void => {
         if (scratch.users.has(scratch.charge.holder)) return;
         for (const [holder, gpu] of scratch.users) {
@@ -338,11 +252,6 @@ export function createAreaKit(): AreaKit {
         for (const piece of set.pieces) set.device.destroy(piece.buffer);
         set.pieces.length = 0;
     };
-    /** Keeps idle sets within IDLE_EDGE_BYTES, least recently used first out; a set used this frame or the kit's previous one stays.
-     * An admission the upload budget defers resumes next frame from the sets it already uploaded; kept for the current frame only,
-     * a view whose sets passed the limit uploaded the same edges again each frame and never finished (measured, the 10,000-stroke
-     * old board after a zoom reset on WebGL2: ~0.75 MB of edge buffers re-created per frame, its tile deferred at every vsync). Every
-     * set is leased from the GPU pool, so the governor still bounds what this keeps. */
     const trimIdle = (): void => {
         if (idleBytes <= IDLE_EDGE_BYTES) return;
         for (const set of [...sets.values()]) {
@@ -352,15 +261,10 @@ export function createAreaKit(): AreaKit {
     };
     const unref = (set: EdgeSet): void => {
         if (--set.refs !== 0) return;
-        // Its recency stays the frame an admission last used it: a set let go by a cancelled admission is as old as that admission, so
-        // the reclaim a refused position makes (freeOwn) can take it at once, while the sets this frame or the last admitted stay.
         idleBytes += set.bytes;
-        // Most recently used last, so the trim takes the oldest first. A set no longer indexed (forgotten, or of an old device
-        // generation) goes with its last holder.
         if (sets.get(set.key) === set) { sets.delete(set.key); sets.set(set.key, set); }
         else destroySet(set);
     };
-    /** Uploads what the frame allows of one set: true once every edge is on the device. A refused lease is a denial. */
     const upload = (host: LayerHost, set: EdgeSet, budget: FrameBudget): true | 'deferred' | { denied: number } | 'unsupported' => {
         const count = set.key.length >> 2;
         while (set.uploaded < count) {
@@ -382,7 +286,6 @@ export function createAreaKit(): AreaKit {
             set.device.writeBuffer(buffer, 0, set.key.subarray(set.uploaded * 4, (set.uploaded + n) * 4));
             set.pieces.push({ buffer, count: n, bytes });
             set.uploaded += n; set.bytes += bytes; setBytes += bytes;
-            // A set no admission holds yet counts as idle while it uploads, so a refused admission's pieces are trimmed like any other.
             if (set.refs === 0) idleBytes += bytes;
         }
         return true;
@@ -426,7 +329,6 @@ export function createAreaKit(): AreaKit {
                     sets.set(part.edges, set);
                 }
                 set.usedFrame = frame;
-                // The upload resumes where it stopped: pieces already written stay on the set, whatever this admission does next.
                 const uploaded = upload(host, set, budget);
                 if (uploaded === 'deferred') { auditCount('area', 'deferred:upload'); return { status: 'deferred' }; }
                 if (uploaded === 'unsupported') return { status: 'unsupported', why: 'vertex-buffer' };
@@ -458,12 +360,7 @@ export function createAreaKit(): AreaKit {
             const scratch = batchScratch;
             if (!scratch || !edgePipeline || !clear) throw new Error('Stale area');
             const W = scratch.target.width, H = scratch.target.height;
-            // Only the part of an area the pass's clip reaches is accumulated (read before the batch's own target is bound): an area is
-            // admitted for its whole view and drawn under a tile position's or a cut piece's clip, and accumulated whole under each it
-            // filled its full box every time (measured, LARGE=11 drag's commit: a 25.6 ms frame). Edges left of the cut still count, as
-            // the edge shader clamps them to the region's left side, so the cut's coverage is exact.
             const clip = pass.clipRect();
-            // Shelf packing, decided for every area before any is drawn: an item's fill and stroke go into one batch or the next.
             let x = shelfX, y = shelfY, h = shelfH;
             for (let i = 0; i < areas.length; i++) {
                 const prepared = areas[i];
@@ -489,7 +386,6 @@ export function createAreaKit(): AreaKit {
                 kept.x = at.x; kept.y = at.y; kept.rect.x = at.rect.x; kept.rect.y = at.rect.y; kept.rect.width = at.rect.width; kept.rect.height = at.rect.height;
                 placed.set(prepared, kept);
                 if (!at.rect.width || !at.rect.height) { auditCount('area', 'clipped-out'); continue; }
-                // The region's own clear first: the area accumulates from zero, and no other region is touched.
                 pass.draw({ pipeline: clear, bindings: { uniforms: [{ binding: 0, slice: regionUniforms(host, W, H, at, bounds, null) }], textures: [] },
                     vertices: [], first: 0, count: 4, instances: 1, scissor: whole });
                 for (let s = 0; s < prepared.sets.length; s++) {
@@ -509,7 +405,6 @@ export function createAreaKit(): AreaKit {
         composite(pass, prepared, output): boolean {
             const at = placed.get(prepared);
             if (!at || !batchScratch) return false;
-            // A cut the clip misses entirely draws nothing there: it is placed (not a refusal) with an empty rect.
             if (at.rect.width && at.rect.height) pass.compositeArea(batchScratch.target, at, at.rect, output);
             return true;
         },
@@ -521,13 +416,10 @@ export function createAreaKit(): AreaKit {
         forget(edges): void {
             const set = sets.get(edges);
             if (!set) return;
-            // A set still held is dropped from the index and destroyed by the last retire's trim once it is idle and unindexed.
             if (set.refs === 0) destroySet(set);
             else sets.delete(edges);
         },
         beginFrame(next): void { if (next !== frame) { previous = frame; frame = next; } },
-        // Unreached by any trim, up to IDLE_EDGE_BYTES of idle edges per kit sat in a pane's GPU grant for good: a narrow pane of
-        // dense ink at rest after divider drags was refused its visible tiles at its own grant, its picture on a stand-in.
         evictIdle(bytes, keepRecent = false): number {
             let freed = 0;
             for (const set of [...sets.values()]) {
@@ -538,7 +430,6 @@ export function createAreaKit(): AreaKit {
             return freed;
         },
         release,
-        // The scratch is reported once, by the kit whose allocator holds its charge (a report never moves without the lease).
         memory: () => {
             const scratch = holding && device ? scratchOf.get(device) : undefined;
             return { gpuBytes: setBytes + (scratch && scratch.charge.holder === kitToken ? scratch.bytes : 0) };

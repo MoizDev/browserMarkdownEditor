@@ -18,7 +18,6 @@ export interface BoardRotationOptions {
     readonly centre: Vec2;
     readonly down: Vec2;
     readonly orientation: number;
-    /** Fences the owning view and input gesture through commit or cancellation. */
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
@@ -29,7 +28,6 @@ export interface BoardRotationPreview {
     readonly ops: readonly NodeSetOp[];
 }
 export interface BoardRotationPlan {
-    /** `release`: the pointer is up, so the angle also lands on whole degrees (and a right angle when coarse). */
     preview(pointer: Vec2, shift: boolean, signal?: AbortSignal, release?: { readonly coarse: boolean }): Promise<BoardRotationPreview>;
     previewAngle(delta: number, signal?: AbortSignal): Promise<BoardRotationPreview>;
     commit(preview: BoardRotationPreview): void;
@@ -37,8 +35,6 @@ export interface BoardRotationPlan {
 }
 interface Root { readonly node: Readonly<Node>; readonly pose: WorldPose }
 
-/** Convert the desired world origin through the unchanged parent and original page.
- * Page ownership is selected only after the complete staged geometry is realized. */
 function provisional(doc: BoardDoc, root: Root, world: WorldPose): NodeSetOp[] {
     const node = root.node;
     let x: number, y: number, rotation: number;
@@ -58,7 +54,6 @@ function provisional(doc: BoardDoc, root: Root, world: WorldPose): NodeSetOp[] {
     ];
 }
 
-/** Actual rigid rotation only. Resize, stretch and reflection need their own kind planners. */
 export async function createBoardRotationPlan(options: BoardRotationOptions): Promise<BoardRotationPlan> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot();
@@ -139,8 +134,6 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
                     if (pose.y !== node.y) final.push({ t: 'set', id: node.id, key: 'y', value: pose.y });
                     if (pose.rotation !== node.rotation) final.push({ t: 'set', id: node.id, key: 'rotation', value: pose.rotation });
                 }
-                // If page ownership changes, rebuild against the final page-local records;
-                // the preview never exposes the provisional page index.
                 const finalDoc = await projectBoardGeometrySets(doc, final, { signal: request, current: active, cooperate: options.cooperate });
                 assert();
                 const finalScope = await acquireBoardGeometryScope(runtime, roots.map(root => root.node.id), { doc: finalDoc, signal: request, current: active, cooperate: options.cooperate });

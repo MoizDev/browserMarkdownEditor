@@ -4,7 +4,6 @@ import { newPdfWorkerId } from './workerIds';
 const STAGE_IDLE_MS = 30_000;
 const HASH = /^[0-9a-f]{64}$/;
 
-/** A staged native document owns all of its PDFium handles. */
 export interface OwnedWriterStage {
     close(): void | Promise<void>;
 }
@@ -17,8 +16,6 @@ export interface WriterStage<T extends OwnedWriterStage> {
 }
 type Slot<T extends OwnedWriterStage> = WriterStage<T> & { deadline: number; timer: ReturnType<typeof setTimeout> };
 
-/** Worker-private, one-use stages. Failed, expired or cancelled assembly never
- * leaves mutable PDFium state available to another revision. */
 export class WriterStageStore<T extends OwnedWriterStage> {
     private readonly entries = new Map<string, Slot<T>>();
     private closed = false;
@@ -34,7 +31,6 @@ export class WriterStageStore<T extends OwnedWriterStage> {
         return id;
     }
 
-    /** Consuming removes the timer before yielding ownership to finish's finally. */
     async take(id: string, revision: number): Promise<WriterStage<T>> {
         const slot = this.entries.get(id);
         if (!slot || this.closed) throw new Error('PDF writer stage is missing or expired');

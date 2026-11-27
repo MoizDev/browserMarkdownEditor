@@ -39,7 +39,6 @@ import type { PdfTiledPresentation } from './PdfTiledView';
 import type { EmphasisAvailability } from '../types/reading';
 import './PdfPane.css';
 
-// Acquisition/editing and contained rendering stay behind their lazy entries.
 import { getPdfInkSourceState } from '../whiteboard/host/pdfInkSourceState';
 
 import { nativePdfEntrySlot, pdfTiledSurfaceSlot, pdfTiledTextSurfaceSlot } from './pdfSurfaceModules';
@@ -54,70 +53,31 @@ const noSubscription = () => () => {};
 
 export interface PdfPaneProps {
     documentId: string;
-    /** Native ink acquisition publishes its owner and receives write authority. */
     onNativeCanvasReady: import('../types/reading').NativeCanvasReady;
-    /** Native ink attaches to the same App-owned session as its reader. */
     attachCanvasSession?: import('../utils/canvasSessionBridge').AttachCanvasSession;
     reading?: PdfReadingBinding;
     nativeCanvasHost?: import('../types/nativeCanvas').NativeCanvasHost;
     file: ActiveFile;
     theme: import('../types').Theme;
     onToggleMode(path: string): void;
-    /**
-     * Whether this document is on screen. EditorPane keeps one pane MOUNTED per
-     * open PDF tab and merely hides the ones that aren't, so switching tabs
-     * never reloads the document or loses the reading position. Native document
-     * services live in App; hidden views release their rendering/input resources.
-     */
     isVisible: boolean;
-    /**
-     * Whether this is the FOCUSED pane, which is a narrower thing than being on
-     * screen once tabs can hold several documents: two PDFs may be visible side
-     * by side, but the +/- zoom keys belong to exactly one of them.
-     */
     isFocused: boolean;
-    /** Which COLUMN this document occupies, and that column's left edge and
-     *  width as percentages of the editor. The pane is positioned over the
-     *  column — it can't be a child of it, since it has to outlive it (see
-     *  isVisible) — and both forms are needed: the index addresses the editor's
-     *  live CSS variables while the pane is on screen, the numbers are what it
-     *  freezes to once it isn't (see slotStyle). */
     slotIndex: number;
     slotLeft: number;
     slotWidth: number;
-    /** Make this the focused pane. The pane floats OVER its slot rather than
-     *  sitting inside it, so DocumentPane's own mousedown/focus handlers can
-     *  never see a click that lands on the document — without this, clicking a
-     *  PDF in a split left ⌘E, ⌘S, the top-bar actions and the +/− zoom keys
-     *  acting on whichever neighbour was focused before. */
     onFocusPane: (path: string) => void;
-    /** 'read' = view the real PDF, 'edit' = annotate. Reuses the per-tab mode. */
     mode: EditorMode;
     onPreparePrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
     onUnsignedPdfCopy?: (identity: ReaderIdentity, version: DiskVersion) => Promise<void>;
-    /** This PDF is a notebook's export — open that notebook instead. Takes the
-     *  PDF's own path too, so App can put its tab back into reading mode. */
     onOpenNotebookSource: (pdfPath: string, notebookPath: string) => void | Promise<void>;
-    /** Turn the pages a quarter and write the file (App.rotatePdf). Reading
-     *  only: the annotate canvas draws against the pages as they are. */
     onRotate: (path: string, delta: number, pageIndex?: number) => void;
-    /** Advance the byte generation over this document's own Annotate saves (App.adoptSavedPdfInk); true when it did. */
     onAdoptSavedInk?: (path: string) => Promise<boolean>;
-    /** True while this tab has strokes not yet written to disk. */
     isDirty: boolean;
-    /** The file parted ways with the tab on disk (OpenTab.disk). The bar is
-     *  drawn HERE, not by DocumentPane: this pane floats over the slot and
-     *  would paint over one placed there. */
     disk?: 'conflict' | 'deleted';
-    /** OpenTab.diskMineLost: the DiskBar offers only Reload. */
     diskMineLost?: boolean;
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
-    /** App owns the baseline and held choice, bound to the FULL reader token.
-     *  When supplied, this callback also owns initial-edit baseline adoption. */
     onAnnotationPreflight?: (identity: ReaderIdentity, value: PdfAnnotationPreflight) => void;
     pdfRebuild?: PdfRebuildNotice;
-    /** Only after App has kept that exact outer generation in Trash. The exact
-     *  role's rebuild capability must also have been explicitly granted. */
     pdfRebuildApproval?: { generation: string };
 }
 
@@ -129,25 +89,16 @@ interface PdfSource {
 }
 
 
-/** An error's own text is shown only when it is a sentence this app wrote for the person. A worker's refusal code
- * ("Unsigned copy unavailable: duplicate signature fields"), a pool error name or the browser's wording reached the
- * screen as it was; it goes to the console, and the person is told what failed and what is left as it was. */
 function shownError(error: unknown, fallback: string): string {
     const message = error instanceof Error ? error.message.trim() : '';
     if (/^[A-Z“][^:]*[.!?…]$/.test(message) && (!(error instanceof Error) || error.name === 'Error' || error.name === 'AbortError')) return message;
     console.error(error);
     return fallback;
 }
-/** Original/Text borrow the App-owned contained source; Annotate borrows its
- * admitted native ink session. Metadata inspection cannot create a second reader,
- * and a dirty/rebinding document must keep its actual editing shell mounted. */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
 function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode: requestedMode, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, onAdoptSavedInk, isDirty, disk, diskMineLost, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
-    // A page turn held for this document (utils/pdfTurnHold.ts): the pane is Original, whatever mode was asked, until
-    // it settles; no Annotate board mounts, reads the role of the bytes being replaced or takes ink meant for the old
-    // pages. Asked for Annotate meanwhile, it opens by itself on the turned pages once the turn is released.
     const turnHeld = useSyncExternalStore(subscribePdfTurnHolds, () => pdfTurnHeld(documentId), () => false);
     const annotateQueued = useSyncExternalStore(subscribePdfTurnHolds, () => pdfTurnQueued(documentId), () => false);
     const mode: EditorMode = turnHeld ? 'read' : requestedMode;
@@ -178,8 +129,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         setPrint('closed'); setPrintError('');
     }, []);
     useEffect(() => { if (!isVisible || !isFocused) cancelPrint(); }, [isVisible, isFocused, cancelPrint]);
-    // A pane can be reused for another document without losing focus. Retire
-    // the old handoff before a pending validation can navigate its reserved tab.
     useLayoutEffect(() => { cancelPrint(); }, [file.path, file.handle, mode, reading?.identity.vaultId, reading?.identity.vaultEpoch, reading?.identity.documentId, reading?.identity.diskRev, cancelPrint]);
     useEffect(() => () => { ++printEpoch.current; if (printExpiry.current !== null) window.clearTimeout(printExpiry.current); printPopup.current?.close(); if (printReady.current) URL.revokeObjectURL(printReady.current.url); }, []);
     const preparePrint = async () => {
@@ -195,8 +144,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                 if (live.tiled !== tiled || live.mode !== mode) throw new Error('The PDF viewer changed. Prepare it again before printing.');
                 if (!tiled) return;
                 if (mode === 'edit') {
-                    // Native Annotate has no tiled source to read /P from. Only a source the host can write is
-                    // admitted, and write safety refuses encrypted files, so such a file carries no print restriction.
                     if (!nativeIdentity || !nativeCanvasHost?.canWrite(nativeIdentity)) throw new Error('Print this PDF from its Original view; annotation printing needs an editable, verified copy.');
                     return;
                 }
@@ -232,8 +179,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         if (printPopup.current) return;
         const ready = printReady.current;
         if (!ready?.valid()) { setPrintError('The document changed. Prepare it again before printing.'); if (ready) URL.revokeObjectURL(ready.url); printReady.current = null; setPrint('confirm'); return; }
-        // Reserve the tab in the click gesture, then recheck disk before any
-        // bytes leave this pane. A cancelled or stale handoff closes only it.
         const opened = window.open('', '_blank');
         if (!opened) { setPrintError('The browser blocked the new tab. Allow pop-ups and try again.'); return; }
         opened.opener = null; printPopup.current = opened;
@@ -247,9 +192,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         }
         try { opened.location.replace(ready.url); }
         catch { opened.close(); printPopup.current = null; setPrintError('Could not open the PDF tab. Please try again.'); setPrint('ready'); return; }
-        // The native viewer consumes the URL asynchronously; releasing it in the
-        // same gesture can race its navigation. Bound the handoff independently
-        // of this pane, which may close as soon as the new tab opens.
         window.setTimeout(() => URL.revokeObjectURL(ready.url), 60_000);
         printPopup.current = null; printReady.current = null; cancelPrint();
     };
@@ -257,7 +199,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         if (!isVisible || !isFocused) return;
         const key = (event: KeyboardEvent) => {
             const target = event.target as HTMLElement | null;
-            // Focus on the body is the pane's own keyboard owner: a click on the canvas leaves nothing focused.
             const paneOwns = !target || target === document.body || target === document.documentElement || !!root.current?.contains(target);
             if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'p' ||
                 !paneOwns || target?.closest('input, textarea, [contenteditable="true"], [role="dialog"]')) return;
@@ -272,8 +213,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         ? { vaultId: findVault, vaultEpoch: findEpoch, documentId: findDocument } : undefined, [findVault, findEpoch, findDocument]);
     const findMemory = useMemo<PdfFindMemory>(() => findIdentity ? peekPdfFindMemory(findIdentity) ?? { open: false, query: '' } : { open: false, query: '' }, [findIdentity]);
     useLayoutEffect(() => findIdentity ? retainPdfFindMemory(findIdentity, findMemory) : undefined, [findIdentity, findMemory]);
-    // Binding values change on preference/status updates. A retained session and
-    // its async consumers always call the current binding without reopening bytes.
     const binding = useRef(reading);
     const writeState = useRef({ isDirty, disk, onAnnotationPreflight });
     useLayoutEffect(() => { binding.current = reading; writeState.current = { isDirty, disk, onAnnotationPreflight }; });
@@ -307,7 +246,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const pageDigest = useRef<string | undefined>(undefined);
     const restoredRecord = useRef(false);
     const [roleRetry, setRoleRetry] = useState(0);
-    // Annotate's code is gone from the server (a newer version replaced this one): the pane says so and offers Reload.
     const [annotateReplaced, setAnnotateReplaced] = useState<unknown>(null);
     const readerIdentity = reading?.identity;
     const annotateEntry = useMemo(() => ({ mode, handle: file.handle, path: file.path, attempt: roleRetry, readerIdentity,
@@ -319,9 +257,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const currentEntry = useRef(annotateEntry);
     useLayoutEffect(() => { currentEntry.current = annotateEntry; }, [annotateEntry]);
     const [loadedSource, setSource] = useState<PdfSource | null>(null);
-    // Render-time entry identity is necessary: effect cleanup alone leaves one
-    // commit in which a prior vault/path/mode's role could mount a canvas before
-    // the new preflight. Each return to Annotate starts without a capability.
     const source = loadedSource && loadedSource.entry === annotateEntry && loadedSource.handle === file.handle && loadedSource.path === file.path ? loadedSource.role : null;
     const foreignHeld = source?.kind === 'annotated' && source.writeMark.kind === 'foreign' &&
         (!source.generation || pdfRebuildApproval?.generation !== source.generation || !canRebuildAnnotatedPdf(source.original));
@@ -330,13 +265,9 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     useLayoutEffect(() => {
         if (!inspectedWriteRefused) return;
         if (source) revokePdfRole(source);
-        // A remount can retain an export in the save cache without a loaded
-        // role in this view. Known unsafe disk bytes revoke that source too.
         const parked = getPdfRenderData(file.path);
         if (parked) revokePdfSource(parked.original);
     }, [inspectedWriteRefused, source, file.path]);
-    // The outer pages remain readable on refusal. DiskBar owns the choice;
-    // don't put a competing action over the page.
     const foreignNotice = !foreignHeld ? undefined : source.writeMark.kind === 'foreign' && source.writeMark.reason === 'mismatch'
         ? 'This PDF was changed by another program after this app saved it. Annotate is read-only so rebuilding its pages does not discard those changes. You can still read the PDF.'
         : 'The PDF write mark cannot be verified by this version. Annotate is read-only so rebuilding its pages does not discard changes. You can still read the PDF.';
@@ -363,8 +294,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const retainedState = useSyncExternalStore(retainedSource?.subscribe ?? noSubscription,
         () => retainedSource?.getSnapshot(), () => undefined);
     const retainedToken = retainedState?.token;
-    // Dirty ink and a saved-byte rebind change the outer role entry, not the acquired
-    // document owner. Keep its camera/input shell; that source's own cover fences writes.
     const retainedNative = !!(mode === 'edit' && retainedIdentity && retainedToken && nativeCanvasHost && appSession && reading
         && retainedIdentity.kind === 'pdfInk' && retainedIdentity.session === appSession.serial
         && retainedIdentity.vaultActivation === reading.identity.vaultEpoch && nativeCanvasHost.isCurrent(retainedIdentity)
@@ -381,8 +310,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const [, setRetryEpoch] = useState(0);
     const [retryBusy, setRetryBusy] = useState(false);
     const retryInFlight = useRef(false);
-    // Role inspection has its own build worker. A refused edit displays the
-    // outer PDF, so its renderer health must belong to that viewer, not a source.
     const renderHealth = idleHealth;
     const renderDiagnostics = useSyncExternalStore(renderHealth.subscribe, renderHealth.getSnapshot);
     const renderDelayIssue = renderDiagnostics.find(issue => issue.code === 'render-delayed');
@@ -413,8 +340,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const [, setMappingNotice] = useState('');
     const [nativeReader, setNativeReader] = useState<EmphasisAvailability>(() => pdfNativeEmphasisAvailability());
     const [nativeAnnotation, setNativeAnnotation] = useState<EmphasisAvailability>(() => pdfNativeEmphasisAvailability());
-    // A remounted renderer may start on a different physical page. Retain the
-    // preference, but never borrow the previous surface's glyph eligibility.
     useLayoutEffect(() => { setNativeReader(pdfNativeEmphasisAvailability()); }, [mode, textSurface]);
     useLayoutEffect(() => { setNativeAnnotation(pdfNativeEmphasisAvailability()); }, [source, mode, isVisible]);
     const [textQuality, setTextQuality] = useState<'available' | 'partial' | 'none'>('partial');
@@ -423,8 +348,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         const b = binding.current, version = displayedVersion.current;
         if (!b || !version) return;
         const held = protectedRestore.current;
-        // A rollback must still find the other engine's original record. Only
-        // the app's navigation counters release it, never a layout/cleanup cause.
         if (held) {
             if (textNavigationRevision.current <= held.textRevision && readPdfNavigationRevision(file.path) <= held.originalRevision) return;
             protectedRestore.current = undefined;
@@ -506,32 +429,15 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         setTextSurface(false);
         publishLocation('user-navigation', false);
     }
-    // A failed attachment read is a tagged read-only role, not a failure to
-    // display the outer pages. Keep the viewer's own IO error separate.
     const [viewError, setViewError] = useState<string | null>(null);
     const error = mode === 'read' || readOnly ? viewError : null;
 
-    // Panes for background tabs mount hidden at session restore; don't touch
-    // the disk (or pdf.js) until the tab is first brought to the front.
     const activated = useActivated(isVisible);
 
-    // Standing this pane over its column, and what it freezes to once hidden:
-    // components/floatingSlot.ts, which the canvas float shares.
     const slotStyle = useFloatingSlot(isVisible, slotIndex, slotLeft, slotWidth);
 
-    // True from the moment the canvas starts exporting until that save lands.
-    // `isDirty` alone can't cover this: the export takes a moment, and the tab
-    // isn't marked dirty until it finishes — a window in which the viewer would
-    // happily read and show the pre-annotation file.
-    // The save landing is what pulls `dirty` back down — this file's own write,
-    // not some other tab's (the old global saveEpoch signal reloaded the view,
-    // and with it the scroll position, whenever ANY file autosaved).
     useEffect(() => { if (!isDirty) setFlushing(false); }, [isDirty]);
 
-    // Safety net: `flushing` normally clears when this file's save lands, but a
-    // save that THROWS leaves `dirty` set — which would leave "Applying
-    // annotations…" covering the document for the rest of the session. Failing
-    // back to showing the file (stale though it may be) beats hiding it forever.
     useEffect(() => {
         if (!flushing) return;
         const timer = setTimeout(() => {
@@ -541,9 +447,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         return () => clearTimeout(timer);
     }, [flushing]);
 
-    // Set when a write happened since the view was last read → it's stale and
-    // the next chance to re-read should take it (and only then; re-reading on
-    // every mode toggle would reload a document that hasn't changed).
     const viewStaleRef = useRef(false);
     useEffect(() => { if (isDirty) viewStaleRef.current = true; }, [isDirty]);
 
@@ -553,34 +456,18 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         setRetryBusy(true);
         viewStaleRef.current = true;
         setViewError(null);
-        // Reopening the outer renderer cannot revoke a tagged read-only role
-        // or turn a refused edit into an annotation capability.
         setRetryEpoch(epoch => epoch + 1);
     }, [annotationMode, isDirty, flushing, disk]);
 
-    /* Read the file's role only once annotating is actually wanted.
-       Every PDF can be annotated now, so this can no longer be gated on the
-       filename — and reading every PDF on open just to find out would be an
-       N-MB allocation and a disk read for documents opened to read. Sticky: it
-       stays true after the first switch, so toggling back to reading does not
-       throw away the original the canvas is drawing on. */
     const [needsSource, setNeedsSource] = useState(mode === 'edit');
     useEffect(() => { if (mode === 'edit') { ++returnEpoch.current; restoredRecord.current = true; setNeedsSource(true); textSurfaceRef.current = false; setTextSurface(false); } }, [mode]);
 
-    // Load once per file (once activated and wanted). A file already annotated
-    // here yields its pristine original and existing snapshot out of its
-    // attachments; any other PDF yields itself as the original.
-    //
-    // Recheck on each Annotate entry, but never mid-stroke/on autosave: replacing
-    // the source underneath a live canvas would re-rasterize every page.
     useEffect(() => {
         if (!activated || !needsSource || mode !== 'edit') return;
         let cancelled = false;
         const isCurrent = () => !cancelled && currentEntry.current === annotateEntry;
         let inspected: PdfRole | undefined;
         if (loadedSource) revokePdfRole(loadedSource.role);
-        // Graph/disk remounts lose component state, not the parked save data.
-        // A fresh preflight revokes that older source too, before any await.
         const parked = getPdfRenderData(file.path);
         if (parked) revokePdfSource(parked.original);
         setSource(null);
@@ -590,19 +477,11 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
             try {
                 if (!file.handle) return;
 
-                // Every PDF is annotatable now, in the file you opened — so the
-                // role is read by CONTENT for all of them, not just for files
-                // whose name says "(annotated)". Still only when annotating: a
-                // PDF opened to read is a wasted N-MB allocation and disk read
-                // otherwise, and the viewer does its own read below.
                 const handle = file.handle as FileSystemFileHandle;
                 const { bytes, version } = await readBytesVersioned(handle);
                 if (!isCurrent()) return;
                 const role = inspected = await readPdfRole(bytes, version.hash);
                 if (!isCurrent()) { revokePdfRole(role); return; }
-                // An external program can replace bytes while the worker is
-                // decoding an attachment. A fresh generation, not the earlier
-                // stat or observer hint, decides which source may be mounted.
                 const current = await readBytesVersioned(handle);
                 if (!isCurrent() || current.version.hash !== version.hash) {
                     revokePdfRole(role);
@@ -612,11 +491,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                     }
                     return;
                 }
-                // An agent/graph restore can start directly in edit mode, with
-                // no prior viewer read to seed App's versioned-write baseline.
                 const b = binding.current;
-                // Like the viewer, a role read must not silently adopt disk's
-                // baseline over an unsaved local revision or a held conflict.
                 if (b && isEditablePdfRole(role) && writeState.current.onAnnotationPreflight) {
                     writeState.current.onAnnotationPreflight(b.identity, { role, version: current.version });
                 } else if (!writeState.current.isDirty && !writeState.current.disk) {
@@ -642,16 +517,11 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     }, [activated, needsSource, mode, file.path, file.handle, file.name, readBytesVersioned, roleRetry, annotateEntry]);
 
     function focusReading() {
-        // Annotate is a board, Original the tiled surface, Text its scroller. The old '.tl-container' and
-        // '.pdf-viewer-scroll' named elements nothing renders any more, so opening or switching back to a PDF left the
-        // keyboard where it was (measured: on the tree row, or on <body> after a tab switch).
         const target = mode === 'edit' && !readOnly ? '.board-interaction-root' : textSurfaceRef.current ? '.pdf-reading-scroll' : '.pdf-tiled-surface';
         focusWait.current?.();
         const host = root.current, element = host?.querySelector<HTMLElement>(target);
         if (element) { element.focus({ preventScroll: true }); return; }
         if (!host) return;
-        // A PDF opened from the tree asks before its surface (a lazy chunk) has mounted: wait for it, briefly, and
-        // take the keyboard only if nobody has moved it meanwhile.
         const holder = document.activeElement;
         const stop = () => { observer.disconnect(); clearTimeout(timer); if (focusWait.current === stop) focusWait.current = null; };
         const observer = new MutationObserver(() => {
@@ -684,7 +554,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         if (textSurfaceRef.current) { const input = root.current?.querySelector<HTMLInputElement>('.pdf-reading-find input'); input?.focus(); input?.select(); }
         else { findMemory.open = true; viewerActions.current?.openFind(); }
     }
-    // The pane's ⋯ menu raises Print… (DocumentPane); Annotate prints from its Original view, so only reading offers it.
     const requestPrint = () => { if (mode === 'read') setPrint(value => value === 'closed' ? 'confirm' : value); };
     const actions = useRef({ showText, showOriginal, focusReading, findReading, capabilities, publishLocation, requestPrint });
     useLayoutEffect(() => { actions.current = { showText, showOriginal, focusReading, findReading, capabilities, publishLocation, requestPrint }; });
@@ -722,7 +591,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         if (!isVisible) { actions.current.publishLocation('layout'); flushPdfTextViewState(); }
     }, [isVisible]);
 
-    // A turn's picture over this pane (utils/pdfRotationStandIn.ts), from the press until the turned file is drawn sharp.
     const standIn = useSyncExternalStore(subscribePdfRotationStandIn,
         () => documentId ? pdfStandInFrame(documentId, root.current) : undefined, () => undefined);
     const standInShown = !!standIn && isVisible && mode === 'read' && !textSurface;
@@ -730,24 +598,17 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         const pane = root.current;
         if (documentId && pane && standIn && (!isVisible || mode !== 'read' || textSurface)) dropPdfStandInFrame(documentId, pane);
     }, [documentId, standIn, isVisible, mode, textSurface]);
-    // Annotate's own saves keep the byte generation (no rebind under the pen), so the generation Original opens still
-    // names the pages without that ink: the file looked unannotated here until the tab was reloaded (measured: a saved
-    // stroke absent from Original, present after reload). Once Original or Text is what shows the document, App moves
-    // the generation onto the saved file and the retained Annotate owner follows it while no board is on screen.
     const adoptInk = !!retainedState?.writtenAhead && requestedMode === 'read' && !turnHeld && isVisible && !!onAdoptSavedInk && !isDirty && !flushing && !disk;
     const adopting = useRef(false);
     useEffect(() => {
         const state = retainedSource, ahead = retainedState;
         if (!adoptInk || !onAdoptSavedInk || !state || !ahead || adopting.current) return;
         adopting.current = true;
-        // Advanced already by an earlier pass whose rebind did not start: only the owner has to follow.
         const advance = appSession && ahead.token.bytesGeneration < appSession.bytesGeneration ? Promise.resolve(true) : onAdoptSavedInk(file.path);
         void advance.then(advanced => advanced && getPdfInkSourceState(documentId) === state ? state.adoptWritten() : undefined)
             .catch(() => { /* The owner reports a failed rebind itself, as editing paused. */ })
             .finally(() => { adopting.current = false; });
     }, [adoptInk, onAdoptSavedInk, file.path, documentId, retainedSource, retainedState, appSession]);
-    // Bound to this pane's path once: a fresh arrow per render would re-render
-    // the memoized viewer on every keystroke anywhere in the app.
     const rotateThis = useCallback((delta: number, pageIndex?: number) => onRotate(file.path, delta, pageIndex), [onRotate, file.path]);
     const presentationOwner = useRef({ source: currentTiledSource, appSession, documentId });
     presentationOwner.current = { source: currentTiledSource, appSession, documentId };
@@ -773,16 +634,8 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         } else if (mode === 'edit' && !source && !retainedNative && annotateReplaced) {
             body = <PartFailureBox error={annotateReplaced} retry={() => setRoleRetry(value => value + 1)} what={<>Annotate for <strong>{file.name}</strong></>} />;
         } else if (mode === 'edit' && !source && !retainedNative) {
-            /* Waiting on the ROLE read, which is lazy — only annotating needs
-               it. Gating every branch on it (as this did) left a PDF opened for
-               reading stuck on "Loading PDF…" forever, waiting for a read that
-               no longer happens until you switch to annotate. Reading needs
-               `viewBytes` and nothing else; that is the branch further down. */
             body = <div className="pdf-pane-message is-waiting">Loading PDF…</div>;
         } else if (mode === 'edit' && source?.kind === 'notebookExport' && !nativeCandidate) {
-            // A notebook's export. Annotating it would fork a third document
-            // whose marks the notebook could neither see nor replace, so the
-            // pane hands you back to the notebook instead of drawing anything.
             body = (
                 <div className="pdf-pane-message">
                     This PDF was exported from <strong>{source.notebookSource.path}</strong>.
@@ -811,12 +664,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
             ) : <div className="pdf-pane-message" role="status">Preparing PDF annotations…</div>;
 
         } else if ((isDirty || flushing) && !disk && !lastSaveFailed) {
-            // Between leaving the canvas and the write landing (a few hundred ms)
-            // the file on disk still predates the last strokes. Say so rather than
-            // render a PDF that's missing the annotations the user just drew.
-            // Only while that write can still land: under a DiskBar nothing is written until the bar is answered, and a
-            // failed save is told by its own notice. Either way the pane shows the PDF, never this line for good: a failed
-            // save leaves the tab dirty, and the 15 s net below clears `flushing` only, so Original stayed behind it.
             body = <div className="pdf-pane-message">Applying annotations…</div>;
         } else if (!pdfRoute) {
             body = <div className="pdf-pane-message is-waiting" role="status">Loading PDF…</div>;
@@ -853,19 +700,12 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const versionMatchesReader = !!versionOwner && !!identityForVersion && versionOwner.vaultId === identityForVersion.vaultId &&
         versionOwner.vaultEpoch === identityForVersion.vaultEpoch && versionOwner.documentId === identityForVersion.documentId &&
         versionOwner.byteGeneration === identityForVersion.byteGeneration;
-    // One stable root for every state, so EditorPane can hide an off-screen pane
-    // with CSS instead of unmounting it (which would forget the document).
     return (
         <div
             ref={root}
             className={`pdf-pane${isVisible ? '' : ' pdf-pane-hidden'}`}
             style={slotStyle}
-            // The pane floats over its slot, so this is the ONLY thing that can
-            // report a click on a PDF as "focus this pane" — capture, so a
-            // scroll, a text selection or a click on the zoom pill all count.
             onPointerDownCapture={() => { if (isVisible) onFocusPane(file.path); }}
-            // Tab can enter another pane's page/find field without a pointer.
-            // Its header commands must then belong to that same document.
             onFocusCapture={() => { if (isVisible && !isFocused) onFocusPane(file.path); }}
             onKeyDown={event => {
                 if (!event.defaultPrevented && event.key === 'Escape' && !disk && pdfRebuild?.state === 'foreign') {
@@ -873,16 +713,12 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                 }
             }}
         >
-            {/* Print… is a row of the pane's ⋯ menu (printPdf above): a pill floating over the page under the
-                title read as a tooltip stuck there. */}
             {print !== 'closed' && <ConfirmDialog title="Open PDF for printing" confirmLabel={print === 'ready' ? 'Open PDF' : print === 'preparing' ? 'Preparing…' : 'Prepare PDF'}
                 onCancel={cancelPrint} onConfirm={() => { if (print === 'ready') void openPrint(); else void preparePrint(); }}>
                 {print === 'ready' ? 'Open the saved PDF in a new tab, then print from the browser’s PDF viewer. An encrypted PDF may ask for its password again.' : 'Any pending annotations will be saved first. The saved PDF opens in the browser’s PDF viewer for printing.'}
                 {printError && <> {printError}</>}
             </ConfirmDialog>}
             {(disk || pdfRebuild) && <DiskBar name={file.name} state={disk ?? pdfRebuild!.state} pdfRebuild={disk ? undefined : pdfRebuild} unsaved={isDirty} mineLost={diskMineLost} path={file.path} onAction={onDiskAction} />}
-            {/* Not again once chosen in this visit: unsaved ink or a DiskBar turns canConvertLegacy off, and the converted board
-                came up under a disabled "Convert legacy annotations…" offer for as long as either lasted. */}
             {legacyOffer && !legacyConversion && legacyConversionEntry !== annotateEntry && <div className="pdf-signed-notice" role="status" onContextMenu={event => event.preventDefault()}>
                 <span>These annotations use Classic format. The original PDF remains available to read.</span>
                 <button type="button" className="pdf-pane-action" disabled={!canConvertLegacy}
@@ -922,7 +758,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                 the viewer and lose the reading position. */}
             <div className="pdf-pane-body">
                 {body}
-                {/* Floating, not a bar: a bar would push the page view out from under the turn's picture. */}
                 {(annotateQueued || turnHeld && requestedMode === 'edit') && isVisible && <div className="pdf-turn-pending" role="status">Turning the pages… Annotate opens once they have turned.</div>}
                 {!fatalRenderIssue && !error && (documentRenderIssue || renderDelayIssue) && <div className="pdf-render-document-notice"><PdfRenderNotice
                     issue={(documentRenderIssue || renderDelayIssue)!} annotation={annotationMode} onRetry={retryRendering}
@@ -933,7 +768,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     );
 }
 
-/** Shows the canvas the PDF view drew for a turn, where its page area is. */
 function PdfRotationStandIn({ frame }: { frame: PdfStandInFrame }) {
     const host = useRef<HTMLDivElement>(null);
     useLayoutEffect(() => {
@@ -946,8 +780,4 @@ function PdfRotationStandIn({ frame }: { frame: PdfStandInFrame }) {
         style={{ left: frame.left, top: frame.top, width: frame.width, height: frame.height }} />;
 }
 
-// Memoized: EditorPane re-renders on every keystroke anywhere in the app and
-// maps over every open PDF tab, so without this each mounted pane re-ran on
-// every character typed in an unrelated note. Its props only change when this
-// tab's own mode/content/dirty state does.
 export default React.memo(PdfPane);

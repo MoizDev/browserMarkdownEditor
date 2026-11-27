@@ -40,8 +40,6 @@ export type NativeEditingToolOptions = Omit<BoardToolServicesOptions, 'surface' 
     };
 };
 
-/** One view's tools borrow the already-attached engine, camera, images and session.
- * DOM-bound controllers are recreated only with their real surface and released on detach. */
 export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 'services' | 'overlays' | 'mode' | 'a11y'> & {
     readonly toolOptions: NativeEditingToolOptions;
     readonly host: NativeCanvasHost;
@@ -49,7 +47,6 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     readonly clipboard: NativeClipboardService;
     onEmbedInfrastructure(value: NativeEmbedInfrastructure | null): void;
     bindClipboard(surface: HTMLElement): NativeClipboardBinding;
-    /** The view's own certificate: complete, sharp, of the live platform frame and PDF source. */
     certifyPresentation(presentation: PlatformPresentation): boolean;
 }) {
     if (options.toolOptions.runtime !== options.runtime || options.toolOptions.engine !== options.engine ||
@@ -107,7 +104,6 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
             binding = options.bindClipboard(surface);
             try {
                 if (!embed) {
-                // A real request (acquire or its release) changes which embeds are live barriers: repaint the board for it.
                 const port = createEmbedPresentationPort({ overlay, onError: options.onError, invalidate: () => options.engine.embedsChanged() });
                 try {
                     const controller = createNativeEmbedController({ runtime: options.runtime, token: options.token, presentation: port,
@@ -120,7 +116,6 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                 accessible = createBoardAccessibilityDom({ runtime: options.runtime, engine: options.engine, surface, overlay,
                     current: () => options.current(options.token), visible: options.visible,
                     schedule: callback => input.schedule(callback), reveal: id => { if (id) options.engine.focusNode(id); },
-                    // The accessibility surface has no point query, so its menu targets the selection, as before.
                     contextMenu: event => { const opener = event.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement;
                         if (opener instanceof HTMLElement) options.toolOptions.ui.contextMenu({ point: { x: event.clientX, y: event.clientY }, opener, locked: null }); },
                     error: options.onError });
@@ -217,7 +212,6 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     });
     return {
         ...input,
-        // The viewer owns the single facts producer; this branch only updates input mapping.
         onPresentation(value: PlatformPresentation | null) {
             input.onPresentation(value);
         },
@@ -233,8 +227,6 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
         },
         cancelViewWork(reason: string) {
             input.cancelViewWork(reason);
-            // A topology seal cancels contacts, not its connected DOM services. Real
-            // detach retires them below; hide or source loss revokes providers here.
             if (!options.visible() || !options.current(options.token)) { disposeTools(); disposeEmbeds(); }
         },
         attachInput(surface: HTMLElement, overlay: HTMLElement) {

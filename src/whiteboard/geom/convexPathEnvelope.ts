@@ -70,7 +70,6 @@ function* hull(points: readonly Vec2[]): Generator<void, Vec2[]> {
     return [...(yield* half(false)), ...(yield* half(true))];
 }
 
-/** Outer controls enclose the curve; the inner hull contains only certified fill points. */
 export function createConvexPathEnvelopeJob(path: readonly PathOp[], localToWorld: Affine, toleranceWorld: number,
     limits: ConvexPathEnvelopeLimits = {}) {
     const maxDepth = limits.maxDepth ?? 32, maxLeaves = limits.maxLeaves ?? 1024, maxPoints = limits.maxPoints ?? 16384,

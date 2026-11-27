@@ -3,7 +3,6 @@ import { RENDER_CONSTANTS as POLICY } from '../constants';
 import type { ByteLease, RectI, TextureHandle } from '../gfx/api';
 import type { RenderToken } from '../types';
 
-/** Content identity is path/camera independent (§5.1:455–484). sourceRole is consumer-owned. */
 export interface TileContentIdentity {
     readonly documentToken: string;
     readonly sourceRole: string;
@@ -23,7 +22,6 @@ export interface TileKey extends TileContentIdentity {
 
 export type TileState = 'absent' | 'queued' | 'running' | 'arrived' | 'resident' | 'cpu-only' | 'failed';
 
-/** Handles only: producers/caches own creation, reference counts, publication and teardown. */
 export interface TileRecord {
     key: TileKey;
     state: TileState;
@@ -54,7 +52,6 @@ export interface TileGrid {
     readonly rows: number;
 }
 
-/** Render quads use these shared edges, not independently reconstructed x+width (§5.5:539). */
 export interface TileEdges {
     readonly left: number;
     readonly top: number;
@@ -66,7 +63,6 @@ export interface RasterTile {
     readonly column: number;
     readonly row: number;
     readonly interior: Readonly<RectI>;
-    /** Unclipped raster quad. Never fit the last partial pixel into the shorter true page extent. */
     readonly edges: TileEdges;
     readonly clip: TileEdges;
     readonly textureUV: TileEdges;
@@ -88,7 +84,6 @@ export function validateTileRect(rect: Readonly<Rect>): void {
         (rect.height > 0 && rect.y + rect.height <= rect.y)) throw new RangeError('Invalid tile region');
 }
 
-/** Canonical four-field token, including the session serial; rename changes none of these. */
 export function renderTokenKey(token: RenderToken): string {
     return JSON.stringify([token.vaultEpoch, token.documentId, token.bytesGeneration, token.session]);
 }
@@ -99,7 +94,6 @@ export function sameTileContent(a: TileContentIdentity, b: TileContentIdentity):
         a.colourVersion === b.colourVersion && a.tileSchema === b.tileSchema;
 }
 
-/** A scalar is encoded by its actual Float64 bits, not decimal rounding (§5.2:500). */
 export function exactScale(scale: number): TileScale {
     positive(scale);
     const bits = new DataView(new ArrayBuffer(8));
@@ -114,7 +108,6 @@ export function levelScale(level: number): TileScale {
     return Object.freeze({ kind: 'level', level, scale, token: `level:${level}` });
 }
 
-/** Caller supplies the camera's validated range; the portable boundary rejects overflow/underflow. */
 export function movingScale(scale: number, previous?: TileScale): TileScale {
     positive(scale);
     if (previous?.kind === 'level') {
@@ -157,7 +150,6 @@ export function tileAt(grid: TileGrid, column: number, row: number): RasterTile 
         right: page.x + right / grid.scale.scale, bottom: page.y + bottom / grid.scale.scale,
     });
     if (!Object.values(edges).every(Number.isFinite)) throw new RangeError('Tile world edge overflow');
-    // Quad-to-texture mapping stays at exact r; clipping is separate (§5.2:496, §5.5:539–541).
     const clip = Object.freeze({ left: Math.max(page.x, edges.left), top: Math.max(page.y, edges.top),
         right: Math.min(page.x + page.width, edges.right), bottom: Math.min(page.y + page.height, edges.bottom) });
     const gutter = POLICY.tileGutterTexels;
@@ -171,7 +163,6 @@ export function tileAt(grid: TileGrid, column: number, row: number): RasterTile 
     });
 }
 
-/** Lazy viewport/prefetch-only enumeration; no whole-grid array, including for giant pages. */
 export function* intersectingTiles(grid: TileGrid, region: Readonly<Rect>): Generator<RasterTile> {
     validateTileRect(region);
     if (!region.width || !region.height || !grid.columns || !grid.rows) return;
@@ -182,7 +173,6 @@ export function* intersectingTiles(grid: TileGrid, region: Readonly<Rect>): Gene
     const bottom = Math.min(region.y + region.height, page.y + page.height);
     if (right <= left || bottom <= top) return;
     const step = POLICY.tileInteriorPixels;
-    // Expand one grid cell before exact edge filtering: inverse Float64 transforms can round inward.
     const firstColumn = Math.max(0, Math.floor((left - page.x) * grid.scale.scale / step) - 1);
     const firstRow = Math.max(0, Math.floor((top - page.y) * grid.scale.scale / step) - 1);
     const endColumn = Math.min(grid.columns, Math.ceil((right - page.x) * grid.scale.scale / step) + 1);
@@ -223,7 +213,6 @@ export function lowCoveragePlan(width: number, height: number, fitWidthZoom: num
     for (const value of [width, height, fitWidthZoom, nominalDpr]) positive(value);
     const tiledRegions = Math.max(width, height) / Math.min(width, height) > POLICY.lowPreviewMaxAspectRatio;
     const fitScale = fitWidthZoom * nominalDpr / POLICY.lowPreviewScaleDivisor;
-    // Vr-lead §5.4 ruling: a narrow page needs readable local tiles, not an empty 512-high preview.
     const scale = tiledRegions ? fitScale : Math.min(fitScale, POLICY.tileInteriorPixels / Math.max(width, height));
     positive(scale);
     return Object.freeze({
@@ -254,9 +243,6 @@ export interface ExpectedTileArrival {
     readonly reservationValid: boolean;
 }
 
-/** No camera epoch: equal content survives pan, zoom and rename (§5.1:480–484).
- * False means the producer/cache owner closes the unmatched transferable; this module owns none.
- */
 export function admitTileArrival(arrival: TileArrivalMetadata, expected: ExpectedTileArrival, current: TileContentIdentity): boolean {
     if (!sameTileContent(arrival.key, current) || tileKeyString(arrival.key) !== tileKeyString(expected.key) ||
         arrival.requestId !== expected.requestId || arrival.workerGeneration !== expected.workerGeneration ||

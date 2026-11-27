@@ -24,7 +24,6 @@ const same = (a: RenderToken, b: RenderToken) => a.vaultEpoch === b.vaultEpoch &
     a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 const stale = () => new DOMException('PDF version transition is stale', 'AbortError');
 
-/** The App slot, not an old pane or old source session, owns the mirror borrow. */
 export function pdfVersionTransitionOwner(documentId: string, source: Role): PdfVersionTransitionOwner {
     const identity = getSessionIdentity(documentId);
     if (!identity || (source !== 'outer' && source !== 'original')) throw stale();

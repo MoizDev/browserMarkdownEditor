@@ -1,4 +1,3 @@
-// Resource limits are admission ceilings, not promises that every ceiling can be reserved at once.
 export const SECURITY_LIMITS = Object.freeze({
     fileBytes: 1024 * 1024 * 1024,
     recordBytes: 64 * 1024 * 1024,
@@ -35,7 +34,6 @@ export type BudgetResult<T> = { readonly ok: true; readonly value: T }
 const refused = <T>(reason: string): BudgetResult<T> => ({ ok: false, reason });
 const integer = (value: number): boolean => Number.isSafeInteger(value) && value >= 0;
 
-/** Check before addition so a hostile length cannot overflow and wrap an admission counter. */
 export function checkedAdd(current: number, amount: number, limit: number): BudgetResult<number> {
     if (!integer(current) || !integer(amount) || !integer(limit) || current > limit || amount > limit - current) {
         return refused('Resource budget exceeded or invalid');
@@ -43,7 +41,6 @@ export function checkedAdd(current: number, amount: number, limit: number): Budg
     return { ok: true, value: current + amount };
 }
 
-/** Check before multiplication, including the platform's exact-integer arithmetic ceiling. */
 export function checkedMultiply(left: number, right: number, limit: number): BudgetResult<number> {
     if (!integer(left) || !integer(right) || !integer(limit) || (right !== 0 && left > Math.floor(limit / right))) {
         return refused('Resource budget exceeded or invalid');
@@ -58,7 +55,6 @@ export function checkMediaBytes(bytes: number, kind: 'raster' | 'video' | 'svg')
     return { ok: true, value: bytes };
 }
 
-/** Intrinsic dimensions must be known and admitted before invoking a browser decoder. */
 export function checkMediaDimensions(width: number, height: number): BudgetResult<{ readonly pixels: number; readonly rgbaBytes: number }> {
     if (!integer(width) || !integer(height) || width === 0 || height === 0) return refused('Media dimensions must be positive integers');
     const pixels = checkedMultiply(width, height, SECURITY_LIMITS.mediaPixels);
@@ -71,7 +67,6 @@ export function checkMediaDimensions(width: number, height: number): BudgetResul
 export type BudgetKey = 'encoded' | 'expanded' | 'records' | 'points' | 'pixels';
 export type ByteBudget = Readonly<Record<BudgetKey, number>>;
 
-/** One session/job owns one accumulator. A failed charge changes no counter. */
 export class BudgetCounter {
     private readonly used: Record<BudgetKey, number> = { encoded: 0, expanded: 0, records: 0, points: 0, pixels: 0 };
     constructor(private readonly limits: ByteBudget) {

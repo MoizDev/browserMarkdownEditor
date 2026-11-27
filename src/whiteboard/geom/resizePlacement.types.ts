@@ -11,7 +11,6 @@ export interface ResizePlacementServices {
     readonly geometry: ChangeGeometry;
     readonly kinds: KindResizeContext;
     capture(node: Readonly<Node>): ResizeTargetSnapshot;
-    /** Centre of projected resized geometry in node-local space; may inspect child ops. */
     projectedLocalCentre(snapshot: ResizeTargetSnapshot, ops: readonly Op[]): Vec2;
     isCurrent(): boolean;
 }

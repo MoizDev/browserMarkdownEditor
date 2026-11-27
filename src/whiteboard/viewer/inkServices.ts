@@ -16,16 +16,13 @@ export interface BoardInkServicesOptions {
     readonly samples: SampleStore;
     readonly token: InputToken;
     readonly current: (token: InputToken) => boolean;
-    /** A fresh read at pointer down; colour and width stay fixed for that stroke. */
     readonly style: () => Pick<UiBlock, 'next' | 'penWidth'>;
     readonly camera: CameraController;
-    /** PointerAcquisition has already applied this history to every RealSample. */
     readonly mappings: MappingHistory;
     readonly invalidate: () => void;
     readonly onError: (error: unknown) => void;
 }
 
-/** Concrete authoring services; sessionInkTool owns the one atomic transaction. */
 export function createBoardInkServices(options: BoardInkServicesOptions): Pick<BoardInputServices, 'ink' | 'continueInk'> {
     const { runtime, samples, camera } = options, session = runtime.session;
     if (session.samples !== samples) throw new TypeError('Ink requires the session-owned sample store');
@@ -58,13 +55,10 @@ export function createBoardInkServices(options: BoardInkServicesOptions): Pick<B
                 retainWet: ref => samples.retain(ref),
                 invalidate: options.invalidate,
                 error: options.onError,
-                // The acquired input and keyboard cursor already use shared-camera world coordinates.
                 mapPoint: (sample, out) => { out.x = sample.x - offset.x; out.y = sample.y - offset.y },
                 localToWorld: point => [1, 0, 0, 1, point.x + offset.x, point.y + offset.y],
                 planStroke(node, summary) {
                     if (session.doc.host.kind !== 'notebook' || !summary) return [];
-                    // Use only the sealed real-sample prefix, so a page grows only for sealed ink.
-                    // The curve's enclosure, not the sample box: a smooth stroke bulges past its lowest sample.
                     const [, y, , height] = summary.curveBounds;
                     const deepest = offset.y + node.y + y + height + node.width;
                     const growth = notebookGrowthOp(session.doc, deepest);

@@ -1,5 +1,3 @@
-/** Optional visual heuristic, not a reading-speed or language-support claim.
- * Coordinates always refer to the original, unnormalised UTF-16 string. */
 export const EMPHASIS_ALGORITHM = 'latin-prefix-v1' as const;
 export interface Utf16Range { from: number; to: number }
 export interface EmphasisRun {
@@ -51,7 +49,6 @@ function latinCluster(cluster: string): boolean {
     return !first;
 }
 
-/** All input ranges are half open. Invalid exclusions fail closed. */
 export function emphasisRanges(run: EmphasisRun): readonly Utf16Range[] {
     const { text } = run;
     if (!text || run.exclusions.some(r => !Number.isSafeInteger(r.from) || !Number.isSafeInteger(r.to)
@@ -81,9 +78,6 @@ export function emphasisRanges(run: EmphasisRun): readonly Utf16Range[] {
             if (raw.length > 16384 || PROTECTED.test(raw)) continue;
             let unicodeWorked = false;
             if (pair) {
-                // Segmenter may fail while iterating as well as constructing.
-                // Build the candidate list before emitting any ranges so the
-                // conservative fallback cannot duplicate partial work.
                 try {
                     const segments = [...pair.word.segment(raw)];
                     const candidates: { from: number; to: number; letters: Utf16Range[] }[] = [];
@@ -97,8 +91,6 @@ export function emphasisRanges(run: EmphasisRun): readonly Utf16Range[] {
                             i += 2;
                         }
                         const from = segment.index, to = from + word.length;
-                        // Do not detach a Latin prefix from an adjacent unknown
-                        // script/combining continuation that ICU split apart.
                         const previousUnit = raw.charCodeAt(from - 1);
                         const before = raw.slice(from - (previousUnit >= 0xdc00 && previousUnit <= 0xdfff ? 2 : 1), from);
                         const afterCode = raw.codePointAt(to);
@@ -132,8 +124,6 @@ export function emphasisRanges(run: EmphasisRun): readonly Utf16Range[] {
     return out.length ? out : EMPTY;
 }
 
-/** Map only real, equal-length fragments; never map through hidden syntax.
- * Fragment order is projection order. Invalid maps fail closed. */
 export function mapEmphasisRanges(ranges: readonly Utf16Range[], fragments: readonly SourceFragment[]): readonly Utf16Range[] {
     let previousRun = 0, previousSource = 0;
     for (const f of fragments) {

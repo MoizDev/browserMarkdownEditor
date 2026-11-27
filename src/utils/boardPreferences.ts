@@ -14,18 +14,13 @@ export interface BoardPreferences {
     enhancedA11yMode: boolean;
     inputMode: 'mouse' | 'trackpad' | null;
     isZoomDirectionInverted: boolean;
-    /** Edge scrolling while a move, marquee or resize drags against a board edge. A user preference, so it survives reloads. */
     edgeScrolling: boolean;
     locale: string;
     colorScheme: 'light' | 'dark' | 'system';
-    /** The navigation panel's minimap, shared by every board and tab. Collapsed until the person opens it. */
     minimapOpen: boolean;
-    /** The command palette's most recent rows, newest first (at most 20 are kept; the palette shows five). */
     paletteRecents: string[];
-    /** The sheet menu's list height once the person has dragged its grip; null follows the content. */
     sheetListHeight: number | null;
 }
-/** Bounds of the sheet list's pinned height: one row at least, and the page menu's auto-fit cap (800px). */
 export const SHEET_LIST_MIN_HEIGHT = 36;
 export const SHEET_LIST_MAX_HEIGHT = 800;
 const defaults: BoardPreferences = {
@@ -33,7 +28,6 @@ const defaults: BoardPreferences = {
     animationSpeed: 1, areKeyboardShortcutsEnabled: true, enhancedA11yMode: false,
     inputMode: null, isZoomDirectionInverted: false, edgeScrolling: true, locale: 'en', colorScheme: 'system', minimapOpen: false, paletteRecents: [], sheetListHeight: null,
 };
-// Until the user chooses, motion follows the OS: a reduced-motion request starts at speed 0 (camera.md F-A11Y-005).
 function osAnimationSpeed(): number {
     return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 1;
 }
@@ -71,8 +65,6 @@ export function getBoardPreferences(): BoardPreferences {
     if (current) return current;
     const saved = readJSON<unknown>(KEY, null);
     if (saved !== null) return current = clamp(object(saved).version === 1 ? saved : {});
-    // This is the only read of the old library record. Once the registered
-    // record exists, neither the new engine nor the bridge consults it again.
     const legacy = object(readJSON<unknown>(LEGACY_KEY, null));
     const user = object(legacy.user);
     current = clamp(user.colorScheme == null && typeof user.isDarkMode === 'boolean'
@@ -80,13 +72,10 @@ export function getBoardPreferences(): BoardPreferences {
     writeJSON(KEY, current);
     return current;
 }
-/** The inverted mouse-wheel zoom applies only while the Mouse input device is chosen: the Preferences row is disabled
- * in Auto and Trackpad, where a wheel turn is not a mouse zoom gesture. */
 export function mouseZoomInverted(): boolean {
     const preferences = getBoardPreferences();
     return preferences.inputMode === 'mouse' && preferences.isZoomDirectionInverted;
 }
-/** The Input device preference names the mouse: the wheel's plain turn zooms and Ctrl/Cmd+wheel pans, as tldraw does. */
 export function mouseInputChosen(): boolean {
     return getBoardPreferences().inputMode === 'mouse';
 }

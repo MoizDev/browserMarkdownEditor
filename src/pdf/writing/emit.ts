@@ -41,8 +41,6 @@ export function affine(value: Affine): Affine {
 export function multiply(a: Affine, b: Affine): Affine {
     return [a[0]*b[0]+a[2]*b[1], a[1]*b[0]+a[3]*b[1], a[0]*b[2]+a[2]*b[3], a[1]*b[2]+a[3]*b[3], a[0]*b[4]+a[2]*b[5]+a[4], a[1]*b[4]+a[3]*b[5]+a[5]];
 }
-// The group may be sheared or rotated. Inverse-transform the page corners into
-// its own space so the Form BBox never clips content that can reach the page.
 export function groupBounds(m: Affine, width: number, height: number): string {
     const det = m[0]*m[3] - m[1]*m[2];
     if (!Number.isFinite(det) || det === 0) throw new RangeError('A singular group transform cannot be exported');
@@ -123,8 +121,6 @@ export class Resources {
         return name;
     }
     async paper(width: number, height: number, stream: Stream): Promise<string> {
-        // The stream is deterministic and resource names are document-local, so
-        // identical paper lists share the same Form even if page objects differ.
         const key = `${n(width)} ${n(height)}\n${stream.content}\n${[...stream.used].join(' ')}`;
         let name = this.papers.get(key);
         if (!name) { name = await this.form(`0 0 ${n(width)} ${n(height)}`, stream, false); this.papers.set(key, name); }

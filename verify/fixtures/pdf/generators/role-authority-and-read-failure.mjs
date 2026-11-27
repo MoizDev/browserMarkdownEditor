@@ -1,4 +1,3 @@
-// GEN-25: synthetic portfolios and legacy serialized DATA, never editor code.
 import { PDFName, PDFString, PDFHexString } from 'pdf-lib';
 import { parseArgs } from '../../lib/cli.mjs';
 import { fixtureWriter, jsonBytes } from '../../lib/output.mjs';
@@ -16,9 +15,6 @@ const inner = await save(await document('inner', 200, 300, 'INNER ATTACHMENT'), 
 const pristine = await save(await document('pristine'), 'pristine');
 const encode = value => new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value));
 
-// Schema and a single hand-drawn stroke captured as data from the d53ae0a
-// production UI's real OPFS output. Its genuine PDF is a separate gate control;
-// these synthetic wrappers exercise damaged trees and reader failures repeatably.
 const schema = { schemaVersion: 2, sequences: {
   'com.tldraw.store': 5, 'com.tldraw.asset': 1, 'com.tldraw.camera': 1,
   'com.tldraw.document': 2, 'com.tldraw.instance': 26, 'com.tldraw.instance_page_state': 5,

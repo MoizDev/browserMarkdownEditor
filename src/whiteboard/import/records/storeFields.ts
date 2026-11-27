@@ -52,10 +52,6 @@ function uniqueField(text: string, start: number, name: string): FieldSpan | und
     }
     return found;
 }
-/** `parsed` is the store object JSON.parse already made of this text: a key written once takes its value from there, and only a
- * repeated key, whose earlier values that object erased, is parsed again from its own span. Parsed again whole, every record
- * existed twice beside the text: with this and the pictures' bytes no longer kept (media.ts), a 200 MB board of 55 photos
- * peaked at 239 MB of import-worker heap instead of 763 MB. */
 export function readStoreFields(text: string, parsed?: Readonly<Record<string, unknown>>): readonly (readonly [string, unknown])[] | null {
     const start = white(text, text.charCodeAt(0) === 0xfeff ? 1 : 0);
     const document = uniqueField(text, start, 'document');

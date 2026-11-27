@@ -17,8 +17,6 @@ import type { SceneMetadata } from './snapshotDoc';
 import type { SceneBounds, SceneOccupiedBounds, ScenePaintRequest, SceneSnapshot } from './types';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: scene pin, rendering token and model snapshot contracts;
-// independent immutable read-side assembly, no third-party source.
 function sameToken(a: RenderToken, b: RenderToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId
         && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
@@ -36,8 +34,6 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
     });
 }
 
-/** The record pin owns its retained node/sample versions until release. The materialized
- * document is a private read side, never a second session or mutation authority. */
 export function createSceneSnapshot(options: {
     token: RenderToken;
     revision: number;
@@ -45,9 +41,7 @@ export function createSceneSnapshot(options: {
     metadata: SceneMetadata;
     bounds?: ReadonlyMap<NodeId, SceneBounds>;
     occupiedBounds?: SceneOccupiedBounds | null;
-    /** Changed regions between an older revision and this pin; absent means unknown. */
     changes?: (from: number) => RegionChanges;
-    /** The node ids changed between an older revision and this pin; null or absent means unknown. */
     changedNodes?: (from: number) => ReadonlySet<string> | null;
     renderer?: { release(): void };
     prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder) => Promise<PaintNodeSource>;
@@ -74,8 +68,6 @@ export function createSceneSnapshot(options: {
         return promise;
     };
     const paintDocument = (): BoardDoc => { check(); return paintDoc ??= createPinnedPaintDoc(records, metadata, revision, check); };
-    // The index is built once per pinned sheet in bounded slices; every stream and frame of this pin
-    // then visits candidate ordinals only. A pending build is part of the pin, never a silent miss.
     const built: SceneCellIndex[] = [];
     const indexes = new Map<SheetId, Promise<SceneCellIndex>>(), ready = new Map<SheetId, SceneCellIndex>();
     const cooperateSlice = options.cooperate ?? yieldToHost;
@@ -83,8 +75,6 @@ export function createSceneSnapshot(options: {
         const index = new SceneCellIndex();
         try {
             const stack: Iterator<import('../model/nodes').Node>[] = [records.children(sheetId)[Symbol.iterator]()];
-            // A build is whole-sheet work, so its slices are sized for throughput: 2048 nodes or 4 ms, never
-            // one host task per 64 nodes, which would make a million-node index spend most of its time yielding.
             let visited = 0, started = performance.now();
             while (stack.length) {
                 check();
@@ -141,8 +131,6 @@ export function createSceneSnapshot(options: {
         ...(request.only ? { only: new Set(request.only) } : {}) });
     const regionChangesSince = (from: number): RegionChanges => options.changes ? options.changes(from) : FULL_REGION_CHANGES;
     const changedNodesSince = (from: number): ReadonlySet<string> | null => options.changedNodes ? options.changedNodes(from) : null;
-    /** Whether any sensitive node may paint inside `world`. Cell candidates answer it; a query too large
-     * for the grid tests each sensitive node's own bounds instead. Unknown answers true. */
     const sensitiveMayMeet = (index: SceneCellIndex, world: Readonly<Rect>, sensitive: ReadonlySet<string>): boolean => {
         if (!sensitive.size) return false;
         try {

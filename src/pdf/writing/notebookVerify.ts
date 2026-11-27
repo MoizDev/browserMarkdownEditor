@@ -10,7 +10,6 @@ import type { WriterOperations } from './protocol';
 
 type Verify = WriterOperations['writer.verifyNotebookOutput'];
 
-/** Runs only in a fresh writer-role instance, independently of the producer. */
 export async function verifyNativeNotebook(runtime: PdfiumRuntime, args: Verify['args'], context: WorkerContext): Promise<Verify['result']> {
     if (!(args.bytes instanceof ArrayBuffer) || args.bytes.byteLength < 8 || args.bytes.byteLength >= 0x80000000 ||
         !args.notebookSource || !validNotebookSourcePath(args.notebookSource.path)) throw new PdfEngineError('InvalidPdf', 'Invalid notebook output verification request');

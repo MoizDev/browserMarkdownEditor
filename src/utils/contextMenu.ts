@@ -1,35 +1,7 @@
-// The app's own right-click menu, as an external store.
-//
-// One menu is on screen at a time, so one module-level slot describes it. The
-// store shape (the same one utils/saveEpoch.ts uses) is not a stylistic choice
-// here — it is what satisfies three constraints that no prop could satisfy
-// together:
-//
-//   · src/editor/ raises this menu (a right-click inside a table cell) and knows
-//     nothing about React. A module function is reachable from a DOM handler
-//     hung off a CodeMirror widget; a prop is not.
-//   · A widget's handlers outlive the pane that built them, so anything they
-//     call must be STABLE FOR THE APP'S LIFE (AGENTS.md § Split tabs — "a state
-//     outliving its pane cuts a second way"). A module-level function is; a
-//     useCallback with dependencies is not, and a per-pane ref only hides the
-//     staleness.
-//   · FileExplorer is React.memo'd and TreeNode is memoized specifically so the
-//     file tree stops re-rendering while the user types. Threading a
-//     `contextTarget` prop through the recursion would re-render every visible
-//     row twice per menu — once on open and once on close — for a value only one
-//     row cares about. Importing this module adds no prop at all, and the "the
-//     menu is on me" highlight rides on the row's OWN local state, cleared by
-//     the `onClose` the row hands over with the request.
-
-/** One clickable row. */
 export interface ContextMenuCommand {
     kind: 'command';
-    /** Unique within one menu; React keys the row by it. */
     id: string;
     /**
-     * Rendered as a React text child, so a file NAME is safe here — the tab
-     * strip's ⌄ lists a pane's tabs by name, and the vault menu names vaults.
-     *
      * Never note CONTENTS and never markup: the menu is not an HTML sink and
      * must not become one by accident. This origin holds the vault's handle
      * with permission granted, so a hole here is read/write over the whole
@@ -39,61 +11,31 @@ export interface ContextMenuCommand {
     shortcut?: string;
     run: () => void | Promise<void>;
     danger?: boolean;
-    /**
-     * Set on EVERY command of a pick-one menu (the explorer's sort order): the
-     * menu then draws a check column, ✓ on the `true` row and blank on the
-     * rest, and the rows become `menuitemradio`s. Left undefined everywhere
-     * else, so an ordinary menu keeps no empty gutter.
-     */
     checked?: boolean;
     disabled?: boolean;
-    /** Becomes the row's tooltip. REQUIRED when `disabled` — a dead row that
-     *  says nothing is indistinguishable from a broken one, which is the rule
-     *  VaultMenu.messageFor states for the vault list and which holds here too. */
     reason?: string;
-    /** The menu stays open after this row runs, for a row that adjusts something the menu shows (zoom steps).
-     *  Its rows are then re-read through replaceContextMenuEntries, so their state stays true. */
     keepOpen?: boolean;
 }
 
-/** A row that opens a matrix size picker beside itself (Insert table…). */
 export interface ContextMenuGrid {
     kind: 'grid';
     id: string;
     label: string;
     maxRows: number;
     maxCols: number;
-    /** `rows` INCLUDES the header row and is always >= 2 — GFM needs a header
-     *  and at least one body row, or the table stops being a table. `cols` >= 1. */
     pick: (rows: number, cols: number) => void;
-    /** A grid row is disabled for the same reasons a command row is — Insert
-     *  table… in Reading mode is the one that exists — and it stays on screen
-     *  and says why rather than vanishing, exactly as a command does. */
     disabled?: boolean;
-    /** Becomes the row's tooltip. REQUIRED when `disabled`, for the reason
-     *  spelled out on ContextMenuCommand.reason. */
     reason?: string;
 }
 
-/**
- * A row that opens the folder icon/colour picker beside itself.
- *
- * Carries DATA, not a React node: this module is `src/utils/` and stays free of
- * React (a table cell in `src/editor/` raises this menu). `ContextMenu` decides
- * what a picker row renders, exactly as it does for the size grid.
- */
 export interface ContextMenuEntryStyle {
     kind: 'entry-style';
     id: string;
     label: string;
-    /** The folder's current look, so the picker opens showing it. */
     icon?: string;
     color?: string;
-    /** Applied live as the user picks, so a choice can be judged against the
-     *  real sidebar. `nodes` is the icon's artwork, which the caller stores. */
     pick: (icon: string | undefined, color: string | undefined, nodes?: unknown) => void;
     disabled?: boolean;
-    /** Becomes the row's tooltip. REQUIRED when `disabled` — see above. */
     reason?: string;
 }
 
@@ -102,12 +44,6 @@ export interface ContextMenuSeparator {
     id: string;
 }
 
-/**
- * Quiet text that is NOT a row: no click, no hover, no focus, skipped by the
- * arrow keys and not a menuitem to a screen reader (the agent panel's ⋯ opens
- * on the connected helper's version). `label` is a React text child, under
- * the same rule as ContextMenuCommand.label.
- */
 export interface ContextMenuLabel {
     kind: 'label';
     id: string;
@@ -133,60 +69,27 @@ export type ContextMenuEntry =
     | ContextMenuLabel;
 
 export interface ContextMenuRequest {
-    /** Viewport coordinates of the click the menu hangs from. */
     x: number;
     y: number;
     entries: ContextMenuEntry[];
-    /** The menu's aria-label. */
     label: string;
-    /**
-     * An extra class on the menu and on its flyouts, for a surface that wants its own look (the board's main
-     * menu). Only a stylesheet reads it: rows, labels and the store behave the same, and a request without it
-     * renders exactly as before.
-     */
     className?: string;
     lang?: string;
     dir?: 'ltr' | 'rtl';
-    /** Focus returns here on close, if it is still `isConnected`. */
     opener: HTMLElement | null;
-    /**
-     * The BUTTON that raised this menu, if a button did: pressing it again
-     * closes the menu instead of re-raising it, the way every native dropdown
-     * behaves. Distinct from `opener` because a right-click raiser hands over
-     * an opener too (the row or the editor, for the focus round trip) and a
-     * second right-click there must re-raise the menu at the new point, not
-     * toggle it away.
-     */
     anchor?: HTMLElement | null;
-    /** Hang the menu ABOVE its point (its bottom edge at `y`), as a popover over a bottom-edge control does. Flips only
-     *  when the menu would not fit above; a menu with room below still goes above. */
     above?: boolean;
-    /** Run exactly once when the menu closes, however it closed. Lets a raiser
-     *  clear its own "the menu is on me" highlight without App knowing anything
-     *  about it. */
     onClose?: () => void;
 }
 
 let current: ContextMenuRequest | null = null;
 const listeners = new Set<() => void>();
 
-/**
- * Returns whether the menu is now OPEN — `false` means the press toggled an
- * open menu shut, and a raiser that sets state around opening (a pressed look,
- * a highlight) must not set it.
- */
 export function openContextMenu(request: ContextMenuRequest): boolean {
-    // A second press on the button that raised the open menu closes it. The
-    // outside-pointerdown dismissal in ContextMenu exempts the anchor for the
-    // same reason: before both halves existed, that pointerdown closed the
-    // menu and the same press's click re-opened it — a one-frame flicker that
-    // left the menu on screen however often the button was pressed.
     if (current && request.anchor && current.anchor === request.anchor) {
         closeContextMenu();
         return false;
     }
-    // Replacing one menu with another still closes the first, so a raiser's
-    // highlight is never stranded on a row whose menu is long gone.
     const previous = current;
     current = request;
     if (previous && previous !== request) previous.onClose?.();
@@ -194,8 +97,6 @@ export function openContextMenu(request: ContextMenuRequest): boolean {
     return true;
 }
 
-/** Swaps the rows of the menu this anchor raised, without closing it or moving it. A keep-open menu whose rows depend on
- *  live state (zoom) calls this when that state changes; any other anchor, or no menu, changes nothing. */
 export function replaceContextMenuEntries(anchor: HTMLElement, entries: ContextMenuEntry[]): void {
     if (!current || current.anchor !== anchor) return;
     current = { ...current, entries };
@@ -218,8 +119,6 @@ export function subscribeContextMenu(listener: () => void): () => void {
     return () => { listeners.delete(listener); };
 }
 
-/** Identity-stable between changes, which is what useSyncExternalStore requires:
- *  two consecutive calls with nothing in between return the same object. */
 export function getContextMenu(): ContextMenuRequest | null {
     return current;
 }

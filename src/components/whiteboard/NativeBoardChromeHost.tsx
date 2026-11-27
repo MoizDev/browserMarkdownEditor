@@ -14,7 +14,6 @@ export interface NativeBoardChromeHostProps extends Omit<NativeBoardChromeProps,
     readonly lease: NativeViewLease;
     readonly confirm: (question: BoardQuestion) => Promise<boolean>;
     readonly canWrite: () => boolean;
-    /** One page's preview from the document's all-sheet print source (the notebook thumbnails). */
     readonly capturePage: (index: number, maxSide: number, signal: AbortSignal) => Promise<Blob>;
     readonly notebook?: {
         readonly inverted: boolean;
@@ -24,7 +23,6 @@ export interface NativeBoardChromeHostProps extends Omit<NativeBoardChromeProps,
     };
 }
 
-/** Logical sheet operations share the same session and owner-scoped confirmation as the chrome. */
 export function NativeBoardChromeHost({ lease, confirm, canWrite, capturePage, notebook, ...props }: NativeBoardChromeHostProps) {
     const lang = useSyncExternalStore(props.language.subscribe, props.language.getSnapshot, props.language.getSnapshot);
     const { currentOwner } = props;
@@ -39,8 +37,6 @@ export function NativeBoardChromeHost({ lease, confirm, canWrite, capturePage, n
     const stack = useMemo(() => boardPageStack(host), [host]);
     if (host.kind !== 'whiteboard' && (!notebook || !stack)) throw new Error('Paged board controls need the actual page view');
     const t = (key: string, values?: Readonly<Record<string, string | number>>) => translateBoard(lang.table, key, values);
-    // The paged bar belongs to the chrome column under the header, so it cannot cover the header's commands.
-    // A notebook's bar also edits paper; an annotated PDF's only navigates, and its physical pages are fixed.
     const paper = host.kind !== 'whiteboard' && notebook && stack ? <div className="board-paper-slot"><div className="board-paper-bar">
         {host.kind === 'notebook' ? <NotebookControls paper={host.paper} page={navigation.page} readOnly={props.readOnly} inverted={notebook.inverted}
             thumbnailsOpen={notebook.thumbnailsOpen} dir={lang.table.dir} t={t} changePaper={sheets.controls.changePaper}

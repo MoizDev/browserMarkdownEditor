@@ -1,7 +1,3 @@
-// React's view onto the two module stores the panel runs on: the connection
-// (utils/agentBridge.ts) and the chats (chatStore.ts). Both live outside React
-// so a run survives the panel being closed; see each file's header for why.
-
 import { useSyncExternalStore } from 'react';
 import { agentBridge } from '../../utils/agentBridge';
 import type { BridgeState } from '../../utils/agentBridge';
@@ -17,7 +13,6 @@ export function useChatState(): ChatStoreState {
     return useSyncExternalStore(chatStore.subscribe, chatStore.getState);
 }
 
-/** "xhigh" → "Extra high". The CLIs report bare ids. */
 export function effortLabel(effort: string): string {
     const known: Record<string, string> = {
         minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High',
@@ -28,7 +23,6 @@ export function effortLabel(effort: string): string {
 
 export type AgentHealth = 'ready' | 'logged-out' | 'unknown-login' | 'missing' | 'checking';
 
-/** One word for an agent's state — the selector's dot and its caption. */
 export function agentHealth(state: ChatStoreState, agent: AgentId): AgentHealth {
     const status = state.agents.find(a => a.agent === agent);
     if (!status) return 'checking';

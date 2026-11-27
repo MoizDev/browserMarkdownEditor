@@ -25,8 +25,6 @@ export function createPdfWorkerBroker(onFailure: (error: PdfEngineError) => void
                 const now = Date.now();
                 while (losses.length && losses[0] < now - 60_000) losses.shift();
                 losses.push(now);
-                // Keep the App-owned pool and its immutable document slots alive.
-                // Direct-port failures retry against one fresh frame, never stale factories.
                 if (losses.length >= 2) { broken = error; onFailure(error); }
             });
         }).finally(() => { pending = undefined; });
@@ -38,7 +36,6 @@ export function createPdfWorkerBroker(onFailure: (error: PdfEngineError) => void
             generations.set(key, generation);
             const broker = await acquire();
             if (disposed) throw new PdfEngineError('EngineBroken', 'PDF broker is closed');
-            // Render and writer identifiers occupy distinct broker namespaces.
             const id = workerId * 2 + (role === 'writer' ? 1 : 0);
             return broker.spawn(role, id, generation, controller.signal);
         },

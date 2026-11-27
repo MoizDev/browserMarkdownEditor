@@ -1,5 +1,3 @@
-// Four real-browser runs, serial under one run slot. A mutant is killed only
-// by its named observable failure after every fixture arm actually executed.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { resolve, join } from 'node:path';

@@ -7,8 +7,6 @@ import { installKeyboard } from '../input/keyboard';
 import { installWheel, TouchArbiter, type ContactPoint } from '../input/navigation';
 import { PAGE_GLIDE_MS } from './keyboardNavigation';
 
-// Provenance: shared camera, touch arbiter, keyboard and scheduler contracts;
-// independent read-only navigation adapter, no third-party source.
 export interface BoardNavigationOptions {
     readonly surface: HTMLElement;
     readonly camera: CameraController;
@@ -23,13 +21,9 @@ export interface BoardNavigationOptions {
     linkAt?(point: Point): (() => void) | null;
     contextMenu?(event: MouseEvent): void;
     readonly keyboard?: { modalOpen?(): boolean; editing?(): boolean; shortcutsEnabled?(): boolean;
-        /** A view row this input does not move the camera for itself (zoom, fit, sheets): the host runs it as its chrome does. */
         command?(id: string): boolean };
-    /** Preferences: whether the mouse wheel's zoom turn is inverted. */
     readonly invertMouseZoom?: () => boolean;
-    /** Preferences: the Input device choice (Mouse makes a plain wheel turn zoom). */
     readonly mouseWheel?: () => boolean;
-    /** The preference that turns board animation off: a Space page then jumps in one step. */
     readonly reducedMotion?: () => boolean;
 }
 interface Drag {
@@ -60,8 +54,6 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
     const contact = (event: PointerEvent): ContactPoint => ({ ...point(event.clientX, event.clientY), id: event.pointerId,
         time: event.timeStamp, width: event.width, height: event.height });
     const cancelMotion = () => options.platform()?.cancelMotion();
-    // Space+arrow pages one viewport. The glide is the shared scheduler's (as the editing path's is), never a loop of its own;
-    // the board's reduce-motion preference makes it one jump.
     const page = (direction: string): boolean => {
         const view = options.viewport();
         const delta = direction === 'ArrowLeft' ? { x: -view.width, y: 0 } : direction === 'ArrowRight' ? { x: view.width, y: 0 }

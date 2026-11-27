@@ -10,7 +10,6 @@ export interface PdfiumFileAccess {
     dispose(): void;
 }
 
-/** The source remains in the runtime's bounded byte cache, not the WASM heap. */
 export function createPdfiumFileAccess(runtime: PdfiumRuntime, source: ByteSource): PdfiumFileAccess {
     if (!Number.isSafeInteger(source.size) || source.size < 0 || source.size >= 0x80000000) {
         throw new PdfEngineError('ResourceLimit', 'PDF source exceeds the supported byte range');

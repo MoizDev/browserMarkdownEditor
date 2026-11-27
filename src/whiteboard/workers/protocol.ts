@@ -1,6 +1,5 @@
 import type { WorkerContext } from '../../platform/workers';
 
-/** Identity is checked at both ends; revision is the exact document revision the job saw. */
 export interface BoardJobIdentity {
     readonly session: string;
     readonly epoch: number;
@@ -27,7 +26,6 @@ export function boardEnvelope(value: unknown): value is BoardWorkerEnvelope<unkn
         && Object.hasOwn(value, 'payload');
 }
 
-/** A worker's operation only sees its payload; replies and events always carry the original token. */
 export function boardHandlers(handlers: Readonly<Record<string, BoardWorkerHandler>>): Record<string, BoardWorkerHandler> {
     const wrapped: Record<string, BoardWorkerHandler> = Object.create(null) as Record<string, BoardWorkerHandler>;
     for (const [name, handler] of Object.entries(handlers)) {
@@ -50,7 +48,6 @@ export function boardHandlers(handlers: Readonly<Record<string, BoardWorkerHandl
     return wrapped;
 }
 
-/** WorkerHost also calls this for results that arrive after cancellation or a deadline. */
 export function closeWorkerResult(value: unknown): void {
     const pending: unknown[] = [value];
     const seen = new Set<object>();

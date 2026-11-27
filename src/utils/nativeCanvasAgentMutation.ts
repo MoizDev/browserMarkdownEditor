@@ -3,7 +3,6 @@ import type { VaultToolHost } from '../types/vaultAgent';
 import { readCanvasViewPos } from './canvasViewState';
 import { createNativeAgentMutation } from '../whiteboard/host/nativeAgentMutation';
 
-/** Session-owned editing does not require a mounted pane, input router or camera. */
 export async function applyNativeCanvasOperations(options: {
     readonly deps: AgentHostDeps;
     readonly path: string;
@@ -22,9 +21,6 @@ export async function applyNativeCanvasOperations(options: {
     if (!tab || (loaded !== 'drawing' && loaded !== 'notebook' && loaded !== 'pdf')) {
         throw new DOMException('Canvas representation changed', 'AbortError');
     }
-    // Every loaded canvas is admitted by its App-owned session. An old-format board's session is read-only for life, so
-    // its editing admission refuses with the reason the agent passes on (ask the user for an editable copy); a refusal
-    // there throws, and no second editor takes over.
     if (!deps.ensureNativeAgentRuntime) throw new Error('Native canvas source acquisition is unavailable');
     const source = await deps.ensureNativeAgentRuntime(path, AbortSignal.any([signal, AbortSignal.timeout(15_000)]));
     check();
@@ -38,8 +34,6 @@ export async function applyNativeCanvasOperations(options: {
         writeBlock: () => source.writeBlockReason() ?? (source.canWrite() ? null : 'The native canvas source is not currently writable.'),
         sheet: () => sheet, page: () => page,
     } });
-    // The genuine C2 facade is installed before lifting only the temporary viewer seal.
-    // Immutable C5/D10/emergency seals and the App's disk baseline remain authoritative.
     try {
         source.activateEditing();
         check();
@@ -47,8 +41,6 @@ export async function applyNativeCanvasOperations(options: {
         return await mutation.apply(ops, { signal, deadlineMs: 30_000 });
     }
     finally {
-        // Only this request's owned work retires; the canonical document/job
-        // authority must keep serving the next tool, view and autosave.
         await mutation.retire();
     }
 }

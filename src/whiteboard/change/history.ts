@@ -70,7 +70,6 @@ function inverse(entries: readonly HistoryOperation[]): Op[] {
     return result;
 }
 
-/** One controller belongs to one BoardSession and is never persisted. */
 export class History implements HistoryController {
     private readonly undoStack: Step[] = [];
     private readonly redoStack: Step[] = [];

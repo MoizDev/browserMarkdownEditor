@@ -1,5 +1,3 @@
-// Shared held-target browser driver for G2's equivalent asks and G3's geometry.
-// Transition/reference completion is required before acceptance; no timing claim.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -128,8 +126,6 @@ try {
             const held = await attributeCanvases(await snapshotPdf(page), prepared, origin);
             const heldWorks = held.canvases.filter(canvas => canvas.firstSequence > mark && canvas.attribution.role === 'work');
             row.heldWorkCanvases = heldWorks;
-            // Bind/page holds can precede canvas allocation. A render/verify
-            // hold must already own exactly one work canvas in this one-page UI.
             await check('held work is bounded', true, heldWorks.length <= configuration.expectedWork);
             await page.evaluate(() => window.__d1Outside.release());
             await page.waitForFunction(mark => window.__d1Outside.snapshot().events.some(event => event.sequence > mark && event.op === 'displayBlit' && event.page === 0), mark);
@@ -157,8 +153,6 @@ try {
             row.reference = await settledReference({ browser, tools, prepared: reference, fixture, configuration, port: portNumber(String(port + 1)) });
             const image = pixels => ({ sha256: pixels.sha256, width: pixels.width, height: pixels.height, css: pixels.css, emphasis: pixels.emphasis, page: pixels.page });
             await check('final pixels equal the independent unheld profile', image(row.reference.pixels), image(row.finalPixels));
-            // The named baseline failure is a discarded covering target. An
-            // incompatible ask deliberately allocates exactly one replacement.
             await check(configuration.expectedWork === 1 ? 'equivalent requests keep one render work canvas' : 'incompatible ask replaces work once', configuration.expectedWork, work.length);
             await check('all render work backing was released', 0, work.reduce((bytes, canvas) => bytes + canvas.width * canvas.height * 4, 0));
             await page.getByRole('button', { name: 'Close fixture.pdf', exact: true }).click();

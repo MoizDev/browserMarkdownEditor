@@ -10,16 +10,12 @@ import { SessionScene } from '../scene/sessionScene';
 import type { SelectionSnapshot } from '../selection';
 import type { NativeExportRuntime } from './nativeExport';
 
-/** A closed board's canonical read parts, owned for one request: the immutable document, its own render
- * services and a real scene over it, and the media it verifiably admitted. No session, camera or live store. */
 export interface ClosedBoardSource {
-    /** The narrowed parts the export producer and its capture snapshot read. */
     readonly runtime: NativeExportRuntime;
     readonly samples: SampleStore;
     dispose(): void;
 }
 
-/** Each embedded media is verified against its document entry before it enters the store, as a live admission does. */
 export async function createClosedBoardSource(options: {
     readonly doc: BoardDoc;
     readonly samples: SampleStore;
@@ -59,7 +55,6 @@ export async function createClosedBoardSource(options: {
             retainRenderer: render.retainRenderer, invalidate() {}, onError: options.onError, signal });
         const first: SheetId | undefined = doc.sheetOrder[0]?.id;
         if (!first) throw new Error('Closed board has no sheet');
-        // A read has no selection: the snapshot names the first sheet and nothing selected.
         const snapshot: SelectionSnapshot = { sheet: first, focus: first satisfies ParentId, selected: [], active: null };
         const runtime: NativeExportRuntime = Object.freeze({
             session: Object.freeze({ doc, owner: Object.freeze({ documentId: token.documentId, session: token.session }) }),

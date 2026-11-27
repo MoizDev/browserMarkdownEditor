@@ -9,8 +9,6 @@ import type { PathOp, Vec2 } from './path';
 export type FillVisibilityResult = Readonly<{ status: 'pending' | 'visible' | 'unresolved' }> | Readonly<{ status: 'uncertain'; reason: string }>;
 const PENDING: FillVisibilityResult = Object.freeze({ status: 'pending' });
 
-/** A bounded grid can prove a compound nonzero fill is visible; failure to
- * find a witness never proves that the fill is empty. */
 export function createFillVisibilityWitnessJob(paths: readonly (readonly PathOp[])[], matrix: Affine, frames: readonly PointClipContour[], options: {
     readonly maxCommands?: number; readonly maxSamples?: number; readonly maxWork?: number;
 } = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): FillVisibilityResult; cancel(): void } {

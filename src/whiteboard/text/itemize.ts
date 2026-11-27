@@ -20,7 +20,6 @@ export interface ItemizedBlock {
 
 const cache = new WeakMap<Block, Omit<ItemizedBlock, 'offset'>>();
 
-/** Offsets in each item and breakpoint are block-relative, not projection-relative. */
 export function itemizeBlock(block: Block, offset: number): ItemizedBlock {
     const cached = cache.get(block);
     if (cached) return { ...cached, offset };
@@ -44,13 +43,11 @@ export function itemizeBlock(block: Block, offset: number): ItemizedBlock {
             }
             items.push({ from: cursor, to, level, marks: run.marks });
             cursor = to;
-            // A run boundary can split a UTF-16 pair; preserve both parts' source ranges.
             if (bidi.characters[charIndex - 1].end > to) charIndex--;
         }
         runStart = end;
     }
     const result = { text, bidi, items, breaks: lineBreaks(text), graphemes: graphemeBoundaries(text) };
-    // Huge edited blocks can be retained by history; caching each version would multiply their memory.
     if (text.length <= 16_384) cache.set(block, result);
     return { ...result, offset };
 }

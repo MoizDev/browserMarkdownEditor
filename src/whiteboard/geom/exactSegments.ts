@@ -5,17 +5,14 @@ export function compareExactCoordinate(a: ExactPoint, b: ExactPoint, axis: 'x' |
     const value = dyadicSubtract(dyadicMultiply(a[axis], b.w), dyadicMultiply(b[axis], a.w)).n;
     return value < 0n ? -1 : value > 0n ? 1 : 0;
 }
-/** Exact closed-segment membership on homogeneous dyadic points. */
 export function exactPointOnSegment(point: ExactPoint, a: ExactPoint, b: ExactPoint): boolean {
     if (sameExactPoint(a, b)) return sameExactPoint(point, a);
     return exactSide(exactLineBetween(a, b), point) === 0
         && compareExactCoordinate(point, a, 'x') * compareExactCoordinate(point, b, 'x') <= 0
         && compareExactCoordinate(point, a, 'y') * compareExactCoordinate(point, b, 'y') <= 0;
 }
-/** Exact closed-segment intersection, including tangency, overlap and points. */
 export type ExactSegmentIntersection = Readonly<{ kind: 'none' }> | Readonly<{ kind: 'point'; point: ExactPoint }>
     | Readonly<{ kind: 'overlap'; from: ExactPoint; to: ExactPoint }>;
-/** Closed-segment intersection with a homogeneous rational witness. */
 export function exactSegmentIntersection(a: ExactPoint, b: ExactPoint, c: ExactPoint, d: ExactPoint): ExactSegmentIntersection {
     if (sameExactPoint(a, b)) return exactPointOnSegment(a, c, d) ? { kind: 'point', point: a } : { kind: 'none' };
     if (sameExactPoint(c, d)) return exactPointOnSegment(c, a, b) ? { kind: 'point', point: c } : { kind: 'none' };

@@ -20,7 +20,6 @@ import { loadChunk } from '../platform/chunkLoad';
 import { oldBoardReadOnlyReason } from '../utils/oldBoards';
 import { DISK_CHANGED_BOARD_NOTICE, DISK_DELETED_BOARD_NOTICE } from '../utils/diskHeldNotice';
 
-/** What the native-canvas host hook reads from App. */
 export interface UseNativeCanvasHostDeps {
   getVaultActivation: FileSystemContextValue['getVaultActivation'];
   tabsRef: React.RefObject<OpenTab[]>;
@@ -43,7 +42,6 @@ export interface UseNativeCanvasHostDeps {
   readLegacyBoardAsset: FileSystemContextValue['readLegacyBoardAsset'];
   putBoardAsset: FileSystemContextValue['putBoardAsset'];
   keepConversionBackup: FileSystemContextValue['keepConversionBackup'];
-  /** The App side of "Make an editable copy" (useEditableCopy), composed after this hook. */
   editableCopyRef: React.RefObject<NativeCanvasHost['makeEditableCopy'] | null>;
 }
 
@@ -147,8 +145,6 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
         const baseline = getBaseline(tab.id);
         const snapshot = await readFileSnapshot(tab.file.handle as FileSystemFileHandle, signal);
         try {
-          // getFile() is bounded by readFileSnapshot; the bytes behind it are not, and a cloud placeholder can answer one and
-          // never deliver the other, which left the board on "Preparing canvas…" for good (lane E, injected never-settling read).
           const bytes = await withinFileDeadline(new Response(snapshot.blob.stream()).blob(), identity.name, byteReadMs(snapshot.blob.size));
           const version = await snapshot.fingerprint(signal);
           signal.throwIfAborted();
@@ -256,7 +252,6 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
         return true;
       },
       async keepConversionBackup(identity, original, digest, signal) {
-        // An old drawing or notebook is never converted, so nothing of one is ever "backed up" before an overwrite.
         if (identity.kind !== 'pdfInk') throw new Error('Only an annotated PDF is converted in place.');
         const tab = current(identity);
         if (!tab) throw new DOMException('Canvas session ended', 'AbortError');

@@ -13,13 +13,11 @@ const licences = {
 const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const assetDir = () => resolve(root, process.env.BME_PDF_FONT_DIR || 'vendor/pdf-fonts');
 
-/** Only pinned filenames can be requested; never expose the supply directory itself. */
 export function pdfFontAssets(): Plugin {
     let emit = false;
     return {
         name: 'pdf-font-assets',
         config(_config, env) {
-            // The engine ships in every build (build/pdfiumAssets.ts), so its fallback fonts do too.
             emit = env.command === 'build';
         },
         configResolved(config) {

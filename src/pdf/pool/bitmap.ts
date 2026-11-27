@@ -2,7 +2,6 @@ import type { PdfPageBitmapOptions, PdfPoolDocument } from './types';
 
 let nextRequest = 1;
 
-/** Compose exact-scale tile interiors; the one-pixel apron is never drawn twice. */
 export async function renderPdfPageBitmap(document: PdfPoolDocument, page: number, scale: number,
     options: PdfPageBitmapOptions): Promise<ImageBitmap> {
     options.signal?.throwIfAborted();

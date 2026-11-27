@@ -8,7 +8,6 @@ import { newIndexSession } from './session';
 import { notifySearchChanges } from '../../utils/searchChanges';
 import type { SearchBatch } from '../../utils/searchController';
 import type { MatchAnswer } from '../../utils/agentMatcher/types';
-// It imports shared chunks and starts the matcher worker, so it cannot be kept (platform/workers/script.ts).
 const indexWorker = workerScript(indexWorkerUrl, { keep: false });
 
 export interface SearchBuffer { path: string; revision: number; text: string }
@@ -22,7 +21,6 @@ export interface IndexTreeDelta {
 const control = { priority: 1, cpu: 'light' } as const;
 const background = { priority: 3 } as const;
 
-/** One owner per vault activation; on worker recovery replay the latest tree. */
 export class VaultIndexClient {
     private readonly worker: WorkerClient;
     private readonly stopForeground: () => void;
@@ -68,9 +66,6 @@ export class VaultIndexClient {
                 if (this.mediaAssets) await bootstrap.request('mediaAssets', { session, entries: this.mediaAssets }, control);
                 for (const [path, value] of this.overlays) await bootstrap.request('overlay', { session, path, rev: value.rev, text: value.text }, control);
                 queueMicrotask(() => { if (!this.disposed) { void this.sweep('open').catch(() => {}); void this.refreshMedia(this.mediaEpoch); } });
-                // A worker that failed and was revived by a later request (platform/workers/client.ts) is working again:
-                // unsaid, the sidebar kept "Search index unavailable. Retry" over a search that answered, and a second
-                // failure was never reported at all.
                 if (this.failedReported) {
                     this.failedReported = false;
                     this.onProblem({ session, kind: 'available' });
@@ -124,7 +119,6 @@ export class VaultIndexClient {
     private reportFailure(error: unknown): void {
         if (!this.disposed && !this.failedReported && error instanceof Error && error.name === 'WorkerFailed') {
             this.failedReported = true;
-            // Its script is gone from the server (a newer version replaced this one): Retry cannot fetch it, a reload can.
             this.onProblem({ session: this.session, kind: isAppReplaced(error) ? 'replaced' : 'unavailable', detail: error.message });
         }
     }
@@ -237,7 +231,6 @@ export class VaultIndexClient {
                     batch = await this.worker.request<typeof batch>(
                         'sweepBatch', { session: this.session, start, treeGen, reason }, background);
                 } catch (error) {
-                    // A newer request must not inherit the failure of the one it superseded.
                     if (!this.disposed && error instanceof Error && error.name === 'WorkerCrashed') {
                         await this.worker.request('ready', {}, background);
                         start = 0; treeGen = this.treeGen; continue;
@@ -338,8 +331,6 @@ export class VaultIndexClient {
         this.markMediaDirty();
         this.mediaListeners.clear();
         this.stopForeground();
-        // The worker owns the write-behind batch and releases its vault lock
-        // only after the batch has committed.
         void this.worker.request('close', { session: this.session }, control)
             .catch(() => {}).finally(() => this.worker.dispose());
     }

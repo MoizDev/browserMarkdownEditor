@@ -5,11 +5,8 @@ import type { PdfTextAnchor, PdfTextPage, PdfTextReader, PdfTextReaderOptions } 
 import { resolvePdfTextAnchor } from '../../utils/pdfTextAnchors';
 import type { PdfTextAnchorOptions, PdfTextAnchorResolution } from '../../utils/pdfTextAnchors';
 
-/** A document-bound adapter around page.text. The pool owns deduplication,
- * cancellation and priority promotion across all its callers. */
 export interface PdfPoolTextSource {
     readonly generation: number;
-    /** Raw immutable docKey plus extraction schema, not a path. */
     readonly cacheKey?: string;
     readonly fontEpoch?: () => number;
     readonly subscribeFontEpoch?: (listener: () => void) => () => void;
@@ -19,7 +16,6 @@ export interface PdfPoolTextSource {
 }
 const abort = () => new DOMException('PDF text operation cancelled', 'AbortError');
 
-/** The Text and Original surfaces share this reader and its one find index. */
 export function createPdfPoolTextReader(source: PdfPoolTextSource, options: PdfTextReaderOptions): PdfTextReader {
     const lifetime = new AbortController();
     let visibility = new AbortController(), profile = new AbortController(), visible = true, hiddenTimer: ReturnType<typeof setTimeout> | undefined;

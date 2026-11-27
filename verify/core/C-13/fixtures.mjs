@@ -1,4 +1,3 @@
-// Fixture expectations, not a parser: every case is opened through the real app.
 const prefixes = {
     plain: ['', '', ''],
     indent: ['   ', '   ', '   '],
@@ -61,7 +60,6 @@ export const fixtures = [
     note('TLMismatchDiagram', { marker: '~', lang: 'mermaid', body: ['flowchart LR', ' A --> B'], closeMarker: '`', closed: false }),
 ];
 
-/** Separate heavy companion: initial coverage is observed via C9, never inferred from elapsed time. */
 export function partialFixture() {
     const item = note('PartialTilde', { marker: '~' });
     const intro = Array.from({ length: 50000 }, (_, i) => `Paragraph ${i} has **bold** words and ordinary text.`).join('\n\n');

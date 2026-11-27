@@ -26,9 +26,6 @@ export interface NotebookTransform<T extends TransformPreview> {
     release(): void;
 }
 
-/** Page growth and actual-geometry page ownership are staged with the move.
- * Existing page-local coordinates are converted through their world poses only
- * after the grown stack has been established, never by moving the content. */
 export async function prepareNotebookTransform<T extends TransformPreview>(options: NotebookTransformOptions<T>): Promise<NotebookTransform<T> | null> {
     const { runtime, preview, signal } = options, session = runtime.session, doc = session.doc;
     if (doc.host.kind !== 'notebook' || !preview.ops.length) return null;

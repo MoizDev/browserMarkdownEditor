@@ -33,25 +33,15 @@ export interface ScenePaintRequest {
     readonly sheetId: SheetId;
     readonly page?: number;
     readonly world?: Readonly<Rect>;
-    /** The part of `world` on screen. Picture tiles are decoded for it and a ring around it, not for the frame's whole margin
-     * (a 4000x3000 picture's twelve level-0 tiles, 48 MB, for a view that shows four); a camera change re-plans the frame. */
     readonly viewWorld?: Readonly<Rect>;
     readonly theme: 'light' | 'dark';
     readonly includeWet?: boolean;
-    /** Frozen world-to-device scale; absent for non-raster callers without a capture scale. */
     readonly deviceScale?: number;
-    /** On a device, where `deviceScale` is the top of the view's band: the view's own scale at the request. An axis-aligned
-     * picture's tiles are planned at it, as the GPU composer plans them (picture tiles, tilePlan.ts). */
     readonly exactScale?: number;
     readonly sensitiveNodes?: ReadonlySet<NodeId>;
     readonly allowInkLod?: boolean;
-    /** Strokes realise at the request's ink band (its device scale's band) with no level of detail: a view stage and the scene
-     * stage at one band key one stroke the same, so a stage switch re-keys nothing. The band moves only at a crossing. */
     readonly scenePrecision?: boolean;
-    /** A band crossing during a live zoom: the device scale the view held before it. A stroke whose wanted band is not built draws
-     * its previous band's geometry (counted as a band miss) while the wanted band builds in the background. Absent at rest. */
     readonly previousDeviceScale?: number;
-    /** Only these nodes are resolved and emitted; a live-only frame carries no other geometry. */
     readonly only?: ReadonlySet<NodeId>;
 }
 
@@ -62,28 +52,19 @@ export interface ScenePaintBinding {
     readonly retainRenderer?: () => { release(): void };
 }
 
-/** Pin is synchronous. Its canonical values/geometry/sample leases never follow later edits.
- * paintSource may await exact offscreen layout/media, but only for this captured revision.
- * isCurrent on the resulting source means "this lease remains valid", NOT live-doc equality.
- */
 export interface SceneSnapshot {
-    /** The immutable root is still owned, independently of any exhausted paint cursor. */
     isCurrent(): boolean;
     readonly token: RenderToken;
     readonly revision: number;
     readonly layout: Readonly<PageStack> | null;
     readonly nodeCount: number;
-    /** Null means empty or not conservatively known; nodeCount distinguishes an empty pin. */
     readonly occupiedBounds: SceneOccupiedBounds | null;
     worldBounds(id: NodeId): SceneBounds | null;
-    /** Pinned immutable row and metadata reads; neither scans the document. */
     readNodeNow(id: NodeId): Node | undefined;
     metadataNow(): SceneMetadata;
-    /** Immutable read side owned by this pin; never a mutation authority. */
     readDocument(signal?: AbortSignal): Promise<BoardDoc>;
     paintSource(request: ScenePaintRequest, signal?: AbortSignal): Promise<PaintNodeSource>;
     paintStream?(request: ScenePaintRequest, signal?: AbortSignal, resolved?: ResolvedNodeCache | null): Promise<ScenePaintNodeStream>;
-    /** Upper-bound node count of a built sheet index over `world`; null while that index is still building. */
     countCandidates?(sheetId: SheetId, world: Readonly<Rect>): number | null;
     release(): void | Promise<void>;
 }
@@ -92,13 +73,9 @@ export interface SceneSpatial {
     readonly layout: Readonly<PageStack> | null;
     worldBounds(id: NodeId): SceneBounds | null;
     ensureExactBounds(id: NodeId, signal?: AbortSignal): Promise<SceneBounds | null>;
-    /** Exact bounds for many nodes with one scene publication (see SessionScene.ensureExactBoundsMany). */
     ensureExactBoundsMany(ids: readonly NodeId[], signal?: AbortSignal): Promise<ReadonlyMap<NodeId, SceneBounds | null>>;
     query(options: SceneQueryOptions, output?: QueryBuffer, visitor?: NearestVisitor): SpatialQuery;
-    /** Adapter for GE-3 pick: resume(deadline/maxVisits, visit(ref)), same generation guards. */
     spatialCursor(options: SceneQueryOptions): SpatialCursor;
-    /** Future snapshots only; the host supplies an actual replacement-source binding. */
     setPaintBinding?(binding: ScenePaintBinding): void;
-    /** Includes swept tests: pass the conservative swept world AABB, then exact narrow phase. */
     pin(): SceneSnapshot;
 }

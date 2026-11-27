@@ -1,8 +1,6 @@
 import type { PageGeometry } from '../../platform/types';
 import type { PdfPoolDocument, PdfRequestOptions } from '../pool/types';
 
-/** The planned pool API resolves the exact rotated page geometry on demand;
- * the document's cheap layout extents are never an affine. */
 export async function exactPdfTextGeometry(document: PdfPoolDocument, page: number,
     priority: 0 | 1 | 2 | 3, signal: AbortSignal): Promise<Readonly<PageGeometry>> {
     const pool = document as PdfPoolDocument & {

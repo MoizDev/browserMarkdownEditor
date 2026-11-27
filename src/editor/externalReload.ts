@@ -1,9 +1,3 @@
-// Putting a file's new text from disk into an open document — a `git pull`, a
-// formatter, another editor — without the reader losing their place.
-//
-// React-free (src/editor/ rule): App reaches it through the pane's reporter
-// (`replaceFromDisk`) or directly on a cached EditorState for a hidden tab.
-
 import { isolateHistory } from '@codemirror/commands';
 import { Annotation, type EditorState, type TransactionSpec } from '@codemirror/state';
 
@@ -16,12 +10,6 @@ import { Annotation, type EditorState, type TransactionSpec } from '@codemirror/
  */
 export const externalReload = Annotation.define<boolean>();
 
-/**
- * The smallest single change turning `from` into `to`: the common head and tail
- * are left alone, so the selection, the scroll anchor, folds and the undo
- * history outside the changed span all survive (the same head/tail technique
- * the agent's whole-file write uses). Null when the texts are equal.
- */
 export function minimalChange(from: string, to: string): { from: number; to: number; insert: string } | null {
     if (from === to) return null;
     const max = Math.min(from.length, to.length);
@@ -40,11 +28,6 @@ export function minimalChange(from: string, to: string): { from: number; to: num
 function isHighSurrogate(code: number): boolean { return code >= 0xd800 && code <= 0xdbff; }
 function isLowSurrogate(code: number): boolean { return code >= 0xdc00 && code <= 0xdfff; }
 
-/**
- * The transaction that reloads `state` to `text`, or null if it already holds
- * it. Isolated in the history so ⌘Z steps back over exactly the reload — the
- * previous text comes back deliberately, never merged with the typing beside it.
- */
 export function reloadSpec(state: EditorState, text: string): TransactionSpec | null {
     const change = minimalChange(state.doc.toString(), text);
     if (!change) return null;

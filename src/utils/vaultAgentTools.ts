@@ -1,35 +1,3 @@
-// The AI agent's hands: every `vault_*` / `canvas_*` tool call the agent CLI
-// makes arrives here (CLI → helper MCP → WebSocket → agentBridge) and is run
-// against the OPEN VAULT through App's VaultToolHost — never against a path on
-// disk. This file is where the vault tools' rules are enforced (the CLI's own
-// tools are outside it):
-//
-//   1. Paths. Everything is vault-relative and normalized here
-//      (normalizeAgentPath) before the host sees it: nothing absolute, no `..`,
-//      no `\`, no control characters. The host resolves the rest by walking
-//      handles down from the vault's root handle, so there is no string that
-//      names anything outside it.
-//   2. The app's own ground. `.VaultAgent/` (the chat index and vault id) can
-//      be neither read nor written; a `.Garbage/` trash is read-only (deleting
-//      goes through vault_trash, which moves rather than erases); the root's
-//      `.appearance.json` is the app's settings file and read-only.
-//   3. One vault per run. A run captures `host.vaultToken()` when it starts;
-//      once the user switches vaults every call is refused, re-checked after
-//      each await before anything is written.
-//   4. Arguments. Validated against the very schemas the agent was served
-//      (shared/vaultAgentTools.ts VAULT_TOOLS, via agentSchema.ts).
-//
-// NEVER THROWS: every failure comes back as an `isError` result whose text
-// tells the agent what to do next ("read it again and retry", "create the
-// folder first"), because a thrown error would reach it as an opaque failure.
-//
-// Bundle discipline: this module is on the agent panel's lazy path and imports
-// no renderer. PDF access is supplied by the App-owned contained source for a PDF
-// that is not open; open documents are read through their panes' reporters
-// (utils/viewRegistry.ts); no board engine is imported — closed canvases are read
-// from their JSON (canvasFileSummary.ts), and changes go through the live
-// canvas the host opens.
-
 import { CANVAS_PAGING_VERSION, MAX_TOOL_TEXT_CHARS, compareVersions, type CanvasOp, type ToolContent, type ToolName, type ToolResult } from '../../shared/vaultAgentProtocol';
 import { VAULT_TOOLS, type ToolDef } from '../../shared/vaultAgentTools';
 import type { AgentChange, AgentRegion, ClosedPdfEmphasis, HostResult, NativeCanvasView, VaultToolHost } from '../types/vaultAgent';
@@ -52,22 +20,13 @@ import type { MatchAnswer } from './agentMatcher/types';
 
 export interface ToolExecution {
     result: ToolResult;
-    /** Present when the call changed the vault (the panel's change card). */
     change?: AgentChange;
 }
 
-/* ───────────────────────── limits ───────────────────────── */
-
-/** vault_list stops walking after this many entries. */
 const MAX_LIST_ENTRIES = 2000;
-/** A single line longer than this is cut in vault_read output (minified files). */
 const MAX_READ_LINE = 4000;
-/** vault_read of a PDF reads at most this many pages per call. */
 const MAX_PDF_PAGES_PER_READ = 50;
-/** Waiting on a pane's reporter (a render, a text extraction). */
 const REPORTER_TIMEOUT_MS = 20_000;
-
-/* ───────────────────────── results ───────────────────────── */
 
 const SWITCHED = 'The user switched to a different vault, so this run can no longer touch files. Tell the user, and ask them to start a new message if they still want this done.';
 const STALE = 'The file changed since you read it (the user may be typing in it). Read it again with vault_read and retry with the current text.';
@@ -84,11 +43,8 @@ function fail(text: string): ToolExecution {
     return { result: textResult(`Error: ${text}`, true) };
 }
 
-/** Thrown inside a handler to end the call with an error result. */
 class ToolError extends Error {}
 
-/** Last-resort size cap — each handler pages its own output first, so this
- *  only catches what a handler under-estimated. */
 function capContent(result: ToolResult): ToolResult {
     let budget = MAX_TOOL_TEXT_CHARS;
     const content = result.content.map(c => {
@@ -104,8 +60,6 @@ function capContent(result: ToolResult): ToolResult {
     return { ...result, content };
 }
 
-/* ───────────────────────── paths ───────────────────────── */
-
 /** NUL and the other C0 controls, and DEL: no file name needs one, and a NUL
  *  is how a path smuggles a second meaning past a string check. */
 function hasControlChar(s: string): boolean {
@@ -116,7 +70,6 @@ function hasControlChar(s: string): boolean {
     return false;
 }
 
-/** Normalize an agent-supplied path, or say exactly why it is refused. */
 function checkPath(input: unknown): { path: string } | { error: string } {
     if (typeof input !== 'string') return { error: 'path must be a string' };
     if (hasControlChar(input)) return { error: 'the path contains control characters' };
@@ -143,20 +96,8 @@ function checkPath(input: unknown): { path: string } | { error: string } {
     return { path: segments.join('/') };
 }
 
-/** Case- and Unicode-normalization-folded, for matching names the way the
- *  macOS and Windows file systems do. */
 const foldName = (s: string) => s.normalize('NFC').toLowerCase();
 
-/**
- * Rewrite each segment to the entry's real on-disk spelling, as the file tree
- * has it. The file systems under the vault (APFS, NTFS) resolve `notes/idea.md`
- * to `Notes/Idea.md`, but everything the app keys on a path — open tabs, the
- * view registry, "is this inside that" — compares exactly. Unresolved, a
- * mis-cased edit bypassed the open tab (its next autosave clobbered it) and a
- * mis-cased `vault_move Notes → notes/Sub` passed the into-itself check and
- * moveFile then deleted the folder it had copied into itself. A segment with
- * no single match (a new name, a hidden folder) is kept as the agent wrote it.
- */
 function canonicalPath(path: string, tree: FileTreeNode[]): string {
     if (!path) return path;
     const segments = path.split('/');
@@ -176,7 +117,6 @@ function canonicalPath(path: string, tree: FileTreeNode[]): string {
     return segments.join('/');
 }
 
-/** Vault-relative, '/'-separated, normalized path, or null when invalid. */
 export function normalizeAgentPath(input: unknown): string | null {
     const r = checkPath(input);
     return 'path' in r ? r.path : null;
@@ -189,13 +129,11 @@ function inTrash(path: string): boolean {
     return path.split('/').some(seg => lower(seg) === lower(TRASH_DIR));
 }
 
-/** Why `path` may not be created/changed/moved/removed by the agent, or null. */
 function writeRefusal(path: string): string | null {
     if (path === '') return 'the vault root itself cannot be changed';
     if (inTrash(path)) {
         return `"${path}" is in a ${TRASH_DIR} folder (the trash), which is read-only. Delete things with vault_trash; restoring from the trash is for the user (the Trash panel in the sidebar).`;
     }
-    // At every depth for the looks file: there is one per customized folder.
     if (lower(baseName(path)) === lower(ENTRY_STYLE_FILE)
         || (!path.includes('/') && lower(path) === lower(LEGACY_STYLE_FILE))) {
         return `"${path}" is the app's own settings file (icons, colours, custom order) and cannot be changed with tools`;
@@ -203,24 +141,18 @@ function writeRefusal(path: string): string | null {
     return null;
 }
 
-/** App folders a moved/trashed entry may not BE (their contents are fine). */
 function isAppFolder(path: string): boolean {
     const name = lower(baseName(path));
     return name === lower(ASSETS_DIR) || name === lower(TRASH_DIR);
 }
-
-/* ───────────────────────── the call context ───────────────────────── */
 
 type Args = Record<string, unknown>;
 
 interface Ctx {
     host: VaultToolHost;
     signal?: AbortSignal;
-    /** Throws a ToolError unless the run's vault is still the open one. */
     ensureLive(): void;
-    /** A normalized path argument, or a ToolError saying why not. */
     path(value: unknown): string;
-    /** `path` plus the agent's write rules. */
     writablePath(value: unknown): string;
 }
 
@@ -260,7 +192,6 @@ function hostFailure(r: Extract<HostResult, { ok: false }>, verb: string, path: 
     }
 }
 
-/** A timed-out open-view read is also aborted, so it stops consuming the shared PDF pool. */
 function withTimeout<T>(promise: Promise<T>, ms: number, what: string, abort?: AbortController): Promise<T> {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => { abort?.abort(); reject(new ToolError(`${what} timed out`)); }, ms);
@@ -272,14 +203,11 @@ async function describe(view: ViewReporter) {
     return withTimeout(Promise.resolve(view.describe()), REPORTER_TIMEOUT_MS, 'reading the open view');
 }
 
-/** A PDF's reporter can serve reads only while it is the one showing the file. */
 function openPdfView(path: string): ViewReporter | undefined {
     const view = getView(path);
-    // A mounted native ink board is read through the host's live view, never as a legacy pane.
     return view && !view.live && (view.kind === 'pdf' || view.kind === 'pdf-annotate') ? view : undefined;
 }
 
-/** Existence as the host sees it; the root always exists. */
 async function kindOf(ctx: Ctx, path: string): Promise<'file' | 'directory' | null> {
     return path === '' ? 'directory' : ctx.host.entryKind(path);
 }
@@ -303,9 +231,6 @@ function assertSupportedCanvasFormat(path: string): void {
     if (isNativeDrawingFile(path)) throw new ToolError(`"${path}" is a native .drawing whiteboard; this build cannot read or change it with text or canvas tools.`);
 }
 
-/** Text files the agent may edit as text: not a PDF/image/binary, and not a
- *  drawing or notebook (JSON on disk, but edited through canvas_apply so the
- *  open canvas and its undo history stay the source of truth). */
 function assertEditableText(path: string): void {
     assertSupportedCanvasFormat(path);
     const name = baseName(path);
@@ -314,8 +239,6 @@ function assertEditableText(path: string): void {
     if (!isTextFile(name)) throw new ToolError(`"${path}" is not a text file.`);
 }
 
-/** Tool arguments with `null`s dropped: the schemas treat an explicit null
- *  for an optional argument as absent, and so does every handler. */
 function dropNulls(value: unknown): unknown {
     if (Array.isArray(value)) return value.map(dropNulls);
     if (value && typeof value === 'object') {
@@ -326,8 +249,6 @@ function dropNulls(value: unknown): unknown {
     return value;
 }
 
-/** `\r\n` → `\n`: every buffer and file the app holds is normalized
- *  (readFile, CodeMirror), so agent text must be too or nothing ever matches. */
 const normalizeNewlines = (text: string) => text.replace(/\r\n?/g, '\n');
 
 function lineOfOffset(text: string, offset: number): number {
@@ -336,7 +257,6 @@ function lineOfOffset(text: string, offset: number): number {
     return line;
 }
 
-/** Numbered lines `from..to` (1-based, inclusive) of `text`. */
 function numberedSlice(text: string, from: number, to: number): string {
     const lines = text.split('\n');
     const out: string[] = [];
@@ -346,8 +266,6 @@ function numberedSlice(text: string, from: number, to: number): string {
     }
     return out.join('\n');
 }
-
-/* ───────────────────────── vault_list ───────────────────────── */
 
 async function vaultList(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const root = ctx.path(a.path ?? '');
@@ -369,15 +287,7 @@ async function vaultList(a: Args, ctx: Ctx): Promise<ToolExecution> {
         const visible = children.filter(c => {
             const name = lower(c.name);
             if (name === '.ds_store' || name.endsWith('.crswap')) return false;
-            // .VaultAgent is never listed, includeHidden or not: every read and
-            // write of it is refused, so showing it would only invite attempts.
             if (dir === '' && name === lower(VAULT_AGENT_DIR)) return false;
-            // `.git` (a folder, or the file a worktree/submodule has) is hidden
-            // from the sidebar at every depth (utils/vaultEntries.ts) and from
-            // this default listing too: thousands of object files that are not
-            // notes. Only that one rule is shared with the tree — NOT the whole
-            // isHiddenVaultEntry, which would also hide `.claude`/`.agents`
-            // that the agent is meant to see.
             const hidden = (c.kind === 'directory' && (name === lower(TRASH_DIR) || name === lower(ASSETS_DIR)))
                 || isGitName(c.name)
                 || (c.kind === 'file' && (c.name === ENTRY_STYLE_FILE || (dir === '' && c.name === LEGACY_STYLE_FILE)));
@@ -411,8 +321,6 @@ async function vaultList(a: Args, ctx: Ctx): Promise<ToolExecution> {
     if (hiddenSkipped) notes.push(`(${hiddenSkipped} hidden app item${hiddenSkipped === 1 ? '' : 's'} left out: ${ASSETS_DIR} image folders, ${TRASH_DIR} trash, .git, the settings file — pass includeHidden: true to show them)`);
     return ok([head, ...lines, ...notes].join('\n'));
 }
-
-/* ───────────────────────── vault_read ───────────────────────── */
 
 async function readText(a: Args, ctx: Ctx, path: string): Promise<ToolExecution> {
     const text = await ctx.host.readText(path);
@@ -448,7 +356,6 @@ async function readText(a: Args, ctx: Ctx, path: string): Promise<ToolExecution>
     return ok(body.join('\n'));
 }
 
-/** Aborted by the run's own cancellation; a view read adds its timeout on top. */
 function viewReadController(ctx: Ctx): AbortController {
     const controller = new AbortController();
     if (ctx.signal?.aborted) controller.abort();
@@ -497,8 +404,6 @@ async function readPdf(a: Args, ctx: Ctx, path: string): Promise<ToolExecution> 
         if (first > pageCount) throw new ToolError(`page ${first} is past the end of "${path}", which has ${pageCount} page${pageCount === 1 ? '' : 's'}.`);
         pages = [];
         let used = 0;
-        // A few pages per request, so a long document stops at the budget
-        // rather than extracting fifty pages to keep three.
         for (let p = first; p <= pageCount && pages.length < maxPages;) {
             const batch = Array.from({ length: Math.min(5, maxPages - pages.length, pageCount - p + 1) }, (_, i) => p + i);
             const controller = viewReadController(ctx);
@@ -539,7 +444,6 @@ async function readPdf(a: Args, ctx: Ctx, path: string): Promise<ToolExecution> 
     return ok(out.join('\n'));
 }
 
-/** Shape lines up to the char budget, with an overflow note. */
 function shapeLines(shapes: Array<ShapeSummary & { sizeUnknown?: boolean }>, budget: number, more: string): string[] {
     const out: string[] = [];
     let used = 0;
@@ -581,12 +485,9 @@ async function readableCanvasText(ctx: Ctx, path: string): Promise<string> {
     return text;
 }
 
-/** Shapes of a drawing/notebook from its live pane, or failing that its file. */
 async function canvasShapesFromAnywhere(ctx: Ctx, path: string, page: number | undefined): Promise<{ lines: string[]; head: string[] }> {
     const name = baseName(path);
     const notebook = isNotebookFile(name);
-    // The board's session owns unsaved data and fences its own SourceOwner; a disk reread here could observe a different
-    // revision from the open board.
     if (ctx.host.canvasShapePage) {
         const result = await ctx.host.canvasShapePage(path, { page }, { signal: ctx.signal, isCurrent: () => {
             try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
@@ -667,8 +568,6 @@ async function vaultRead(a: Args, ctx: Ctx): Promise<ToolExecution> {
     return readText(a, ctx, path);
 }
 
-/* ───────────────────────── vault_view ───────────────────────── */
-
 async function pngResult(blob: Blob | null, caption: string, what: string): Promise<ToolExecution> {
     if (!blob) throw new ToolError(`${what} could not be rendered.`);
     const img = await prepareImageForAgent(await blobBytes(blob), blob.type || 'image/png');
@@ -679,8 +578,6 @@ function onScreenCaption(viewport: { readonly x: number; readonly y: number; rea
     return ` — the part on screen: x ${Math.round(viewport.x)}…${Math.round(viewport.x + viewport.w)}, y ${Math.round(viewport.y)}…${Math.round(viewport.y + viewport.h)}`;
 }
 
-/** What a native canvas picture shows, said plainly: a recorded view, the whole sheet when the board was never viewed,
- *  or one page. A hidden or unmounted board is never claimed to be on screen. */
 function nativeViewCaption(path: string, native: NativeCanvasView, page: number | undefined, region?: AgentRegion): string {
     if (region) return `${path}${page !== undefined ? `, page ${page}` : ''}, the region x ${Math.round(region.x)}…${Math.round(region.x + region.w)}, y ${Math.round(region.y)}…${Math.round(region.y + region.h)}:`;
     const info = native.info;
@@ -702,7 +599,6 @@ function pdfEmphasisCaption(emphasis: ClosedPdfEmphasis | undefined): string {
     return ` (word emphasis not applied${reason ? `: ${reason}` : ''})`;
 }
 
-/** The agent's region, checked: finite numbers and a positive extent. An empty but valid region is pictured as a blank image. */
 function regionArg(value: unknown): AgentRegion | undefined {
     if (value === undefined) return undefined;
     const r = value as Partial<Record<'x' | 'y' | 'w' | 'h', unknown>> | null;
@@ -727,7 +623,6 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
 
     if (isPdfFile(name)) {
         const view = openPdfView(path);
-        // An OPEN native ink board with no mounted pane is pictured from its own session, at its last real view.
         if (!view && ctx.host.nativeCanvasView) {
             const native = await ctx.host.nativeCanvasView(path, { signal: ctx.signal, isCurrent: () => {
                 try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
@@ -761,7 +656,6 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
             ctx.ensureLive();
             return pngResult(blob, `${path}, page ${target} of ${count}${annotation}:`, `page ${target}`);
         }
-        // A closed native ink board is pictured from its admitted source; every other PDF keeps the routes below.
         if (!view && ctx.host.nativePdfPicture) {
             const picture = await ctx.host.nativePdfPicture(path, max, { signal: ctx.signal, isCurrent: () => {
                 try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
@@ -787,8 +681,6 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     }
 
     if (isCanvasFile(name) || isNativeDrawingFile(name)) {
-        // An open board is read from its session (its live view while mounted). A closed native drawing or notebook is
-        // pictured from its own bytes. Any other canvas opens beside the user, without taking focus, and its session answers.
         const guard = { signal: ctx.signal, isCurrent: () => {
             try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
         } };
@@ -825,8 +717,6 @@ async function vaultView(a: Args, ctx: Ctx): Promise<ToolExecution> {
     throw new ToolError(`vault_view shows PDFs, notebooks, drawings and images; "${path}" is text — read it with vault_read.`);
 }
 
-/* ───────────────────────── vault_search ───────────────────────── */
-
 async function vaultSearch(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const query = String(a.query);
     const scope = a.path !== undefined ? ctx.path(a.path) : '';
@@ -856,13 +746,9 @@ async function vaultSearch(a: Args, ctx: Ctx): Promise<ToolExecution> {
     }
     const summary = `${count} match${count === 1 ? '' : 'es'} in ${fileCount} file${fileCount === 1 ? '' : 's'} for ${JSON.stringify(query)}${where} (format: path:line: text)`;
     if (stopped) out.push(`…[stopped at maxResults=${maxResults}; narrow the query, pass path to search one folder, or raise maxResults (≤ 500)]`);
-    // Measured: 295 acknowledged matches filled the 60k text cap and clipped a trailing timeout.
-    // Even query text is unbounded, so status must precede the summary as well as the rows.
     const status = incomplete ? [`…[incomplete:true; ${answer.reason}]`] : [];
     return ok([...status, summary, ...out].join('\n'));
 }
-
-/* ───────────────────────── text edits ───────────────────────── */
 
 function editHints(oldString: string): string {
     const hints: string[] = [];
@@ -872,7 +758,6 @@ function editHints(oldString: string): string {
     return hints.length ? ` ${hints.join(' ')}` : '';
 }
 
-/** Apply `changes` to `text` locally (to diff and hash what the host applied). */
 function applyLocally(text: string, changes: TextChange[]): string {
     let out = '';
     let at = 0;
@@ -880,8 +765,6 @@ function applyLocally(text: string, changes: TextChange[]): string {
     return out + text.slice(at);
 }
 
-/** The lines around the first change, as they read now — so the agent can see
- *  its edit landed as meant without another read. */
 function editSnippet(after: string, changes: TextChange[]): string {
     const first = changes[0];
     const startLine = lineOfOffset(after, first.from);
@@ -941,8 +824,6 @@ async function vaultWrite(a: Args, ctx: Ctx): Promise<ToolExecution> {
     if ((await sha256Hex(current)) !== String(a.base_hash).trim().toLowerCase()) throw new ToolError(STALE);
     if (content === current) return ok(`${path} already has exactly this text; nothing changed.`);
 
-    // ONE change covering only what differs (common head and tail kept), so
-    // the user's cursor and undo history outside it are left alone.
     let head = 0;
     const maxHead = Math.min(current.length, content.length);
     while (head < maxHead && current.charCodeAt(head) === content.charCodeAt(head)) head++;
@@ -957,8 +838,6 @@ async function vaultWrite(a: Args, ctx: Ctx): Promise<ToolExecution> {
         { kind: 'edit', path, added: d.added, removed: d.removed, diff: d.diff },
     );
 }
-
-/* ───────────────────────── create / mkdir / move / trash ───────────────────────── */
 
 async function requireParentFolder(ctx: Ctx, path: string): Promise<void> {
     const parent = parentVaultPath(path);
@@ -1033,8 +912,6 @@ async function vaultTrash(a: Args, ctx: Ctx): Promise<ToolExecution> {
     return ok(`Moved ${kind === 'directory' ? 'the folder ' : ''}${path} to the trash (${bin}). The user can restore it from the Trash panel.`, { kind: 'trash', path });
 }
 
-/* ───────────────────────── canvas ───────────────────────── */
-
 function assertCanvasPath(path: string, supportsNative: boolean): void {
     if (isNativeDrawingFile(path) && supportsNative) return;
     assertSupportedCanvasFormat(path);
@@ -1044,7 +921,6 @@ function assertCanvasPath(path: string, supportsNative: boolean): void {
     }
 }
 
-/** An open board's session answers a shape query, and a closed admitted source answers the rest: nothing is mounted to read. */
 async function nativeShapePage(ctx: Ctx, path: string, query: CanvasShapeQuery): Promise<CanvasShapePage | undefined> {
     if (!ctx.host.canvasShapePage) return undefined;
     const result = await ctx.host.canvasShapePage(path, query, { signal: ctx.signal, isCurrent: () => {
@@ -1076,7 +952,6 @@ async function canvasShapes(a: Args, ctx: Ctx): Promise<ToolExecution> {
         return ok([...head, '', ...lines].join('\n'));
     }
     if (isPdfFile(baseName(path))) {
-        // An open ink board is read from its session. A closed PDF is refused, asking for annotation mode (F-AGENT-001).
         const result = await nativeShapePage(ctx, path, { page });
         if (!result) throw new ToolError(`Open "${path}" in annotation mode to read its shapes.`);
         const head = [`path: ${path}`, `revision: ${result.revision}`, `total: ${result.total}`, COORDS_PAGED];
@@ -1109,7 +984,6 @@ async function canvasApply(a: Args, ctx: Ctx): Promise<ToolExecution> {
     const ops = a.ops as CanvasOp[];
     let r: CanvasApplyResult;
     try {
-        // Every board is edited through its session, which admits a legacy file by its own conversion; nothing edits a second copy.
         const native = await ctx.host.canvasApplyNative?.(path, ops, { signal: ctx.signal, isCurrent: () => {
             try { ctx.ensureLive(); return !ctx.signal?.aborted; } catch { return false; }
         } });
@@ -1134,8 +1008,6 @@ async function canvasApply(a: Args, ctx: Ctx): Promise<ToolExecution> {
     });
 }
 
-/* ───────────────────────── dispatch ───────────────────────── */
-
 const HANDLERS: Record<ToolName, (a: Args, ctx: Ctx) => Promise<ToolExecution>> = {
     vault_list: vaultList,
     vault_read: vaultRead,
@@ -1153,8 +1025,6 @@ const HANDLERS: Record<ToolName, (a: Args, ctx: Ctx) => Promise<ToolExecution>> 
 
 const TOOL_DEFS = new Map<string, ToolDef>(VAULT_TOOLS.map(t => [t.name, t]));
 
-/** Run one agent tool call against the vault. Never throws: failures come back
- *  as `isError` results the agent can read. */
 export async function executeTool(
     name: string,
     args: Record<string, unknown>,

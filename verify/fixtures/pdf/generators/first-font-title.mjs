@@ -1,4 +1,3 @@
-// Authored first-font control; proposed CC0-1.0 awaits the owner.
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../../lib/cli.mjs';

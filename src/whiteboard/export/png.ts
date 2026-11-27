@@ -1,6 +1,5 @@
 import type { Rect } from '../../platform/types'
 
-// F-EXPORT-002/006: rows arrive at export resolution, independent of display DPR.
 export class ExportTooLarge extends Error {
   constructor(readonly suggestedScale: number) {
     super('Export is too large')
@@ -13,9 +12,6 @@ export interface PngSize {
   height: number
 }
 
-// Every export streams bounded bands from a worker and never allocates a whole-image canvas, so a download is limited
-// only by PNG's own format and a sanity cap on what a viewer opens and the render time it costs (side 65535, 2^32 pixels).
-// The clipboard holds its image whole, so a copy keeps the smaller limits.
 const DOWNLOAD_SIDE = 65535, DOWNLOAD_PIXELS = 2 ** 32
 const CLIPBOARD_SIDE = 8192, CLIPBOARD_PIXELS = 2 ** 28
 function limitsFor(clipboard: boolean): { side: number; pixels: number } {
@@ -32,7 +28,6 @@ export function checkPngSize(width: number, height: number, clipboard = false): 
   return { width, height }
 }
 
-/** The largest scale at which checkPngSize accepts these world bounds, shaved a hair for the rounding up to whole pixels. */
 export function pngScaleLimit(world: Readonly<{ width: number; height: number }>, clipboard = false): number {
   const { side, pixels } = limitsFor(clipboard)
   return Math.min(side / world.width, side / world.height, Math.sqrt(pixels / world.width / world.height)) * (1 - 1e-9)
@@ -59,7 +54,6 @@ function chunk(type: string, data: Uint8Array): Uint8Array<ArrayBuffer> {
   return result
 }
 
-/** Encode unpremultiplied RGBA rows without allocating a full output canvas. */
 export async function encodePng(
   width: number,
   height: number,
@@ -159,7 +153,6 @@ export async function encodePng(
   } finally { reporting = false; options.ownedBytes?.(0) }
 }
 
-/** Replace density without decoding pixels; all retained chunks are zero-copy Blob slices. */
 export async function splicePngDensity(blob: Blob, worldRect: Readonly<Rect>, signal: AbortSignal): Promise<Blob> {
   signal.throwIfAborted()
   if (!(blob instanceof Blob) || ![worldRect.x, worldRect.y, worldRect.width, worldRect.height].every(Number.isFinite)
@@ -173,7 +166,6 @@ export async function splicePngDensity(blob: Blob, worldRect: Readonly<Rect>, si
   if (headView.getUint32(0) !== 13 || String.fromCharCode(...header.subarray(4, 8)) !== 'IHDR') throw new TypeError('Invalid PNG header')
   const width = headView.getUint32(8), height = headView.getUint32(12)
   if (!width || !height) throw new RangeError('Invalid PNG dimensions')
-  // Rounded output dimensions can differ by a fraction of a pixel: geometric-mean fit preserves area at one square density.
   const pixelsPerWorldUnit = Math.sqrt((width / worldRect.width) * (height / worldRect.height))
   const pixelsPerMetre = Math.round(pixelsPerWorldUnit * 72 / 0.0254)
   if (!Number.isSafeInteger(pixelsPerMetre) || pixelsPerMetre < 1 || pixelsPerMetre > 0xffffffff) throw new RangeError('Invalid PNG density')

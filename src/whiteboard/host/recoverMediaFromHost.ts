@@ -4,7 +4,6 @@ import { boardRecoveryMedia } from '../format/recoveryRecipe';
 import type { MediaLease, MediaStore } from '../media/store';
 import { isSafeMediaFile, type MediaId } from '../model/media';
 
-/** Restore capsule bytes without changing the live document or its media locations. */
 export async function restoreRecoveredMediaFromHost(
     payload: unknown, host: NativeCanvasHost, identity: NativeCanvasIdentity, store: MediaStore,
     signal: AbortSignal, isCurrent: () => boolean,

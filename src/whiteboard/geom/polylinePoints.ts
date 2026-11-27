@@ -8,12 +8,6 @@ import { connectorBody } from './connectors';
 import { bodyCrossingSteps, pointAtLength } from './connectorPath';
 import type { AttachmentSurface } from './connectorTypes';
 
-// Provenance: polyline endpoint aiming and exit-crossing rules, shared with the
-// connector attachment contracts; independent composition, no third-party source.
-// One generator serves the cooperative attachment readers and the synchronous
-// staged reader, so the two cannot disagree about where a bound end lands.
-
-/** H4 owns the persisted fields; this reader also accepts documents predating them. */
 export type AttachedPolyline = Readonly<PolylineNode> & { readonly startAttach?: Attachment | null; readonly endAttach?: Attachment | null };
 export const POLYLINE_TOLERANCE_WORLD = 0.01;
 const CROSSING_PIECES = 65_536;
@@ -24,7 +18,6 @@ export function polylineMatrix(doc: BoardDoc, id: NodeId): Affine {
     return [c, s, -s, c, pose.x, pose.y];
 }
 
-/** Aims each bound end at its target anchor, then moves it to the body's exit crossing unless the binding is exact. */
 export function* polylinePointSteps(node: AttachedPolyline, doc: BoardDoc, surfaces: ReadonlyMap<NodeId, AttachmentSurface>,
     tolerance: number, check: () => void): Generator<void, readonly Point[]> {
     check();
@@ -34,7 +27,7 @@ export function* polylinePointSteps(node: AttachedPolyline, doc: BoardDoc, surfa
     if (points.length < 2) throw new RangeError('Invalid attached polyline');
     const world = points.map(point => transformPoint(localToWorld, point));
     const aim = (attachment: Attachment, surface: AttachmentSurface) => {
-        const box = surface.logicalBox, anchor = attachment.precise || attachment.exact ? attachment.anchor : { x: 0.5, y: 0.5 }; // default, calibration cut by owner
+        const box = surface.logicalBox, anchor = attachment.precise || attachment.exact ? attachment.anchor : { x: 0.5, y: 0.5 };
         if (![box.x, box.y, box.width, box.height, anchor.x, anchor.y].every(Number.isFinite) || box.width < 0 || box.height < 0
             || anchor.x < 0 || anchor.x > 1 || anchor.y < 0 || anchor.y > 1) throw new RangeError('Polyline attachment anchor is invalid');
         const point = transformPoint(surface.localToWorld, { x: box.x + box.width * anchor.x, y: box.y + box.height * anchor.y });
@@ -64,7 +57,6 @@ export function* polylinePointSteps(node: AttachedPolyline, doc: BoardDoc, surfa
     check(); return Object.freeze(points.map(point => Object.freeze(point)));
 }
 
-/** Synchronous drain of the same steps: for staged readers that cannot await. */
 export function drainPolylinePoints(node: AttachedPolyline, doc: BoardDoc, surfaces: ReadonlyMap<NodeId, AttachmentSurface>,
     tolerance: number, check: () => void = () => {}): readonly Point[] {
     const steps = polylinePointSteps(node, doc, surfaces, tolerance, check);

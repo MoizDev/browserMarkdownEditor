@@ -7,9 +7,6 @@ import matcherWorkerUrl from './matcher.worker.ts?worker&url';
 const matcherWorker = workerScript(matcherWorkerUrl, { keep: true });
 
 const CHUNK_CHARS = 64 * 1024;
-// Matching line by line limits input granularity, not one regex match's runtime.
-// The host enforces this deadline and recycles the worker even if it is stuck;
-// clipping the returned text is not execution containment.
 const QUERY_MS = 5000;
 let active: AbortController | undefined;
 let owner: WorkerClient | undefined;
@@ -19,7 +16,6 @@ const poisoned = new Set<string>();
 const vaultIds = new WeakMap<object, number>();
 let nextVaultId = 0;
 
-/** The owner is the vault, not the chat panel or any document pane. */
 export function releaseAgentMatcher(): void {
     ++ownerEpoch;
     const controller = active;
@@ -38,7 +34,6 @@ export async function matchAgentSearch(
 ): Promise<MatchAnswer> {
     const epoch = ownerEpoch;
     const { createWorkerClient, WorkerHostError } = await loadChunk(() => import('../../platform/workers'));
-    // A vault can close while the lazy chunk loads. Never resurrect its owner afterwards.
     if (epoch !== ownerEpoch || options.signal?.aborted || !options.isCurrent()) {
         return { out: [], count: 0, fileCount: 0, stopped: false, incomplete: true, reason: 'the search was cancelled' };
     }
@@ -50,8 +45,6 @@ export async function matchAgentSearch(
         protocol: 1,
         spawn: () => matcherWorker.start(),
     });
-    // A new message, not the agent's next tool call, is an explicit user retry. The persistent
-    // owner retains crash/poison accounting across disposable workers and searches in one run.
     if (options.signal !== lastRunSignal) {
         if (client.state === 'failed') { client.reset(); poisoned.clear(); }
         lastRunSignal = options.signal;
@@ -68,9 +61,6 @@ export async function matchAgentSearch(
         void client.recycle('Agent search cancelled', { lazy: true }).catch(() => {});
     };
     signal.addEventListener('abort', stop, { once: true });
-    // TODO(C-03): replace root-handle identity with the vault activation id when it lands.
-    // Follow the query, not the panel mount: hiding chat must not orphan its work. An idle owner
-    // has neither this poll nor a worker clock.
     const identity = setInterval(() => { if (!options.isCurrent()) lifetime.abort(); }, 100);
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     let matching = false;
@@ -79,8 +69,6 @@ export async function matchAgentSearch(
     let workerCrashed = false;
     let requestKey: string | undefined;
     try {
-        // Syntax validation runs in the worker too. A startup/hello stall has its own 2 s cap;
-        // the 5 s matching budget starts only once the bounded input feed can dispatch work.
         const queryKey = await client.request<string>('configure', config, { priority: 0, deadlineMs: 2000, signal });
         if (typeof queryKey !== 'string' || queryKey.length !== 64) throw new WorkerHostError('Protocol', 'Invalid matcher identity');
         const files = await readFiles();

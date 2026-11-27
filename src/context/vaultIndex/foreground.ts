@@ -1,7 +1,6 @@
 let active = 0;
 const listeners = new Set<(active: number) => void>();
 
-/** Foreground document opens outrank background index reads. */
 export function beginForegroundRead(): () => void {
     active++;
     for (const listener of listeners) listener(active);

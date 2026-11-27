@@ -12,31 +12,14 @@ import type { BoardJobIdentity } from './protocol';
 
 const AUDIT = 'board-paint';
 
-/** The stroke's held LOD levels, as this client needs them; the render-side ladder implements it. */
 export interface InkLodPort {
     coarsest(budget: number): InkCoverageReply | null;
     add(reply: InkCoverageReply): boolean;
 }
 
-// Chunks asked for in one task with one abort signal travel as ONE `ink.batch` request: one message and one transfer each way,
-// the samples of every chunk in one input buffer and every coverage packed in one reply (inkBatchHandler.ts). A batch leaves at
-// the end of the task that filled it, or at once when it is full. It is keyed by its signal as well as its document: a paint
-// stream passes one signal for all its strokes, so a replaced stream's batch is cancelled in the worker as one unit, where a batch
-// shared with another stream was cancelled only once both were. Measured (WebGL2, Strokes-3 and a 10,060-stroke drawing): a
-// stream fills 9 to 15 chunks a task (10,060 chunks in 1,094 requests on the open), so a batch's first chunk waits for a few
-// builds at most, and answering in parts as the worker went (tried) changed nothing measurable.
-/** Sample bytes one batch carries before it leaves without waiting for the task to end. */
 const BATCH_INPUT_BYTES = 1 << 20;
-/** Geometry workers a task's chunks are spread over: one is the shared geometry worker, the rest are made when a task first asks
- * for enough chunks to give each at least `POOL_SHARE`, so a board's edits and small views never start one. Bounded below the
- * cores, which the main thread, the compositor and the GPU process share. Measured (WebGL2, Strokes-3 native, 5,640 strokes):
- * with one worker it was busy for the whole 1.36 s of the geometry phase, a third of that the per-request overhead batching
- * removes, while the main thread was idle half the time. */
 const POOL_SIZE = Math.max(1, Math.min(3, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 4) - 2));
 const POOL_SHARE = 32;
-/** An extra pool member with no batch for this long is ended, so the garbage of its last batches goes with its isolate instead of
- * staying until a collection that an idle isolate seldom runs. The shared member 0 is kept: 30 s after a 10,060-stroke drawing
- * opened its heap was 0.7 MB, and recycling it put a worker start in front of the next zoom's geometry. */
 const POOL_IDLE_MS = 5_000;
 
 interface Pending {
@@ -47,29 +30,18 @@ interface Pending {
     readonly resolve: (value: { coverage: InkCoverage; level: 'fine' | 'coarse' }) => void;
     readonly reject: (error: unknown) => void;
     settled: boolean;
-    /** Called once the item's own signal aborts: settles it, and aborts its request once every item of it has. */
     onAbort: () => void;
-    /** The listener on `signal`, which calls the current `onAbort`. */
     readonly listener: () => void;
 }
 interface Batch { readonly identity: BoardJobIdentity; readonly items: Pending[]; bytes: number }
 const open = new Map<string, Batch>();
 let flushing: Promise<void> | null = null, nextSignal = 0;
 const signalIds = new WeakMap<AbortSignal, number>();
-/** Requests in flight per pool member, and its idle timer. */
 const members: { requests: number; idle?: ReturnType<typeof setTimeout> }[] = [];
 
-/** Chunks whose geometry crashed the isolation worker, for the page's life: asking again would only crash a worker again, and four
- * crashes in a minute fail it (platform/workers/client.ts). Keyed by the board session and the chunk's samples, not by its
- * precision band, so a zoom does not try it again. */
 const crashed = new Set<string>();
-/** The worker a crashed batch's chunks are asked again on, one at a time, so a crash there is that chunk's own. Retried side by side
- * on the pool, a chunk in flight beside the bad one crashed with it: in one run of Strokes-3 two innocent strokes were refused, and
- * with them 1,618 strokes drawn from the same samples. Made when a batch crashes, ended once its queue is empty. */
 let isolation: { readonly client: BoardWorkerClient & { dispose(): void }; queue: Promise<unknown>; waiting: number } | null = null;
 function crashKey(identity: BoardJobIdentity, pending: Pick<Pending, 'item' | 'xy'>): string {
-    // Every sample's bits, hashed (FNV-1a): strokes are stored in their own coordinates, so many start at the same point with the
-    // same sample count, and a key of a few samples refused 270 strokes of Strokes-3 for one that crashed.
     const { item, xy } = pending, words = new Uint32Array(xy.buffer, xy.byteOffset, xy.length * 2);
     let hash = 0x811c9dc5;
     for (let i = 0; i < words.length; i++) hash = Math.imul(hash ^ words[i], 0x01000193);
@@ -96,8 +68,6 @@ function scheduleFlush(): void {
         for (const batch of batches) dispatch(batch);
     });
 }
-/** The pool members that may take work: those that have not failed. A member that failed refuses every request until a cool-down
- * passes, so its share would fail at once; with every member failed the shared one is asked, and its failure is the answer. */
 function liveMembers(wanted: number): number[] {
     const live: number[] = [];
     for (let member = 0; member < POOL_SIZE && live.length < wanted; member++) {
@@ -105,7 +75,6 @@ function liveMembers(wanted: number): number[] {
     }
     return live.length ? live : [0];
 }
-/** Sends a task's chunks as one batch per pool member it needs, in order: the first share holds the chunks the stream takes first. */
 function dispatch(batch: Batch): void {
     const live = liveMembers(Math.max(1, Math.min(POOL_SIZE, Math.floor(batch.items.length / POOL_SHARE))));
     const share = Math.ceil(batch.items.length / live.length);
@@ -129,11 +98,9 @@ function answer(pending: Pending, identity: BoardJobIdentity, output: ArrayBuffe
             throw error;
         }
         if (!pending.isCurrent(identity)) throw new DOMException('Board job is stale', 'AbortError');
-        // Each chunk keeps a buffer of its own: a view on the shared reply would hold the whole batch while one stroke lives.
         pending.resolve({ coverage: readPackedInkCoverage(output.slice(result.at, result.at + result.bytes), 0).coverage, level: result.level });
     } catch (error) { pending.reject(error); }
 }
-/** Asks for one chunk on the isolation worker, after every chunk queued there before it. */
 function isolate(identity: BoardJobIdentity, pending: Pending): Promise<unknown> {
     const worker = isolation ??= { client: dedicatedBoardWorker('geometry'), queue: Promise.resolve(), waiting: 0 };
     worker.waiting++;
@@ -143,8 +110,6 @@ function isolate(identity: BoardJobIdentity, pending: Pending): Promise<unknown>
     });
     return run;
 }
-/** Sends one `ink.batch` request to pool member `target`, or to the isolation worker; settles when it and any retries it led to
- * have. */
 function send(identity: BoardJobIdentity, all: readonly Pending[], target: number | 'isolated'): Promise<unknown> {
     const items = all.filter(pending => !pending.settled);
     if (!items.length) return Promise.resolve();
@@ -160,8 +125,6 @@ function send(identity: BoardJobIdentity, all: readonly Pending[], target: numbe
         described.push({ ...pending.item, at });
         at += inkBatchSampleBytes(count, pressure);
     }
-    // The request is cancelled only once every item of it is: an item cancelled alone is settled at once and its answer dropped.
-    // A batch's items share one signal (keyOf), so a replaced stream cancels its request whole.
     const controller = new AbortController();
     let live = items.length;
     for (const pending of items) {
@@ -185,8 +148,6 @@ function send(identity: BoardJobIdentity, all: readonly Pending[], target: numbe
         const left = items.filter(pending => !pending.settled);
         if (!left.length) return;
         if (error instanceof Error && error.name === 'WorkerCrashed') {
-            // One stroke that crashes the worker would take the batch with it: each chunk left is asked again on its own, on the
-            // isolation worker, so the one that crashes fails alone and the rest draw.
             if (member >= 0) {
                 auditCount(AUDIT, 'ink:batch-retry', left.length);
                 return Promise.all(left.map(pending => isolate(identity, pending)));
@@ -195,8 +156,6 @@ function send(identity: BoardJobIdentity, all: readonly Pending[], target: numbe
             if (settle(left[0])) left[0].reject(crashedError());
             return;
         }
-        // A member that has failed for good (four crashes in a minute) refuses everything queued on it and everything asked of it
-        // during its cool-down: those chunks go to a member still alive. With none left, its failure is the answer.
         if (member >= 0 && error instanceof Error && error.name === 'WorkerFailed') {
             const alive = liveMembers(POOL_SIZE).filter(other => other !== member && boardWorkerPoolState('geometry', other) !== 'failed');
             if (alive.length) { auditCount(AUDIT, 'ink:batch-redirect', left.length); return send(identity, left, alive[0]); }
@@ -207,7 +166,6 @@ function send(identity: BoardJobIdentity, all: readonly Pending[], target: numbe
     });
 }
 
-/** Copies only one canonical range and its neighbours; the caller retains the original sequence. */
 export async function prepareInkCoverageInWorker(samples: SampleSequence, parameters: CurveParameters,
     style: InkWidth, range: CurveRange, options: CoverageOptions, identity: BoardJobIdentity,
     signal: AbortSignal | undefined, isCurrent: (identity: BoardJobIdentity) => boolean,
@@ -219,8 +177,6 @@ export async function prepareInkCoverageInWorker(samples: SampleSequence, parame
     }
     if (options.dotMetric && options.dotMetric !== DOT_METRIC_PROVISIONAL) throw new TypeError('Ink dot metric cannot be transferred');
     signal?.throwIfAborted();
-    // A held level that already fits serves the stroke: no worker round trip and no sample copy. Its radius
-    // error is the same at every level, so it is checked here against this device scale as the worker would.
     const scale = options.deviceScale;
     const held = lod?.ladder && Number.isFinite(scale) && scale > 0 ? lod.ladder.coarsest(1 / 16 / scale) : null;
     if (held && held.radiusErrorWorld * scale <= 1 / 16) {
@@ -260,7 +216,6 @@ export async function prepareInkCoverageInWorker(samples: SampleSequence, parame
         else scheduleFlush();
     });
     lod?.onChoice?.(level);
-    // Only a coarse reply is new LOD; fine replies are the samples' own geometry and are not kept.
     if (level === 'coarse') lod?.ladder?.add(coverage);
     return coverage;
 }

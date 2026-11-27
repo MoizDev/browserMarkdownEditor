@@ -4,8 +4,6 @@ import type { MediaEntry, MediaId } from './media';
 import { attachedTargets, createNode, type Node } from './nodes';
 import { compareOrder } from './orderKey';
 
-// Loading can encounter a million siblings; native sort and index construction
-// must not monopolize the admission worker between cancellation checks.
 export async function createLoadedBoardDoc(input: BoardDocInput, cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<BoardDoc> {
     let work = 0;
     const tick = async () => {

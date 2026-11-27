@@ -1,4 +1,3 @@
-/** Opaque worker frames are not secure contexts; getRandomValues remains available. */
 export function newPdfWorkerId(): string {
     const bytes = crypto.getRandomValues(new Uint8Array(16));
     bytes[6] = (bytes[6] & 0x0f) | 0x40;

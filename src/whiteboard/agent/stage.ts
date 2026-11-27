@@ -17,11 +17,9 @@ export interface AgentStageHost {
     readonly sheet: SheetId;
     readonly currentPage: number;
     admitSamples(builder: SampleBuilder): SampleLease;
-    /** Authoritative current staged world geometry, expressed in the destination page. */
     target(node: Node, page: number): Point;
     placement(node: Node, op: UpdateOp): { readonly ops: readonly NodeSetOp[]; readonly notes?: readonly string[] };
     reanchor(id: NodeId, builder: CommandBuilder): void;
-    /** Shared deletion command stages into this same builder. */
     delete(id: NodeId, builder: CommandBuilder): { readonly deleted: readonly NodeId[]; readonly kept: readonly NodeId[]; readonly notes: readonly string[] };
 }
 
@@ -51,8 +49,6 @@ export function stageAgentOp(host: AgentStageHost, op: CanvasOp, context: AgentO
         }
         const created = stageSimpleCreate(op, base);
         let notes = created.notes;
-        // A text's size is only known once laid out: place it again through the staged geometry so
-        // its whole box is clamped to the page, as figures and stickies are at creation.
         const node = op.type === 'text' && host.doc.kind !== 'whiteboard' ? host.doc.nodes.get(created.id) : undefined;
         if (node && op.type === 'text') {
             const placed = host.placement(node, { op: 'update', id: created.id, x: op.x, y: op.y, ...(op.page !== undefined ? { page: op.page } : {}) });

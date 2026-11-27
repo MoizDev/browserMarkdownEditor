@@ -9,7 +9,6 @@ function crcValid(bytes: Uint8Array): boolean {
     return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(bytes.length - 4) === ((crc ^ 0xffffffff) >>> 0);
 }
 
-/** Private PNG metadata only; the regular media inspector separately admits the image. */
 export async function privatePngDensityWorker(args: unknown, context: WorkerContext): Promise<number | null> {
     if (!args || typeof args !== 'object' || !((args as { blob?: unknown }).blob instanceof Blob)) throw new TypeError('Invalid private PNG');
     const blob = (args as { blob: Blob }).blob;

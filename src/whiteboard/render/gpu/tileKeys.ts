@@ -1,20 +1,10 @@
-// Integer tile keys and a map keyed by them. A tile is (band, scale index, slice, x, y); packing it into one
-// safe integer lets the composer hold its tiles in a flat table with no string ids and no per-call allocation.
 import type { PaintBand } from '../material';
 
-/** Field widths, most significant first. The packed key is 1 + 6 + 6 + 20 + 20 = 53 bits, the most a safe integer holds.
- *  band       0..1   'underlay' = 0, 'content' = 1 (PaintBand has no other value).
- *  scaleIndex 0..63  the caller's index into its scale ladder, not the scale itself.
- *  slice      0..63  a position's slices, in paint order.
- *  x, y       −2^19 .. 2^19−1 tile indices, biased by 2^19 so negative world coordinates pack. At scale 1 that
- *             reaches 2^19·512 ≈ 268M world units from the origin on each axis; at scale 16, about 16M. */
 const BAND_BITS = 1, SCALE_BITS = 6, SLICE_BITS = 6, XY_BITS = 20;
 const SCALE_MAX = (1 << SCALE_BITS) - 1, SLICE_MAX = (1 << SLICE_BITS) - 1;
 const XY_BIAS = 1 << (XY_BITS - 1), XY_SPAN = 1 << XY_BITS;
 const XY_MIN = -XY_BIAS, XY_MAX = XY_BIAS - 1;
 const TWO_XY = 2 ** XY_BITS;
-/** The limits a packed key holds, exported so a store can test a key before packing it: x and y in [−REACH, REACH), slice
- * below TILE_KEY_SLICES, scale index below TILE_KEY_SCALES. */
 export const TILE_KEY_REACH = XY_BIAS;
 export const TILE_KEY_SLICES = SLICE_MAX + 1;
 export const TILE_KEY_SCALES = SCALE_MAX + 1;
@@ -40,8 +30,6 @@ function field(name: string, value: number, min: number, max: number): number {
     return value;
 }
 
-/** The integer that names one tile. Throws a RangeError for any field outside the ranges above: a key that wrapped
- * would silently name another tile, so an out-of-range position is refused rather than packed. */
 export function tileKeyNum(band: PaintBand, scaleIndex: number, x: number, y: number, slice: number): number {
     const b = bandIndex(band);
     const s = field('scaleIndex', scaleIndex, 0, SCALE_MAX);
@@ -51,10 +39,7 @@ export function tileKeyNum(band: PaintBand, scaleIndex: number, x: number, y: nu
     return ((((b << SCALE_BITS) | s) << SLICE_BITS | l) * TWO_XY + tx) * TWO_XY + ty;
 }
 
-/** Empty slots hold −1, which no packed key can be: every key is non-negative. */
 const EMPTY = -1;
-/** Bit-mixes a packed key into a table index. The low and high 32 bits are taken with arithmetic, never through a
- * BigInt or a view, so hashing allocates nothing. */
 function hashOf(k: number): number {
     const lo = k % 4294967296, hi = (k - lo) / 4294967296;
     let h = Math.imul((lo | 0) ^ Math.imul(hi | 0, 0x85ebca6b), 0xc2b2ae35);
@@ -62,18 +47,11 @@ function hashOf(k: number): number {
     return h;
 }
 
-/**
- * A map from packed tile keys to values: open addressing with linear probing over a Float64Array of keys, so get, set
- * and delete allocate nothing (growth, when the table passes half full, is the only allocation and is amortised).
- * Deletion shifts later probe-chain entries back instead of leaving tombstones, so a table that churns through tiles
- * for an hour does not slow down.
- */
 export class TileKeyMap<V> {
     #keys: Float64Array;
     #values: (V | undefined)[];
     #mask: number;
     #size = 0;
-    /** The values() result, refilled on each call: the array the caller copies if it keeps it. */
     readonly #valueScratch: V[] = [];
 
     constructor(initialCapacity = 16) {
@@ -86,7 +64,6 @@ export class TileKeyMap<V> {
 
     get size(): number { return this.#size; }
 
-    /** The slot holding `k`, or −1. */
     #find(k: number): number {
         if (k === EMPTY) return -1;
         const keys = this.#keys, mask = this.#mask;
@@ -117,7 +94,6 @@ export class TileKeyMap<V> {
         this.#size++;
     }
 
-    /** Places a key known to be absent; the table has room for it. */
     #insertNew(k: number, v: V): void {
         const keys = this.#keys, mask = this.#mask;
         let i = hashOf(k) & mask;
@@ -142,8 +118,6 @@ export class TileKeyMap<V> {
         let i = this.#find(k);
         if (i < 0) return false;
         const keys = this.#keys, values = this.#values, mask = this.#mask;
-        // Backward shift: an entry after the hole moves into it unless its home slot lies cyclically after the hole, so
-        // every key stays reachable from its home slot without a tombstone.
         for (let j = (i + 1) & mask; keys[j] !== EMPTY; j = (j + 1) & mask) {
             const home = hashOf(keys[j]) & mask;
             const stays = i <= j ? (home > i && home <= j) : (home > i || home <= j);
@@ -156,7 +130,6 @@ export class TileKeyMap<V> {
         return true;
     }
 
-    /** Drops every entry and keeps the capacity, so a table refilled to the same size allocates nothing. */
     clear(): void {
         this.#keys.fill(EMPTY);
         this.#values.fill(undefined);

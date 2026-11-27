@@ -7,8 +7,6 @@ const upper = /\p{Lu}/u;
 const lower = /\p{Ll}/u;
 const bareDomain = /^(?:https?:\/\/|mailto:|(?:[\p{L}\p{N}-]+\.)+[\p{L}]{2,}(?:[^\p{L}\p{N}-]|$))/iu;
 
-// COV-34: URLs, addresses and paths are skipped before word segmentation;
-// otherwise their fragments would be offered as spelling corrections.
 export function spellWords(text: string): SpellWord[] {
     const words: SpellWord[] = [];
     for (const run of text.matchAll(/\S+/gu)) {

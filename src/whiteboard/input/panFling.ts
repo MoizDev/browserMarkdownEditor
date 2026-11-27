@@ -1,8 +1,6 @@
 import type { TouchPanSample } from '../../platform/render/scheduler';
 import type { RealSample } from './tool';
 
-/** The platform scheduler fits and damps velocity. Keep only its recent input
- * window here; this is camera metadata, never a reduction of authored samples. */
 export class PanFlingSamples {
     private values: TouchPanSample[] = [];
     append(sample: RealSample, surface: Readonly<{ x: number; y: number }>): void {

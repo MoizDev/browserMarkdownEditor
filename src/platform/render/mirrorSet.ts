@@ -5,7 +5,6 @@ import { renderTokenKey } from './tiles/geometry';
 import type { TileKey } from './tiles/geometry';
 import type { RenderToken } from './types';
 
-/** The App session owns this store. The platform reads pixels only into an explicit borrow. */
 export interface MirrorStorage<T extends object> {
     read(id: string): T | undefined;
     /** Idempotent real resource close/removal; never merely a counter decrement. */
@@ -23,13 +22,11 @@ export interface MirrorView {
 }
 
 export interface MirrorEntry {
-    /** Publication identity, not just a tile key; replacing pixels always uses a new id. */
     readonly id: string;
     readonly key: TileKey;
     readonly geometryDigest: string;
     readonly tier: 'exact' | 'low';
     readonly bytes: number;
-    /** Visible low coverage may be the last provider; hidden entries are all revocable. */
     readonly neededByCurrentFrame: boolean;
 }
 
@@ -49,7 +46,6 @@ export interface MirrorSetOptions<T extends object> {
     readonly governor: MemoryGovernor;
     readonly storage: MirrorStorage<T>;
     readonly createdAt: number;
-    /** Stable App-session callback; null means this session can no longer publish. */
     readonly currentToken: () => RenderToken | null;
 }
 
@@ -103,9 +99,6 @@ function all(actions: readonly (() => void)[]): void {
     if (errors.length) throw new AggregateError(errors, 'Mirror cleanup failed');
 }
 
-/** One instance belongs to one App-level session (§6.4:649), never a layer or module singleton.
- * Only metadata/leases are retained here. Session storage keeps canonical pixels across graph trips.
- */
 export class MirrorSet<T extends object> {
     readonly owner: MemorySessionOwner;
     private readonly governor: MemoryGovernor;
@@ -134,8 +127,6 @@ export class MirrorSet<T extends object> {
         this.currentToken = options.currentToken;
         if (!Number.isFinite(options.createdAt)) throw new RangeError('Invalid mirror creation time');
         this.hiddenAt = options.createdAt;
-        // Reloaded byte generations and PDF roles share a logical owner while old borrows drain.
-        // Registration identity must be per instance; token/owner checks remain the authority.
         const scope = `mirror-set:${crypto.randomUUID()}`;
         this.retained = this.governor.register({
             id: `${scope}:mirrors`, pool: 'cpu', kind: 'mirror', class: 'scene-cache', owner: this.owner,
@@ -151,10 +142,6 @@ export class MirrorSet<T extends object> {
         } catch (error) { this.retained.close(); throw error; }
     }
 
-    /** True transfers ownership, even if reentrant pressure immediately retires the new entry.
-     * The producer has already published pixels in session storage and must not close/return them
-     * after success. A refusal leaves its original cache/token authority untouched (§6.1:592).
-     */
     adopt(entry: MirrorEntry, token: RenderToken, lease: ByteLease): boolean {
         if (!Number.isSafeInteger(entry.bytes) || entry.bytes <= 0 || entry.bytes !== lease.bytes || !entry.id) {
             throw new RangeError('Invalid mirror allocation');
@@ -178,16 +165,12 @@ export class MirrorSet<T extends object> {
         } finally { this.adopting.delete(entry.id); }
     }
 
-    /** True only while id's pixels are held: the record is present and no close (retainViewport, evict, closeEntry) has claimed
-     * it. A closing record still waits for its borrows, so it reports false at once; finish() is the only path that removes one.
-     * By reading: the record is deleted exactly when its storage is closed, so presence without `closing` is the held state. */
     holds(id: string): boolean {
         if (this.released) return false;
         const record = this.entries.get(id);
         return record !== undefined && !record.closing;
     }
 
-    /** Commit only ids whose CPU copy survived. A sharp GPU frame alone is not a CPU mirror proof. */
     commitFrame(view: MirrorView, ids: readonly string[], sharp: boolean, protectedLow: ReadonlySet<string>): void {
         if (!this.isCurrent(view.token)) return;
         const unique = [...new Set(ids)];
@@ -205,7 +188,6 @@ export class MirrorSet<T extends object> {
         this.frame = { key: viewKey(view), entries: unique, sharp: sharp && complete };
     }
 
-    /** Camera changes drop exact pixels left behind; only the bounded near-low set is retained. */
     retainViewport(needed: ReadonlySet<string>): void {
         const discard = [...this.entries.values()].filter(record => !record.closing && !needed.has(record.entry.id));
         all(discard.map(record => () => this.closeEntry(record)));
@@ -216,7 +198,6 @@ export class MirrorSet<T extends object> {
         if (this.released) return;
         if (visible) { this.hiddenAt = null; this.lastVisibleAt = now; }
         else if (this.hiddenAt === null) this.hiddenAt = now;
-        // Governor eviction can reenter this set; metadata changes precede that callback.
         this.retained.updateActivity({ hiddenAt: this.hiddenAt, lastVisibleAt: this.lastVisibleAt, lastUsedAt: this.lastUsedAt });
     }
 
@@ -269,8 +250,6 @@ export class MirrorSet<T extends object> {
         };
     }
 
-    /** Hidden: exact → low → nothing. Visible: low providers needed by this frame stay pinned. Returns the bytes it closed:
-     * they stay charged as retiring until their borrows drain, so the governor counts them here, not by a later drop. */
     evict(bytes: number): number {
         if (!Number.isFinite(bytes) || bytes < 0) throw new RangeError('Invalid mirror eviction');
         let retired = 0;
@@ -303,7 +282,6 @@ export class MirrorSet<T extends object> {
         }
     }
 
-    /** Explicit retry for a failed owner close; no timer or optimistic lease return. */
     collect(): void {
         all([...this.entries.values()].filter(record => record.closing && !record.borrows).map(record => () => this.finish(record)));
     }

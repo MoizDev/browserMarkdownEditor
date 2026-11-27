@@ -15,7 +15,6 @@ import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface FrameMembershipOptions {
     readonly runtime: BoardRuntime;
-    /** Staged positions, before reparenting, fenced by the live gesture. */
     readonly doc: BoardDoc;
     readonly roots: readonly NodeId[];
     readonly geometry: BoardGeometryScope;
@@ -25,7 +24,6 @@ export interface FrameMembershipOptions {
 }
 export interface FrameMembershipProjection { readonly doc: BoardDoc; readonly ops: readonly NodeSetOp[] }
 
-/** Exact half-plane classification of the semantic frame body and inherited clips. */
 function containsFrame(doc: BoardDoc, frame: Readonly<FrameNode>, point: Vec2): boolean {
     const pose = worldPose(doc, frame.id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
     return pointInTransformedFrame(point, { x: 0, y: 0, width: frame.w, height: frame.h }, [c, s, -s, c, pose.x, pose.y]);
@@ -39,7 +37,6 @@ function insideFocus(doc: BoardDoc, parent: ParentId, focus: ParentId): boolean 
     }
     throw new Error('Frame focus ancestry is too deep');
 }
-/** Prepare centre-based frame entry/exit on the same staged translation and history transaction. */
 export async function projectFrameMembership(options: FrameMembershipOptions): Promise<FrameMembershipProjection> {
     const { runtime, doc, geometry, signal } = options, live = runtime.session.doc, revision = live.rev, owner = runtime.session.owner;
     const selection = runtime.selection.getSnapshot(), selected = new Set(options.roots);
@@ -74,8 +71,6 @@ export async function projectFrameMembership(options: FrameMembershipOptions): P
         const b = geometry.logicalBounds(id), point = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
         if (![point.x, point.y].every(Number.isFinite)) throw new RangeError('Frame membership centre overflows');
         let parent: ParentId = node.parent;
-        // Default, calibration cut by owner: frame membership follows the translated logical centre.
-        // Exit any direct frame whose interior no longer contains that centre.
         for (let depth = 0; depth < 64 && !isSheetParent(doc, parent); depth++) {
             const ancestor = doc.nodes.get(parent as NodeId); if (!ancestor) throw new Error('Frame membership parent disappeared');
             if (ancestor.kind !== 'frame' || containsFrame(doc, ancestor, point)) break;

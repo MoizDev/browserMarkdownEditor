@@ -46,17 +46,13 @@ import { INK_GEOMETRY_CRASHED } from '../workers/geometryProtocol';
 import { inkRealisationScale, pictureTileWorld } from './paintRequestScope';
 import { loadChunk } from '../../platform/chunkLoad';
 import { yieldToHost } from '../../platform/yieldToHost';
-/** The audit surface of the board's paint services: every counter below is `board-paint:<event>`. */
 const AUDIT = 'board-paint';
-/** A link card's stored preview picture and favicon, as the document holds them; other nodes have none. */
 function previewMediaOf(doc: Pick<BoardDoc, 'media'>, node: Readonly<Node>): PreviewMedia | undefined {
     if (node.kind !== 'linkcard' || !node.preview) return undefined;
     return { image: node.preview.image ? doc.media.get(node.preview.image) : undefined,
         favicon: node.preview.favicon ? doc.media.get(node.preview.favicon) : undefined };
 }
-/** The idle geometry budget: about 16 MB of the 32 MB CPU grant, so a few thousand strokes' geometry stays cached. */
 const IDLE_GEOMETRY_BYTES = 16 * 1024 * 1024;
-/** Resident size of one prepared geometry, estimated from its typed arrays and records (see residentBytes). */
 function preparedBytes(prepared: Prepared): number {
     let bytes = 512 + prepared.key.length * 2 + prepared.signature.length * 16;
     for (const chunk of prepared.ink ?? []) bytes += inkChunkBytes(chunk);
@@ -64,7 +60,6 @@ function preparedBytes(prepared: Prepared): number {
     if (prepared.connector) bytes += connectorBytes(prepared.connector);
     return bytes;
 }
-/** A dense plan's resolved nodes, valid for one variant of the paint inputs that resolution reads. */
 interface SharedResolution { readonly cache: ResolvedNodeCache; readonly variant: string }
 
 
@@ -82,8 +77,6 @@ const allocationScratch = new Float64Array(4);
 function withAllocation(paint: PaintNode, geometry: Prepared, context: SceneResolveContext): PaintNode {
     const ink = geometry.bounds.ink;
     if (!ink) return paint;
-    // Rewalking every realised command for every dense tile left a 1000-polyline view blank.
-    // The canonical prepared ink envelope already covers all this node's contributions.
     transformBox(allocationScratch, 0, ink, 0, context.world);
     const [x, y, right, bottom] = allocationScratch;
     const bounds = { x, y, width: nextUp(right - x), height: nextUp(bottom - y) };
@@ -94,8 +87,6 @@ function matrix(doc: BoardDoc, id: NodeId): Affine {
     const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
     return [c, s, -s, c, pose.x, pose.y];
 }
-/** The connector with each end whose target has no attachment surface detached: that end paints from its own free point, as a
- * connector whose target is gone does. Left attached, the resolver answers 'pending' for it, and the frame never presents. */
 function unattachedWhere(node: ConnectorNode, surfaces: ReadonlyMap<NodeId, AttachmentSurface>): ConnectorNode {
     const start = node.start.attach && !surfaces.has(node.start.attach.target) ? { ...node.start, attach: null } : node.start;
     const end = node.end.attach && !surfaces.has(node.end.attach.target) ? { ...node.end, attach: null } : node.end;
@@ -142,8 +133,6 @@ function connectorPrepared(key: string, node: Readonly<Node> & { kind: 'connecto
     return { key, connector: geometry, bounds: { ink: [local[0] - half, local[1] - half, local[2] + half, local[3] + half] } };
 }
 
-/** One session service resolves the same local geometry for Scene, paint and
- * export. Pinned read-side documents are passed explicitly after every await. */
 export function createBoardRenderServices(options: {
     readonly doc: BoardDoc;
     readonly samples: SampleStoreReader;
@@ -151,22 +140,14 @@ export function createBoardRenderServices(options: {
     readonly token: RenderToken;
     readonly palettes?: Readonly<{ light: PaintPalette; dark: PaintPalette }>;
     readonly deviceScale?: number;
-    /** Main-window transport only; worker-hosted admission reuses its own cooperative canonical job. */
     readonly coverageWorker?: boolean;
     readonly fonts?: BoardFonts;
-    /** The session's cache allocator for derived residency: idle geometry and stroke LOD levels. Absent, nothing is charged. */
     readonly derivedMemory?: (evict: (bytes: number) => void) => Pick<MemoryCacheHandle, 'reserve' | 'release' | 'close'>;
-    /** Hears the bytes of stroke geometry alive now (built by these services and not yet collected), whoever holds it: frames, caches,
-     * picks. Absent, nothing is reported. */
     readonly modelMemory?: (bytes: number) => void;
     cooperate?(): Promise<void>;
 }) {
-    // Every prepared geometry is kept under its own geometry key (unique per build), indexed by node. A frame can ask for one node
-    // at several precisions and from two document states (a preview and the committed board), so a lookup matches the precision and
-    // the signature, and no other variant is dropped on a store: the byte budget ages them out.
     const cached = new Map<string, Prepared>(), variantsOf = new Map<NodeId, Set<string>>();
     const listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
-    // Strokes left out of the picture because their geometry crashed the geometry worker; their listeners hear the count.
     const failedStrokes = new Set<NodeId>(), failureListeners = new Set<(count: number) => void>();
     let failureAnnounce = false;
     const strokeFailed = (id: NodeId) => {
@@ -177,8 +158,6 @@ export function createBoardRenderServices(options: {
         queueMicrotask(() => { failureAnnounce = false; for (const listener of [...failureListeners]) listener(failedStrokes.size); });
     };
     const sessionRasters = new SessionDenseRasters();
-    // Every coverage these services built, counted until it is collected: what a board's geometry costs while anything holds it.
-    // The frames that draw it, the idle cache and the surviving index all share one object per chunk, so it is counted once.
     let liveModelBytes = 0, modelReported = -1, modelReport = false;
     const reportModel = () => {
         if (modelReport || !options.modelMemory) return;
@@ -201,29 +180,23 @@ export function createBoardRenderServices(options: {
         }
         reportModel();
     };
-    // An opaque service incarnation binds the full owner token without putting an arbitrarily
-    // long document id into the worker protocol's 128-character session field.
     const workerSession = `render/${options.token.session}/${options.token.bytesGeneration}/${crypto.randomUUID()}`;
     const coverageWorker = typeof window !== 'undefined' && options.coverageWorker !== false;
     const textIds = new Set<NodeId>();
     const changeScopes = new Set<ReadonlyMap<NodeId, Prepared>>();
     let serial = 0, disposed = false, ownerReleased = false, holders = 1;
-    // One ladder per stroke, valid for its geometry signature: an edit replaces the signature, so the old
-    // ladder is disposed at the next prepare, and the cache trim and session end release the rest.
     const inkLadders = new Map<NodeId, { readonly signature: readonly unknown[]; readonly ladder: InkLodLadder }>();
     const evictInkLadders = (bytes: number): number => {
         let freed = 0;
         for (const { ladder } of inkLadders.values()) { if (freed >= bytes) break; freed += ladder.evict(bytes - freed); }
         return freed;
     };
-    // Idle entries are bounded by bytes, and each lease is charged to the derived handle, so the governor reclaims them first.
     const idle = new Map<string, { readonly node: NodeId; readonly bytes: number; readonly lease: ByteLease | null }>();
     let idleBytes = 0;
     const dropInkLadder = (id: NodeId) => {
         const entry = inkLadders.get(id);
         if (entry) { entry.ladder.dispose(); inkLadders.delete(id); }
     };
-    // Drops one variant. Replacing or releasing an entry keeps its ladder, which the caller may have just rebuilt for the new signature.
     const dropVariant = (key: string) => {
         const entry = idle.get(key), value = cached.get(key);
         cached.delete(key);
@@ -236,11 +209,6 @@ export function createBoardRenderServices(options: {
         if (entry.lease) derived?.release(entry.lease);
     };
     const forgetIdle = (id: NodeId) => { for (const key of [...(variantsOf.get(id) ?? [])]) dropVariant(key); };
-    // Stroke geometry outlives its idle entry while anything draws it: a presented frame's ink items hold the very coverage array
-    // the build returned. Each build leaves a small record (key, signature, bounds) holding that array weakly, so a later stream
-    // takes the geometry that is still in memory instead of building a second copy of it. Evicted from the idle budget and asked
-    // again by the next stream (view, whole scene, a dense tile), every stroke of a dense board was built again: measured, a
-    // 451-stroke notebook opened with 2,519 builds of 905 variants. The record goes when the coverage is collected.
     interface Surviving { readonly key: string; readonly signature: readonly unknown[]; readonly bounds: LocalGeometryBounds;
         readonly inkPrecision?: string; readonly inkLod?: boolean; readonly ink: WeakRef<readonly InkCoverage[]> }
     const surviving = new Map<NodeId, Map<string, Surviving>>();
@@ -270,7 +238,6 @@ export function createBoardRenderServices(options: {
         if (!bands.size) surviving.delete(id);
         return undefined;
     };
-    // A node's prepared geometry for `signature`, whichever precision it was prepared for (bounds and changes do not depend on it).
     const variantFor = (id: NodeId, signature: readonly unknown[], accept: (value: Prepared) => boolean = () => true): Prepared | undefined => {
         for (const key of variantsOf.get(id) ?? []) {
             const value = cached.get(key);
@@ -278,25 +245,15 @@ export function createBoardRenderServices(options: {
         }
         return survivingFor(id, signature, accept);
     };
-    // Marks an idle entry most recently used. A surviving geometry (survivingFor) is not an idle entry and stays out of the budget.
     const touch = (value: Prepared): void => { if (cached.delete(value.key)) cached.set(value.key, value); };
-    // One build per node, precision and signature at a time: a second stream asking while it runs takes its answer. Without it the
-    // view and whole-scene streams, which share one realisation per stroke on a device, built the same stroke side by side.
     const building = new Map<string, { readonly signature: readonly unknown[]; readonly promise: Promise<Prepared>; readonly signal: AbortSignal }>();
-    // The band a paint stream last resolved an ordinary stroke at: what a bounds-only build (realize) builds, so the two share it.
     let lastPaintPrecision: Pick<SceneResolveContext, 'deviceScale' | 'allowInkLod' | 'sensitive'> | null = null;
-    // The geometry a visible item draws at its wanted band, else at the band before the last crossing. A missing wanted band is
-    // counted (geometry:band-miss) whether or not the previous band serves it; both missing leaves the caller a counted stand-in.
     const variantForBand = (id: NodeId, signature: readonly unknown[], wanted: string, previous: string | null): Prepared | undefined => {
         const exact = variantFor(id, signature, value => value.inkPrecision === wanted);
         if (exact) return exact;
         auditCount(AUDIT, 'geometry:band-miss');
         return previous === null ? undefined : variantFor(id, signature, value => value.inkPrecision === previous);
     };
-    // The zoom's pins (pinVisible): the visible nodes. Every variant of a pinned node is kept, whatever its band: a sensitive stroke is
-    // keyed at another scale, and a band crossing holds the previous band. Matched at eviction, so a variant stored after the pins
-    // were set (in the same frame) is pinned too. A pin lapses PIN_TTL_MS after the zoom's last pin, so a zoom that ends with no
-    // further prepare (the settled board asks for none) still lets the governor reclaim its geometry. Released at rest too.
     const PIN_TTL_MS = 1000;
     let pinnedNodes = new Set<NodeId>(), pinnedAt = -Infinity;
     const pinsLive = (): boolean => {
@@ -313,23 +270,16 @@ export function createBoardRenderServices(options: {
         auditCount(AUDIT, 'geometry:pin', pinnedNodes.size);
     };
     const releasePins = (): void => { pinnedNodes = new Set(); pinnedAt = -Infinity; };
-    // Least recently used first; a budget eviction also drops the entry's ladder once no precision of its node has a geometry to serve.
-    // Null when every idle entry is pinned: the caller stops (a pinned zoom variant is never the budget's to take).
     const evictOldestIdle = (): { readonly bytes: number; readonly charged: number } | null => {
         let gone: string | undefined;
         for (const key of cached.keys()) if (!isPinned(key)) { gone = key; break; }
         if (gone === undefined) return null;
         const entry = idle.get(gone);
-        // A budget eviction of a node a later pass needs again is a rebuild; the count shows whether the idle budget is too small.
         auditCount(AUDIT, 'geometry:evict');
         dropVariant(gone);
         if (entry && !variantsOf.has(entry.node)) dropInkLadder(entry.node);
         return { bytes: entry?.bytes ?? 0, charged: entry?.lease?.bytes ?? 0 };
     };
-    // The governor's request: idle geometry first (rebuildable from the document), then stroke ladders, then the session's resolved
-    // paint (rebuilt by the next resolve). Left out, the resolved paint was the one derived charge no trim could take: an old board of
-    // 450 pen strokes held most of the 32 MiB CPU pool in it, every frame was refused, idle geometry was trimmed and rebuilt 379 times
-    // in 15 s, and the pane stayed on "Waiting for memory to draw this board…" for good (measured, CfT 157, M4 Pro, one pane).
     const evictDerived = (bytes: number) => {
         let freed = 0;
         while (freed < bytes) { const evicted = evictOldestIdle(); if (!evicted) break; freed += evicted.charged; }
@@ -337,10 +287,6 @@ export function createBoardRenderServices(options: {
         if (freed < bytes && sessionResolved) { auditCount(AUDIT, 'geometry:evict-resolved'); freed += sessionResolved.evict(); }
     };
     const derived = options.derivedMemory?.(evictDerived);
-    // The session's resolved paint, one revision at a time. A node resolves to the same items in every stream and frame of one
-    // variant (revision, sheet, theme, precision, fonts), so a direct frame, a candidate pass and a dense plan of one revision each
-    // paint a node once. By reading: the paint re-ran per stream, and the first picture of a 5,400-item board prepared each candidate
-    // three times (solo/whiteboard.md). Its charge is the derived handle's, released with the session.
     const sessionResolved = derived ? new ResolvedNodeCache(derived) : undefined;
     const inkLadder = (id: NodeId, signature: readonly unknown[]): InkLodLadder | undefined => {
         if (!derived || disposed) return undefined;
@@ -353,13 +299,9 @@ export function createBoardRenderServices(options: {
     };
     const admit = (charged: number): { readonly lease: ByteLease | null } | null => {
         if (!derived) return { lease: null };
-        // Work ahead of need (ReserveOptions.prefetch): idle geometry only saves a rebuild. Asked as a normal reservation, its refusal
-        // was pool pressure: it trimmed the frame's own working memory and stepped the app's quality down for a cache insert.
         const lease = derived.reserve(charged, { prefetch: true });
         return lease ? { lease } : null;
     };
-    /** Stores a prepared geometry as the newest idle entry. Its stroke ladder counts toward the budget too. A charge the
-     * governor still denies after idle bytes are freed leaves the entry out: the cache only ever saves a rebuild. */
     const storeIdle = (id: NodeId, prepared: Prepared): void => {
         const key = prepared.key;
         const ladder = inkLadders.get(id), charged = preparedBytes(prepared);
@@ -380,8 +322,6 @@ export function createBoardRenderServices(options: {
     };
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
     const text = createBoardTextGeometry({ fonts: options.fonts, cooperate: options.cooperate, onFontEpoch() {
-        // An id leaves the set only when the session doc no longer holds its node AND no geometry is kept for it: a deleted node
-        // whose geometry is gone has nothing to re-prepare, so the set stays the text nodes the session still has or keeps.
         for (const id of [...textIds]) {
             const kept = (variantsOf.get(id)?.size ?? 0) > 0;
             forgetIdle(id);
@@ -400,7 +340,6 @@ export function createBoardRenderServices(options: {
         for (const id of [...inkLadders.keys()]) dropInkLadder(id);
         sessionResolved?.dispose();
         derived?.close();
-        // The services' own count ends with them; geometry still drawn by a closing pane goes with it.
         if (options.modelMemory) { liveModelBytes = 0; modelReported = 0; options.modelMemory(0); }
     };
     const signature = (node: Readonly<Node>, doc: BoardDoc): readonly unknown[] => {
@@ -422,12 +361,7 @@ export function createBoardRenderServices(options: {
         const lod = !!context?.allowInkLod && context.deviceScale !== undefined && !context.sensitive;
         return { scale, lod, key: `${scale}:${lod ? 'lod' : 'fine'}` };
     };
-    // Wanted bands building in the background during a zoom: one build per node and band at a time.
     const warming = new Set<string>(), warmFailed = new Set<string>();
-    // Warm builds share one controller, ended only with the services: a band crossing aborts the request's paint, and a build tied to
-    // it would restart from zero at every crossing. Shared, the warm builds a task asks for travel to the geometry workers as one
-    // batch (inkCoverageClient.ts keys a batch by its signal). A failure other than the abort is counted, and that node and band
-    // is not retried (the previous band serves).
     const warmController = new AbortController();
     const warmBand = (borrowed: Readonly<Node>, doc: BoardDoc,
         context: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousDeviceScale'>, key: string): void => {
@@ -444,10 +378,7 @@ export function createBoardRenderServices(options: {
         const precision = node.kind === 'stroke' ? inkPrecision(context) : undefined;
         const old = variantFor(node.id, before, value => value.inkPrecision === precision?.key);
         if (old) { touch(old); auditCount(AUDIT, 'geometry:hit'); return old; }
-        // A band crossing during a live zoom: the stroke draws its previous band's geometry (a band miss) while the wanted band builds
-        // in the background, so the zoom frame does not wait for the build. Only the async producer takes this (the live paint path).
         if (precision && context?.previousDeviceScale !== undefined) {
-            // The previous band of this stroke: sensitivity applies to it as to the wanted band, so a selected stroke's previous band is its own.
             const previousKey = inkPrecision({ ...context, deviceScale: context.previousDeviceScale }).key;
             const held = variantForBand(node.id, before, precision.key, previousKey);
             if (held) { warmBand(borrowed, doc, context, `${node.id}:${precision.key}`); return held; }
@@ -482,7 +413,6 @@ export function createBoardRenderServices(options: {
             const ink = await buildStrokeCoverage(node, options.samples, {
                 deviceScale: precision!.scale, cooperate: options.cooperate, signal,
                 worker: coverageWorker ? async (points, parameters, style, range, coverage) => {
-                    // Bounded like every lazy chunk on a path a person waits on: a stalled fetch here held "Loading drawing…".
                     const { prepareInkCoverageInWorker } = await loadChunk(() => import('../workers/inkCoverageClient'));
                     return prepareInkCoverageInWorker(points, parameters, style, range, coverage, identity, signal, () => {
                         const current = doc.nodes.get(node.id);
@@ -494,20 +424,16 @@ export function createBoardRenderServices(options: {
             countModel(ink);
             result = strokePrepared(key, ink);
         } else if (node.kind === 'connector') {
-            // Capture every dependency before awaiting fonts/geometry. An export
-            // pin never follows a later target move in the live document.
             const world = matrix(doc, node.id), inverseWorld = inverse(world, 1e12);
             if (!inverseWorld) throw new RangeError('Connector transform is not invertible');
             const targets = new Map<NodeId, { node: Node; world: Affine; clips: AttachmentSurface['clips'] }>();
             for (const end of [node.start, node.end]) if (end.attach && !targets.has(end.attach.target)) {
                 const target = doc.nodes.get(end.attach.target);
-                // A target the doc does not hold has no surface: its end is painted unattached (unattachedWhere), not thrown on.
                 if (!target) continue;
                 targets.set(target.id, { node: createNode(target), world: matrix(doc, target.id), clips: frameClips(doc, target) });
             }
             const surfaces = new Map<NodeId, AttachmentSurface>();
             for (const [id, target] of targets) {
-                // A group aggregates its children in Scene and has no geometry of its own, so it is never prepared here.
                 if (target.node.kind === 'group') continue;
                 const prepared = await prepare(target.node, doc, signal);
                 const surface = prepared.vector?.attachments;
@@ -542,18 +468,10 @@ export function createBoardRenderServices(options: {
         if (twin) { touch(twin); auditCount(AUDIT, 'geometry:twin'); return twin; }
         const prepared: Prepared = { ...result, signature: before,
             ...(precision ? { inkPrecision: precision.key, inkLod: precision.lod } : {}) };
-        // Retained source items own their geometry by reference after eviction, and a later lookup finds it there (noteSurviving).
         storeIdle(node.id, prepared);
         noteSurviving(node.id, prepared);
         return prepared;
     };
-    // A pick reuses the coverage the painter already built when that coverage is precise enough at the pick's zoom. Every
-    // InkCoverage carries its own certified error (centre, radius, dash phase), and the pick jobs widen their hit/miss
-    // decisions by exactly that error, so ANY certified variant answers a hit test correctly; precision only decides how
-    // close to the band's edge an answer stays undecided. Under PICK_COVERAGE_ERROR_CSS the edge moves by less than an
-    // eighth of a CSS px against a 4 CSS px pointer margin. The pick asked for its own variant before (device scale 3,
-    // never LOD), so the first hover or marquee over fresh ink waited on worker coverage jobs for geometry already on screen
-    // (measured: after 12 strokes painted, the first hover sweep counted geometry:build 10, the second 1).
     const PICK_COVERAGE_ERROR_CSS = 1 / 8;
     const pickVariant = (borrowed: Readonly<Node>, doc: BoardDoc, cssPerWorld: number): Prepared | undefined => {
         if (borrowed.kind !== 'stroke' || !(cssPerWorld > 0) || !Number.isFinite(cssPerWorld)) return undefined;
@@ -568,9 +486,6 @@ export function createBoardRenderServices(options: {
         touch(value); auditCount(AUDIT, 'geometry:pick-reuse');
         return value;
     };
-    // A native copy event cannot await fonts, images, or a worker. These are the
-    // canonical CPU producers at the current face epoch, not persisted b hints.
-    // Mutation access below still separately requires fully loaded text faces.
     const prepareNow = (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
         context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): Prepared => {
         check(signal);
@@ -593,7 +508,6 @@ export function createBoardRenderServices(options: {
             for (const end of [node.start, node.end]) if (end.attach && !seen.has(end.attach.target)) {
                 seen.add(end.attach.target);
                 const target = doc.nodes.get(end.attach.target);
-                // A missing target, a group, or an opaque node has no copy geometry: its end is painted unattached (unattachedWhere).
                 if (!target || target.kind === 'group' || target.kind === 'opaque') continue;
                 const surface = prepareNow(target, doc, signal).vector?.attachments;
                 if (!surface) continue;
@@ -638,13 +552,10 @@ export function createBoardRenderServices(options: {
         const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
         return {
             cooperate: options.cooperate, ...(orderedIds ? { orderedIds } : {}),
-            // Physical-page capture owns its final clip. A stored pg is an
-            // origin, not a certificate that overflowing geometry is invisible.
             intersectsPage: () => true,
             async resolve(node, context, itemSignal) {
                 if (node.kind === 'group') return { content: [] };
                 if (node.kind === 'stroke' && !context.sensitive) lastPaintPrecision = { deviceScale: context.deviceScale, allowInkLod: context.allowInkLod, sensitive: false };
-                // A picture's tiles depend on the stream's own world, so only world-independent resolutions are shared.
                 const reuse = shared && node.kind !== 'picture' ? shared : undefined;
                 const known = reuse?.cache.get(reuse.variant, node.id, context.sensitive);
                 if (known) { auditCount(AUDIT, 'paint:resolve-hit'); return known; }
@@ -652,9 +563,6 @@ export function createBoardRenderServices(options: {
                 let geometry: Prepared;
                 try { geometry = await prepare(node, doc, itemSignal, context); }
                 catch (error) {
-                    // A stroke whose geometry stops the geometry worker is left out of the picture, and the board says so: failing
-                    // its paint failed the whole frame, and on canvas2d the board ("Could not open canvas"). It is never asked
-                    // again on this page (inkCoverageClient.ts), so it costs no more crashes; the file keeps it as it is.
                     if (node.kind !== 'stroke' || !(error instanceof Error) || error.name !== INK_GEOMETRY_CRASHED) throw error;
                     strokeFailed(node.id);
                     return { content: [] };
@@ -682,20 +590,15 @@ export function createBoardRenderServices(options: {
         return { ...source, sessionRasters, sourceWorld: world,
             ...(text.fonts.epoch === epoch ? { rasterVariant: variant } : {}) };
     };
-    // What resolution reads beyond the node itself: a shared resolution is reused only while every one of these holds.
     const resolutionVariant = (doc: BoardDoc, request: ScenePaintRequest, sourceToken: RenderToken) => JSON.stringify([
         doc.rev, sourceToken.vaultEpoch, sourceToken.documentId, sourceToken.bytesGeneration, sourceToken.session,
         request.sheetId, request.theme, request.deviceScale ?? null, !!request.allowInkLod,
         palettes[doc.kind === 'whiteboard' ? request.theme : 'light'].revision, text.fonts.epoch,
     ]);
-    /** The resolution a paint shares: the caller's dense-plan cache when it names one, else the session's cache of this revision. */
-    /** `null`: the caller keeps what it reads itself (a dense plan's node buffer), so no cache also holds it. */
     const sharedResolution = (doc: BoardDoc, request: ScenePaintRequest, sourceToken: RenderToken, given?: ResolvedNodeCache | null): SharedResolution | undefined => {
         const cache = given === null ? undefined : given ?? sessionResolved;
         return cache ? { cache, variant: resolutionVariant(doc, request, sourceToken) } : undefined;
     };
-    // Frame identity matches `paint`: the variant is withdrawn if the font epoch moved while the
-    // stream was being consumed, so a frame never claims a raster from a superseded face set.
     const paintStream = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder,
         sourceToken: RenderToken = options.token, resolved?: ResolvedNodeCache | null): ScenePaintNodeStream => {
         const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch, sourceToken);
@@ -748,7 +651,6 @@ export function createBoardRenderServices(options: {
         const revision = doc.rev, host = doc.host, seen = new Set<NodeId>(), queue = [...ids];
         const captured = new Map<NodeId, Readonly<Node>>(), children = new Map<NodeId, readonly Node[] | undefined>();
         const incidents = new Map<NodeId, ReadonlySet<NodeId> | undefined>();
-        // A candidate's explicit current callback fences the immutable overlay's base too.
         const fenced = doc === options.doc || current !== undefined;
         const fast = () => {
             check(signal);
@@ -879,9 +781,6 @@ export function createBoardRenderServices(options: {
         storeIdle(node.id, { key, vector, bounds: value, signature: signature(node, options.doc) });
         return value;
     };
-    // A connector's conservative envelope may name an attach target the connector hint cannot box alone (a stroke,
-    // a polyline or a group). Such a target's own genuine geometry, carried by its pose, is the only source; a group
-    // is the union of its children's boxes. Depth is bounded so a cyclic attachment refuses instead of recursing.
     let envelopeDepth = 0;
     const worldEnvelope = (node: Readonly<Node>): Box | undefined => {
         if (envelopeDepth >= 8) return undefined;
@@ -907,9 +806,6 @@ export function createBoardRenderServices(options: {
     };
     return {
         text, bounds, changeGeometry, retainRenderer, variantForBand, pinVisible, releasePins,
-        /** The stroke band key the producers and pinVisible use, for a device scale and the flags the paint request carries. */
-        /** Actual source admission belongs to the App owner. This captures publication identity
-         * for NEW work over the same canonical model/cache; existing sources are never retagged. */
         capturePaintBinding(token: RenderToken) {
             check();
             const captured = Object.freeze({ ...token });
@@ -927,7 +823,6 @@ export function createBoardRenderServices(options: {
                 },
             });
         },
-        /** `cssPerWorld`: the pick's zoom. With it, a stroke's already-built coverage serves the pick when it is precise enough there. */
         async prepareForPick(node: Readonly<Node>, signal: AbortSignal, doc: BoardDoc = options.doc, cssPerWorld?: number): Promise<Prepared> {
             check(signal);
             return (cssPerWorld === undefined ? undefined : pickVariant(node, doc, cssPerWorld)) ?? await prepare(node, doc, signal);
@@ -964,15 +859,8 @@ export function createBoardRenderServices(options: {
                 try { for (const lease of leases) lease.release(); } finally { releaseHolder(); }
             } };
         },
-        /** Preflight actual font/ink inputs outside the synchronous writer.
-         * Staged transforms still resolve through the doc passed by apply. */
         prepareChangeGeometry: (ids: Iterable<NodeId>, signal: AbortSignal) => warmChangeGeometry(ids, signal),
-        /** Commands may touch more than the idle cache's 256 nodes. Their
-         * exact records/resources stay pinned until the synchronous writer ends. */
         async pinChangeGeometry(ids: Iterable<NodeId>, signal: AbortSignal, doc: BoardDoc = options.doc, current?: () => boolean): Promise<{ release(): void }> {
-            // A pre-existing Scene/export pin owns a renderer holder. Its
-            // asynchronous geometry may start after the App owner has closed;
-            // disposed (zero holders), not ownerReleased, ends that authority.
             check(signal);
             const scope = new Map<NodeId, Prepared>(), leases: { release(): void }[] = [];
             try {
@@ -987,21 +875,12 @@ export function createBoardRenderServices(options: {
                 try { for (const lease of leases) lease.release(); } finally { releaseHolder(); }
             } };
         },
-        /** Conservative native b hint only. Current-font TX3 layout is real
-         * geometry, but a conservative connector/ink envelope is NOT a Scene
-         * exact-bound or page-placement capability. */
         encoderLocal: localEnvelope,
         retainNode: (node: Readonly<Node>) => retainPaintNodeResources(node, options.samples, options.media),
-        // Bounds do not depend on the band: any geometry of the node's current signature answers, whichever band it was built at.
-        // A missing one is built at the band the paint last asked for, so the stream that draws it shares the build. Built at the
-        // default band, the camera fit of a converted 5,640-stroke drawing built every stroke a second time, at a band no frame
-        // drew (measured: 5,640 extra builds beside the view's, the open's whole second half).
         async realize(node: Readonly<Node>, signal: AbortSignal) {
             const known = variantFor(node.id, signature(node, options.doc));
             try { return (known ?? await prepare(node, options.doc, signal, lastPaintPrecision ?? undefined)).bounds; }
             catch (error) {
-                // A stroke left out of the picture (see `resolve`) is still placed by a box from its samples: failing here failed
-                // the scene, and the board did not open.
                 if (node.kind !== 'stroke' || !(error instanceof Error) || error.name !== INK_GEOMETRY_CRASHED) throw error;
                 strokeFailed(node.id);
                 return { ink: strokeSampleBounds(createNode(node) as StrokeNode, options.samples) };
@@ -1013,15 +892,11 @@ export function createBoardRenderServices(options: {
             return paint(doc, request, signal, ids);
         },
         subscribeInvalidation(listener: (ids: ReadonlySet<NodeId>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-        /** Hears how many strokes this document has left out of its picture because their geometry crashed the geometry worker:
-         * at once when some already are, and on each new one. */
         subscribeStrokeFailures(listener: (count: number) => void) {
             failureListeners.add(listener);
             if (failedStrokes.size) listener(failedStrokes.size);
             return () => { failureListeners.delete(listener); };
         },
-        /** No view shows the document: gives back everything derived it holds (idle geometry, stroke levels, resolved paint), all of it
-         * rebuildable. A geometry a frame still draws is found again through `surviving` while that frame lives. */
         releaseDerived() {
             if (disposed) return;
             releasePins();

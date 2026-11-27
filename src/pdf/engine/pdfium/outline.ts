@@ -5,7 +5,6 @@ import type { PdfiumRuntime } from './loader';
 import { pdfiumDestination } from './links';
 import { readPdfiumUtf16, withPdfiumMemory } from './memory';
 
-/** The document owns these bookmark handles; only copied strings and targets escape. */
 export function pdfiumOutline(runtime: PdfiumRuntime, document: number, pageCount: number,
     geometryFor: (page: number) => PageGeometry, limits: { maxDepth: number; maxNodes: number }): RawOutlineNode[] {
     const maxDepth = Math.min(64, limits.maxDepth), maxNodes = Math.min(20_000, limits.maxNodes);

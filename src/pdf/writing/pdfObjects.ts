@@ -1,4 +1,3 @@
-// Only serializes objects this writer creates. It is deliberately not a PDF parser.
 const encoder = new TextEncoder();
 const MAX_OUTPUT = 0x7fffffff;
 

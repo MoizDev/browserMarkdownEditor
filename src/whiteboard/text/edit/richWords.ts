@@ -3,13 +3,10 @@ import { yieldToHost } from '../cooperative';
 import type { RichText } from '../richText';
 import type { EditSelection } from './host';
 
-/** Pane-owned cache; immutable blocks can be shared across document revisions. */
 export class RichWordNavigation {
     private readonly boundaries = new TextBoundaries();
     private priming: AbortController | undefined;
 
-    /** Warms the wordless-block proofs of a value opened for editing, in host-yielding slices. Advisory only:
-     * word motion computes any missing proof itself, so a warm that fails or is abandoned is never visible. */
     prime(text: RichText): void {
         this.priming?.abort();
         const priming = this.priming = new AbortController();

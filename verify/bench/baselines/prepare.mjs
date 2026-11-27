@@ -1,4 +1,3 @@
-// Build preparation only: no browser and no baseline numbers. Never run it during a timed run.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -12,7 +11,6 @@ import { invocations, SEED } from '../../fixtures/catalog.mjs';
 const exec = promisify(execFile);
 const [referenceArg, reuseArg] = process.argv.slice(2);
 const reuse = reuseArg ? JSON.parse(await readFile(resolve(reuseArg), 'utf8')) : null;
-// The frozen reference is a separate, clean checkout of the commit to compare against.
 const reference = requiredInput('BME_REFERENCE_WORKTREE', 'a clean checkout of the frozen reference commit (or pass its path as the first argument)', referenceArg ?? process.env.BME_REFERENCE_WORKTREE);
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const git = async (...args) => (await exec('git', args, { cwd: reference })).stdout.trim();
@@ -47,7 +45,6 @@ for (const mode of reuse ? [] : ['production', 'benchmark']) {
     if (mode === 'production' && plants.length) throw new Error(`Production contains C9 hook plant: ${plants.join(', ')}`);
     metadata.builds[mode] = { ...identity, mode, sourceCommit: commit, configSha256: sha(await readFile(configPath)), plantChunks: plants };
 }
-// This is source availability, not a claim that a runtime path mounted or that a hook works.
 for (const [name, path, text] of [
     ['vault', 'src/App.tsx', 'reportVault'], ['editor', 'src/editor/editorPerf.ts', 'perfRoot'],
     ['tree', 'src/components/FileExplorer.tsx', 'perfRoot'], ['graph', 'src/utils/graph.ts', 'perfRoot'],

@@ -76,7 +76,6 @@ export function subscribePdfPassword(listener: () => void): () => void {
 }
 export function getPdfPasswordSnapshot(): PdfPasswordSnapshot | null { return snapshot; }
 
-/** Each surface registers its exact current identity. Only one presents the head. */
 export function registerPdfPasswordPresenter(owner: symbol, token: RenderToken): () => void {
     presenters.set(owner, Object.freeze({ ...token })); publish();
     return () => { presenters.delete(owner); publish(); };

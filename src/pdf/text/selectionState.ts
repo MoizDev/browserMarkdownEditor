@@ -6,8 +6,6 @@ export interface SelectionGeometryOwner {
 }
 export interface PdfSelectionSnapshot { readonly docKey: string; readonly selection: PdfSelection | null }
 
-/** The pane, not its mounted overlay, owns this store. Camera changes and Text
- * round trips never alter canonical offsets; new immutable bytes do. */
 export class PdfSelectionState {
     private snapshot: PdfSelectionSnapshot;
     private readonly listeners = new Set<() => void>();

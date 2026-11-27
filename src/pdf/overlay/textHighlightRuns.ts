@@ -1,22 +1,15 @@
 import type { Rect } from '../../platform/types';
 
-/** Transferred selection geometry from one physical page, in page space. */
 export interface PdfHighlightGeometry {
     readonly text: string;
     readonly charU16: Uint32Array;
     readonly loose: Float32Array;
     readonly flags: Uint8Array;
-    /** First and exclusive-last character index for every line. */
     readonly lines: Uint32Array;
-    /** Unit writing direction, two floats per line. */
     readonly lineDir: Float32Array;
 }
 interface Glyph { index: number; from: number; to: number; rect: Rect; coordinate: number }
 
-/** Yield a line at a time so a large page can be prepared within the frame budget.
- * Bounding boxes merge only across consecutive visual glyphs with nearly identical
- * cross-axis extents. Otherwise the bounding rectangle would paint outside the ink.
- */
 export function* pdfHighlightRuns(geometry: PdfHighlightGeometry, from: number, to: number,
     onePixelInPage: number): Generator<readonly Rect[]> {
     const low = Math.max(0, Math.min(from, to)), high = Math.max(low, Math.max(from, to));
@@ -44,8 +37,6 @@ export function* pdfHighlightRuns(geometry: PdfHighlightGeometry, from: number, 
                 coordinate: (x0 + x1) * dx + (y0 + y1) * dy });
         }
         if (chunk.length) { chunk.sort(compare); chunks.push(chunk); }
-        // A heap merges bounded sorted chunks without one uninterruptible sort
-        // on a hostile page containing hundreds of thousands of characters.
         const heap: { glyph: Glyph; chunk: number; next: number }[] = [];
         const push = (item: typeof heap[number]) => {
             let i = heap.length; heap.push(item);
@@ -72,8 +63,6 @@ export function* pdfHighlightRuns(geometry: PdfHighlightGeometry, from: number, 
             const entry = pop(), glyph = entry.glyph, next = chunks[entry.chunk][entry.next];
             if (next) push({ glyph: next, chunk: entry.chunk, next: entry.next + 1 });
             if (++processed === 256) {
-                // Keep the final run mutable until the following glyph decides
-                // whether it joins; completed runs may be published now.
                 if (runs.length > 1) { yield runs.slice(0, -1); runs = [runs[runs.length - 1]]; }
                 else yield [];
                 processed = 0;

@@ -2,21 +2,6 @@ import { WidgetType } from '@codemirror/view';
 import { countEditorWidget } from './editorPerf';
 import { loadChunk } from '../platform/chunkLoad';
 
-/* ── KaTeX, fetched when a formula first needs it ───────────────────────────
- * KaTeX is ~250KB of the main bundle — the largest single library in it, bigger
- * than React — and it is parsed before anybody can type, in every session,
- * including the many that never open a note with a `$` in them. Behind a
- * dynamic import it is a chunk of its own.
- *
- * The seam is `renderMath`, which WRITES INTO AN ELEMENT THE CALLER OWNS, so
- * nothing needs invalidating when the module lands: the formula's own source
- * stands in its place until then — which is exactly what the editor shows while
- * the caret is inside it anyway — and the same element is rendered into the
- * moment KaTeX arrives. `warmMath` starts that fetch as soon as a document
- * holding maths is opened, so by the time a formula scrolls into view it is
- * usually already here.
- * ────────────────────────────────────────────────────────────────────────── */
-
 type Katex = typeof import('katex').default;
 let katex: Katex | null = null;
 let loading: Promise<void> | null = null;
@@ -26,19 +11,10 @@ function loadKatex(): Promise<void> {
     return loading;
 }
 
-/** Start fetching the renderer. Call it when opening something with maths in
- *  it; harmless and free once it has been called. */
 export function warmMath(): void {
     if (!katex) void loadKatex();
 }
 
-/**
- * KaTeX doesn't implement the top-level LaTeX document environments that
- * MathJax (and therefore Obsidian) accepts — \begin{equation} makes it error
- * out in red. Map them onto KaTeX's supported equivalents: the equation-like
- * wrappers just disappear (the $ delimiters already established math mode),
- * and the multiline ones become their KaTeX-native aligned/gathered forms.
- */
 function normalizeForKatex(latex: string): string {
     return latex
         .replace(/\\(begin|end)\{(equation|displaymath|math)\*?\}/g, '')
@@ -47,43 +23,15 @@ function normalizeForKatex(latex: string): string {
 }
 
 /**
- * Render `latex` into `el` with this app's one set of KaTeX options.
- *
- * Exported because the table cell renderer needs the SAME call, and a second
- * copy of these options is the "exists twice" hazard (AGENTS.md) in miniature.
- * It is a DOM builder, not an innerHTML sink: katex.render builds its tree
- * with createElement/createTextNode. The app's two note-text HTML sinks are
- * tableWidget's attribute-free allowlist and mermaidWidget's strict sanitized
- * renderer; KaTeX introduces neither a third sink nor a string write.
- *
- * `output: 'html'` is load-bearing for a table cell as much as for a widget:
- * it suppresses KaTeX's parallel MathML layer, so `el.textContent` stays the
- * visible glyphs once. With the default 'htmlAndMathml' every formula appears
- * TWICE in a cell's textContent — which tableEdit.ts's caret arithmetic, its
- * copy path and beginCellEdit's "does the rendered text differ from the raw
- * source" guard all read. Its cost is that the tree KaTeX hands back is
- * entirely `aria-hidden` with no MathML beside it, so a caller that puts one
- * somewhere a reader could not otherwise read the source owes it a label —
- * tableWidget's fillMathSlots does exactly that.
- *
- * TWO defaults are load-bearing BY ABSENCE, so think before adding either:
  *  · `trust` is left falsy, which is what turns `\href`, `\url`,
  *    `\includegraphics` and `\htmlClass/Id/Style/Data` into inert red text.
  *    It is the only thing keeping note text from emitting ATTRIBUTES one call
  *    away from the app's innerHTML sink, in an origin holding the vault's
  *    directory handle. Turning it on to make `\href` work is not a local
  *    change.
- *  · `maxSize` is left at KaTeX's Infinity. Measured, `$\rule{9999em}{9999em}$`
- *    in a cell produced a 193,601px row — self-inflicted, and it is the one way
- *    note text can still break "a cell is one line" (which the fitter's height
- *    accounting rests on). Capping it would change note bodies too, so it is a
- *    deliberate open question rather than an oversight.
  */
 export function renderMath(el: HTMLElement, latex: string, displayMode: boolean): void {
     if (!katex) {
-        // The source, in its own place, until the renderer lands. Tagged so a
-        // late arrival cannot paint a formula into an element the caller has
-        // since reused for another one.
         el.textContent = latex;
         el.dataset.mathPending = latex;
         void loadKatex().then(() => {
@@ -101,10 +49,6 @@ export function renderMath(el: HTMLElement, latex: string, displayMode: boolean)
             throwOnError: false,
             output: 'html',
         });
-        // With throwOnError off, a parse error renders as red source text whose
-        // message KaTeX puts in a native `title` — the one native tooltip left
-        // once the app drew its own (utils/tooltip.ts). Moved across verbatim;
-        // the controller writes it with textContent, never as markup.
         for (const err of el.querySelectorAll<HTMLElement>('.katex-error[title]')) {
             err.dataset.tooltip = err.getAttribute('title') ?? '';
             err.removeAttribute('title');
@@ -115,9 +59,6 @@ export function renderMath(el: HTMLElement, latex: string, displayMode: boolean)
     }
 }
 
-/**
- * A CodeMirror 6 widget that renders LaTeX math via KaTeX.
- */
 export class MathWidget extends WidgetType {
     latex: string;
     displayMode: boolean;

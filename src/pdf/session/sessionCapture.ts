@@ -51,8 +51,6 @@ function waitForPageEmphasis(controller: PdfEmphasisController, page: number, si
     });
 }
 
-/** One capture queue participant per App document session, never per pane.
- * Closing the session cancels captures only after its source leases settle. */
 export function pdfSessionCapturer(session: PdfTiledDocumentSession, stack: Readonly<PageStack>): PdfSessionCapturer {
     const previous = session.getSlot<PdfSessionCapturer>(slot);
     if (previous) return previous;
@@ -99,8 +97,6 @@ export function pdfSessionCapturer(session: PdfTiledDocumentSession, stack: Read
                     if (known.kind !== 'unknown' && (known.kind === 'active') === (painted.variant === 'emphasis')) {
                         selected = shared; emphasis = known;
                     } else {
-                        // A one-page P0 proof follows the preference even while the pane is hidden,
-                        // without changing the displayed controller or starting a viewport.
                         temporary = createPdfEmphasisController(pdf); selected = temporary;
                         temporary.setEnabled(true); temporary.setVisiblePages([page], page, true);
                         emphasis = await waitForPageEmphasis(temporary, page, combined, check);

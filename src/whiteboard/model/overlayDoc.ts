@@ -9,8 +9,6 @@ import { attachedTargets, type Node } from './nodes';
 import { compareOrder } from './orderKey';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: staged geometry, ordered child indexes and immutable session
-// contracts; independent addition-only read projection, no third-party source.
 class AddedMap<K, V> implements ReadonlyMap<K, V> {
     readonly [Symbol.toStringTag] = 'AddedMap';
     constructor(private readonly base: ReadonlyMap<K, V>, private readonly extra: ReadonlyMap<K, V>, private readonly removed: ReadonlySet<K> = new Set()) {}
@@ -163,13 +161,10 @@ async function changedSets<K>(base: ReadonlyMap<K, ReadonlySet<NodeId>>, changes
 }
 export interface BoardGeometryProjectionOptions {
     readonly signal: AbortSignal;
-    /** Fences the base source's version and lifetime through construction and use. */
     readonly current: () => boolean;
     readonly cooperate?: () => Promise<void>;
 }
 
-/** Sparse replacement projection. Inputs and base are caller-owned immutable values
- * while this builds; the resulting replacement records own their cloned geometry. */
 export async function projectBoardGeometrySets(base: BoardDoc, ops: readonly NodeSetOp[], options: BoardGeometryProjectionOptions): Promise<BoardDoc> {
     if (typeof options.current !== 'function') throw new TypeError('Geometry projection requires a base lifetime fence');
     const signal = options.signal, revision = base.rev, host = base.host, cooperate = options.cooperate ?? yieldToHost;

@@ -6,7 +6,6 @@ const FENCE = '{"document":{"schema":{"schemaVersion":999},"store":{}},"fence":"
 const MAX_ATTACHMENTS = 100_000;
 const HASH = /^[0-9a-f]{64}$/;
 
-/** The PDF marker is a format declaration, not an AFRelationship value. */
 export function attachmentMarker(role: Exclude<AttachmentInput['role'], 'unknown'>, format: string): string {
     if (!format || format.length > 128) throw new Error('Invalid attachment format identifier');
     let encoded: string;
@@ -29,8 +28,6 @@ async function blobHash(blob: Blob, cooperate: () => Promise<void>): Promise<str
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
-/** Checks a frozen input before native attachment mutation. Unknown files retain
- * their own metadata and are never assigned an app marker by this writer. */
 export async function validateBoardAttachments(attachments: readonly AttachmentInput[], format: string, writeId: string,
     cooperate: () => Promise<void>): Promise<void> {
     if (!Array.isArray(attachments) || attachments.length > MAX_ATTACHMENTS || !format) throw new Error('Invalid board attachment set');

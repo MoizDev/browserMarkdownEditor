@@ -9,7 +9,6 @@ export interface DelegatedBridgeOptions {
     readonly mappings: MappingHistory;
     camera(): Readonly<{ x: number; y: number; z: number }>;
     current(): boolean;
-    /** Only called for a wet curve that actually reached presentation. */
     onRealPresented(callback: (sample: PresentedWetSample) => void): () => void;
 }
 interface InkState { readonly identity: InkIdentity; readonly presentation: InkPresentation; readonly sample: RealSample }
@@ -27,8 +26,6 @@ function sameMapping(a: readonly number[], b: readonly number[]): boolean {
     return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-/** Delegation is an optional compositor capability, never an authoring path.
- * Only a token-matched real-curve presentation may release its trusted event. */
 export class DelegatedInkBridge {
     private readonly delegated: DelegatedInk;
     private readonly unsubscribe: () => void;
@@ -81,7 +78,6 @@ export class DelegatedInkBridge {
         const mapping = this.options.mappings.latest(), values = mapping && mappingValues(mapping), camera = this.options.camera();
         if (!values || !sameMapping(values, submitted.record.mapping)
             || !sameMapping(submitted.record.camera, [camera.x, camera.y, camera.z])) return;
-        // The two mappings yield world units and CSS-surface units for one client pixel.
         const worldPerClient = Math.hypot(values[2] - values[0], values[3] - values[1]);
         const surfacePerClient = Math.hypot(values[8] - values[6], values[9] - values[7]);
         const m = submitted.presentation.localToWorld, localScale = Math.hypot(m[0], m[1]);

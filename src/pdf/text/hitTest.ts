@@ -44,7 +44,6 @@ const boundsProjection = (x0: number, y0: number, x1: number, y1: number, dx: nu
 };
 const distanceTo = (v: number, min: number, max: number) => v < min ? min - v : v > max ? v - max : 0;
 
-/** Point and boxes are in page space; the margin clamps to the line ends. */
 export function positionAt(g: HitGeometry, x: number, y: number): CharacterHit | null {
     if (!Number.isFinite(x) || !Number.isFinite(y) || !(g.width > 0 && g.height > 0)) return null;
     const count = Math.floor(g.lines.length / 2);
@@ -52,8 +51,6 @@ export function positionAt(g: HitGeometry, x: number, y: number): CharacterHit |
     const cx = Math.max(0, Math.min(GRID - 1, Math.floor(x / g.width * GRID)));
     const cy = Math.max(0, Math.min(GRID - 1, Math.floor(y / g.height * GRID)));
     const nearby = gridFor(g)[cy * GRID + cx];
-    // A populated cell can contain non-containing boxes; only actual
-    // containment is conclusive. Otherwise compare every line by distance.
     const containing = nearby.filter(i => {
         const p = i * 4;
         return x >= g.lineBox[p] && x <= g.lineBox[p + 2] && y >= g.lineBox[p + 1] && y <= g.lineBox[p + 3];
@@ -106,7 +103,6 @@ export function hitTextPoint(g: HitGeometry, page: number, x: number, y: number)
     const hit = positionAt(g, x, y);
     return hit ? pointForCharacter(page, g.charU16, hit.charIndex, hit.side, g.text) : null;
 }
-/** First and last character indices whose canonical intervals overlap [from,to). */
 export function characterRange(charU16: Uint32Array, from: number, to: number): { first: number; end: number } {
     const find = (value: number, upper: boolean) => {
         let lo = 0, hi = charU16.length;

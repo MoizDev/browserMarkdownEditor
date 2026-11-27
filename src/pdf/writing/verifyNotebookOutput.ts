@@ -32,7 +32,6 @@ export function notebookOutputSpec(args: WriterOperations['writer.buildNotebook'
     return { path: args.notebookSource.path, pages };
 }
 
-/** Hash the host-owned bytes without a Blob copy, yielding for cancellation. */
 export async function hashNotebookOutput(buffer: ArrayBuffer, signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
     if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 8 || buffer.byteLength >= 0x80000000) throw new Error('Invalid notebook output bytes');
@@ -52,7 +51,6 @@ export async function hashNotebookOutput(buffer: ArrayBuffer, signal: AbortSigna
     return hash.digest();
 }
 
-/** Only generated notebook pages allow PDFium's float32 readback tolerance. */
 export function verifyNotebookGeometry(spec: NotebookOutputSpec, pages: readonly PageGeometry[]): void {
     if (pages.length !== spec.pages.length) throw new Error('Notebook output page count does not match');
     const close = (a: number, b: number) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 0.01;

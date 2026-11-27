@@ -9,7 +9,6 @@ import { yieldToHost } from '../../platform/yieldToHost';
 const yes: CommandState = Object.freeze({ enabled: true });
 const no = (reason: string): CommandState => ({ enabled: false, reason });
 
-/** Zoom-to-content measures the current Scene's exact bounds, never saved headers or a minimap bitmap. */
 export function createNativeCameraOperations(options: {
     readonly runtime: BoardRuntime;
     readonly lease: NativeViewLease;
@@ -26,7 +25,6 @@ export function createNativeCameraOperations(options: {
         const state = available(); return state.enabled && !runtime.selection.getSnapshot().selected.length ? no('Select content first') : state;
     };
     const operation = (state: () => CommandState, run: () => void | Promise<void>): NativeCommandOperation => ({ state, run });
-    /** The View menu and the shortcuts share one fit (contentBounds.ts), so the two cannot diverge. */
     const fit = async (selectedOnly: boolean) => {
         const doc = session.doc, revision = doc.rev, snapshot = runtime.selection.getSnapshot(), scene = runtime.scene;
         const signal = options.signal, font = runtime.render.text.fonts.epoch;
@@ -44,7 +42,6 @@ export function createNativeCameraOperations(options: {
         const bounds = unionRects(paper ? pageStackBounds(doc) : null, content), view = lease.camera.viewport;
         if (!bounds) throw new Error('There is no measurable content to fit');
         if (view.width <= 0 || view.height <= 0) throw new Error('The board view has no size');
-        // Selection at any zoom but 1 toggles to natural 1:1, as the shortcut does (F-CAM-007).
         const toNatural = selectedOnly && Math.abs(lease.camera.camera.z - 1) > .001;
         const plan = fitTarget(doc, view, bounds, { paper, natural: !paper && toNatural });
         lease.camera.setCamera(centredCamera(bounds, lease.camera.clampZoom(plan.z), view, plan.edges));
@@ -58,7 +55,6 @@ export function createNativeCameraOperations(options: {
         },
         zoomIn: operation(available, () => lease.zoomStep(1)),
         zoomOut: operation(available, () => lease.zoomStep(-1)),
-        // Zoom to 100% says nothing at 100%, and fit says nothing about an empty sheet (tldraw's enablement, actions.tsx:1562-1577).
         zoomTo100: operation(() => {
             const state = available();
             return state.enabled && Math.abs(lease.camera.camera.z - 1) <= 1e-3 ? no('The view is already at 100%') : state;

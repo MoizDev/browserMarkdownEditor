@@ -1,13 +1,7 @@
-/** Font requests finishing is not the same as font layout finishing.
- * @param {import('playwright').Page} page
- */
 export async function fontsReady(page) {
     await page.evaluate(async () => { await document.fonts.ready; });
 }
 
-/** Files open in read mode: use the user's shortcut, never flip editor internals.
- * @param {import('playwright').Page} page
- */
 export async function editMode(page) {
     const editor = page.locator('.cm-content:visible');
     await editor.waitFor();

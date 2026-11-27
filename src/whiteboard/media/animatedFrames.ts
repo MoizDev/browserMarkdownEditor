@@ -4,13 +4,7 @@ import type { MediaEntry, MediaId } from '../model/media';
 import { PictureAnimations, type AnimatedPictureDemand } from './animation';
 import type { VideoFrameRegistry } from './videoFrames';
 
-// Provenance: picture animation clock (media MD-4) driven by real per-frame decoding; independent
-// driver that presents each decoded frame through the view's own frame registry.
-
 export interface AnimatedPictureSource { readonly entry: MediaEntry; readonly blob: Blob }
-/** Whether this view can decode the picture's frames at all. Without it an animated picture is simply not animated. */
-// ImageDecoder answers its support question asynchronously; the answer is cached per type, and
-// until it arrives the picture is simply not offered as animated.
 const probes = new Map<string, boolean>();
 export function canAnimatePicture(mime: string): boolean {
     const known = probes.get(mime);
@@ -22,27 +16,22 @@ export function canAnimatePicture(mime: string): boolean {
 for (const mime of ['image/gif', 'image/webp', 'image/png', 'image/avif']) canAnimatePicture(mime);
 export interface AnimatedPictureDriverOptions {
     readonly registry: VideoFrameRegistry;
-    /** Only session-owned bytes already verified against an animated entry may be returned. */
     source(node: NodeId): AnimatedPictureSource | null;
     current(): boolean;
     invalidate(): void;
-    /** The layer's own deadline. The layer wakes the view; the paint that follows advances the clock. No timer of this driver's. */
     wakeAt(deadlineMs: number | null): void;
     error(node: NodeId, message: string): void;
 }
 interface Held { readonly media: MediaId; readonly decoder: ImageDecoder; readonly frameCount: number; readonly lease: ByteLease }
 interface Frame { readonly bitmap: ImageBitmap; readonly lease: ByteLease; readonly frameCount: number; readonly durationMs: number }
-/** No memory for the next decode. The frame waits for the view's next paint; it is not a failure to report. */
 class Deferred extends Error {}
 
-/** One clock for the view's animated pictures. A frame is decoded only while its picture plays and is visible. */
 export class AnimatedPictureDriver {
     private readonly clock: PictureAnimations;
     private readonly decoders = new Map<NodeId, Promise<Held>>();
     private readonly decoderMedia = new Map<NodeId, MediaId>();
     private readonly decoding = new Map<NodeId, number>();
     private readonly shown = new Map<NodeId, number>();
-    /** Decodes started and not yet settled: a source is dropped only after these have finished with it. */
     private readonly inflight = new Set<Promise<void>>();
     private demands: readonly AnimatedPictureDemand[] = [];
     private visible = true;
@@ -50,11 +39,9 @@ export class AnimatedPictureDriver {
     constructor(private readonly options: AnimatedPictureDriverOptions) {
         this.clock = new PictureAnimations({ invalidate: () => options.invalidate(), wakeAt: deadline => { if (!this.disposed) options.wakeAt(deadline); } });
     }
-    /** Called whenever the view draws: the demands are the playing, visible animated pictures on the sheet. */
     sync(demands: readonly AnimatedPictureDemand[], now: number): void {
         if (this.disposed) return;
         this.demands = demands;
-        // A layer wake only invalidates the view. The paint it causes is where the clock advances to the current time.
         this.clock.tick(now);
         this.clock.update(demands, now);
         this.ensure();
@@ -67,13 +54,11 @@ export class AnimatedPictureDriver {
     }
     dispose(): void {
         if (this.disposed) return;
-        // Clears the layer's deadline while the driver still forwards it; nothing is forwarded after this.
         this.clock.clear();
         this.disposed = true;
         this.demands = [];
         this.stopDecoders();
     }
-    /** Decodes the frame the clock is on for each playing demand, unless that frame is already shown or on its way. */
     private ensure(): void {
         if (this.disposed || !this.visible) return;
         for (const demand of this.demands) {
@@ -89,7 +74,6 @@ export class AnimatedPictureDriver {
         const cached = this.decoders.get(node);
         if (cached && this.decoderMedia.get(node) === source.entry.id) return cached;
         const next = (async (): Promise<Held> => {
-            // The encoded bytes are charged before the decoder copies them in; the charge is the decoder's until it closes.
             const lease = this.options.registry.reserve(source.blob.size);
             if (!lease) throw new Deferred('Not enough memory for this animation');
             try {
@@ -109,10 +93,6 @@ export class AnimatedPictureDriver {
         next.catch(() => { if (this.decoders.get(node) === next) { this.decoders.delete(node); this.decoderMedia.delete(node); } });
         return next;
     }
-    /**
-     * Stops every decoder now, so nothing new is decoded for them. Each decoder's charge is returned only after the native
-     * decodes already in flight have settled, and presented frames of the stopped pictures are retired.
-     */
     private stopDecoders(): void {
         const decoders = [...this.decoders.values()];
         for (const node of this.shown.keys()) this.options.registry.retire(node);
@@ -126,7 +106,6 @@ export class AnimatedPictureDriver {
     private decode(node: NodeId, source: AnimatedPictureSource, index: number): void {
         this.decoding.set(node, index);
         const finish = () => { if (this.decoding.get(node) === index) this.decoding.delete(node); };
-        // The frame's pixels are charged before the decoder allocates them; a refused charge defers the frame to the next paint.
         const charged = source.entry.w * source.entry.h * 4;
         const work = async (): Promise<Frame | null> => {
             const held = await this.decoderFor(node, source);
@@ -145,7 +124,7 @@ export class AnimatedPictureDriver {
         };
         const settled: Promise<void> = work().then(frame => {
             finish();
-            if (!frame) return; // Deferred: the view's next paint asks for this frame again.
+            if (!frame) return;
             const demanded = this.demands.some(item => item.node === node && item.playing && item.media === source.entry.id);
             if (this.disposed || !this.visible || !demanded || !this.options.current() || this.clock.frame(node) !== index) {
                 frame.bitmap.close(); this.options.registry.release(frame.lease); this.ensure(); return;
@@ -156,7 +135,6 @@ export class AnimatedPictureDriver {
             this.ensure();
         }, error => {
             finish();
-            // A decode stopped or superseded by another picture is the normal end of that work, not a failure to report.
             if (error instanceof Deferred || this.disposed || !this.visible || !this.options.current() || this.decoderMedia.get(node) !== source.entry.id) return;
             this.decoders.delete(node); this.decoderMedia.delete(node);
             this.options.error(node, error instanceof Error ? error.message : 'This picture animation could not be shown');

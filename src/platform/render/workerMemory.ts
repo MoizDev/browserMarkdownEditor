@@ -20,7 +20,6 @@ for (const [worker, bytes] of workerMemoryReports()) {
     if (workerOwnedBytes(worker) === bytes) target.reportWorkerMemory(worker, bytes);
 }
 
-/** Report only worker-owned bytes not already represented by governor leases. */
 export function reportWorkerMemory(worker: object, ownedBytes: number): void {
     const target = governor();
     if (onWorkerStop(worker, () => target.releaseWorkerMemory(worker))) {
@@ -28,7 +27,6 @@ export function reportWorkerMemory(worker: object, ownedBytes: number): void {
     }
 }
 
-/** Call when that worker stops; repeated release is harmless. */
 export function releaseWorkerMemory(worker: object): void {
     activeGovernor?.releaseWorkerMemory(worker);
 }

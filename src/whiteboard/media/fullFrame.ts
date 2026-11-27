@@ -9,16 +9,11 @@ import { boardEnvelope, closeWorkerResult, matchingIdentity, validBoardIdentity 
 import type { BoardJobIdentity } from '../workers/protocol';
 const decodeWorker = workerScript(decodeWorkerUrl, { keep: true });
 
-// Provenance: media admission, governed worker and isolated SVG frame contracts;
-// independent full-frame ownership wiring, no third-party source.
 export interface FullFrameDecoderOptions {
     readonly identity: BoardJobIdentity;
     isCurrent(identity: BoardJobIdentity): boolean;
     reserveCpu(bytes: number): { release(): void } | null;
-    /** Network-denied SVG image profile; must support full intrinsic dimensions,
-     * settle on abort only after its frame is disposed, and never use a main-origin parser. */
     svg?(blob: Blob, info: InspectedMedia, identity: BoardJobIdentity, signal: AbortSignal): Promise<ImageBitmap>;
-    /** Explicit host-owned video poster decoder; cancellation releases intermediates. */
     video(blob: Blob, info: InspectedMedia, identity: BoardJobIdentity, signal: AbortSignal): Promise<ImageBitmap>;
 }
 export type BoardFullFrameDecoder = ((blob: Blob, info: InspectedMedia, identity: BoardJobIdentity,
@@ -77,8 +72,6 @@ export function createBoardFullFrameDecoder(options: FullFrameDecoderOptions): B
                     spawn: () => decodeWorker.start(),
                     disposeResult: (_op, result) => closeWorkerResult(result) });
                 workers.add(worker);
-                // A native decode is not interruptible inside a worker turn. Termination
-                // precedes releasing the scratch reservation on abort or error.
                 const stop = () => worker?.dispose();
                 combined.addEventListener('abort', stop, { once: true });
                 try {

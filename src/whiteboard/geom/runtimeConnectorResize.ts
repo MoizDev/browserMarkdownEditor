@@ -14,11 +14,9 @@ import type { ResizePreview } from './transforms';
 export interface ConnectorResizeOptions {
     readonly runtime: BoardRuntime;
     readonly source: BoardDoc;
-    /** A staged document in which selected targets have already been resized. */
     readonly doc: BoardDoc;
     readonly node: Readonly<ConnectorNode>;
     readonly frame: ResizePreview;
-    /** Additional world displacement after the selection-frame scale. */
     readonly translateWorld?: Vec2;
     readonly current: () => boolean;
     readonly signal: AbortSignal;
@@ -35,7 +33,6 @@ function mapped(point: Vec2, frame: ResizePreview, delta: Vec2 = { x: 0, y: 0 })
     return { x: frame.anchor.x + c * x - s * y + delta.x, y: frame.anchor.y + s * x + c * y + delta.y };
 }
 
-/** Targets are already staged; bound ends stay bound while free ends and controls map once. */
 export async function prepareConnectorResize(options: ConnectorResizeOptions): Promise<ConnectorResizeResult> {
     const { runtime, source, doc, frame, signal } = options, session = runtime.session, live = session.doc, owner = session.owner;
     const sourceRevision = source.rev, revision = doc.rev, liveRevision = live.rev;
@@ -64,7 +61,6 @@ export async function prepareConnectorResize(options: ConnectorResizeOptions): P
             if (prior.attach) continue;
             const world = mapped({ x: pose.x + c * prior.x - s * prior.y, y: pose.y + s * prior.x + c * prior.y }, frame, options.translateWorld);
             const local = worldToLocal(doc, node, world);
-            // Default, calibration cut by owner: a selection transform never detaches a binding.
             ops.push({ t: 'set', id: node.id, key: side, value: { ...currentEnd, x: local.x, y: local.y } });
         }
         const project = (changes: readonly NodeSetOp[]) => projectBoardGeometrySets(doc, changes, { signal, current, cooperate: options.cooperate });

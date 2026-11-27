@@ -15,7 +15,6 @@ export interface PrivateTextClipboardOptions {
     isCurrent(identity: BoardJobIdentity): boolean;
 }
 
-/** All private text takes the same worker bounds and C5 admission as a board paste. */
 export async function readPrivateClipboardText(encoded: string, plain: string | null, signal: AbortSignal,
     options: PrivateTextClipboardOptions): Promise<RichFragment | null> {
     signal.throwIfAborted();
@@ -33,8 +32,6 @@ export async function readPrivateClipboardText(encoded: string, plain: string | 
             signal.throwIfAborted();
             const doc = acquired.load.doc, roots = doc.children.get(acquired.payload.from.sheet) ?? [];
             if (roots.length !== 1 || doc.nodes.size !== 1 || roots[0].kind !== 'text') return null;
-            // The C5 text is admitted through the same fragment gate as any other pasted fragment: data-only,
-            // reader-branded opaque values, and a sliced copy that holds nothing of the acquired payload.
             return await admitRichFragmentCooperative(roots[0].text, { signal, cooperate: options.cooperate ?? yieldToHost,
                 current: () => options.isCurrent(identity) });
         } finally { acquired.dispose(); }

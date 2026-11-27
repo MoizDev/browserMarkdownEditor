@@ -4,7 +4,6 @@ function baseName(path: string): string {
     return (path.split('/').pop() ?? '').replace(/\.md$/i, '');
 }
 
-/** Tree order chooses the same duplicate name as opening a wikilink. */
 export async function assembleGraph(session: IndexSession, graphGen: number, treeGen: number, files: readonly IndexFile[],
     records: ReadonlyMap<string, FileRecord>, stale: boolean, slice: () => Promise<void>): Promise<IndexGraph> {
     const notes = files.filter(file => /\.md$/i.test(file.path));
@@ -33,8 +32,6 @@ export async function assembleGraph(session: IndexSession, graphGen: number, tre
         for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
             const raw = targets[targetIndex];
             if ((++work & 127) === 0 && performance.now() - lastYield >= 8) { await slice(); lastYield = performance.now(); }
-            // Markdown parents are relative to the source folder. Wikilinks
-            // retain their existing basename-only navigation policy.
             if (targetIndex >= facts.wikilinks.length && !raw.startsWith('/')) {
                 let parents = 0;
                 while (raw.slice(parents * 3, parents * 3 + 3) === '../') parents++;

@@ -57,5 +57,4 @@ export function validatePdfInkInspection(value: unknown): PdfInkInspection {
     });
     return { kind: 'native', id, outerFingerprint, pristine, pristineFingerprint, board, writeId, media, formatId: 'board', writeSafety };
 }
-/** Media bytes are immutable and only acquired by a separately authorised name request. */
 export function validatePdfInkMedia(value: unknown): Blob { return blob(value, LIMIT, true); }

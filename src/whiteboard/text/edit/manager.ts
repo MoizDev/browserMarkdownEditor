@@ -5,7 +5,6 @@ import type { EditSelection } from './host';
 import type { TextEditBinding } from './bindingTypes';
 import type { TextEditingManager, TextEditingManagerPorts } from './managerTypes';
 
-/** Pane-owned editor lifecycle; all content and history remain session-owned. */
 export function createTextEditingManager(ports: TextEditingManagerPorts): TextEditingManager {
     let current: TextEditBinding | null = null, disposed = false;
     const { session } = ports;

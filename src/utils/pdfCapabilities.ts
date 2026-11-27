@@ -3,13 +3,11 @@
 export interface PdfCapabilities {
     encrypted: boolean | 'unknown';
     copy: boolean | 'unknown';
-    /** Native browser printing receives original bytes, not a quality-limited raster. */
     print?: boolean | 'unknown';
     printHighQuality?: boolean | 'unknown';
     forms: boolean | 'unknown';
     xfa: boolean | 'unknown';
     javascript: boolean | 'unknown';
-    /** Separate authorities: an unlocked view is not permission to extract or rewrite it. */
     render?: boolean | 'unknown';
     capture?: boolean | 'unknown';
     write?: boolean | 'unknown';
@@ -34,7 +32,6 @@ function assertAllowed(value: boolean | 'unknown' | undefined, denied: string, u
     if (value !== true) throw new Error(value === false ? denied : unknown);
 }
 
-/** Use at the operation boundary, not as a substitute for role/baseline checks. */
 export function assertPdfRenderAllowed(policy: Pick<PdfCapabilities, 'render'>): void {
     assertAllowed(policy.render, 'This PDF cannot be rendered.', 'PDF rendering permission could not be established.');
 }
@@ -54,7 +51,6 @@ export function assertPdfCopyAllowed(policy: Pick<PdfCapabilities, 'copy'>): voi
     if (policy.copy !== true) throw new Error(policy.copy === false ? PDF_COPY_RESTRICTED : PDF_COPY_UNKNOWN);
 }
 
-/** Unknown native flags are displayed as unknown, never advertised as clean. */
 export function tiledPdfCapabilities(info: { encrypted: boolean; permissions: number | null; hasForms: boolean;
     formType?: PdfCapabilities['formType']; javascript?: 'present' | 'absent' | 'unknown';
     actions?: PdfCapabilities['actions']; repairStatus?: PdfCapabilities['repairStatus']; signatureCount?: number }): PdfCapabilities {
@@ -68,8 +64,6 @@ export function tiledPdfCapabilities(info: { encrypted: boolean; permissions: nu
     const signed = Number.isSafeInteger(info.signatureCount) && (info.signatureCount as number) >= 0
         ? (info.signatureCount as number) > 0 : 'unknown';
     const repairStatus = info.repairStatus ?? 'unknown';
-    // Public PDFium cannot report repairs. Unknown stays disclosed, not a blanket edit ban:
-    // the source-bound writer separately proves geometry and full attachment preservation.
     const write = info.encrypted || xfa === true || signed === true || repairStatus === 'repaired' ? false
         : xfa === false && signed === false ? true : 'unknown';
     return { encrypted: info.encrypted, copy, print, printHighQuality, forms: info.hasForms, xfa,

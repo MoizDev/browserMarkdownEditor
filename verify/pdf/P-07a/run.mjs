@@ -150,8 +150,6 @@ try {
                 for (const text of window.__hideHits ?? []) if (!shown.has(text)) window.__lostHideHits.push(text);
             }).observe(root, { subtree: true, childList: true, characterData: true });
         }, manifest.file);
-        // A cold session makes this a real, ongoing extraction scan. The
-        // pointerdown witness below refuses an already-completed hide.
         await input.fill(hideQuery); await input.press('Enter');
         await page.waitForFunction(() => {
             const status = document.querySelector('.pdf-reading-results [role="status"]')?.textContent ?? '';
@@ -166,7 +164,7 @@ try {
         const pane = page.locator('.pdf-pane');
         await assertWitness(await pane.evaluate(element => getComputedStyle(element).visibility) === 'hidden', 'PDF pane did not become hidden');
         const before = await page.evaluate(() => window.__findTraffic.length);
-        await page.waitForTimeout(250); // The stated no-request observation interval.
+        await page.waitForTimeout(250);
         const after = await page.evaluate(() => window.__findTraffic.length);
         await assertWitness(after === before, 'Hidden PDF continued requesting extraction');
         await page.locator('.tree-item').filter({ hasText: manifest.file }).click();
@@ -180,8 +178,6 @@ try {
     }
     const queries = corrupt ? ['remote sentinel', 'later sentinel'] : [...new Set(manifest.probes.map(probe => probe.query))];
     for (const query of queries) {
-        // A stale successful count cannot stand in for this submit: first make
-        // an independently impossible query finish, and witness its zero hits.
         await input.fill('P07A-absent-sentinel-9127'); await input.press('Enter');
         await page.waitForFunction(total => document.querySelector('.pdf-reading-results [role="status"]')?.textContent?.startsWith(`0 matches · ${total}/${total} pages searched`), manifest.pages, { timeout: 120000 });
         await input.fill(query); await input.press('Enter');

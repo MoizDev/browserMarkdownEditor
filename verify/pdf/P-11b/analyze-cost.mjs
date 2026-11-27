@@ -1,4 +1,3 @@
-// Reanalyze saved real-browser traces; never generate synthetic timing samples.
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { analysisVersion, summarizeTrace, summarizeCosts } from '../lib/textCostTrace.mjs';

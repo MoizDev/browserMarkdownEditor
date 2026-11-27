@@ -18,7 +18,6 @@ import { RECOVERY_SESSION_BINDING, hasHostedNativeOwner } from './nativeOwners';
 import type { NativePolicy } from './types';
 import { loadChunk } from '../platform/chunkLoad';
 
-/** What the open-documents hook reads from App. */
 export interface UseOpenDocumentsDeps {
   getVaultActivation: FileSystemContextValue['getVaultActivation'];
 }
@@ -26,8 +25,6 @@ export interface UseOpenDocumentsDeps {
 export function useOpenDocuments(deps: UseOpenDocumentsDeps) {
   const { getVaultActivation } = deps;
 
-  // Every open document, flat — one entry per file, whatever tab it is drawn
-  // in. Autosave, the asset diff, search and rename all index this by path.
   const classificationSourceRef = useRef<(id: string) => ContentSource | undefined>(() => undefined);
   const [tabs, setTabs] = useReducer(
     (previous: OpenTab[], action: React.SetStateAction<OpenTab[]>) =>
@@ -37,14 +34,6 @@ export function useOpenDocuments(deps: UseOpenDocumentsDeps) {
   const [, setClosingDocumentIds] = useState<ReadonlySet<string>>(() => new Set());
   const closingRef = useRef(new Set<string>());
   const reopenedClosingRef = useRef(new Set<string>());
-  // How those documents are arranged on screen: a row of panes — columns, all
-  // drawn at once — each holding its own ordered tabs and showing one of them
-  // (utils/tabPanes.ts). One pane with a few tabs is the ordinary workspace; up
-  // to five columns is the ceiling. The panes, the focused one's id and the
-  // columns' widths are ONE piece of state so no update can leave the active id
-  // naming a pane it just removed, or a width row indexed against a pane list
-  // that moved underneath it; the focused document — the old `activeTabPath` —
-  // is derived from it, which is what keeps those from drifting.
   const [layout, setLayout] = useState<TabLayout>(EMPTY_LAYOUT);
   const activeTabPath = focusedPathOf(layout);
 
@@ -52,17 +41,9 @@ export function useOpenDocuments(deps: UseOpenDocumentsDeps) {
     () => tabs.find(t => t.file.path === activeTabPath) ?? null,
     [tabs, activeTabPath]
   );
-  // Keeping `t.file` identity stable across keystrokes (see updateTabContent)
-  // means `activeFile` only changes when the focus does, not on every edit.
-  // It is what the file tree highlights and what the graph view centres on;
-  // the editor derives its own from the layout, pane by pane.
   const activeFile = activeTab?.file ?? null;
-  /* Published to a store as well as held in state: the file tree reads "am I
-     the active row" from it per row, so switching tabs re-renders the two rows
-     that changed instead of every row in the vault. See utils/activeFile.ts. */
   useEffect(() => { setActiveFilePath(activeFile?.path ?? null); }, [activeFile]);
 
-  // Refs mirroring tab state for use inside stable callbacks / timers.
   const tabsRef = useRef<OpenTab[]>(tabs);
   const sessionReportRef = useRef<(documentId: string, source: ContentSource, options?: ContentChangeOptions) => void>(() => {});
   const nativeTransitionRef = useRef<(documentId: string, source: import('../utils/documentBuffers').DeferredSource, revision: number, prior: ContentSource) => void>(() => { throw new Error('Canvas source coordinator is not ready'); });
@@ -141,10 +122,6 @@ export function useOpenDocuments(deps: UseOpenDocumentsDeps) {
   const invalidReaderTokens = useRef(new Set<string>());
   const layoutRef = useRef<TabLayout>(layout);
   const activeTabPathRef = useRef<string | null>(activeTabPath);
-  // The documents currently on screen — one per column, since a pane shows one
-  // of its tabs, and every column not just the focused one, so a save in a
-  // neighbouring pane still reports itself. A document merely OPEN behind
-  // another tab of the same pane is not here: nothing on screen would show it.
   const visiblePathsRef = useRef<string[]>([]);
   // Per-PATH debounced save timers, so switching or closing one tab never
   // cancels another tab's pending write (fixes the old single-timer data loss).
@@ -172,8 +149,6 @@ export function useOpenDocuments(deps: UseOpenDocumentsDeps) {
       if (!bufferPathIdsRef.current.has(tab.file.path)) bufferPathIdsRef.current.set(tab.file.path, tab.id);
       documentBuffers.setReadable(tab.id, canReadTabText(tab));
     }
-    // A reader needs its identity before its editable engine mounts. The
-    // bridge attaches that engine later without replacing its serial or slots.
     for (const path of visiblePaths(layout)) {
       const tab = tabs.find(t => t.file.path === path);
       const kind = tab?.representation.loadedKind;
@@ -212,8 +187,6 @@ export function useOpenDocuments(deps: UseOpenDocumentsDeps) {
       ...(acquisition.pdfWriteAuthority ? { pdfWriteAuthority: acquisition.pdfWriteAuthority } : {}) });
     const digest = acquisition.legacyOriginalSha256;
     const legacyOriginalSha256 = digest && /^[a-f0-9]{64}$/.test(digest) ? digest : undefined;
-    // A converted old annotated PDF's initial source report follows this callback synchronously,
-    // before React commits the representation update.
     const admitted = (representation: OpenTab['representation']) => ({ ...representation, nativeCanvasKind: kind, nativeCanvasSession: owner.session,
       emergencyReadOnly, legacyOriginalSha256, ...(kind === 'pdfInk' ? {} : { oldBoard }) });
     tabsRef.current = tabsRef.current.map(current => current.id === owner.documentId && live()
@@ -235,7 +208,6 @@ export function useOpenDocuments(deps: UseOpenDocumentsDeps) {
 
   const contentOf = useCallback((path: string): string | undefined => documentBuffers.contentOf(path), [documentBuffers]);
 
-  /** Documents with a write queued or running — App.hasUnsaved. */
   const flushingRef = useRef(new Map<string, number>());
   const readerIdentityCache = useRef(new Map<string, ReaderIdentity>());
 

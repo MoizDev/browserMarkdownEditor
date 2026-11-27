@@ -1,40 +1,11 @@
-// The turned picture a PDF shows from the click until the turned file is drawn sharp.
-//
-// A turn is a real edit to the file (app/pdfGestures.ts rotatePdf), and the file
-// takes some time to write and reopen — so the pane shows the turn AT ONCE with
-// what it already has: the pixels of the pages it was showing, turned and laid out
-// where the turned document will put them. Measured before this existed: nothing
-// moved for 350–430ms after a click, then a blurry, differently scaled "Loading
-// rotated PDF…" preview; on a 62-page scan the unturned page stayed up for ~9s.
-//
-// ONE STATE PER DOCUMENT, shared by every pane showing it (a split view of the
-// same PDF turns in both), living outside the views because a pane's PDF view is
-// remounted on the new bytes and the picture has to cover that remount.
-//
-// TURNS ARE RELATIVE. The reader only knows its pages' displayed sizes, not their
-// /Rotate, so the state counts quarter turns per page since the first press
-// (`total`), and per byte generation how many of them that generation's bytes
-// already carry (`applied`): a view remounted on bytes holding the first two of
-// four quick presses lays out only the last two. Pictures record how many turns
-// they already show.
-//
-// It ends one of two ways: the pane presents a sharp frame of the file the last
-// turn wrote (`presentedPdfRotation`), or App reports that a write failed and the
-// view goes back exactly as it was. Pictures never reach disk, the agent or
-// another vault: tab ids are per vault, and closing a tab clears its state.
-
 export interface PdfStandInFrame {
     readonly canvas: HTMLCanvasElement;
-    /** CSS pixels, relative to the pane root. */
     readonly left: number; readonly top: number; readonly width: number; readonly height: number;
 }
 export interface PdfPagePicture {
     readonly image: HTMLCanvasElement;
-    /** Quarter turns (since the first press) the picture already shows. */
     readonly turns: number;
-    /** The exact-resolution tiles alone (transparent elsewhere): what stays on top of a whole-page backdrop. */
     readonly top?: HTMLCanvasElement;
-    /** The whole page is drawn; a capture of what was on screen is transparent elsewhere. */
     readonly whole?: boolean;
 }
 export interface PdfTurns { readonly all: number; readonly pages: ReadonlyMap<number, number> }
@@ -50,10 +21,8 @@ interface DocumentState {
     pending: number;
     lastHash?: string;
     expectedHash?: string;
-    /** Puts the reader back where it was before the first turn, for a rollback. */
     readonly restore: () => void;
     version: number;
-    /** Changes on a press and when a picture improves: when every pane redraws its own picture. */
     drawn: number;
 }
 
@@ -69,23 +38,18 @@ export function subscribePdfRotationStandIn(listener: () => void): () => void {
     return () => { listeners.delete(listener); };
 }
 
-/** Changes whenever anything about the document's stand-in does. */
 export function pdfRotationVersion(documentId: string): number { return states.get(documentId)?.version ?? 0; }
-/** Changes only on a press or a better picture, so a pane's own drawing does not make the others redraw. */
 export function pdfRotationDrawSerial(documentId: string): number { return states.get(documentId)?.drawn ?? 0; }
 export function pdfRotationActive(documentId: string): boolean { return states.has(documentId); }
 export function pdfStandInFrame(documentId: string, pane: Element | null): PdfStandInFrame | undefined {
     return pane ? states.get(documentId)?.frames.get(pane) : undefined;
 }
 export function pdfRotationHasPicture(documentId: string, page: number): boolean { return !!states.get(documentId)?.pictures.has(page); }
-/** Pages whose picture holds only what was on screen (or nothing), and wants a whole-page backdrop. */
 export function pdfRotationWantsBackdrop(documentId: string, page: number): boolean {
     const state = states.get(documentId);
     return !!state && !state.pictures.get(page)?.whole;
 }
 
-/** A whole-page render under a page's captured pixels: the parts of a turned page that were off screen.
- * `turns` is how many turns the render shows. A capture already there stays on top (it is the sharper). */
 export function addPdfRotationBackdrop(documentId: string, page: number, backdrop: ImageBitmap, turns: number): void {
     const state = states.get(documentId);
     if (!state || page < 0 || page >= state.total.length) return;
@@ -96,7 +60,6 @@ export function addPdfRotationBackdrop(documentId: string, page: number, backdro
     canvas.width = existing ? existing.image.width : backdrop.width; canvas.height = existing ? existing.image.height : backdrop.height;
     const context = canvas.getContext('2d');
     if (!context) return;
-    // The backdrop shows `turns`; turn it to what the capture shows before drawing the capture over it.
     context.translate(canvas.width / 2, canvas.height / 2);
     context.rotate(quarter * Math.PI / 2);
     const [w, h] = quarter % 2 ? [canvas.height, canvas.width] : [canvas.width, canvas.height];
@@ -113,7 +76,6 @@ export function addPdfRotationBackdrop(documentId: string, page: number, backdro
     emit();
 }
 
-/** What a view on byte generation `generation` must still show turned: quarter turns per page, and pictures. */
 export function pdfRotationView(documentId: string, generation: number, pageCount: number):
     { pending(page: number): number; shown(page: number): number; picture(page: number): { image: HTMLCanvasElement; quarter: number } | undefined } | undefined {
     const state = states.get(documentId), applied = state?.applied.get(generation);
@@ -128,8 +90,6 @@ export function pdfRotationView(documentId: string, generation: number, pageCoun
     };
 }
 
-/** A press on a view of byte generation `generation`: turn `page` (or every page) by `delta` degrees.
- * `capture` gets how many turns that view already shows per page, for the pictures it takes. */
 export function beginPdfRotationTurn(documentId: string, options: {
     generation: number; pageCount: number; delta: number; page?: number;
     capture(applied: (page: number) => number): ReadonlyMap<number, PdfPagePicture>; restore: () => void;
@@ -163,7 +123,6 @@ export function setPdfStandInFrame(documentId: string, pane: Element, frame: Pdf
     emit();
 }
 
-/** A pane that is hidden or unmounted lets go of its picture; the document's turn goes on. */
 export function dropPdfStandInFrame(documentId: string, pane: Element): void {
     const state = states.get(documentId), frame = state?.frames.get(pane);
     if (!state || !frame) return;
@@ -174,12 +133,10 @@ export function dropPdfStandInFrame(documentId: string, pane: Element): void {
     emit();
 }
 
-/** App, once per write, for the `presses` that write took. */
 export function settlePdfRotationWrite(documentId: string, outcome: PdfRotationOutcome, presses: number): void {
     const state = states.get(documentId);
     if (!state) return;
     if (outcome.kind === 'failed') {
-        // Back exactly as it was: the reader's position, and no picture over the unturned view.
         state.restore();
         clear(documentId);
         return;
@@ -192,12 +149,8 @@ export function settlePdfRotationWrite(documentId: string, outcome: PdfRotationO
     }
     state.pending = Math.max(0, state.pending - presses);
     if (!state.pending) {
-        // No write at all in the burst (the turns cancelled out): the view already shows the result.
-        // Nor is there anything to wait for when no pane is showing it (hidden, or switched away).
         if (!state.lastHash || !state.frames.size) { clear(documentId); return; }
         state.expectedHash = state.lastHash;
-        // A view that never presents the new file (closed, failed to open) must not hold the
-        // reader's input frozen behind a picture: the stand-in gives way after a bound.
         const expected = state.expectedHash;
         setTimeout(() => { if (states.get(documentId) === state && state.expectedHash === expected) clear(documentId); }, STAND_IN_LIMIT_MS);
     }
@@ -205,7 +158,6 @@ export function settlePdfRotationWrite(documentId: string, outcome: PdfRotationO
     emit();
 }
 
-/** The pane drew a complete sharp frame of `hash`: its stand-in has done its job. */
 export function presentedPdfRotation(documentId: string, pane: Element, hash: string): void {
     const state = states.get(documentId);
     if (!state || state.pending || state.expectedHash !== hash) return;
@@ -215,7 +167,6 @@ export function presentedPdfRotation(documentId: string, pane: Element, hash: st
     else { state.version++; emit(); }
 }
 
-/** A document that closes takes its stand-in with it. */
 export function clearPdfRotationStandIn(documentId: string): void { clear(documentId); }
 
 function release(canvas: HTMLCanvasElement): void { canvas.width = canvas.height = 0; }

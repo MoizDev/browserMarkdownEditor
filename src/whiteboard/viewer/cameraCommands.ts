@@ -7,13 +7,11 @@ import { resetBoardZoom, stepBoardZoom } from '../input/cameraZoom';
 import type { NodeId } from '../model/ids';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-/** Back to content's glide: 220 ms, tldraw's back-to-content move (scaled by the board's motion setting). */
 const BACK_TO_CONTENT_MS = 220;
 
 export interface BoardCameraCommandsOptions {
     readonly runtime: BoardRuntime;
     readonly camera: CameraController;
-    /** The pane's motion: the platform scheduler animates the camera; cancel ends the glide in flight. */
     readonly motion: { glideTo(target: Camera, durationMs: number): void; cancel(): void };
     readonly surface: HTMLElement;
     current(): boolean;
@@ -22,8 +20,6 @@ export interface BoardCameraCommandsOptions {
     cooperate?(): Promise<void>;
 }
 
-/** Commands share the pane camera and its paper constraint. They never change
- * document history; asynchronous fit owns a revision/selection/camera fence. */
 export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
     const { runtime, camera, surface } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     const cooperate = options.cooperate ?? yieldToHost;
@@ -31,7 +27,6 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
     let disposed = false, serial = 0, pending: AbortController | undefined, cursor: Point | null = null;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
     const cancel = () => { serial++; pending?.abort(); pending = undefined; cancelGlide(); };
-    // A glide is the view's own motion; the person taking the view back (a press or a wheel turn on the board) ends it.
     const cancelGlide = () => motion.cancel();
     const viewport = () => camera.viewport;
     const moved = (event: PointerEvent) => {
@@ -78,14 +73,11 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
             fence();
             const bounds = unionRects(paper ? pageStackBounds(doc) : null, content);
             if (!bounds) return;
-            // A selection at any zoom but 1 toggles to natural 1:1 (F-CAM-007); a paper sheet always fits.
             const toNatural = natural || (selectionOnly && Math.abs(starting.z - 1) > .001);
             const plan = fitTarget(doc, dimensions, bounds, { paper, natural: !paper && toNatural });
             centreOn(bounds, plan.z, plan.edges);
         })().catch(error => { if (active()) options.error(error); }).finally(() => { if (pending === controller) pending = undefined; });
     };
-    /** Back to content centres the selection, or the sheet's content when nothing is selected, and never zooms past 100%: it
-     * keeps a smaller zoom and only steps a larger one down to 1. Its glide takes 220 ms (tldraw's back-to-content move). */
     const backToContent = () => {
         cancel(); if (!current()) return;
         const state = runtime.selection.getSnapshot();
@@ -101,7 +93,6 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
             fence();
             if (!content) return;
             const target = centredCamera(content, camera.clampZoom(Math.min(1, starting.z)), view, fitEdges(doc, view, false));
-            // Zero at the board's reduced-motion setting: the scheduler jumps there at once.
             motion.glideTo(target, BACK_TO_CONTENT_MS * getBoardPreferences().animationSpeed);
             notify();
         })().catch(error => { if (active()) options.error(error); }).finally(() => { if (pending === controller) pending = undefined; });

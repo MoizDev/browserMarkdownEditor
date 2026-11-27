@@ -1,11 +1,3 @@
-// The code palettes — One Dark Darker and One Light — as plain values, in a
-// module that imports nothing. Code panes (codeHighlight.ts) build their
-// highlighting from them, and the terminal (TerminalPanel/terminalTheme.ts)
-// seeds its 16 ANSI colours from them, so `ls`, `git diff` and a source file in
-// a pane are one colour scheme. Import-free so the terminal chunk can read a
-// handful of strings without pulling a CodeMirror module along.
-
-/** One Dark Darker, as the theme file states it. */
 export const CODE_DARK = {
     base: '#abb2bf',
     comment: '#7f848e',
@@ -20,7 +12,6 @@ export const CODE_DARK = {
     invalid: '#ef596f',
 };
 
-/** One Light, the same theme's light half. */
 export const CODE_LIGHT: CodePalette = {
     base: '#383a42',
     comment: '#a0a1a7',

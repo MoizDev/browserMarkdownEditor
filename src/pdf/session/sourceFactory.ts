@@ -28,7 +28,6 @@ function matches(a: RenderToken, b: RenderToken): boolean {
         a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 }
 
-/** A view can stop waiting without cancelling the App-owned shared open. */
 function waitFor<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     if (signal.aborted) return Promise.reject(new DOMException('PDF view closed', 'AbortError'));
     return new Promise<T>((resolve, reject) => {
@@ -39,7 +38,6 @@ function waitFor<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     });
 }
 
-/** This factory is lazy, while slot authority and identity remain App-owned. */
 export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSourceFactory {
     return {
         async open(reading, signal) {
@@ -118,13 +116,6 @@ export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSo
     };
 }
 
-/**
- * The bytes Original shows for a document's live byte generation — its memory-backed copy, which no later change on
- * disk reaches — with their version. Undefined when no reader has opened this generation, or its copy failed.
- *
- * The DiskBar's one source for a PDF with no Annotate session: with the file replaced by another program, this copy is
- * the only place the app's version still exists (it may hold saved ink), so Keep mine writes it back and Reload keeps it.
- */
 export async function pdfReaderBytes(documentId: string): Promise<{ blob: Blob; version: DiskVersion } | undefined> {
     const identity = getSessionIdentity(documentId);
     const entry = identity?.getSlot<Entry>(sourceSlot);

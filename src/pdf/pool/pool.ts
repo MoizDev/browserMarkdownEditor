@@ -65,12 +65,10 @@ function sameGeometry(a: Readonly<PageGeometry>, b: Readonly<PageGeometry>): boo
         [0, 1, 2, 3, 4, 5].every(index => Number.isFinite(a.toUserSpace[index]) && a.toUserSpace[index] === b.toUserSpace[index]);
 }
 let poolSerial = 0;
-/** How long a pre-booted render worker outlives the idle retirement while nothing has opened a document on it. */
 const WARM_HOLD_MS = 5 * 60_000;
 
 type BootstrapPort = ContainedPort & { readonly engine: EngineInitArgs; compiled(): Promise<void> };
 
-/** The broker supplies a direct worker port and trusted init metadata, never a same-origin fallback (C5.4). */
 function pdfClient(options: PdfPoolOptions, name: string, role: 'render' | 'writer', id: number, onHeap?: (bytes: number) => void): WorkerClient {
     let port: BootstrapPort | null = null;
     let bootstrap: WorkerClient | undefined;
@@ -408,8 +406,6 @@ class Pool implements PdfPool {
         request.client.reprioritise(request.request, priority);
     }
     private preemptLower(slot: Slot, wanted: Job): void {
-        // A governor-paused render holds the worker's serial chain at slice(); only cancelling
-        // its native attempt releases the chain without cancelling the logical page request.
         if (wanted.priority > 1) return;
         for (const job of this.queue) {
             const attempt = job.attempt;
@@ -475,7 +471,6 @@ class Pool implements PdfPool {
         if (!job.progress && job.op === 'page.tile' && job.priority <= 1 && Number.isSafeInteger(job.args.page)) {
             job.progress = beginPdfPageWork(job.doc.key, job.args.page as number);
         }
-        // Which worker each visible/prefetch tile went to: how a large window's open spreads (or queues) across the pool.
         if (job.op === 'page.tile') auditCount('pdf-pool', `tile:p${job.priority}:w${this.slots.indexOf(slot)}`);
         const attempt = { controller: new AbortController(), preempted: false };
         const signal = AbortSignal.any([job.signal, attempt.controller.signal]);
@@ -621,7 +616,6 @@ class Pool implements PdfPool {
             void pending.catch(() => { if (slot.fonts.get(id) === installed) slot.fonts.delete(id); });
         }
         const shared = pending;
-        // The first waiter owns this shared installation; its preemption must not fail the others.
         return waitFor(shared, signal).catch(error => {
             if (!signal.aborted && isCancellation(error)) {
                 if (slot.fonts.get(id) === shared) slot.fonts.delete(id);
@@ -702,8 +696,6 @@ class Pool implements PdfPool {
     async adoptSource(doc: Doc, blob: Blob): Promise<void> {
         if (!(blob instanceof Blob) || (typeof File !== 'undefined' && blob instanceof File) || blob.size !== doc.blob.size) throw new PdfEngineError('RangeError', 'Invalid PDF source copy');
         if (doc.closing || doc.blob === blob || this.disposed) return;
-        // Swapped first: an open posted from now on (a new worker, a restart) reads the copy. A worker that already opened
-        // the snapshot is told in its serial order, after its open and any render queued before.
         doc.blob = blob;
         await Promise.allSettled(this.slots.filter(slot => slot.opens.has(doc.key)).map(async slot => {
             const generation = slot.client.generation;
@@ -837,7 +829,6 @@ class Pool implements PdfPool {
                     const length = output.bytes.byteLength, hash = await hashNotebookOutput(output.bytes, signal);
                     signal.throwIfAborted();
                     if (closed || this.disposed) throw abortError();
-                    // The verifier takes the same global writer turn only after the producing heap is gone.
                     releaseNative();
                     const verifier = await this.writer({ signal });
                     try {
@@ -863,13 +854,7 @@ class Pool implements PdfPool {
     warm(): void {
         if (this.disposed || this.slots.some(slot => !slot.retiring)) return;
         const slot = this.slot();
-        // Held past the no-visible-document retirement until first use: a vault's first PDF is often opened minutes
-        // after it loads, and retired at 60 s the boot would be gone by then. Bounded, so an engine nobody opens a
-        // document on still goes: measured (macOS footprint, DPR 2), the booted broker frame and its empty worker are one
-        // renderer process of ~77 MB, plus ~12 MB in the browser and network processes, which a first open would pay anyway.
         slot.warmUntil = Date.now() + WARM_HOLD_MS;
-        // The cheapest request spawns the worker through the broker frame, compiles the module and runs engine.init.
-        // Its failure is not the reader's: the open that follows owns the restart policy and the error.
         void slot.client.request<unknown>('worker.stats', {}, { priority: 3, deadlineMs: 60_000 }).then(value => {
             const stats = validatePdfWorkerStats(value);
             slot.heapBytes = stats.heapBytes; reportMemory(slot.client, stats.heapBytes);
@@ -956,5 +941,4 @@ class Lease implements PdfPoolDocument {
     async close(): Promise<void> { if (this.closed) return; this.invalidate(); await this.pool.release(this); }
 }
 
-/** The broker must be a contained-frame implementation; no same-origin fallback. */
 export function createPdfPool(options: PdfPoolOptions): PdfPool { return new Pool(options); }

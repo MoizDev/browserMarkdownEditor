@@ -11,7 +11,6 @@ export interface PenTransitionHost {
     begin(sample: RealSample, modifiers: Modifiers, event: PointerEvent): boolean;
     prepareInk(sample: RealSample, modifiers: Modifiers, event: PointerEvent): GestureOwner | null;
     cancelPending(): void;
-    /** Resolves only after the previous gesture's async commits release their holds. */
     settled(signal: AbortSignal): Promise<void>;
     ended(reason: FinishReason): void;
     error(error: unknown): void;
@@ -20,9 +19,6 @@ type Batch = { readonly type: 'move'; readonly samples: readonly RealSample[]; r
     | { readonly type: 'modifiers'; readonly modifiers: Modifiers }
     | { readonly type: 'end'; readonly samples: readonly RealSample[]; readonly modifiers: Modifiers; readonly reason: FinishReason };
 
-/** A pen eraser-end change is a real gesture boundary. Preserve every acquired
- * sample while the old eraser resolves its asynchronous exact sweep, and never
- * join the two independently committed ink segments across the eraser gap. */
 export class PenContactTransitions {
     private readonly controller = new AbortController();
     private readonly queue: Batch[] = [];
@@ -35,14 +31,12 @@ export class PenContactTransitions {
     private shadowMode: PenContactMode;
     private shadows: { readonly sequence: number; readonly owner: GestureOwner }[] = [];
     private shadow: { readonly sequence: number; readonly owner: GestureOwner } | null = null;
-    /** The current ink run could not be shadowed; its samples still replay from the queue. */
     private unshadowed = false;
     private readonly dirtyShadows = new Set<{ readonly sequence: number; readonly owner: GestureOwner }>();
     private readonly shadowed = new WeakSet<Batch>();
     constructor(readonly pointerId: number, initial: PenContactMode, private readonly host: PenTransitionHost) {
         this.mode = initial; this.shadowMode = initial;
     }
-    /** The contact has ended (its tip lifted, or it was interrupted) and still holds the input while the work before it lands. */
     get lifted(): boolean { return this.terminal && !this.closed; }
     move(samples: readonly RealSample[], modifiers: Modifiers, event: PointerEvent): void {
         if (this.terminal || this.closed) return;
@@ -60,8 +54,6 @@ export class PenContactTransitions {
         if (this.waiting && samples.length && this.shadow) { this.shadow.owner.update(samples, modifiers); this.dirtyShadows.add(this.shadow); }
         this.terminal = true; this.queue.push({ type: 'end', samples, modifiers, reason }); this.drain();
     }
-    /** A shadow is a real, unsaved ink builder, not a second presentation.
-     * It is discarded on normal replay and sealed only at a synchronous barrier. */
     private stage(batch: Extract<Batch, { type: 'move' }>, start: number): void {
         if (this.shadowed.has(batch)) return;
         this.shadowed.add(batch);
@@ -72,10 +64,6 @@ export class PenContactTransitions {
             if (!this.shadow) {
                 const owner = this.host.prepareInk(sample, batch.modifiers, batch.event);
                 if (!owner || owner.kind !== 'ink' || !owner.discard) {
-                    // The shadow only shows the run early and keeps it through a synchronous barrier; the queue keeps every
-                    // sample, which the ink begun after the sweep replays. Thrown, this ended the contact with its internal
-                    // wording on screen ("Pen prefix cannot be preserved", reported beside a board that took no stroke until a
-                    // reload), and an eraser begun for the refused shadow takes a gesture hold as it begins that nothing released.
                     owner?.cancel('invalidated'); this.unshadowed = true; continue;
                 }
                 this.shadow = { sequence: sample.sequence, owner }; this.shadows.push(this.shadow);
@@ -83,8 +71,6 @@ export class PenContactTransitions {
             this.dirtyShadows.add(this.shadow);
         }
     }
-    /** Runs from the shared input frame; bounded batches prevent a delayed
-     * eraser sweep from monopolizing a frame when the pen changes ends often. */
     publishPending(): boolean {
         if (this.closed) return false;
         let count = 0;
@@ -136,8 +122,6 @@ export class PenContactTransitions {
                 let end = start + 1;
                 while (end < batch.samples.length && (((batch.samples[end].buttons & 32) !== 0) === (desired === 'eraser'))) end++;
                 if (desired !== this.mode) {
-                    // Resolve and commit the previous mode before starting the next;
-                    // queued raw samples remain owned here while the sweep completes.
                     this.host.finish('tool-change');
                     this.waiting = true;
                     if (!this.shadowed.has(batch) && !this.shadows.length) { this.shadowMode = this.mode; this.shadow = null; this.unshadowed = false; }
@@ -146,20 +130,15 @@ export class PenContactTransitions {
                     this.waiting = false;
                     if (this.closed || this.controller.signal.aborted || !this.host.current()) { this.stop('os-cancel'); return; }
                     if (desired === 'ink') this.discardShadow(batch.samples[start].sequence);
-                    // A refused start (the view stopped taking edits, the contact ended under it) ends the contact as a cancel
-                    // does; the next press starts afresh. It was thrown, and showed its internal wording to the person.
                     if (!this.host.begin(batch.samples[start], batch.modifiers, batch.event)) { this.stop('os-cancel'); return; }
                     this.mode = desired; start++;
                 }
                 if (start < end) this.host.update(batch.samples.slice(start, end), batch.modifiers);
                 start = end;
             }
-            // Compact only processed batches; queued samples are never thinned.
             if (this.cursor >= 128) { this.queue.splice(0, this.cursor); this.cursor = 0; }
         }
     }
-    /** Escape and Undo must reach the last acquired prefix even while an eraser
-     * sweep is finishing. The ordinary gesture owner still implements policy. */
     interrupt(reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
         if (this.closed) return false;
         if (reason === 'os-cancel' || reason === 'flush' || !this.running || (this.host.owner() && this.cursor >= this.queue.length)) return this.stop(reason);
@@ -171,7 +150,6 @@ export class PenContactTransitions {
         this.terminal = true; this.queue.push({ type: 'end', samples, modifiers, reason }); this.drain();
         return true;
     }
-    /** Invalidations terminate immediately; no pending continuation may resurrect a closed view. */
     stop(reason: 'escape' | 'undo' | 'flush' | 'os-cancel'): boolean {
         if (this.closed) return false;
         this.closed = true; this.terminal = true; this.controller.abort(); this.queue.length = 0; this.cursor = 0;

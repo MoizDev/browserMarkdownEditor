@@ -8,34 +8,19 @@ import { isCancellation } from '../../platform/workers/envelope';
 export interface BoardSelectGestureContext extends SelectToolContext {
     readonly sampleToSurface: (sample: RealSample) => Vec2;
     beginHandle(sample: RealSample, modifiers: Modifiers): GestureOwner | null;
-    /** The press lies inside the drawn selection frame (world point at the frame presented at its time). */
     insideSelection(sample: RealSample): boolean;
-    /** The press lands on the selection: its picture may be built at rest before the drag that may follow. */
     prewarm?(): void;
-    /** The user's wrap-mode preference: a brush then selects only what it fully encloses, and accel inverts it for one gesture. */
     readonly wrapMode?: () => boolean;
-    /** The press lies on a resize or rotate handle of the selection frame (accel turns such a drag into a brush). */
     selectionHandleAt?(sample: RealSample): boolean;
-    /** An empty press that clears the selection leaves a focused group whose bounds it lies outside (catalogue S§4.6). */
     leaveFocusAt?(point: Vec2): void;
-    /** A Cmd press on an arrow endpoint or label brushes, even though the node under it is the selected arrow (catalogue S§11.1). */
     brushOverHandle?(sample: RealSample): boolean;
-    /** A click, without a drag, on the sole selected text edits it with the caret where the press landed (catalogue S§4.2). */
-    /** `clicks` is the press's place in a run of clicks: the second click of a double-click edits all the text, not at a caret. */
     editTextAt?(node: NodeId, point: Vec2, pointerId: number, clicks: number): void | Promise<void>;
-    /** The hold a released box keeps until its selection lands (a `settling` gesture hold: the next press is admitted). */
     settle(): () => void;
-    /** Finished work that a new press, Escape or another key does not cancel; the view's end does. */
     registerSettling(cancel: () => void, undoable: boolean): () => void;
-    /** Resolves once every gesture finished before now has landed. */
     settled(): Promise<void>;
 }
-// A box whose query went stale (the board or camera changed under it) asks again; bounded so a board that never stops
-// changing cannot hold it forever.
 const REGION_ATTEMPTS = 32;
 
-/** A selection contact owns its hit preflight, optional exact sweep and final
- * transaction handoff. Real points stay in their presented coordinate mapping. */
 class BoardSelectGesture implements GestureOwner {
     readonly kind = 'marquee' as const;
     readonly pointerIds: ReadonlySet<number>;
@@ -45,29 +30,22 @@ class BoardSelectGesture implements GestureOwner {
     private readonly downSurface: Vec2;
     private initial: readonly NodeId[] = [];
     private readonly startKeys: Modifiers;
-    /** Null until the gestures finished before this press have landed: their selection is the one this press starts from. */
     private selectionFence: ReturnType<SelectToolContext['selection']['getSnapshot']> | null = null;
     private last: RealSample;
     private keys: Modifiers;
     private hit: NodeId | null | undefined;
-    /** Empty space inside the selection frame: a drag moves the whole selection, as a person expects
-     * after a marquee over handwriting (measured: a press between strokes started a second marquee). */
     private body = false;
     private dragging = false;
     private ended = false;
     private finishing = false;
     private cleaned = false;
     private transform: GestureOwner | null = null;
-    /** The Alt state the live move was started with: a change while moving switches between moving and cloning. */
     private transformAlt = false;
     private sweep: SweepQueue | null = null;
     private sweepLast: Vec2;
     private sweepPreview: ReadonlySet<NodeId> = new Set();
     private readonly points: Vec2[];
-    /** The selection the brush has written while dragging (catalogue S§5: hits show live, Escape restores the start).
-     * Null until the first write; a cancel restores `initial` only while the selection still holds exactly these ids. */
     private shown: readonly NodeId[] | null = null;
-    /** One rectangle query in flight at a time; a move during it marks the latest region dirty, so the last move always lands. */
     private liveBusy = false;
     private liveDirty = false;
 
@@ -83,31 +61,24 @@ class BoardSelectGesture implements GestureOwner {
         } catch (error) { this.cancel('invalidated'); throw error; }
     }
 
-    /** Alt on empty canvas scribbles: the path from here is swept, and pressing or releasing Alt mid-brush switches the mode. */
     private startSweep(): void {
         const services: SweepQueueServices = { ...this.context.scribble,
             preview: ids => {
                 this.sweepPreview = ids;
                 if (this.hit === null && this.dragging && this.valid()) this.context.scribble.preview(ids);
-                // The scribble's hits are the sweep's visible set, cumulative over the path so far: they select as they arrive.
                 if (this.hit === null && this.dragging) this.showSelection([...ids]);
             } };
         this.sweep = new SweepQueue(services);
         this.sweep.add(this.sweepLast, this.sweepLast, false);
     }
 
-    // A press right after a released box or erase decides against what they leave: the hit, and the selection a Shift box
-    // extends, are read once they have landed. Read at the press, a box released 30 ms earlier replaced the selection under
-    // this one's fence and cancelled it, and an erase landing mid-query made the hit stale.
     private async decide(): Promise<void> {
         await this.context.settled();
         if (!this.valid()) { this.cancel('invalidated'); return; }
         this.selectionFence = this.context.selection.getSnapshot(); this.initial = this.selectionFence.selected;
         const id = await this.context.hit(this.down, this.controller.signal);
         if (!this.valid()) { this.cancel('invalidated'); return; }
-        // A brush press never moves what it lands on: the hit is taken as empty space, so the press is a marquee.
         this.hit = this.brushOnly ? null : id;
-        // A selection handle is not a body press: accel-drag from a handle brushes (crop and resize are the handle's own gestures).
         this.body = !this.brushOnly && id === null && !this.startKeys.shift && !this.startKeys.alt && this.initial.length > 0
             && this.context.insideSelection(this.down) && !(this.startKeys.accel && this.context.selectionHandleAt?.(this.down));
         if (this.body || (id !== null && this.initial.includes(id))) this.context.prewarm?.();
@@ -116,8 +87,6 @@ class BoardSelectGesture implements GestureOwner {
         if (this.ended) this.complete();
     }
     private valid(): boolean {
-        // The fence guards the hit/marquee decision. A running transform republishes the selection
-        // snapshot as it moves; it owns its own validity, and the fence cancelled every drag-move.
         return !this.cleaned && !this.controller.signal.aborted && this.context.isCurrent()
             && (this.transform !== null || this.selectionFence === null || this.context.selection.getSnapshot() === this.selectionFence);
     }
@@ -140,9 +109,6 @@ class BoardSelectGesture implements GestureOwner {
             ? { kind: 'scribble', points: this.points }
             : { kind: 'marquee', start: { x: this.down.x, y: this.down.y }, end: { x: this.last.x, y: this.last.y }, containment: this.containment() };
     }
-    /** Wrap mode (the preference) selects only what the brush fully encloses, and the platform's accelerator held while boxing
-     * (⌘ on macOS, Ctrl elsewhere) inverts it for this gesture. It read Ctrl, which a Mac sends as a right click (the press
-     * pans), so containment was unreachable there. */
     private containment(): boolean {
         return (this.context.wrapMode?.() ?? false) !== this.keys.accel;
     }
@@ -151,7 +117,6 @@ class BoardSelectGesture implements GestureOwner {
         if (this.body) this.beginMove(this.initial[0]);
         else if (this.hit !== null && !this.startKeys.accel) {
             if (!this.context.selection.getSnapshot().selected.includes(this.hit)) {
-                // Default: Shift-drag adds the hit before moving; Shift-click still toggles on release.
                 this.context.selection.replace(this.startKeys.shift ? [...this.initial, this.hit] : [this.hit]);
                 this.selectionFence = this.context.selection.getSnapshot();
             }
@@ -162,10 +127,7 @@ class BoardSelectGesture implements GestureOwner {
             this.refreshMarquee();
         }
     }
-    /** Writes the brush's hits to the selection as it moves, so a shape the brush or scribble reaches is selected while the
-     * drag is still going (catalogue S§5, S§6). Shift keeps the starting selection, as the release does. */
     private showSelection(ids: readonly NodeId[]): void {
-        // Until the press has decided (after released work lands) there is no fence to write against, so nothing shows yet.
         if (this.ended || this.cleaned || !this.valid() || !this.selectionFence) return;
         const next = [...new Set(this.keys.shift ? [...this.initial, ...ids] : ids)];
         const current = this.selectionFence.selected;
@@ -174,7 +136,6 @@ class BoardSelectGesture implements GestureOwner {
         this.selectionFence = this.context.selection.getSnapshot();
         this.shown = this.selectionFence.selected;
     }
-    /** Rectangle hits for the current region, one query at a time: a move that arrives during a query re-runs it once it lands. */
     private refreshMarquee(): void {
         if (this.sweep || this.transform || this.ended || !this.dragging || this.hit === undefined) return;
         if (this.liveBusy) { this.liveDirty = true; return; }
@@ -185,7 +146,6 @@ class BoardSelectGesture implements GestureOwner {
             if (this.liveDirty) this.refreshMarquee();
         }).catch(error => { this.liveBusy = false; this.fail(error); });
     }
-    /** A cancelled brush gives back the selection it started with, but only while nothing else has changed it since. */
     private restoreShown(): void {
         const shown = this.shown;
         this.shown = null;
@@ -193,8 +153,6 @@ class BoardSelectGesture implements GestureOwner {
         const current = this.context.selection.getSnapshot().selected;
         if (current.length === shown.length && shown.every(id => current.includes(id))) this.context.selection.replace(this.initial);
     }
-    /** A move of `hit`, cloned while Alt is held (catalogue S§7.4). The move is relative to the press, so a switch restarts it
-     * from the current pointer without a jump. */
     private beginMove(hit: NodeId): void {
         this.transformAlt = this.keys.alt;
         this.transform = this.context.beginTransform(this.down, hit, { ...this.startKeys, alt: this.keys.alt });
@@ -218,13 +176,11 @@ class BoardSelectGesture implements GestureOwner {
                 this.dragging = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= this.context.dragThresholdCss;
             }
             if (this.transform && keys.alt !== this.transformAlt) {
-                // Alt pressed or released mid-move: clone or move the originals from here (catalogue S§7.4).
                 const previous = this.transform; this.transform = null; previous.cancel('invalidated');
                 if (this.dragging) this.activateDrag();
             }
             else if (this.transform) this.transform.update(samples, keys);
             else if (this.dragging) this.activateDrag();
-            // Alt pressed or released mid-brush switches between the rectangle and the scribble (catalogue S§5, S§6).
             if (!this.transform && (this.hit === null || this.hit === undefined)) {
                 if (keys.alt && !this.sweep) { this.startSweep(); this.points.length = 0; this.points.push(this.sweepLast); }
                 else if (!keys.alt && this.sweep) { this.sweep.cancel(); this.sweep = null; this.context.scribble.preview(new Set()); }
@@ -238,8 +194,6 @@ class BoardSelectGesture implements GestureOwner {
         if (!this.settling()) return;
         if (this.hit !== undefined) this.complete();
     }
-    /** Released: from here the box lands. A new press, Delete or Escape waits for it rather than cancelling it (measured:
-     * a box then Delete at once deleted nothing; the key cancelled the box's 8–11 ms query and was swallowed). */
     private settling(): boolean {
         let settle: (() => void) | null = null;
         try {
@@ -269,7 +223,6 @@ class BoardSelectGesture implements GestureOwner {
             }
             if (!this.dragging) {
                 this.sweep?.cancel(); this.sweep = null;
-                // Shift and accel both add or remove; alt replaces the selection (catalogue S§4.3-4.6).
                 const additive = (this.keys.shift || this.keys.accel) && !this.keys.alt;
                 if (this.hit === null) {
                     if (!additive) { this.context.selection.clear(); this.context.leaveFocusAt?.({ x: this.down.x, y: this.down.y }); }
@@ -290,8 +243,6 @@ class BoardSelectGesture implements GestureOwner {
                 for (let attempt = 1; ; attempt++) {
                     try { return await this.context.region(region, this.controller.signal); }
                     catch (error) {
-                        // Stale is not refused: the box the person drew still stands, so it is asked again at the new revision
-                        // and camera (a tool change, an erase landing or a wheel tick after the release made it stale).
                         if (!isCancellation(error) || this.controller.signal.aborted || !this.valid() || attempt >= REGION_ATTEMPTS) throw error;
                     }
                 }
@@ -305,7 +256,6 @@ class BoardSelectGesture implements GestureOwner {
     }
     cancel(reason: CancelReason): void {
         if (this.cleaned) return;
-        // Set before the sweep is drained: its empty preview must not write the selection while the cancel gives it back.
         this.ended = true;
         this.restoreShown();
         try { this.sweep?.cancel(); }

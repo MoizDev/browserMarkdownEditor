@@ -1,22 +1,18 @@
 import type { ContextMenuCommand, ContextMenuEntry, ContextMenuSubmenu } from '../../../utils/contextMenu';
 
-/** One titled group of the palette's root list. The groups keep the order they are built in; an empty one is not shown. */
 export interface PaletteGroup {
     readonly id: string;
     readonly label: string;
     readonly entries: readonly ContextMenuEntry[];
 }
 
-/** A command the palette can run, addressed by the path of ids that reaches it. The key is stable across openings, so Recent can keep it. */
 export interface PaletteLeaf {
     readonly key: string;
     readonly label: string;
-    /** The groups and submenus it sits in, joined for display and for the search. */
     readonly crumb: string;
     readonly command: ContextMenuCommand;
 }
 
-/** Recent shows five rows (the preferences keep twenty). */
 export const RECENT_SHOWN = 5;
 const MAX_RESULTS = 60;
 
@@ -27,7 +23,6 @@ export function paletteLeaves(groups: readonly PaletteGroup[]): PaletteLeaf[] {
             if (entry.kind === 'command') {
                 leaves.push({ key: `${path}/${entry.id}`, label: entry.label, crumb: crumbs.join(' › '), command: entry });
             } else if (entry.kind === 'submenu') {
-                // A level never repeats the one above it: "Arrange › Arrange" names nothing new.
                 const next = crumbs[crumbs.length - 1] === entry.label ? crumbs : [...crumbs, entry.label];
                 visit(entry.entries, `${path}/${entry.id}`, next);
             }
@@ -37,7 +32,6 @@ export function paletteLeaves(groups: readonly PaletteGroup[]): PaletteLeaf[] {
     return leaves;
 }
 
-/** Drops separators that would open, close or double a run of rows. */
 function tidy<T extends ContextMenuEntry>(entries: readonly T[]): T[] {
     const result: T[] = [];
     for (const entry of entries) {
@@ -63,10 +57,6 @@ function runnableSubmenu(entries: SubmenuRows): SubmenuRows {
     return tidy(result);
 }
 
-/**
- * A read-only board offers only what can run there: a disabled row is dropped, and so is any submenu left empty.
- * An editable board keeps the disabled rows, each with its reason, so the palette says why a row cannot run.
- */
 export function runnableEntries(entries: readonly ContextMenuEntry[]): ContextMenuEntry[] {
     const result: ContextMenuEntry[] = [];
     for (const entry of entries) {
@@ -86,7 +76,6 @@ export function runnableGroups(groups: readonly PaletteGroup[], readOnly: boolea
         .filter(group => group.entries.some(entry => entry.kind !== 'separator' && entry.kind !== 'label'));
 }
 
-/** Each query word must appear in order inside the text; a match scores higher at a word's start and in an unbroken run. */
 function wordScore(word: string, text: string): number | null {
     let at = 0, score = 0, previous = -2;
     for (const character of word) {
@@ -100,7 +89,6 @@ function wordScore(word: string, text: string): number | null {
     return score;
 }
 
-/** The leaves that match every word of the query, best first. A word may match the row's label or only its path. */
 export function searchLeaves(leaves: readonly PaletteLeaf[], query: string): PaletteLeaf[] {
     const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
     if (!words.length) return [];
@@ -118,7 +106,6 @@ export function searchLeaves(leaves: readonly PaletteLeaf[], query: string): Pal
     return scored.sort((a, b) => b.score - a.score).slice(0, MAX_RESULTS).map(item => item.leaf);
 }
 
-/** The Recent rows: the stored keys that still name a runnable row, newest first. */
 export function recentLeaves(keys: readonly string[], leaves: readonly PaletteLeaf[]): PaletteLeaf[] {
     const byKey = new Map(leaves.map(leaf => [leaf.key, leaf] as const));
     const result: PaletteLeaf[] = [];
@@ -130,7 +117,6 @@ export function recentLeaves(keys: readonly string[], leaves: readonly PaletteLe
     return result;
 }
 
-/** The newest-first list after running `key`: it moves to the front, and the list keeps at most `limit` keys. */
 export function rememberRecent(keys: readonly string[], key: string, limit: number): string[] {
     return [key, ...keys.filter(item => item !== key)].slice(0, limit);
 }

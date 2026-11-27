@@ -29,8 +29,6 @@ function pinUrl(base: URL, pin: AssetPin): string {
     return url.href;
 }
 
-/** Bytes are authenticated on the trusted side before becoming immutable Blobs.
- * No compiled Module crosses C5 or an agent-cluster boundary. */
 async function verifiedBytes(url: string, pin: AssetPin, signal?: AbortSignal): Promise<ArrayBuffer> {
     const response = await fetch(url, { signal, credentials: 'omit', referrerPolicy: 'no-referrer', cache: 'force-cache' });
     if (!response.ok || !response.body) throw broken();

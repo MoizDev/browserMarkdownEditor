@@ -13,8 +13,6 @@ import type { PaintPalette } from './colour';
 import type { TextMaterial } from './material';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: text/edit host requests, figure geometry and paint material
-// contracts; independent session service, no third-party source.
 export interface BoardTextGeometryOptions {
     readonly revision: string;
     readonly zoom?: number;
@@ -32,16 +30,11 @@ export interface BoardTextGeometry {
     readonly faces: FaceTable;
     prepareNow(node: Readonly<Node>, options: BoardTextGeometryOptions): PreparedBoardText | null;
     prepare(node: Readonly<Node>, options: BoardTextGeometryOptions, signal: AbortSignal): Promise<PreparedBoardText | null>;
-    /** Loads every face a node's text uses (its style's regular face and each fragment's), calling `after` once each load settles: a
-     * fence on the font epoch taken after it holds while the node's geometry is prepared. Throws when a face cannot be loaded. */
     loadFaces(node: Readonly<Node>, after: () => void): Promise<void>;
     dispose(): void;
 }
-/** The poster's inset, in world units: 12 screen pixels at any zoom, as the frame title's size is kept. */
 function cardPosterPad(zoom: number): number { return 12 / zoom; }
-/** A stored preview's favicon sits on the title's line, its own size and gap left of the text. */
 export const POSTER_FAVICON = 16, POSTER_FAVICON_GAP = 6, POSTER_FAVICON_INSET = POSTER_FAVICON + POSTER_FAVICON_GAP;
-/** The picture band at a card's top when a preview picture is stored: the top 55% of the card; the poster sits below it. */
 export const POSTER_IMAGE_SHARE = 0.55;
 export function posterImageHeight(node: Readonly<EmbedNode | LinkcardNode>): number {
     return node.kind === 'linkcard' && node.preview?.image ? node.h * POSTER_IMAGE_SHARE : 0;
@@ -49,12 +42,6 @@ export function posterImageHeight(node: Readonly<EmbedNode | LinkcardNode>): num
 export function posterFaviconInset(node: Readonly<EmbedNode | LinkcardNode>): number {
     return node.kind === 'linkcard' && node.preview?.favicon ? POSTER_FAVICON_INSET : 0;
 }
-/**
- * A card's poster: the title (a preview's title, else the provider or domain), a preview's description, and the address the
- * link names; an embed also says its content is not in the picture. The actions (Load, Stop, Fetch preview, Open link) are
- * the viewer's controls on the card, so the poster names no instructions. It sits at the card's foot in the card's own width,
- * and as many lines as the card's on-screen height holds are kept (the rest end in an ellipsis).
- */
 function cardPosterRequest(node: Readonly<EmbedNode | LinkcardNode>, revision: string, fontEpoch: number, zoom: number): TextLayoutRequest {
     const { title, address } = urlPoster(node.url), pad = cardPosterPad(zoom);
     const preview = node.kind === 'linkcard' ? node.preview : null;
@@ -62,7 +49,6 @@ function cardPosterRequest(node: Readonly<EmbedNode | LinkcardNode>, revision: s
         ...(node.kind === 'embed' ? ['Embedded content not included'] : [])];
     const paragraph = (text: string) => ({ kind: 'p' as const, level: 0 as const, dir: 'auto' as const, runs: [{ text, marks: {} }] });
     const size = 14 / zoom, lineHeight = size * 1.3, inset = posterFaviconInset(node);
-    // Screen height is the world height times zoom; the line count is what that holds at this size, never less than one.
     const linesThatFit = Math.max(1, Math.floor((node.h - posterImageHeight(node) - 2 * pad) / lineHeight));
     return { text: { blocks: lines.map(paragraph) },
         revision, fontEpoch, width: Math.max(1, node.w - 2 * pad - inset),
@@ -101,7 +87,6 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
             if (!node.label) return null;
             text = node.label;
         } else if (node.kind === 'frame') {
-            // An unnamed frame stores an empty title but is presented as "Frame", as the accessibility label does.
             text = frameTitleRequest(node, 'Frame', requestOptions.revision, getFonts().epoch, requestOptions.zoom ?? 1).text;
         } else return null;
         if (node.kind === 'connector' && (!requestOptions.anchor || !Number.isFinite(requestOptions.anchor.x)
@@ -121,7 +106,6 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
         } else if (node.kind === 'sticky' || node.kind === 'text') scale = node.scale;
         else if (node.kind === 'frame') y = -paint.box.h;
         else if (node.kind === 'embed' || node.kind === 'linkcard') {
-            // The poster's text sits at the card's bottom-left, inside the same pad the layout width leaves.
             const pad = cardPosterPad(requestOptions.zoom ?? 1);
             x = pad + posterFaviconInset(node); y = node.h - paint.box.h - pad;
         }
@@ -145,11 +129,9 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
             check(signal);
             await (options.cooperate?.() ?? yieldToHost());
             check(signal);
-            // Font loads can finish during the wait; use their actual current epoch and faces.
             return prepareNow(node, requestOptions);
         },
         async loadFaces(node, after) {
-            // Faces do not depend on where a connector's label sits or how long its body is: any finite anchor and length lay it out.
             const label = prepareNow(node, { revision: `faces:${node.id}`, anchor: { x: 0, y: 0 }, connectorLength: 1 });
             if (!label) return;
             const keys = new Map<string, FontKey>();
@@ -166,14 +148,10 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
     };
 }
 
-/** Parallel material arrays follow TextPaint visual order; inherited opacity is applied once. */
-/** `backdrop` is the fill the text sits on, when the owner has one (a sticky note): an ink that cannot be read on it is replaced. */
 export function textPaintMaterial(paint: TextPaint, palette: PaintPalette, inheritedOpacity: number, backdrop?: Rgba): TextMaterial {
     opacity(inheritedOpacity);
     const ink = (value: InkRef): Rgba => withOpacity(backdrop ? legibleInk(backdrop, palette.stroke[value.swatch]) : palette.stroke[value.swatch], inheritedOpacity);
     const backgrounds = paint.backgrounds.map(rect => {
-        // TextPaint does not carry a separate code-background token. Use a subtle
-        // ink-colour wash for code; regular highlights use the theme highlight pigment.
         const colour = rect.ink.role === 'code' ? withOpacity(palette.stroke[rect.ink.swatch], 0.12) : palette.highlight[rect.ink.swatch];
         return withOpacity(colour, inheritedOpacity);
     });

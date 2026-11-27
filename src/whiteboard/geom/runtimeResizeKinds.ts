@@ -17,13 +17,9 @@ export interface BoardLeafResizeOptions {
     readonly runtime: BoardRuntime;
     readonly doc?: BoardDoc;
     readonly factors: KindResizeFactors;
-    /** The resize planner's mapped logical centre in world coordinates. */
     readonly centreWorld: Vec2;
-    /** Reflections may change world orientation even when kind-local dimensions are unchanged. */
     readonly rotationWorld?: number;
-    /** Selection-frame orientation used to align the actual projected logical centre. */
     readonly alignmentRotation?: number;
-    /** Fences the source candidate, session and gesture through result release. */
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
@@ -33,7 +29,6 @@ export interface BoardLeafResizeResult {
     readonly placementOps: readonly NodeSetOp[];
     readonly doc: BoardDoc;
     readonly fontEpoch: number;
-    /** Missing or dimensionless media cannot certify an intrinsic aspect ratio. */
     readonly clipAspect?: 'intrinsic' | 'placeholder';
     release(): void;
 }
@@ -98,7 +93,6 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
         const grown = await project(kindOps); check();
         const grownNode = grown.nodes.get(node.id);
         if (!grownNode || grownNode.kind !== 'figure' || grownNode.w !== width) throw new Error('Projected figure growth is unavailable');
-        // Re-layout with final growth and the same loaded faces, not the provisional paint.
         const second = await runtime.render.text.prepare(grownNode, { revision: `resize-final:${node.id}:${revision}` }, signal); check();
         if (second && !loadedText(runtime, second)) throw new Error('Figure text faces are unavailable');
         if (second && Math.max(0, runtime.render.text.layout.measure(second.request).requiredHeight + node.width - height) !== growY)
@@ -107,7 +101,6 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
         const extent = (value: number) => Math.min(1_000_000, Math.max(1, value));
         const x = Math.abs(factors.x), y = Math.abs(factors.y);
         if (node.kind === 'clip') {
-            // Default, calibration cut by owner: clip resize uses its intrinsic aspect.
             if (x !== y) throw new Error('Clip resize requires a whole-selection uniform scale');
             const media = node.media ? doc.media.get(node.media) : undefined;
             const known = !!media && Number.isFinite(media.w) && Number.isFinite(media.h) && media.w > 0 && media.h > 0;
@@ -115,13 +108,11 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
             const ratio = known ? media!.w / media!.h : node.w / node.h;
             const minWidth = Math.max(1, ratio), maxWidth = Math.min(1_000_000, ratio * 1_000_000);
             if (!Number.isFinite(ratio) || ratio <= 0 || minWidth > maxWidth) throw new RangeError('Clip aspect cannot satisfy model dimensions');
-            // Default, calibration cut by owner: a vertical side preserves its scaled height.
             const requestedWidth = factors.handle === 'side' && factors.handleX === 0 && factors.handleY
                 ? node.h * y * ratio : node.w * x;
             const w = Math.max(minWidth, Math.min(maxWidth, requestedWidth)), h = extent(w / ratio);
             kindOps = [{ t: 'set', id: node.id, key: 'w', value: w }, { t: 'set', id: node.id, key: 'h', value: h }];
         } else {
-            // Default, calibration cut by owner: card/embed reflow inside independently resized bounds.
             kindOps = [{ t: 'set', id: node.id, key: 'w', value: extent(node.w * x) },
                 { t: 'set', id: node.id, key: 'h', value: extent(node.h * y) }];
         }
@@ -141,7 +132,6 @@ export async function prepareBoardLeafResize(node: Readonly<Leaf>, options: Boar
         const local = staged.localBounds(node.id), before = worldPose(candidate, node.id), angle = options.rotationWorld ?? before.rotation;
         if (!Number.isFinite(angle)) throw new RangeError('Invalid resized world rotation');
         const localX = (local[0] + local[2]) / 2, localY = (local[1] + local[3]) / 2;
-        // Default, calibration cut by owner: an exact-zero release puts the model minimum on the crossed side.
         const crossedX = factors.x === 0 && factors.handleX ? factors.handleX * factors.zeroSignX * (local[2] - local[0]) / 2 : 0;
         const crossedY = factors.y === 0 && factors.handleY ? factors.handleY * factors.zeroSignY * (local[3] - local[1]) / 2 : 0;
         const c = Math.cos(angle), s = Math.sin(angle), desiredCentre = {

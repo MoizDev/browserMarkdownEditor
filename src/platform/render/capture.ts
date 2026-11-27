@@ -25,13 +25,10 @@ export interface CaptureOptions {
     readonly inverted: false;
     readonly signal?: AbortSignal;
     readonly policy?: 'exact' | 'allow-standin';
-    /** Only thumbnails opt into replacement; user/agent captures never supply this key. */
     readonly thumbnailKey?: string;
-    /** An explicit writer/export deadline, not an exemption from bounded output. */
     readonly deadlineMs?: number;
 }
 
-/** Frozen before acquiring the source lease; independent of the displayed camera. */
 export interface CaptureRequest {
     readonly worldRect: Readonly<Rect>;
     readonly view: ViewState;
@@ -43,63 +40,34 @@ export interface CaptureRequest {
     readonly unsealedInput: false;
 }
 
-/** Uses the stream's ordinary layer paint path, bound to one leased revision.
- * The source adapter removes selection/chrome and unsealed input,
- * but retains document effects (including per-image inversion). No undo is sealed here.
- */
 export interface CapturedLayer {
     readonly id: string;
     readonly draw2d: Layer['draw2d'];
     readonly drawGpu?: Layer['drawGpu'];
 }
 
-/** The session retains immutable content/layout and read-only resources under its
- * CPU cap before returning this lease. An edit does not invalidate it; vault switch,
- * document disposal and loss of its resources abort signal. Hide must NOT abort it.
- */
 export interface CaptureSnapshot {
     readonly token: RenderToken;
     readonly revision: string;
     readonly signal: AbortSignal;
     readonly layers: readonly CapturedLayer[];
-    /** Peak simultaneous scopes in this immutable capture plan, in capture device pixels.
-     * Never reuse the live viewport's inventory: region/scale and selected layers may differ.
-     */
     readonly isolation?: readonly IsolationReservation[];
-    /** Prepare offscreen tiles, never Layer.prepare's view jobs. Must honor signal;
-     * all temporary resources belong to this lease, including late worker arrivals.
-     * A missing exact tile is incomplete, never a successful white image.
-     */
     prepare(request: CaptureRequest, route: '2d' | 'gpu', signal: AbortSignal): Promise<'exact' | 'standin' | 'incomplete'>;
-    /** Optional sequential tile preparation against this SAME immutable source lease. Coordinates
-     * include the export apron; never acquire a fresh live document/session or another queue slot. */
     prepareTile?(request: CaptureRequest, signal: AbortSignal): Promise<'exact' | 'standin' | 'incomplete'>;
-    /** Idempotent, nonthrowing; async producers resolve only after actual native work retires. */
     release(): void | Promise<void>;
 }
 
 export type CaptureGpuOwner = Pick<Webgl2Owner, 'resources' | 'acquireTarget' | 'releaseTarget' | 'discardFrame'> & {
-    /** Admits offscreen scope storage before encoding; false selects the complete CPU path. */
     readonly prepareIsolation?: (view: ViewState, inventory: readonly IsolationReservation[]) => boolean;
-    /** Installs the existing compositor's frame-scoped LayerHost services for this offscreen pass. */
     readonly withCapturePass?: (encoder: FrameEncoder, pass: GpuPass, view: ViewState, paint: (scope: GpuPass) => void) => void;
 };
 
 export interface PaneCapturerOptions {
     readonly paneId: string;
-    /** Exactly one queue per App, shared by all pane instances. */
     readonly queue: CaptureQueue;
-    /** CPU capture cache allocator from the governor; source leases are charged separately. */
     readonly memory: MemoryAllocator;
-    /** Synchronous revision + render-plan snapshot and resource/read lease; never reads live
-     * bindings later. Reject if any requested layer is unavailable or is presentation-only.
-     */
     snapshot(request: CaptureRequest): CaptureSnapshot;
-    /** Optional opt-in only while the pane's EXISTING owner is current and healthy,
-     * and capture will not delay input. Null/default selects 2D; never create a context.
-     */
     tryGpu?(snapshot: CaptureSnapshot): CaptureGpuOwner | null;
-    /** Existing engine-owned streaming encoder; no dependency from platform back into an engine. */
     readonly encodePngTiles?: CapturePngEncoder;
 }
 
@@ -107,7 +75,6 @@ type CaptureOutput = ImageBitmap | Blob;
 type CaptureOutputKind = 'bitmap' | 'png';
 
 function frozenIsolation(snapshot: CaptureSnapshot): readonly IsolationReservation[] {
-    // The retained source is frozen before awaiting; its async plan publishes bounds in prepare.
     return Object.freeze((snapshot.isolation ?? []).map(item => Object.freeze({ ...item,
         bounds: Object.freeze({ ...item.bounds }), targets: item.targets ? Object.freeze({ ...item.targets,
             bounds: Object.freeze({ ...item.targets.bounds }) }) : undefined })));
@@ -156,7 +123,6 @@ function requestFor(rect: Rect, maxSidePx: number, options: CaptureOptions,
         (options.thumbnailKey !== undefined && (typeof options.thumbnailKey !== 'string' || !options.thumbnailKey))) {
         throw new CaptureError('invalid-input');
     }
-    // Reject rather than silently resize: exact exports negotiate bands with their stream (§4.6).
     const scale = Math.min(maxSidePx / rect.width, maxSidePx / rect.height);
     const width = Math.max(1, Math.ceil(rect.width * scale)), height = Math.max(1, Math.ceil(rect.height * scale));
     if (!Number.isFinite(scale) || scale <= 0 || !Number.isFinite(rect.x * scale) || !Number.isFinite(rect.y * scale)) {
@@ -187,10 +153,6 @@ function hasCode(error: unknown, code: string): boolean {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }
 
-/** Session-bound delegate for compositor.captureRegion (C4.5; design §4.6).
- * Neither route samples the displayed surface or creates a GPU context. Dispose on
- * document/vault disposal, not pane-hide; awaited session captures survive hiding.
- */
 export class PaneCapturer {
     private readonly lifetime = new AbortController();
     private readonly pending = new Set<Promise<void>>();
@@ -210,12 +172,10 @@ export class PaneCapturer {
         return this.capture(worldRect, maxSidePx, options, 'bitmap');
     }
 
-    /** PNG from the same default-2D target, not a second canvas repaint of the bitmap. */
     captureBlob(worldRect: Rect, maxSidePx: number, options: CaptureOptions): Promise<Blob> {
         return this.capture(worldRect, maxSidePx, options, 'png');
     }
 
-    /** Full PNG writer/copy route: bounded tiles and streamed rows, never an 8k/16k canvas. */
     captureExportBlob(worldRect: Rect, maxSidePx: number, options: CaptureExportOptions): Promise<Blob> {
         let active: CaptureScope | null = null, snapshot: CaptureSnapshot | null = null;
         try {
@@ -225,7 +185,6 @@ export class PaneCapturer {
                 || (options.pixelsPerWorldUnit !== undefined && (!Number.isFinite(options.pixelsPerWorldUnit) || options.pixelsPerWorldUnit <= 0))) {
                 throw new CaptureError('invalid-input');
             }
-            // The same export limits as whiteboard/export/png.ts: a download streams bands, a copy keeps the clipboard's limits.
             const request = requestFor(worldRect, maxSidePx, options,
                 options.clipboard ? { axis: 8192, pixels: 2 ** 28 } : { axis: 65535, pixels: 2 ** 32 });
             const deadline = options.deadlineMs ?? 60_000;
@@ -233,7 +192,6 @@ export class PaneCapturer {
             active = scope(deadline); active.link(this.lifetime.signal, 'disposed');
             if (options.signal) active.link(options.signal, 'aborted');
             active.check();
-            // Retain exactly once, synchronously, before waiting for the shared global slot.
             snapshot = this.options.snapshot(request);
             const unlinkSnapshot = active.link(snapshot.signal, 'disposed'); active.check();
             if (!snapshot.prepareTile) throw new CaptureError('incomplete');
@@ -247,7 +205,6 @@ export class PaneCapturer {
             const retire = this.trackRetirement();
             const release = async () => {
                 if (released) return; released = true;
-                // Owned release revokes the snapshot signal, not the already-finished pixels.
                 unlinkSnapshot();
                 try { await lease.release(); } finally { operation.dispose(); retire(); }
             };
@@ -294,7 +251,6 @@ export class PaneCapturer {
             const release = async () => {
                 if (released) return;
                 released = true;
-                // Keep caller/lifetime/deadline cancellation until native cleanup really retires.
                 unlinkSnapshot();
                 try { await lease.release(); } finally { active.dispose(); retire(); }
             };
@@ -303,8 +259,6 @@ export class PaneCapturer {
                 try { return await this.render(request, lease, layers, active, output); }
                 finally { await release(); }
             }, options.thumbnailKey).finally(() => {
-                // An active abort may reject before prepare/readback has unwound. The
-                // active work, not this caller's promise, owns its resources until then.
                 if (!started) void release().catch(() => {});
             });
         } catch (error) {
@@ -315,8 +269,6 @@ export class PaneCapturer {
 
     async dispose(): Promise<void> {
         this.lifetime.abort(new CaptureError('disposed'));
-        // Caller abort settles promptly in CaptureQueue; only real source/native retirement
-        // ends allocator ownership. No new capture can enter after the lifetime abort.
         await Promise.allSettled([...this.pending]);
     }
 
@@ -344,9 +296,6 @@ export class PaneCapturer {
                     }
                 } catch (error) {
                     active.check();
-                    // Hide can abort the device's view jobs without aborting this session
-                    // capture. active.check() above distinguishes a caller/session abort.
-                    // Retry the SAME retained revision on 2D, never a new context.
                     if (!hasCode(error, 'lost') && !hasCode(error, 'aborted') && !hasCode(error, 'out-of-budget')) throw error;
                 }
             }
@@ -361,8 +310,6 @@ export class PaneCapturer {
     private async draw2d(request: CaptureRequest, layers: readonly CapturedLayer[], active: CaptureScope,
         output: CaptureOutputKind): Promise<CaptureOutput> {
         const { width, height } = request.view.viewport;
-        // Backing and bitmap/PNG encoder output coexist. The result becomes caller-owned;
-        // temporary storage stays charged until encoding actually settles, even on abort.
         const memory = this.options.memory.reserve(width * height * 8);
         if (!memory) throw new CaptureError('out-of-budget');
         let canvas: HTMLCanvasElement | null = null, bitmap: ImageBitmap | null = null;

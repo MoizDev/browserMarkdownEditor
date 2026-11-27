@@ -1,6 +1,5 @@
 import { PdfEngineError } from '../engine/types';
 
-/** Structured clone cannot prevent a hostile worker from allocating a message before inspection (security §4). */
 export function invalidPdfReply(): never {
     throw new PdfEngineError('EngineBroken', 'The PDF engine returned invalid data.');
 }

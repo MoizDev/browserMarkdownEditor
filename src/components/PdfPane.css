@@ -15,8 +15,6 @@
 
 .pdf-signed-notice span { flex: 1 1 220px; }
 
-/* Annotate asked for while a page turn is being written: it opens by itself once the pages have turned
-   (utils/pdfTurnHold.ts). Over the turn's picture (z 4), like the reader's own pills, and never in the way. */
 .pdf-turn-pending {
     position: absolute;
     top: 12px;

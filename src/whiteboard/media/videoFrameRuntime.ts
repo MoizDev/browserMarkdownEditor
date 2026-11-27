@@ -1,8 +1,6 @@
 import { matchingIdentity, validBoardIdentity } from '../workers/protocol';
 import { sniffMedia } from './sniff';
 
-// Provenance: SEC-W2 contained-frame protocol and media admission limits;
-// independent muted first-frame capture, no third-party source.
 const CHUNK = 192 * 1024, LIMIT = 10 * 1024 * 1024, PIXELS = 2 ** 26;
 async function decode(blob: Blob, metadata: unknown): Promise<ImageBitmap | number> {
     if (!metadata || typeof metadata !== 'object') throw new TypeError('Missing video metadata');
@@ -26,7 +24,6 @@ async function decode(blob: Blob, metadata: unknown): Promise<ImageBitmap | numb
             video.src = url; video.load();
         });
         if (video.videoWidth !== width || video.videoHeight !== height || !Number.isFinite(video.duration) || video.duration < 0) throw new Error('Video metadata mismatch');
-        // No playback or seek: loadeddata supplies the initial frame at time zero.
         if (video.currentTime !== 0) throw new Error('Video decoder did not supply frame zero');
         if (operation === 'probe') return video.duration;
         canvas = new OffscreenCanvas(width, height);

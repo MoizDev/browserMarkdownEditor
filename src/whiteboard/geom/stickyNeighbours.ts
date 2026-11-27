@@ -27,8 +27,6 @@ function visibleCentre(doc: BoardDoc, node: Readonly<StickyNode>, point: Vec2): 
     return true;
 }
 
-/** Directional reuse reads one complete Scene revision and never promotes a
- * hidden child, a locked note or a candidate in a different container. */
 export async function findStickyNeighbour(options: {
     readonly runtime: BoardRuntime; readonly doc: BoardDoc; readonly source: Readonly<StickyNode>; readonly target: StickyCentre;
     readonly sheet: SheetId; readonly focus: ParentId; readonly radius: number; readonly signal: AbortSignal;
@@ -80,8 +78,6 @@ export async function findStickyNeighbour(options: {
 }
 
 export type StickyDirection = 'left' | 'right' | 'up' | 'down';
-/** The offset of the slot a neighbour takes beside a note, in the note's own frame: one note width (or height, plus the grown
- * text) and the 10 px margin away. Tab, Cmd+Enter and the pits of a click or a drag all take these slots (catalogue T§10). */
 export function stickyNeighbourOffset(scale: number, growY: number, direction: StickyDirection): Vec2 {
     switch (direction) {
         case 'right': return { x: 210 * scale, y: growY * scale / 2 };
@@ -92,10 +88,6 @@ export function stickyNeighbourOffset(scale: number, growY: number, direction: S
 }
 const POINTS: readonly StickyDirection[] = ['right', 'left', 'down', 'up'];
 
-/** A click or a drag snaps into an empty adjacent slot ("pit") of a note of the same scale and rotation when the pointer is within
- * `radius` of it (tldraw's adjacent-position snap). The slots are the ones Tab and Cmd+Enter use, so a note made in a pit is the
- * note the keyboard would have made; a slot is taken when another note's centre sits in it. `moving` is the note being dragged:
- * it neither offers nor occupies a slot. Returns the new note's local top-left. */
 export function findStickyPit(doc: BoardDoc, scale: number, centre: Vec2, parent: ParentId, page: number, radius: number,
     moving?: NodeId): Vec2 | null {
     const siblings = (doc.children.get(parent) ?? []).filter(node => node.id !== moving);

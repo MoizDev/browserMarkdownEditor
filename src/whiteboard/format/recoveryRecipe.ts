@@ -12,7 +12,6 @@ import { FORMAT_LIMITS } from './schema';
 import type { RecordIdentity, StoredRecordCategory } from './writeTypes';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-/** A dirty recipe is relative to the pinned parsed-byte baseline, not a live board session. */
 export interface BoardRecoveryRecipe {
     readonly version: 1;
     readonly prime: SerializerPrime;
@@ -21,8 +20,6 @@ export interface BoardRecoveryRecipe {
     readonly endFields: readonly (readonly [string, string])[];
     readonly retainedMedia: readonly RecoveryMediaAsset[];
     readonly mediaRecords: readonly MediaEntry[];
-    /** Snapshot-only existing-row values, e.g. the PDF outer build's exact
-     * write mark. They do not change model/content or record-key revisions. */
     readonly overrides?: readonly SerializerRecordOverride[];
 }
 
@@ -68,8 +65,6 @@ async function* bytesOf(blobValue: Blob): AsyncIterable<Uint8Array> {
     finally { reader.releaseLock(); }
 }
 
-// Re-admit only the immutable assembled copy, never the live session. Unknown
-// raw JSON may name an old physical file even when its hash remains unchanged.
 async function refusePreservedFilenames(board: Blob, names: ReadonlySet<string>, signal: AbortSignal): Promise<void> {
     let count = 0, started = performance.now();
     const tick = async () => {
@@ -92,8 +87,6 @@ async function refusePreservedFilenames(board: Blob, names: ReadonlySet<string>,
             if (due()) await tick();
             const span = stack.pop()!;
             if (span.kind === 'string') {
-                // A larger opaque string cannot be certified as independent of a
-                // nested physical path without retaining an unbounded copy.
                 if (span.stringLength(4096) > 4096) throw new Error('Preserved recovery string is too long to inspect safely');
                 if (matches(await span.stringIncremental(4096, tick))) throw new Error('Preserved content refers to a media filename that must be renamed');
             } else if (span.kind === 'array') {
@@ -157,7 +150,6 @@ async function remapRecoveryMedia(baseline: Blob, index: Blob, header: string, b
     if (pending) throw new TypeError('Truncated recovery record index');
     const original = originalDigest.snapshot();
     if (original.count !== expected.count || original.digest !== expected.digest) throw new Error('Recovery record index integrity mismatch');
-    // This digest reflects only the explicit media-record revision replacements above.
     if (!overrides.length) return baseline;
     const next = digest.snapshot();
     if (next.count !== expected.count) throw new Error('Recovery record count changed during remap');
@@ -202,7 +194,6 @@ export async function materializeBoardRecoveryRecipe(payload: unknown, signal: A
     }
     const prime: SerializerPrime = { revision: baseRevision, baseline, header: source.header,
         ...(lines ? { lines } : { index: blob(source.index) }), ...(overrides ? { overrides } : {}) };
-    // A baseline alone is not evidence of the unsaved revision.
     if (recipe.delta === null || recipe.delta === undefined) throw new TypeError('Dirty board recovery requires a cumulative delta');
     const rawDelta = record(recipe.delta), nextRevision = revision(rawDelta.revision);
     if (revision(rawDelta.previous) !== baseRevision || nextRevision <= baseRevision

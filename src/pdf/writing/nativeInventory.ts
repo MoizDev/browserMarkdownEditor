@@ -7,7 +7,6 @@ export interface NativeAttachment {
     index: number;
     name: string;
     sha256: string;
-    /** The app marker, if present in Filespec /Desc. */
     marker?: string;
 }
 
@@ -25,7 +24,6 @@ function readWide(document: WriterNativeDocument, fn: string, handle: number, pr
     } finally { arena.dispose(); }
 }
 
-/** Full bytes are read one attachment at a time; PDFium never receives a path. */
 export async function inventoryNativeAttachments(document: WriterNativeDocument,
     cooperate: () => Promise<void>): Promise<NativeAttachment[]> {
     const runtime = document.runtime, count = runtime.call('FPDFDoc_GetAttachmentCount', document.handle);

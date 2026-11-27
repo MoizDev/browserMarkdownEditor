@@ -9,7 +9,6 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import type { NativeClipboardBinding, NativeClipboardService } from './useNativeClipboard';
 import { isCancellation } from '../../platform/workers/envelope';
 
-/** Inline text borrows the document's one ClipboardCopy, cache, allocator and paste controller. */
 export function createNativeTextClipboard(options: {
     readonly surface: HTMLElement;
     readonly editor: ReturnType<typeof createBoardTextEditor>;

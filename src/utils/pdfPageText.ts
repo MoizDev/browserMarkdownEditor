@@ -1,5 +1,3 @@
-/** Canonical PDF extraction: content order is evidence; visual reading order is
- * only a heuristic. Never normalize ligatures, whitespace or discretionary hyphens. */
 export const PDF_PAGE_TEXT_SCHEMA = 'pdf-page-v1' as const;
 export type PdfMatrix = readonly [number, number, number, number, number, number];
 export interface PdfPageGeometry {
@@ -17,7 +15,6 @@ export interface PdfItemInterval {
     from: number; to: number; itemIndex: number; syntheticLF: boolean;
     transform: readonly number[]; width: number; height: number; dir: string; fontName: string;
     markedContentIds: readonly string[];
-    /** Resolved from the PDF structure tree where available; never guessed prose. */
     role: PdfSemanticRole;
 }
 export interface PdfPageText {
@@ -70,7 +67,6 @@ export function projectPdfPageV1(items: readonly PdfProjectionItem[], geometry: 
         quality: !text.trim() ? 'none' : reasons.size ? 'partial' : 'available', reasons: [...reasons], geometry };
 }
 
-/** Structural public pdf.js shape, without a runtime import into this pure module. */
 export function pdfPageGeometry(page: {
     pageNumber: number; view: number[]; rotate: number; userUnit: number;
     getViewport(options: { scale: number }): { width: number; height: number; transform: number[] };

@@ -1,8 +1,6 @@
 import type { PinnedBoardBuild } from '../session/contentSource';
 import type { BoardBuildPinning, BoardBuildPorts, PinnedMediaRestore, PinnedPdfAssembly } from './saveBuildTypes';
 
-/** A restored media file received a different safe name; its set-file edit must be
- * checkpointed as a new revision before any document bytes can be committed. */
 export class MediaLocationsChanged extends Error {
     constructor() { super('Media locations changed; checkpoint the board again'); this.name = 'MediaLocationsChanged'; }
 }
@@ -24,7 +22,6 @@ export function createBoardBuildPinning(ports: BoardBuildPorts): BoardBuildPinni
             const release = () => {
                 if (released) return;
                 released = true;
-                // No asynchronous build may publish after its pinned resources retire.
                 lifetime.abort();
                 pending.delete(cancel);
                 const retire = () => { try { media.release(); } finally { pdf?.release(); } };

@@ -1,10 +1,8 @@
 import type { DiskStat, DiskVersion } from '../utils/diskVersion';
 export type LoadedDocumentKind = 'markdown'|'text'|'code'|'tex'|'drawing'|'notebook'|'pdf'|'epub'|'unsupported';
 export interface DocumentRepresentation { generation:number; loadedKind:LoadedDocumentKind; status:'loading'|'ready'|'unavailable'; bufferKind:'text'|'annotationSnapshot'|'unavailable'; contentWritable:boolean; nativeCanvasKind?:'drawing'|'notebook'|'pdfInk'; nativeCanvasSession?:number; emergencyReadOnly?:boolean; legacyOriginalSha256?:string;
- /** The bytes last loaded are a drawing or notebook from the old app: shown read-only, never written (utils/oldBoards.ts). */
  oldBoard?:boolean }
 export interface NativeCanvasAcquisition { owner:import('../utils/documentBuffers').SourceOwner; vaultActivation:number; bytesGeneration:number; kind:'drawing'|'notebook'|'pdfInk'; legacyOriginalSha256:string|null; oldBoard?:boolean; pdfWriteAuthority?:{canWriteSource():boolean;canWrite():boolean} }
-/** Null rejects a stale owner; the returned flag is the session's write authority. */
 export type NativeCanvasReady = (acquisition:NativeCanvasAcquisition)=>{emergencyReadOnly:boolean}|null;
 export interface ReaderToken { vaultId:string; vaultEpoch:number; documentId:string; byteGeneration:number }
 export interface ReaderIdentity extends ReaderToken { path:string; diskRev:number; rawVersion?:DiskVersion }
@@ -31,8 +29,6 @@ export type ReaderHostCommand='next-document'|'previous-document'|'close-documen
 export interface ReadingTypography {family:'serif'|'sans'|'publisher';size:number;leading:number;measure:'compact'|'comfortable'|'wide';margins:'small'|'medium'|'large';theme:'follow-app'|'light'|'sepia'|'dark'}
 export interface ReaderCallbacks {
  onReaderVersion(token:ReaderToken,version:DiskVersion):void;
- /** The reader's disk snapshot could not be read through (the file changed or went during the open): the owner checks
-  * the file against the snapshot's stat and reloads or raises the DiskBar. */
  onReaderSourceLost?(token:ReaderToken,stat:{lastModified:number;size:number}):void;
  onReaderStatus(token:ReaderToken,status:ReaderStatus):void;
  onReaderCapabilities(token:ReaderToken,caps:ReaderCapabilities):void;

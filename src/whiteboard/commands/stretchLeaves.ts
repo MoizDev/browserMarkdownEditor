@@ -21,7 +21,6 @@ export interface StretchLeavesOptions {
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
-    /** The transform's own gesture hold, when the keyboard or menu queue takes one before calling: the source is current under it. */
     readonly heldGestures?: number;
 }
 export interface StretchLeavesPlan {
@@ -33,8 +32,6 @@ export interface StretchLeavesPlan {
 type Leaf = Exclude<Node, { kind: 'opaque' | 'group' | 'connector' }>;
 type Lease = { release(): void };
 
-/** Prepare every stretched leaf and bound connector in one immutable candidate;
- * all intermediate resources remain pinned through commit or cancellation. */
 export async function prepareStretchBoardLeaves(options: StretchLeavesOptions): Promise<StretchLeavesPlan> {
     const { runtime, axis } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
@@ -91,7 +88,6 @@ export async function prepareStretchBoardLeaves(options: StretchLeavesOptions): 
                 check(); const node = pending.pop()!;
                 if (node.locked) { await tick(); continue; }
                 if (node.kind === 'group') for (const child of childrenOf(doc, node.id)) { pending.push(child); await tick(); }
-                // Opaque nodes are locked, so the check above already skips them; opaque subtrees were rejected by inspectOpaqueSubtrees before this walk.
                 else { result.push(node.id); all.add(node.id); }
                 await tick();
             }
@@ -126,7 +122,6 @@ export async function prepareStretchBoardLeaves(options: StretchLeavesOptions): 
                 if (!aligned || node.kind === 'sticky' || node.kind === 'clip' || (node.kind === 'text' && localAxis === 'y')) aspect = true;
                 await tick();
             }
-            // Default, calibration cut by owner: arbitrary rotations or aspect-only descendants lock the whole root uniformly.
             const sx = axis === 'x' || aspect ? factor : 1, sy = axis === 'y' || aspect ? factor : 1;
             const delta = { x: axis === 'x' ? targetCentre - cx : 0, y: axis === 'y' ? targetCentre - cy : 0 };
             if (factor === 1 && delta.x === 0 && delta.y === 0) continue;
@@ -149,7 +144,6 @@ export async function prepareStretchBoardLeaves(options: StretchLeavesOptions): 
                 for (const op of result.placementOps) { ops.push(op); await tick(); }
             }
         }
-        // Default, calibration cut by owner: bound connectors resolve only after all selected targets.
         for (const item of connectors) {
             check(); const node = doc.nodes.get(item.id); if (!node || node.kind !== 'connector') throw new Error('Stretch connector changed');
             const result = await prepareConnectorResize({ runtime, source: doc, doc: candidate, node, frame: item.frame,
@@ -159,7 +153,6 @@ export async function prepareStretchBoardLeaves(options: StretchLeavesOptions): 
         }
         const frozen: NodeSetOp[] = [];
         for (const op of ops) { frozen.push(Object.freeze(op)); await tick(); }
-        // A notebook stretch that reaches the paper edge grows it in the same step, as every notebook edit does (R-24).
         const growth = await prepareNotebookTransform({ runtime, ids: roots.map(node => node.id), preview: { doc: candidate, ops: frozen }, signal, current, cooperate });
         if (growth) leases.push(growth);
         check(); return plan(growth ? growth.preview.doc : candidate, growth ? growth.ops : frozen);

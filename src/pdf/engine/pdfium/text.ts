@@ -6,8 +6,6 @@ import type { PdfiumRuntime } from './loader';
 import { pdfiumTransformBox, pdfiumTransformPoint, pdfiumUserToPage } from './geometry';
 import { heapView, withPdfiumMemory } from './memory';
 
-/** Handles stay page-private and are rebuilt in a disposable clone in the same
- * character order. Only the owned typed arrays leave this module. */
 export interface PdfiumTextResult { raw: RawPageText; objectHandles: readonly number[] }
 
 export function extractPdfiumText(runtime: PdfiumRuntime, page: number, textPage: number,

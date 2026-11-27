@@ -19,7 +19,6 @@ function textOf(transfer: DataTransfer, type: string): string | null {
     return Array.from(transfer.types).includes(type) ? transfer.getData(type) : null;
 }
 
-/** DataTransfer becomes unusable after the event, including directory entries. */
 export function captureTransfer(transfer: DataTransfer): ClipboardInput {
     return { html: textOf(transfer, 'text/html'), text: textOf(transfer, 'text/plain'),
         svg: textOf(transfer, 'image/svg+xml'), uriList: textOf(transfer, 'text/uri-list'),

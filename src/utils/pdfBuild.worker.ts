@@ -1,10 +1,3 @@
-// Builds annotated PDFs off the main thread.
-//
-// Stamping overlays costs ~150ms per annotated page and scales linearly (~4.2s
-// for 30 annotated pages, measured). On the main thread that lands as stutter
-// under the pen, because the pen and the encoder share a thread. Here it costs
-// the user nothing.
-
 import { buildAnnotatedPdf, buildNotebookPdf } from './pdfBuild';
 import { inspectPdfRole } from './pdfAttachmentInventory';
 import type { PdfRole } from './pdfRole';
@@ -14,7 +7,6 @@ import type { PageOverlay } from './pdfOverlay';
 import { PdfBuildRefused } from './pdfBuildRefusal';
 import type { PdfBuildRefusal } from './pdfBuildRefusal';
 
-/** Stamping annotations back onto their source document. */
 export interface AnnotateBuildRequest {
     kind: 'annotate';
     id: number;
@@ -24,14 +16,11 @@ export interface AnnotateBuildRequest {
     overlays: Array<PageOverlay | undefined>;
 }
 
-/** Writing a notebook out as ruled pages with the writing drawn on. */
 export interface NotebookBuildRequest {
     kind: 'notebook';
     id: number;
     paper: NotebookPaper;
     overlays: Array<PageOverlay | undefined>;
-    /** The notebook this came from, stamped in so annotating the PDF can find
-     *  its way back. */
     source?: NotebookSource;
 }
 
@@ -63,8 +52,6 @@ self.onmessage = async (e: MessageEvent<PdfBuildRequest>) => {
             ? await buildAnnotatedPdf(request.original, request.snapshot, request.overlays, request.outer)
             : { bytes: await buildNotebookPdf(request.paper, request.overlays, request.source), aliases: [] };
         const { bytes, aliases } = result;
-        // Transfer rather than copy: the worker has no further use for these
-        // bytes, and they can be megabytes.
         (self as unknown as Worker).postMessage({ id, bytes, aliases } satisfies PdfBuildResponse, [bytes.buffer as ArrayBuffer]);
     } catch (err) {
         if (err instanceof PdfBuildRefused) {

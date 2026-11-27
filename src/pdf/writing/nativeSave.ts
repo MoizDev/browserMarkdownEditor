@@ -14,8 +14,6 @@ function setParameter(runtime: PdfiumRuntime, attachment: number, key: string, v
     }
 }
 
-/** Add one app-owned attachment. The caller has already checked its bytes,
- * content hash, role and collision-free name. */
 export async function addNativeAttachment(document: WriterNativeDocument, name: string, bytes: Blob, marker: string, writeMark?: string): Promise<void> {
     if (!(bytes instanceof Blob) || bytes.size >= MAX_OUTPUT) throw new PdfEngineError('ResourceLimit', 'PDF attachment is too large');
     const data = new Uint8Array(await bytes.arrayBuffer());
@@ -40,7 +38,6 @@ export function addNativeWriteMark(document: WriterNativeDocument, format: strin
     addNativeBytes(document, mark.name, mark.payload, mark.marker, mark.value);
 }
 
-/** FPDF_NO_INCREMENTAL, bounded sink, no filesystem handle. */
 export function saveNativePdf(document: WriterNativeDocument, cancelled: () => boolean): Uint8Array {
     const runtime = document.runtime, arena = new WriterArena(runtime), chunks: Uint8Array[] = [];
     let size = 0, callback = 0, failure: Error | undefined;
@@ -75,7 +72,6 @@ export function saveNativePdf(document: WriterNativeDocument, cancelled: () => b
     }
 }
 
-/** A mark failure is never returned as commit-ready bytes. */
 export async function saveNativeMarkedPdf(document: WriterNativeDocument, writeId: string, cancelled: () => boolean): Promise<Uint8Array> {
     const bytes = await sealPdfWriteMark(saveNativePdf(document, cancelled));
     const check = await checkPdfWriteMarkForBoard(bytes, writeId);

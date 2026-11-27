@@ -8,8 +8,6 @@ import { EMPTY_RICH_TEXT, spliceRichText, type RichText } from '../richText';
 import type { TextEditTransactionPreparer } from './bindingTypes';
 import { editableTextRequest } from './request';
 
-/** The growY a figure's label needs at the figure's current size and width, measured exactly as a text edit measures it.
- * Undefined for an empty label: nothing has to grow, so the stored value stays. Used by style changes, which never edit text. */
 export function figureLabelGrowY(measure: (request: TextLayoutRequest) => { readonly requiredHeight: number },
     fontEpoch: number, node: Readonly<FigureNode>): number | undefined {
     const label = node.label ?? EMPTY_RICH_TEXT;
@@ -18,7 +16,6 @@ export function figureLabelGrowY(measure: (request: TextLayoutRequest) => { read
     return Math.max(0, measure(request).requiredHeight + node.width - node.h);
 }
 
-/** Compute stored text bounds as part of the triggering edit, never on font arrival. */
 export function createTextEditGrowth(doc: BoardDoc, id: NodeId, engine: TextLayoutEngine,
     request: (node: Readonly<Node>, text: RichText) => TextLayoutRequest): TextEditTransactionPreparer {
     return (transaction: Transaction): Transaction => {

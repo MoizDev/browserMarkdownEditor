@@ -18,9 +18,6 @@ function part(input: Float64Array, from: number, to: number, out: Float64Array, 
     split(input, to, out, scratch);
     if (from > 0) { scratch.set(out); split(scratch, from / to, scratch, out); }
 }
-/** An explicit common parameterization gives a symmetric enclosure of EVERY centreline point:
- * the difference cubic lies in its four Bernstein control differences. No sampled distance,
- * flattened-polyline guess or accumulation of previously accepted pairwise errors is used. */
 export function createOmissionCertificate(parameters: CurveParameters): OmissionCertificate {
     const a = new Float64Array(8), b = new Float64Array(8), ca = new Float64Array(8), cb = new Float64Array(8), scratch = new Float64Array(8);
     const arc: number[] = [];
@@ -43,17 +40,10 @@ export function createOmissionCertificate(parameters: CurveParameters): Omission
             segmentKind(i) { return i + 1 < prefix ? c.frozen.segmentKind(i) : c.incomingKinds[indices ? indices[i + 1 - prefix] : i + 1 - prefix] ? 'straight' : 'freehand'; },
         });
         const raw = sequence(null, n), next = sequence(proposed, proposed.length);
-        // The omitted sample must not be a geometric cusp even if input did not mark a pin.
         const flagsBefore = writeCurveSpan(raw, prefix + removed - 1, parameters, a);
         const flagsAfter = writeCurveSpan(raw, prefix + removed, parameters, b);
         if ((flagsBefore & CurveFlag.CornerAfter) || (flagsAfter & CurveFlag.CornerBefore)) return false;
         const budget = CANONICALIZATION_DIRECTED_ERROR_DEVICE_PX / c.captureDeviceScale;
-        // The common parameter is the raw samples' cumulative chord length, not their index. Pointer
-        // samples are unevenly spaced along a stroke (a slow mouse alternates one- and two-pixel steps,
-        // and ink/dequantize.ts keeps that spacing), and an index parameter pairs points that far apart,
-        // so the bound measured the misalignment instead of the shape: measured on a slow whole-pixel
-        // circle, 287 of 411 samples kept by index, 103 by chord length, and 8 instead of 157 on a line
-        // 10° off horizontal. Any common monotone parameter is still an enclosure of every centreline point.
         const first = Math.max(-2, -prefix);
         arc.length = 0;
         for (let i = first, total = 0; i < n; i++) {
@@ -64,7 +54,6 @@ export function createOmissionCertificate(parameters: CurveParameters): Omission
         const compare = (before: SampleSequence, indices: ArrayLike<number> | null, size: number): boolean => {
             let oldSpan = Math.max(0, prefix - 2), newSpan = oldSpan;
             const position = (index: number, map: ArrayLike<number> | null) => index < prefix ? index - prefix : map ? map[index - prefix] : index - prefix;
-            // Frozen neighbours matter: omission changes the tangent just before the window too.
             for (let rawSpan = Math.max(-2, -prefix); rawSpan < size - 1; rawSpan++) {
                 while (oldSpan + 1 < before.count - 1 && position(oldSpan + 1, indices) <= rawSpan) oldSpan++;
                 while (newSpan + 1 < next.count - 1 && position(newSpan + 1, proposed) <= rawSpan) newSpan++;
@@ -86,11 +75,9 @@ export function createOmissionCertificate(parameters: CurveParameters): Omission
             }
             return true;
         };
-        // Always compare the FULL raw acquisition window, so repeated omissions cannot drift.
         if (!compare(raw, null, n)) return false;
         if (c.publishedRetainedCount > 1) {
             const published = sequence(c.publishedRetained, c.publishedRetainedCount);
-            // Only the old published prefix is constrained; new real input remains visible.
             if (!compare(published, c.publishedRetained, c.publishedRawCount)) return false;
         }
         return true;

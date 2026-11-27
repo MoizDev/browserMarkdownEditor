@@ -23,13 +23,11 @@ export interface NativeBoardChromeProps extends Supplied {
 }
 type Styles = ReturnType<typeof createBoardStyleControls>;
 
-/** Chrome observes the exact document-owned tool, selection, preferences and view. */
 export function NativeBoardChrome(props: NativeBoardChromeProps) {
     const { runtime, engine, language, currentOwner, reportError, onStyles } = props;
     const tools = useMemo(() => ({ getSnapshot: runtime.tools.getSnapshot, subscribe: runtime.tools.subscribe,
         setTool(id: string, variant?: string) { if (currentOwner()) runtime.tools.setTool(id, variant); },
         toggleLocked() { if (currentOwner()) runtime.tools.toggleLocked(); },
-        // A registration's `lockable: false` (zoom) withdraws the padlock, as ToolState's own rule does (gesture.ts).
         lockable: (id: string) => { const registration = runtime.tools.getRegistration(id); return registration?.persistence === 'single-use' && registration.lockable !== false; },
         setBarTools: (choices: readonly { readonly id: string; readonly variant?: string }[]) => runtime.tools.setBarTools(choices),
         beginDrag: (choice: { readonly id: string; readonly variant?: string; readonly label?: string }, event: PointerEvent, bar: Element) => currentOwner() && runtime.tools.beginChromeDrag(choice, event, bar) }), [runtime, currentOwner]);
@@ -52,9 +50,6 @@ function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onRead
     const lang = useSyncExternalStore(language.subscribe, language.getSnapshot, language.getSnapshot);
     const local = useSyncExternalStore(preferences.subscribe, preferences.getSnapshot, preferences.getSnapshot);
     const panel = useSyncExternalStore(styles.subscribe, styles.getSnapshot, styles.getSnapshot);
-    // The commands a gesture holds (undo, redo, delete, …) are read as the chrome renders, so it renders when a gesture starts and
-    // ends. Without this they showed whatever the last unrelated render saw: Undo stayed lit through a shape's creation drag on
-    // canvas2d once a pan or a press stopped asking for a new paint (and with it the view's re-render).
     const session = runtime.session;
     const subscribeGesture = useCallback((listener: () => void) => session.subscribeGesture(listener), [session]);
     const gestureActive = useCallback(() => session.isGestureActive, [session]);
@@ -63,7 +58,6 @@ function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onRead
         onReady(true); return () => onReady(false); }, [onReady, styles, props.isVisible]);
     useEffect(() => { styles.refresh(); }, [props.readOnly, styles]);
     useEffect(() => { if (!props.isVisible) styles.finish(); }, [props.isVisible, styles]);
-    // A tool's chord is its binding's; the media tool's is Insert media's (⌘U), and an id with a dot names its binding.
     const chord = (key: string): string | undefined => {
         const binding = boardBindings.find(item => item.id === key);
         return binding ? bindingChord(binding, mac) : undefined;

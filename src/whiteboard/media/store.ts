@@ -7,8 +7,6 @@ interface StoredMedia {
 }
 export interface MediaLease { release(): void }
 
-// Bytes are session-owned, not attached to the DOM or to a view. Undo and the
-// clipboard can outlive a node; only the last holder makes bytes evictable.
 export class MediaStore {
     private readonly entries = new Map<MediaId, StoredMedia>();
     private readonly pending = new Map<MediaId, Map<MediaHolder, number>>();
@@ -60,8 +58,6 @@ export class MediaStore {
         } };
     }
 
-    // The host re-verifies disk bytes and streams only missing assets. Its
-    // collision policy remains authoritative; this class never receives handles.
     async restoreReferenced(entries: Iterable<MediaEntry>, restore: (entry: MediaEntry, bytes: Blob) => Promise<string | null>,
         updateFile: (id: MediaId, file: string | null) => void, signal: AbortSignal): Promise<void> {
         for (const entry of Array.from(entries)) {

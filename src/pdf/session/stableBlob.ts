@@ -2,13 +2,6 @@ const COPY_CHUNK_BYTES = 4 * 1024 * 1024;
 
 function aborted(): DOMException { return new DOMException('PDF acquisition cancelled', 'AbortError'); }
 
-/**
- * A disk-backed File is only a snapshot while its disk version exists. Copy it
- * incrementally into blob storage before handing it to the pool so a later
- * outside edit cannot change or invalidate pages of this open session. Each
- * temporary ArrayBuffer is released after its slice is appended; fingerprinting
- * is a separate worker operation and does not block opening the document.
- */
 export async function stablePdfBlob(file: Blob, signal?: AbortSignal): Promise<Blob> {
     if (signal?.aborted) throw aborted();
     let result = new Blob([], { type: 'application/pdf' });

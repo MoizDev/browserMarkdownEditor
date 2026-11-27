@@ -14,34 +14,21 @@ import { selfContainedWorkers } from './build/selfContainedWorkers'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 const regenerateFrame = () => execFileSync(process.execPath, ['src/epub/build-frame.mjs'], { cwd: root, stdio: 'pipe' })
-// The deployed build's identity, read by an open tab's version poll (utils/versionPoll.ts). It is a hash of what the
-// build EMITTED and lives only in version.json and an index.html meta tag, never in a hashed chunk. Compiled into the
-// entry chunk as a random id, it renamed 139 of 371 chunks on every build of the same commit (119 chunks import the
-// entry by its hashed name), so every redeploy — of identical code too — 404'd the lazy loads of every open tab.
-// Derived from the output, the same commit built twice is the same build: same chunk names, and no update notice.
 const BUILD_ID_SLOT = 'bme-build-id-slot'
 
 export default defineConfig({
-  // Index workers share split modules; Chromium-only module workers support ES chunks.
   worker: { format: 'es', plugins: () => [selfContainedWorkers()] },
   plugins: [react(), pdfiumAssets(), pdfContainedAssets(), pdfFontAssets(), whiteboardSvgFrames(root), containedEmbedFrames(root), thirdPartyNotices(root), {
-    // The benchmark-build constant (verification.md §2.1, contracts C9): true only
-    // in `vite build --mode benchmark` (a dev server in that mode stays false: the
-    // benchmark build is the production build plus hooks, nothing else), so every
-    // measurement hook sits behind `if (__BME_BENCH__)` and the production build
-    // drops it. A plugin hook, not a function config, because scratch configs spread this object.
     name: 'benchmark-build-constant',
     config(_config, { command, mode }) {
       return {
         define: { __BME_BENCH__: JSON.stringify(command === 'build' && mode === 'benchmark') },
-        // Vite's client define may follow the initial TS transform, too late for its dead-code elimination.
         ...(command === 'serve' ? { esbuild: { define: { __BME_BENCH__: 'false' }, treeShaking: true, minifySyntax: true } } : {}),
       }
     },
   }, {
     name: 'build-identity',
     apply: 'build',
-    // After every other plugin's output (Vite's HTML and the notices/frames assets included), so the hash covers it all.
     enforce: 'post',
     transformIndexHtml: () => [{ tag: 'meta', attrs: { name: 'bme-build', content: BUILD_ID_SLOT }, injectTo: 'head' }],
     generateBundle(_options, bundle) {
@@ -59,9 +46,6 @@ export default defineConfig({
     },
   }, {
     name: 'contained-epub-frame',
-    // Runs for both dev and build, even when generated files already exist.
-    // The frame is imported as raw text only from the lazy EPUB chunk, so base
-    // paths never become publisher resource URLs and note-only vaults fetch none.
     buildStart() { regenerateFrame() },
     async handleHotUpdate(context) {
       const path = context.file.replaceAll('\\', '/')
@@ -72,17 +56,12 @@ export default defineConfig({
       }
     },
     generateBundle() {
-      // License texts/source inventory travel with static deployments, too.
       for (const name of ['src/epub/vendor/LICENSE', 'src/epub/vendor/PYTHON-LICENSE.txt', 'src/epub/vendor/THIRD_PARTY_NOTICES.txt', 'src/epub/vendor/source-lock.json', 'src/epub/reader-frame.integrity.json']) {
         this.emitFile({ type: 'asset', fileName: name, source: readFileSync(new URL(name, import.meta.url)) })
       }
     },
   }],
   optimizeDeps: {
-    // Worker-only imports escape the HTML scan. Observed: discovering these
-    // after mount changed React's shared-chunk URL; NativePdfEntry then used
-    // a second dispatcher while React DOM still held the original module.
-    // Pre-optimization does not fetch these lazy workers in the browser.
     include: ['@lezer/markdown', 'lz-string', 'pdf-lib', 'nspell'],
     // harfbuzzjs finds its WASM with new URL('harfbuzz.wasm', import.meta.url): pre-bundled into the
     // deps cache that URL fell through to index.html ("expected magic word 00 61 73 6d"). Excluded, it is

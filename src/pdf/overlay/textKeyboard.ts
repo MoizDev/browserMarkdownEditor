@@ -9,12 +9,9 @@ export interface PdfTextKeyboardHost {
     selection: PdfSelectionState;
     pageCount(): number;
     isFocused(): boolean;
-    /** Visible pane request, priority 0. */
     page(page: number, signal: AbortSignal): Promise<PdfSelectionReply>;
     findOpen(): boolean;
-    /** Cancel an asynchronous clipboard gather before clearing selection. */
     cancelCopy?(): boolean;
-    /** The find owner closes the bar and retains its current hit as selection. */
     closeFindPreservingHit(): void;
 }
 export interface PdfTextKeyboardBinding { setVisible(visible: boolean): void; dispose(): void }
@@ -112,8 +109,6 @@ async function move(host: PdfTextKeyboardHost, point: TextPoint, movement: Movem
     }
 }
 
-/** Install in the focused pane only. Meta/Ctrl+A uses the same shared handler
- * as the classic viewer; Copy remains owned by textCopy, never a second route. */
 export function bindPdfTextKeyboard(root: HTMLElement, host: PdfTextKeyboardHost): PdfTextKeyboardBinding {
     let visible = true, closed = false, lifetime = new AbortController(), preferredX: number | undefined;
     let queue: Promise<void> = Promise.resolve();

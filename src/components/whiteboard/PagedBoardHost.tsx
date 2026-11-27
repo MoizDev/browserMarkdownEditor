@@ -16,7 +16,6 @@ export type PagedBoardHostProps<T extends object, S extends BoardSessionPort> =
         | { readonly kind: 'pdf-ink'; readonly controls: PagedNavigationProps & { readonly dir: 'ltr' | 'rtl' } }
     );
 
-/** The App owns the session and representation policy; this host attaches only its view. */
 export default function PagedBoardHost<T extends object, S extends BoardSessionPort>(props: PagedBoardHostProps<T, S>) {
     const { adapter, emergencyReadOnly, chrome, mode } = props;
     if (emergencyReadOnly && !adapter.board.isReadOnly) throw new Error('Native read-only policy is not enforced by the board session');

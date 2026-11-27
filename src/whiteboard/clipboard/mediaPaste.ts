@@ -11,8 +11,6 @@ import { SECURITY_LIMITS } from '../security/limits';
 import { privatePngDensity } from './pngDensity';
 import type { ClipboardFile, ClipboardIntent, ClipboardTarget } from './types';
 
-// Provenance: clipboard external placement, page stack, and session media
-// ingestion contracts; independent host composition, no upstream engine source.
 export function externalMediaPlacement(doc: BoardDoc, target: Readonly<ClipboardTarget>, intent: ClipboardIntent): MediaPlacement {
     if (intent === 'duplicate') throw new Error('External content cannot be duplicated');
     if (!doc.sheets.has(target.sheet)) throw new Error('Clipboard target sheet is unavailable');
@@ -69,7 +67,6 @@ export async function pasteClipboardMediaInJob(options: ClipboardMediaPasteOptio
         if (!(options.privatePng instanceof Blob)) throw new TypeError('Invalid private PNG');
         const blob = new Blob([options.privatePng], { type: options.privatePng.type });
         const density = await privatePngDensity(blob, context.signal); check();
-        // A PNG without our density is still pasted, at its ordinary pixel size, and the user is told so.
         if (density === undefined) options.notice?.('Clipboard PNG has no usable density; using ordinary image size.');
         sources.push({ blob, name: 'clipboard.png', ...(density === undefined ? {} : { pixelsPerWorldUnit: density }) });
     } else for (const item of options.files) {

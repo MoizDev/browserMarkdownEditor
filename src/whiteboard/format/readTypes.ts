@@ -7,7 +7,7 @@ import type { PointInspectionHeader } from './points';
 import type { SavedView } from './encode';
 
 export interface ReadPosition {
-    readonly ordinal: number; // Original records-array order, including unreadable records and end.
+    readonly ordinal: number;
     readonly line: number;
     readonly byteOffset: number;
     readonly byteLength: number;
@@ -19,14 +19,11 @@ export interface ReadIssue {
     readonly position?: ReadPosition;
 }
 export interface ReadOptions {
-    readonly byteLength?: number; // getFile()'s fact, checked before any decoding; streaming count is checked too.
+    readonly byteLength?: number;
     readonly signal?: AbortSignal;
-    /** Worker governor cooperation point; absent for direct callers. */
     readonly cooperate?: () => Promise<void>;
     readonly expectedKind?: BoardKind;
-    readonly pdfPages?: readonly (readonly [number, number])[]; // Current host PageGeometry if authored host record is absent.
-    // R-W28/29: the host owns admission leases and cleanup. It can wrap admitEncoded's SampleLease
-    // by collecting each lease and returning its .ref; no sample arrays cross this pure reader.
+    readonly pdfPages?: readonly (readonly [number, number])[];
     readonly admitEncoded: (pts: string, header: PointInspectionHeader) => SampleRef;
 }
 export interface ReadSourceRecord {
@@ -34,7 +31,7 @@ export interface ReadSourceRecord {
     readonly type: string;
     readonly id?: string;
     readonly position: ReadPosition;
-    readonly nodeBounds?: Bounds; // Untrusted cache hint; the scene recomputes it when geometry is realised.
+    readonly nodeBounds?: Bounds;
     readonly reencode: boolean; // Never prime a repaired line as clean original source (RV-6).
 }
 export interface UnmappedRecord { readonly raw: RawJson; readonly position: ReadPosition; readonly reason: string; }
@@ -44,7 +41,7 @@ export interface ReadDraft {
     readonly input: BoardDocInput;
     readonly sources: readonly ReadSourceRecord[];
     readonly unmapped: readonly UnmappedRecord[];
-    readonly coldBounds: ReadonlyMap<NodeId, Bounds>; // R-W38: validated cache domain, not decoded geometry or raw-content metadata.
+    readonly coldBounds: ReadonlyMap<NodeId, Bounds>;
     readonly savedView?: SavedView;
 }
 export interface NativeReadResult {
@@ -52,7 +49,7 @@ export interface NativeReadResult {
     readonly readOnly: boolean;
     readonly draft: ReadDraft | null;
     readonly issues: readonly ReadIssue[];
-    readonly issueCount: number; // Diagnostics are bounded; this count is not truncated.
+    readonly issueCount: number;
     readonly recordsSeen: number;
     readonly recordsRecovered: number;
     readonly bytesRead: number;

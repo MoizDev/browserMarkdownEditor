@@ -18,7 +18,6 @@ export function vaultHelpers(h) {
       if(operation==='remove'){await d.removeEntry(name,{recursive:!!options.recursive});return true;}
       const fh=await d.getFileHandle(name,{create:operation==='write'});
       if(operation==='write'){
-        // This fresh handle and native write deliberately bypass the app-write counter.
         const w=await window.__harness.native.createWritable.call(fh);await w.write(data.bytes?new Uint8Array(data.bytes):data.text);await w.close();return true;
       }
       const f=await fh.getFile();
@@ -41,8 +40,6 @@ export function vaultHelpers(h) {
       const event=await until(async()=>{
         const writes=await page.evaluate(({path,after})=>window.__harness.writes.filter(w=>w.id>after&&w.path===window.__harness.vaultName+'/'+path&&w.closed!==null&&!w.error),{path,after});
         if(!writes.length)return false;
-        // A clean dot can precede serialization. Compare actual saved/live records below;
-        // never import an app reporter to inspect its internal debounce.
         const dirty=await page.locator('[role="tab"]').evaluateAll((tabs,path)=>tabs.some(t=>t.getAttribute('data-tooltip')===path&&!!t.querySelector('.tab-dirty-dot')),path);
         if(dirty)return false;
         if(/\.(tldraw|notebook|pdf)$/.test(path)){const synchronized=await h.probe.synchronized(path);if(synchronized===false||(synchronized===null&&!predicate))return false;}

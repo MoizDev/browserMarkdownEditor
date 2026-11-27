@@ -1,4 +1,3 @@
-/** Page-local CSS coordinates at the request's immutable layout scale. */
 export interface PageRect {
     readonly x: number;
     readonly y: number;
@@ -10,10 +9,8 @@ export interface RenderTarget {
     readonly emphasis: boolean;
     readonly scale: number;
     readonly dpr: number;
-    /** Null means a whole page; otherwise preserve the full-resolution band. */
     readonly rect: PageRect | null;
     readonly need: PageRect | null;
-    /** Half-margin hysteresis, except at an actual page edge. */
     readonly trigger: PageRect | null;
 }
 
@@ -22,7 +19,6 @@ const contains = (outer: PageRect, inner: PageRect): boolean =>
     && inner.x + inner.w <= outer.x + outer.w + 0.5
     && inner.y + inner.h <= outer.y + outer.h + 0.5;
 
-/** Old pixels must cover the latest need, not the other way around. */
 export function satisfies(have: RenderTarget | undefined, want: RenderTarget): boolean {
     if (!have || have.scale !== want.scale || have.dpr !== want.dpr || have.emphasis !== want.emphasis) return false;
     if (want.rect === null) return have.rect === null;
@@ -32,12 +28,9 @@ export function satisfies(have: RenderTarget | undefined, want: RenderTarget): b
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-/** Pure budget arithmetic, shared by the request and its raster dimensions. */
 export function pageRenderRegion(page: Readonly<{ w: number; h: number }>, viewport: PageRect, dpr: number, maxPixels: number): Pick<RenderTarget, 'rect' | 'need' | 'trigger'> {
     const { w, h } = page;
     if (w * h * dpr * dpr <= maxPixels) return { rect: null, need: null, trigger: null };
-    // Prefetch can be just past a page's bottom/right. Put its minimum strip
-    // INSIDE that page, or the resulting band cannot satisfy its own need.
     const minW = Math.min(1, w), minH = Math.min(1, h);
     const x = clamp(viewport.x, 0, w - minW), y = clamp(viewport.y, 0, h - minH);
     const need: PageRect = { x, y,

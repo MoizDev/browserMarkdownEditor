@@ -1,12 +1,3 @@
-// The two terminal settings, as a lightweight external store: SettingsPanel
-// (main chunk) writes them and the lazy terminal chunk reads them, so neither
-// may import the other. localStorage only — nothing about a terminal belongs in
-// the vault's `.appearance.json`.
-//
-// Both are clamped/cleaned on READ: localStorage is user-editable, and a NaN
-// font size reaches xterm's cell measurement while a stray `;` or `{` in the
-// family would end up inside a CSS font shorthand.
-
 import { removeStoredValue, writeStoredValue } from './storage';
 
 const FAMILY_KEY = 'terminalFontFamily';
@@ -16,14 +7,8 @@ export const TERMINAL_FONT_SIZE_MIN = 10;
 export const TERMINAL_FONT_SIZE_MAX = 24;
 
 export interface TerminalSettings {
-    /** A CSS family list; '' = automatic (detected from the user's terminal
-     *  app, else the editor's monospace). */
     fontFamily: string;
-    /** Pixels; null = automatic (the detected terminal app's size, else 13). */
     fontSize: number | null;
-    /** What automatic resolved to, once a terminal has been opened and the font
-     *  detection ran: shown by Settings as the field's placeholder and the
-     *  slider's starting point. Not persisted — written by the terminal chunk. */
     detectedFamily: string | null;
     detectedSize: number | null;
 }
@@ -89,14 +74,12 @@ export function setTerminalFontSize(size: number | null): void {
     write(SIZE_KEY, size === null ? null : String(cleanSize(String(size))));
 }
 
-/** Settings → Reset to Defaults. */
 export function resetTerminalSettings(): void {
     removeStoredValue(FAMILY_KEY);
     removeStoredValue(SIZE_KEY);
     emit();
 }
 
-/** The terminal chunk reports what the font detection settled on. */
 export function setDetectedTerminalFont(family: string | null, size: number | null): void {
     const clean = size === null ? null : cleanSize(String(size));
     if (family === detectedFamily && clean === detectedSize) return;

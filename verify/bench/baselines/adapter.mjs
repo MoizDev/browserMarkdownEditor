@@ -13,8 +13,6 @@ const categories = 'toplevel,devtools.timeline,blink.user_timing,disabled-by-def
 
 async function prepareEditor(page, text, drop) {
     await editMode(page); await page.locator('.cm-content').click();
-    // Selecting through the end asks the real editor to parse the full note,
-    // then returning to the beginning keeps preparation out of the timed edit.
     await page.keyboard.press('ControlOrMeta+a'); await page.keyboard.press('ArrowRight');
     if (await page.evaluate(() => !!window.__perf?.editor)) await page.waitForFunction(() => window.__perf.editor.parse.idle, null, { timeout: 30000 });
     await page.keyboard.press('ControlOrMeta+a'); await page.keyboard.press('ArrowLeft');
@@ -53,7 +51,6 @@ async function session({ profile, host, build, fixture, scenario, artifacts }) {
             catch (error) { if (error.name !== 'NotFoundError') throw error; }
         }, name);
         await seedVault(page, { name, files: fixture.files });
-        // One actual read of every generated file; no cold-disk claim.
         await page.evaluate(async ({ name, paths }) => {
             const root = await (await navigator.storage.getDirectory()).getDirectoryHandle(name);
             for (const path of paths) {
@@ -103,8 +100,6 @@ async function session({ profile, host, build, fixture, scenario, artifacts }) {
                 await page.waitForFunction(() => window.__v08.save.armed);
                 details.input = await keySample(page, drop ? 'Backspace' : 'x');
                 await complete;
-                // A Node timer does not inject sixty Runtime polling tasks/sec
-                // into the renderer whose busy-time sum we are measuring.
                 await new Promise(resolve => setTimeout(resolve, 1500));
                 await page.evaluate(() => performance.mark('bme-v08-trace-tail'));
             } else if (scenario === 'pdf-scroll') {

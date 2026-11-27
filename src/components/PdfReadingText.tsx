@@ -41,7 +41,6 @@ function domPoint(root: HTMLElement, value: Endpoint): { node: Node; offset: num
     while ((node = walker.nextNode())) { if (offset <= (node.textContent?.length ?? 0)) return { node, offset }; offset -= node.textContent?.length ?? 0; }
     return { node: el, offset: el.childNodes.length };
 }
-/** Copy/report only page-model text; headings, actions and quality notices are app UI. */
 function selectedPageText(root: HTMLElement | null, pages: Map<number, PageState>): string | null {
     const selection = root?.ownerDocument.getSelection();
     if (!root || !selection?.rangeCount || selection.isCollapsed) return null;
@@ -149,8 +148,6 @@ function PdfReadingText({ filePath, expectedPageDigest, findMemory, sameSchema =
         controller.setWindow(current);
         const cancel = new AbortController(), indices = [current, current - 1, current + 1, current - 2, current + 2].filter(n => n >= 0 && n < count);
         setPages(old => new Map([...old].filter(([index]) => indices.includes(index))));
-        // Queue visible demand first. Cancellation removes queued work and cancels
-        // the active text stream; unrelated PDF consumers retain their leases.
         for (const index of indices) void controller.getPage(index, cancel.signal, index === current ? (isFocused ? 0 : 1) : 2).then(page => {
             if (!cancel.signal.aborted) setPages(old => new Map(old).set(index, { page }));
         }).catch(error => { if (!cancel.signal.aborted) setPages(old => new Map(old).set(index, { error: String(error) })); });
@@ -237,8 +234,6 @@ function PdfReadingText({ filePath, expectedPageDigest, findMemory, sameSchema =
             if (indices.every(index => pages.has(index))) pending.current = null;
         }
     }, [pages, place, current, count]);
-    // Capture against the OLD text nodes before applying new weights/fonts. The
-    // second layout pass restores source offsets, including a cross-prefix selection.
     useLayoutEffect(() => {
         if (presentation.emphasis === emphasisEnabled && presentation.typography === effectiveTypography) return;
         const value = capture(), host = root.current, selection = window.getSelection();
@@ -313,7 +308,6 @@ function PdfReadingText({ filePath, expectedPageDigest, findMemory, sameSchema =
                     textlessPages: batch.textlessPages, unavailablePages: [...new Set([...batch.failedPages, ...batch.partialPages])] };
                 setSearch(previous => {
                     if (!keepResults || next.done || !previous) return next;
-                    // A resumed scan revisits cached keys before its old frontier.
                     const merged = new Map([...previous.hits, ...next.hits].map(hit => [`${hit.anchor.physicalPageIndex}:${hit.anchor.offsetUTF16}`, hit]));
                     return { ...next, hits: [...merged.values()].sort((a, b) => a.anchor.physicalPageIndex - b.anchor.physicalPageIndex || a.anchor.offsetUTF16 - b.anchor.offsetUTF16).slice(0, 500),
                         totalHits: Math.max(previous.totalHits, next.totalHits), pagesDone: Math.max(previous.pagesDone, next.pagesDone),

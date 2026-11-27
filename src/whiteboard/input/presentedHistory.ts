@@ -1,6 +1,5 @@
 export interface PresentedValue<T> { readonly time: number; readonly value: T }
 
-/** Chrome hit targets follow the same bounded presented-time rule as physical samples. */
 export class PresentedHistory<T> {
     private readonly entries: PresentedValue<T>[] = [];
     present(time: number, value: T): void {

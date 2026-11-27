@@ -1,7 +1,6 @@
 import { useSyncExternalStore, type ReactNode } from 'react';
 import { dismissSaveNotice, getSaveNotices, subscribeSaveNotices } from '../utils/saveNotices';
 
-/** The bottom-right notice column: save failures (never focused, see utils/saveNotices.ts) above the update notice. */
 export default function SaveNotices({ children }: { children?: ReactNode }) {
     const notices = useSyncExternalStore(subscribeSaveNotices, getSaveNotices, getSaveNotices);
     if (!notices.length && !children) return null;

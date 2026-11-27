@@ -52,9 +52,7 @@ export interface FileDiffProps {
     lines: DiffLine[];
     added: number;
     removed: number;
-    /** Extra header content (the "Open" button). */
     action?: ReactNode;
-    /** Cap the body's height and scroll inside it. */
     maxHeight?: number;
 }
 

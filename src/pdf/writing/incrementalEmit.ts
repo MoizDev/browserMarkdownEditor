@@ -21,7 +21,6 @@ function operation(value: unknown): IncrementalOperation {
     return value as IncrementalOperation;
 }
 
-/** Worker-local transaction. No page or unfinished path is published independently. */
 export class IncrementalEmitter {
     private readonly resources = new Resources();
     private readonly root = this.resources.objects.reserve();

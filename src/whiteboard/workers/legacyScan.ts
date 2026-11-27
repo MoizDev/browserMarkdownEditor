@@ -7,9 +7,7 @@ import { ReportBuilder, type ImportReport } from '../import/report';
 import type { BoardKind } from '../model/doc';
 import { backdropRole, readShape } from '../import/records/common';
 
-// Provenance: legacy record admission, SEC-W1/W4 and C5 worker contracts;
-// independent extraction only, no third-party source.
-export const LEGACY_SCAN_MAX_BYTES = 256 * 1024 * 1024; // import/preflight.ts expanded UTF-8 ceiling
+export const LEGACY_SCAN_MAX_BYTES = 256 * 1024 * 1024;
 export type LegacyScanAsset = {
     readonly sourceOrdinal: number;
     readonly assetId?: string;
@@ -24,11 +22,7 @@ export interface LegacyScanReply {
     readonly assets: readonly LegacyScanAsset[];
     readonly report: ImportReport;
 }
-// The text a scan read, kept for the import that follows it in the same load's own worker (legacyAcquisition.ts), which otherwise
-// read and decoded the whole file again (for a 200 MB board, another 200 MB string while the scan's was still uncollected). Keyed by
-// the host, which sends the same bytes to both.
 let kept: { readonly key: string; readonly size: number; readonly text: string } | undefined;
-/** The text the scan keyed `key` read, once, when it was read from a file of `size` bytes. */
 export function takeScannedText(key: unknown, size: number): string | undefined {
     const value = kept;
     if (typeof key !== 'string' || !value || value.key !== key || value.size !== size) return undefined;

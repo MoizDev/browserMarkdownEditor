@@ -4,13 +4,6 @@ import { inverse } from './affine';
 import type { Vec2 } from './path';
 import { commonResizeRotation } from './transforms';
 
-/** The point a keyboard rotation turns the selection about. It must not move as the selection turns, or steps do not
- * compose: measured on the centre of the axis-aligned logical bounds (recomputed each step), three 15° steps forward and
- * three back left every member 60 px from its start. Two cases keep the centre fixed under a turn of the whole set:
- * - members sharing one frame (`commonResizeRotation`, the frame the selection handles draw): the centre of that frame's box,
- *   which a rigid turn of the box about its own centre leaves in place;
- * - otherwise: the centroid of the members' own centres, which a common turn about the centroid leaves in place.
- * Callers pass only movable roots: a locked root never turns, so it cannot be part of a centre that must hold still. */
 export async function rotationCentre(scope: BoardGeometryScope, ids: readonly NodeId[]): Promise<Vec2> {
     if (!ids.length) throw new RangeError('Rotation centre needs a member');
     const common = commonResizeRotation(ids.map(id => scope.worldPose(id).rotation));

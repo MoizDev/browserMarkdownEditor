@@ -10,7 +10,6 @@ import type { createNativeCameraOperations } from './nativeCameraOperations';
 import './chrome/chrome.css';
 import './readOnlyChrome.css';
 
-/** The zoom panel's rows a view can run; every other action has no place on a board nobody can change. */
 const ZOOM_LABELS: Partial<Record<MainAction, string>> = {
     zoomIn: 'Zoom in', zoomOut: 'Zoom out', zoomTo100: 'Zoom to 100%', zoomToFit: 'Zoom to fit',
     zoomToSelection: 'Zoom to selection', toggleMinimap: 'Minimap',
@@ -27,20 +26,11 @@ export interface ReadOnlyBoardChromeProps {
     readonly setSheet: (id: string) => void;
     readonly inverted: boolean;
     readonly setInverted: (inverted: boolean) => void;
-    /** A notebook's page panel, drawn under the strip while open. */
     readonly thumbnails?: (open: boolean, setOpen: (open: boolean) => void) => ReactNode;
-    /** The document's print and PDF export (useNativeClipboard.ts), null until its command service is ready. Neither
-     *  changes the board: a print or an export reads it. */
     readonly output: { readonly print: () => boolean; readonly exportPdf: () => boolean } | null;
-    /** An old-format board: what the strip says about it, and its copy. Absent for any other read-only view. */
     readonly oldBoard?: { readonly kind: 'drawing' | 'notebook'; readonly copying: boolean; readonly onCopy: (trigger: HTMLElement) => void };
 }
 
-/**
- * The read-only view's chrome, in the editing chrome's places and look (chrome.css): the strip in the top-left corner,
- * the zoom panel in the bottom-right. Nothing that edits is drawn at all, so nothing on screen silently does nothing; an
- * old-format board's strip says once what it is, and carries the one way on: Make an editable copy.
- */
 export function ReadOnlyBoardChrome({ camera, zoom, minimapOpen, kind, sheets, sheet, setSheet, inverted, setInverted, thumbnails, output, oldBoard }: ReadOnlyBoardChromeProps) {
     const [pagesOpen, setPagesOpen] = useState(false);
     const commands = useMemo(() => ({
@@ -65,8 +55,6 @@ export function ReadOnlyBoardChrome({ camera, zoom, minimapOpen, kind, sheets, s
         + 'Make an editable copy to work on it: the copy is made beside it in the same folder, and the original stays as it is.';
     const invertLabel = inverted ? 'Show page colours as they are' : 'Invert page colours';
     const mac = /Mac|iPhone|iPad/.test(navigator.platform);
-    // The editing menu's place and look (BoardHeader.tsx), holding only what reads the board. Copy, Select all and Copy as
-    // PNG stay on their keys (⌘C, ⌘A, ⇧⌘C), which work here as they do while editing.
     const openMenu = (anchor: HTMLButtonElement) => {
         const rect = anchor.getBoundingClientRect();
         const dark = anchor.closest('[data-board-theme="dark"]') !== null;

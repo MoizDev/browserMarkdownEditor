@@ -1,6 +1,5 @@
 import type { SessionAdapter } from './documentSessions';
 
-// C-20 binds the App-owned session, never a transient pane, at session creation.
 const adapters = new Map<string, SessionAdapter>();
 export function bindRecoveryAdapter(documentId: string, adapter: SessionAdapter): () => void {
     adapters.set(documentId, adapter);

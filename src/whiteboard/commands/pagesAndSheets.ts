@@ -12,7 +12,6 @@ import { keyBetween } from '../model/orderKey';
 
 type MutationPort = Pick<ApplyController, 'apply' | 'begin'>;
 
-/** A refusal is safe to show in the host's own dialog. */
 export class StructureRefused extends Error {
     constructor(message: string) { super(message); this.name = 'StructureRefused'; }
 }
@@ -78,7 +77,6 @@ export function renameSheet(apply: MutationPort, id: SheetId, name: string): App
     return commit(apply, 'Rename sheet', [{ t: 'sheet', op: 'set', id, key: 'name', value: name }]);
 }
 
-/** Destination is an index in the resulting sheet order, not the original list. */
 export function reorderSheet(doc: BoardDoc, apply: MutationPort, id: SheetId, destination: number): Applied | undefined {
     const old = doc.sheetOrder.findIndex(sheet => sheet.id === id);
     if (old < 0 || !Number.isInteger(destination) || destination < 0 || destination >= doc.sheetOrder.length)
@@ -89,7 +87,6 @@ export function reorderSheet(doc: BoardDoc, apply: MutationPort, id: SheetId, de
         value: keyBetween(rest[destination - 1]?.order ?? null, rest[destination]?.order ?? null) }]);
 }
 
-/** Returns the exact descendants to disclose before a destructive confirmation. */
 export function deletionContents(doc: BoardDoc, roots: readonly NodeId[]): readonly Node[] {
     const result: Node[] = [], seen = new Set<NodeId>();
     const visit = (id: NodeId) => {
@@ -130,7 +127,6 @@ export function changePaper(doc: BoardDoc, apply: MutationPort, paper: Readonly<
 }
 
 /** Append this operation to the originating content transaction, not a later save. */
-/** Only a notebook grows; any other board needs no growth (several creation paths call this unguarded). */
 export function notebookGrowthOp(doc: BoardDoc, deepestWorldY: number): BoardOp | undefined {
     if (doc.host.kind !== 'notebook') return undefined;
     const paper = doc.host.paper;
@@ -150,7 +146,6 @@ const NODE_NAMES: Record<Node['kind'], readonly [string, string]> = {
     opaque: ['unsupported item', 'unsupported items'],
 };
 
-/** Structured counts let the host pluralize actual kinds, not call every item a stroke (WB-D29). */
 export function pageContentCounts(contents: readonly Node[]): ReadonlyMap<Node['kind'], number> {
     const counts = new Map<Node['kind'], number>();
     for (const node of contents) counts.set(node.kind, (counts.get(node.kind) ?? 0) + 1);
@@ -194,7 +189,6 @@ export function deleteLastPage(doc: BoardDoc, apply: MutationPort, geometry?: Ch
     }
 }
 
-/** Reorders physical pages while preserving each root's unscaled page-local position. */
 export function reorderPage(doc: BoardDoc, apply: MutationPort, from: number, to: number): Applied | undefined {
     const { pageCount } = notebook(doc);
     if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 || from >= pageCount || to >= pageCount)
@@ -210,6 +204,5 @@ export function reorderPage(doc: BoardDoc, apply: MutationPort, from: number, to
             ops.push({ t: 'set', id, key: 'page', value: next });
         }
     }
-    // Empty pages are indistinguishable and have no persisted identity.
     return ops.length ? commit(apply, 'Reorder pages', ops) : undefined;
 }

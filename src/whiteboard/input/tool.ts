@@ -1,4 +1,3 @@
-// F-INPUT-001/004/005: tools receive normalized real input only.
 export interface InputToken {
   readonly vaultEpoch: number
   readonly tabId: string
@@ -12,7 +11,6 @@ export interface RealSample {
   readonly source: 'pen' | 'touch' | 'mouse' | 'keyboard'
   readonly x: number
   readonly y: number
-  /** Surface coordinates from the same presented mapping as x/y, never persisted. */
   readonly surfaceX?: number
   readonly surfaceY?: number
   readonly pressure: number
@@ -22,11 +20,9 @@ export interface RealSample {
   readonly tiltX: number
   readonly tiltY: number
   readonly twist: number
-  /** On a press's first sample only: its place in a run of clicks (2 for a double-click), counted by `PointerAcquisition`. */
   readonly clicks?: number
 }
 
-/** Physical samples carry their original surface mapping; keyboard samples use the current camera. */
 export function sampleSurface(sample: RealSample, keyboard: (sample: RealSample) => { readonly x: number; readonly y: number }): { readonly x: number; readonly y: number } {
   if (sample.source === 'keyboard') return keyboard(sample)
   if (!Number.isFinite(sample.surfaceX) || !Number.isFinite(sample.surfaceY)) throw new Error('Physical sample has no presented surface mapping')
@@ -54,11 +50,8 @@ export interface GestureOwner {
   cancel(reason: CancelReason): void
 }
 
-// The host supplies commands and services through Context; tools never own the session or view.
 export interface Tool<Context = unknown> {
   readonly id: string
-  /** A view-only gesture (right-button pan) takes no session gesture hold, so the context menu its press
-   * opens sees no "current gesture" and keeps Delete, Select all and Arrange enabled. */
   readonly holdsNoGesture?: boolean
   begin(sample: RealSample, modifiers: Modifiers, context: Context): GestureOwner | null
 }
@@ -68,11 +61,6 @@ export function sameInputToken(a: InputToken, b: InputToken): boolean {
     a.sessionGeneration === b.sessionGeneration && a.viewGeneration === b.viewGeneration
 }
 
-/** How far a press may drift and still be a click, in CSS px. A person's click is never still:
- * measured, trackpad and mouse clicks drift 1-8 px over an 80-300 ms press, and at the old 4 px a
- * Note or Text click became a 2 px drag-created note and a click inside a selection became a move. */
 export const CLICK_SLOP_CSS = 8
-/** Presses within this time of the one before, close enough to it, make one run of clicks (the platforms' default double-click time). */
 export const MULTI_CLICK_MS = 500
-/** How far apart the presses of one run may land, by pointer: a pen's tip lands a few px off on every tap, a finger more. */
 export const MULTI_CLICK_CSS: Readonly<Record<RealSample['source'], number>> = { mouse: CLICK_SLOP_CSS, pen: 16, touch: 24, keyboard: 0 }

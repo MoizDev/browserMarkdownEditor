@@ -4,7 +4,6 @@ import type { MemoryAllocator } from './memoryGovernor';
 type Pool = 'gpu' | 'cpu';
 const totals = new Map<string, { gpu: number; cpu: number }>();
 
-/** Measurement remains a subset of the same canonical leases charged by the governor. */
 export function measurementAllocator(paneId: string, pool: Pool, source: MemoryAllocator): MemoryAllocator {
     const owned = new Set<ByteLease>();
     return {

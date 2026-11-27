@@ -12,7 +12,6 @@ export type PdfGroupOpen = Omit<Extract<PageDisplayItem, { kind: 'group' }>, 'ki
 export type PdfPathOpen = Omit<Extract<PageDisplayItem, { kind: 'path' }>, 'd'>
 export type PdfImageItem = Extract<PageDisplayItem, { kind: 'image' | 'raster' }>
 
-/** Each call consumes its arguments before resolving. Paths and groups stay open across calls. */
 export interface IncrementalPdfPage {
   beginGroup(group: PdfGroupOpen, signal: AbortSignal): Promise<void>
   endGroup(signal: AbortSignal): Promise<void>
@@ -41,9 +40,7 @@ export interface IncrementalPdfPageSource {
   readonly source: PaintNodeSource
   readonly world: Readonly<Rect>
   readonly paper?: PageDisplayList
-  /** Additional logical sheets are emitted in order, without collecting a physical page. */
   readonly additionalSources?: AsyncIterable<PaintNodeSource>
-  /** Page-space scale; shape realization quality is supplied separately. */
   readonly outputScale?: number
 }
 export interface IncrementalPdfSource {
@@ -194,7 +191,6 @@ async function writePaint(item: PaintItem, scale: number, image: ExportImage, si
   await writeDisplay(await paintItemDisplay(item, scale, image, signal), sink, source, signal)
 }
 
-/** Stream one pinned physical page without collecting its display list or any whole text/ink path. */
 export async function writeIncrementalPdfPage(page: IncrementalPdfPageSource, index: number, scale: number,
   image: ExportImage, sink: IncrementalPdfPage, signal: AbortSignal): Promise<void> {
   const { source, world, paper } = page, outputScale = page.outputScale ?? 1
@@ -235,7 +231,6 @@ export async function writeIncrementalPdfPage(page: IncrementalPdfPageSource, in
   guard(source, signal)
 }
 
-/** Writer, source and media are already pinned by the owning export job; no partial result escapes. */
 export async function streamIncrementalPdf(source: IncrementalPdfSource, scale: number, image: ExportImage,
   writer: IncrementalPdfWriter, signal: AbortSignal, notebookSource?: { readonly path: string }): Promise<Uint8Array> {
   if (!Number.isSafeInteger(source.revision) || source.revision < 0 || !Number.isSafeInteger(source.pageCount) || source.pageCount < 1

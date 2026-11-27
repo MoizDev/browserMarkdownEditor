@@ -3,7 +3,6 @@ import type { SheetId } from '../model/ids';
 import type { IncrementalPdfPage } from '../export/incrementalPdf';
 import type { EmittedInk } from '../../pdf/writing/protocol';
 
-/** The source is revision-pinned; the reader returns page-local, clipped print-light ink. */
 export interface PdfInkSnapshot {
     readonly pages: readonly PageGeometry[];
     readonly sheets: readonly SheetId[];
@@ -11,8 +10,6 @@ export interface PdfInkSnapshot {
     writeSheetPage(sheet: SheetId, page: number, sink: IncrementalPdfPage, signal: AbortSignal): Promise<void>;
 }
 
-/** Passes a page's writes through, telling `paint` when one can mark the page: a filled or stroked path, or a picture.
- * Groups (the page clip, isolation, transforms) and unpainted paths mark nothing. */
 function paintWatch(page: IncrementalPdfPage, paint: () => void): IncrementalPdfPage {
     return {
         beginGroup: (group, signal) => page.beginGroup(group, signal),
@@ -24,12 +21,6 @@ function paintWatch(page: IncrementalPdfPage, paint: () => void): IncrementalPdf
     };
 }
 
-/** The writer consumes each contour chunk before the producer pulls the next one.
- * A logical text/ink path remains open across chunks and logical sheets retain their order.
- * Only pages that something paints are placed: the stamper turns every placed page's (possibly empty) ink into Forms
- * and regenerates that page's content, so every save paid for empty ink on every page (measured: one stroke on a
- * 120-page, 109 KB PDF saved as 445 KB, and as 353 KB once the 119 pages it does not touch were left unplaced).
- * An unplaced page keeps the original's content, which is what the page shows either way. */
 export async function emitStreamingPdfInk(snapshot: PdfInkSnapshot, revision: number, signal: AbortSignal): Promise<EmittedInk> {
     const { createIncrementalPdfWriter } = await import('../../pdf/writing/incrementalClient');
     let result: EmittedInk | undefined;

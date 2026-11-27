@@ -47,8 +47,6 @@ function rootAngle(root: CircleRootBox, centre: Vec2): Interval | null {
     return certifiedAngleBox(x, y);
 }
 
-/** Exact curve/circle root isolation plus certified angular and fill-state
- * enclosures. Close crossings are refined separately; tangencies keep state. */
 export function* certifiedConnectorArcCrossings(arc: ArcGeometry, length: number, contours: readonly ExactConnectorContour[],
     error: number, maxPieces: number): Generator<void, readonly ExactConnectorCrossing[]> {
     if (![arc.centre.x, arc.centre.y, arc.radius, arc.start, arc.sweep, length, error].every(Number.isFinite) || arc.radius <= 0

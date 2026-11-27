@@ -40,7 +40,6 @@ function record(value: unknown): Record<string, unknown> {
     return value as Record<string, unknown>;
 }
 
-/** Accept only the compiler-declared callback and value layouts this adapter implements. */
 export function validatePdfiumAbi(value: unknown): PdfiumAbi {
     const descriptor = record(value);
     if (descriptor.schemaVersion !== 1 || descriptor.pointerBytes !== 4 || descriptor.unsignedLongBytes !== 4) {

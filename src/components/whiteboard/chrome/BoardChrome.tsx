@@ -19,28 +19,21 @@ export interface BoardChromeProps extends BoardHeaderProps {
     readonly readOnlyReason?: string;
     readonly toolDisabledReason?: (choice: ToolChoice) => string | undefined;
     readonly focusMode?: boolean;
-    /** Focus mode's one button puts the chrome back; its label is the mode's own, with its chord. */
     readonly focusModeLabel: string;
     readonly exitFocusMode: () => void;
-    /** The bar's figure slot: the figure last drawn with (rectangle until one is chosen). */
     readonly lastFigure?: string;
-    /** The tool lock, while the selected tool can be locked; `toolLockLabel` names it. */
     readonly toolLockLabel: string;
     readonly toolLock?: { readonly locked: boolean; readonly toggle: () => void };
     readonly onBarTools?: (shown: readonly ToolChoice[]) => void;
     readonly selectTool: (choice: ToolChoice) => void;
-    /** A bar tool dragged onto the board; the board answers whether it took the press. */
     readonly dragTool?: (choice: ToolChoice, event: PointerEvent, bar: Element) => boolean;
     readonly zoomControls: ZoomControlsProps;
     readonly stylePanel?: StylePanelProps;
     readonly debug?: DebugOverlayProps;
-    /** Paper controls of a paged host; they sit under the header, never over it. */
     readonly pageControls?: ReactNode;
-    /** The command palette; it sits between the header and the bar, above the bar when open. */
     readonly palette?: ReactNode;
 }
 
-/** The view supplies live session state; these controls do not own a second selection or history. */
 export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolShortcut, toolsLabel, moreLabel,
     readOnly, readOnlyReason, toolDisabledReason, focusMode, focusModeLabel, exitFocusMode, lastFigure, toolLockLabel, toolLock,
     onBarTools, selectTool, dragTool, zoomControls, stylePanel, debug, pageControls, palette, ...header }: BoardChromeProps) {
@@ -60,10 +53,6 @@ export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolSh
             <BoardHeader {...header} locale={locale} direction={direction} />
             {pageControls}
         </div>
-        {/* The middle row is what the header and the bottom row leave. The docked panel is a flow column in it, so it gets the height
-            the bottom row, the notices and an open minimap leave free (chrome.css .board-chrome-pen). The palette lays over the
-            row instead of taking a place in the column: as a flow child it shrank the panel, which then jumped and clipped
-            (measured: the panel's box went from y 118, h 562 to y 536, h 144, when the palette opened). */}
         <div className="board-chrome-middle">
             {stylePanel && <div className="board-chrome-pen"><DockedStylePanel {...stylePanel} /></div>}
             {palette}

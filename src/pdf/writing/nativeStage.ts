@@ -7,7 +7,6 @@ import type { EmittedInk } from './protocol';
 import { inkPlacements } from './placement';
 import { WriterArena } from './nativeMemory';
 
-/** Writer-private native ownership. Neither this handle nor its source crosses C5. */
 export class WriterNativeDocument {
     private closed = false;
     private constructor(readonly runtime: PdfiumRuntime, readonly handle: number, private readonly access: PdfiumFileAccess) {}
@@ -38,8 +37,6 @@ export class WriterNativeDocument {
         return count;
     }
 
-    /** v2 marks are raw PDF strings, so an encrypted saved output cannot carry
-     * an inspectable mark. Refuse instead of silently dropping its security. */
     assertEditable(): void {
         if (this.runtime.call('FPDF_GetSecurityHandlerRevision', this.handle) !== -1) throw new PdfEngineError('UnsupportedSecurity', 'Encrypted PDF cannot be safely rebuilt by this writer');
         const signatures = this.runtime.call('FPDF_GetSignatureCount', this.handle);
@@ -55,8 +52,6 @@ export class WriterNativeDocument {
     }
 }
 
-/** Import each generated ink page as a Form on the pristine, never on a prior
- * stamped output. Every transferred native handle is closed on every exit. */
 export async function stampNativeInk(destination: WriterNativeDocument, ink: EmittedInk,
     geometries: readonly PageGeometry[], cooperate: () => Promise<void>): Promise<void> {
     const runtime = destination.runtime;
@@ -67,7 +62,6 @@ export async function stampNativeInk(destination: WriterNativeDocument, ink: Emi
     const source = WriterNativeDocument.openBytes(runtime, bytes);
     try {
         const count = source.pageCount();
-        // The map may place fewer pages than the ink PDF holds: a page nothing paints is not placed (pdfInkExport.ts).
         if (ink.pages.length > count) throw new PdfEngineError('InvalidPdf', 'Ink page count does not match its map');
         for (const placement of placements) {
             await cooperate();

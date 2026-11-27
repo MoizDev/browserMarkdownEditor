@@ -1,7 +1,6 @@
 import { resolve } from 'node:path';
 import { bundleContainedRuntime } from '../src/platform/containedFrameBuild.mjs';
 
-/** The virtual module contains only the fixed first-party bootstrap and its exact CSP hash. */
 export function containedEmbedFrames(root) {
     const id = '\0virtual:contained-embed';
     const entry = 'src/platform/embedBootstrap.ts';

@@ -1,13 +1,3 @@
-/**
- * Save failures, told without taking the keyboard.
- *
- * An autosave fails while the person is typing, so its report must not be the modal "Could not continue" dialog: that
- * focused its OK button and the next Space pressed it (measured: "abc more" typed across a failed save landed as
- * "abcmore", the space swallowed by the dialog). A notice here is drawn beside the update notice, announced as an
- * alert, and never focused. One per document (keyed by its tab id): a retry that fails again replaces it, a save
- * that succeeds takes it away. Dismissed, it stays away until that document saves again: every keystroke's retry
- * bringing it back would bury the editor.
- */
 export interface SaveNotice { readonly id: string; readonly message: string }
 
 let notices: readonly SaveNotice[] = [];
@@ -26,7 +16,6 @@ export function showSaveNotice(id: string, message: string): void {
     publish(at >= 0 ? notices.map(notice => notice.id === id ? { id, message } : notice) : [...notices, { id, message }]);
 }
 
-/** The document saved: its notice goes, and a later failure is told again. */
 export function clearSaveNotice(id: string): void {
     dismissed.delete(id);
     const wasFailed = failed.delete(id);
@@ -34,7 +23,6 @@ export function clearSaveNotice(id: string): void {
     else if (wasFailed) publish(notices);
 }
 
-/** True from a failed save of this document until one succeeds, whether or not its notice was dismissed. */
 export function saveFailed(id: string): boolean { return failed.has(id); }
 
 export function dismissSaveNotice(id: string): void {

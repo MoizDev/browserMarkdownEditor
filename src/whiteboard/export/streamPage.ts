@@ -7,8 +7,6 @@ import { createExportTextResolver } from './textResolver'
 import { yieldToHost } from '../../platform/yieldToHost'
 import { paintMayReachPage } from './pageReach'
 
-/** One immutable source per physical page. Never publish a partial list: the caller holds
- * the source's revision/media leases until the resulting page has been handed to the writer. */
 export async function streamPageDisplayList(
   source: PaintNodeSource, page: number, world: Readonly<Rect>, scale: number, image: ExportImage, signal: AbortSignal, text?: ExportText,
 ): Promise<PageDisplayList> {

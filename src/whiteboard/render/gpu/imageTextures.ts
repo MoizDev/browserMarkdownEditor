@@ -1,30 +1,15 @@
-// One GPU texture per decoded picture (imageKey), leased from the governor and written only as it arrives, then only read.
-// A picture that fits one chunk is written whole; anything larger arrives in row bands, each decoded and then claimed on its
-// own claimUpload, so no single write is larger than a chunk. Design: PLAN §4 gpu-h7, §3.1.
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { ByteLease, DrawableImage, GfxDevice, TextureHandle } from '../../../platform/render/gfx/api';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FrameBudget } from '../../../platform/render/types';
 import type { Admission } from './contracts';
 
-/** One upload chunk: the scheduler's progress grant is a tile (scheduler.ts progressUploadBytes, 516 × 516 × 4 = 1,064,256 B),
- * so a chunk of this size is claimable on an otherwise idle frame. Smaller chunks would mean a decode round trip per band:
- * a 4000-px-wide picture would take about 16 times as many frames to arrive. */
 export const IMAGE_CHUNK_BYTES = 1024 * 1024;
-/** The bytes a frame may write past its upload allowance for pictures that would otherwise be a hole (acquire's firstPaint): one
- * whole decode's worth (WHOLE_MIP_BYTES). Banded over the allowance, a 4000x3000 picture's 3 MB stand-in took four frames to show after
- * its decode, where canvas2d draws the bitmap at once (measured, insert at DPR 2: WebGL2 1097 ms median vs canvas2d 1000). */
 const FIRST_PAINT_FRAME_BYTES = 16 * 1024 * 1024;
 
-/** Mip levels stay off. IMAGE_SAMPLING_PROFILE is bilinear without mip levels, canvas2d samples that way, and the
- * parity row (pictures within 3 levels of canvas2d) is measured against it; mips would smooth minified pictures away
- * from that reference. The path is real (h10's `createTexture(…, { mips })`, `generateMips`): turning this on is gpu's
- * call, and the sampler the route binds follows it through IMAGE_FILTER. */
 const IMAGE_MIPS = false;
-/** The filter every picture is sampled with: linear, with the mip chain when IMAGE_MIPS is on. */
 export const IMAGE_FILTER: 'linear' | 'linear-mipmap' = IMAGE_MIPS ? 'linear-mipmap' : 'linear';
 
-/** Bytes of a texture's whole chain: level 0 alone, or every level down to 1×1 when it is mipped. */
 function textureBytes(width: number, height: number, mips: boolean = IMAGE_MIPS): number {
     let bytes = 0;
     for (let w = width, h = height; ; w = Math.max(1, w >> 1), h = Math.max(1, h >> 1)) {
@@ -33,9 +18,6 @@ function textureBytes(width: number, height: number, mips: boolean = IMAGE_MIPS)
     }
 }
 
-/** A video node's current frame, from h12's registry (videoFrames.ts): the lease's `version` moves per presented frame, its
- * `source` is a VideoFrame or an ImageBitmap, and its size is the lease's. The registry owns the frame and closes it when the
- * lease is released: the texture never closes it, so a frame is never closed twice. */
 export interface VideoFrameInput {
     readonly version: number;
     readonly source: DrawableImage;
@@ -43,8 +25,6 @@ export interface VideoFrameInput {
     readonly height: number;
 }
 
-/** A picture's texture, the stable value every route draws from. `width`/`height` are its texels: the source's own, unless
- * the source is larger than the device's texture limit, which is the only case the texture is resampled (counted as image:resample). */
 export interface ImageTexture {
     readonly key: string;
     readonly texture: TextureHandle;
@@ -55,62 +35,40 @@ export interface ImageTexture {
 }
 
 export interface ImageTextures {
-    /** `ready` holds the texture until `unhold` (a route pairs them per prepared run). `deferred` while staging or
-     * uploading; `denied` when the GPU pool refuses the lease; `unsupported` for a source this path cannot draw. `image` is
-     * null once the picture's bitmap was released: a ready texture still draws; anything else must wait for the bitmap. */
-    /** `firstPaint`: nothing of this picture is drawn without this texture (the picture itself, or a finer tile of a live run, which is
-     * drawn all or none): its first upload is written whole in this frame, past the upload allowance, within FIRST_PAINT_FRAME_BYTES a frame. */
     acquire(key: string, image: CanvasImageSource | null, budget: FrameBudget, firstPaint?: boolean): Admission<ImageTexture>;
-    /** One texture per video node, rewritten in place when its version moves and never mipped. A version the texture already
-     * holds costs no upload; a new one is decoded, then written whole once its claim is granted. Until then the texture keeps
-     * the version it has, so a node is never drawn half-written. */
     acquireVideo(key: string, frame: VideoFrameInput, budget: FrameBudget): Admission<ImageTexture>;
-    /** True when acquiring `key` needs its bitmap: no texture is ready for this device. */
     needsSource(key: string): boolean;
     unhold(key: string): void;
-    /** Frees textures nobody holds and no frame used this frame, least recently used first. Returns the bytes freed. */
     evict(bytes: number, frameId: number): number;
     release(): void;
     memory(): { gpuBytes: number; cpuBytes: number };
 }
 
-/** A decoded piece awaiting its upload, charged to the CPU pool while it exists. */
 interface Staged { readonly bitmap: ImageBitmap; readonly lease: ByteLease; readonly row: number; readonly rows: number }
 
-/** A decode in flight. Its CPU lease is returned by whichever comes first: its settlement, or the release of its slot. A
- * release returns the lease at once, so the governor sees the bytes freed synchronously; the bitmap is closed when it lands. */
 interface Inflight { lease: ByteLease | null }
 
 interface Slot {
     readonly device: GfxDevice;
     readonly view: ImageTexture;
-    /** The texture's own GPU lease: its bytes are reserved before the texture exists and returned when it is destroyed. */
     readonly lease: ByteLease;
     readonly bytes: number;
     refs: number;
     usedFrame: number;
     ready: boolean;
-    /** Rows of the texture already written, from the top, once the picture arrives in bands. */
     uploaded: number;
-    /** The downscaled source, present only when the picture was larger than its texture. */
     scaled: Staged | null;
-    /** A band decoded and waiting for its claimUpload. */
     band: Staged | null;
-    /** The decode in flight (a resize or a band), when there is one. */
     inflight: Inflight | null;
-    /** One asynchronous decode in flight; its settlement clears this. */
     busy: boolean;
     failed: boolean;
     dropped: boolean;
-    /** Video only: the version the texture holds (-1 before its first write). */
     version: number;
 }
 
 const UPLOAD_USES = ['sample', 'copy-dst'] as const;
 const UPLOAD_SOURCE = { premultiplied: true, colorSpace: 'srgb', origin: 'top-left' } as const;
 
-/** The texture a picture gets: its source size, fitted proportionally into the device's texture limit (`limits.maxTexture2D`,
- * the field gpu confirmed). A picture within the limit keeps its texels: the GPU scales it when it is drawn, not a CPU resample. */
 function targetSize(device: GfxDevice, w: number, h: number): { width: number; height: number } {
     const max = device.limits.maxTexture2D;
     const scale = Math.min(1, max / w, max / h);
@@ -121,7 +79,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
     const slots = new Map<string, Slot>();
     let gpuBytes = 0, cpuBytes = 0;
     const wake = () => host.invalidate('image-texture-capacity');
-    // A refused reservation does not poll (needsFrame() is false while denied): it waits for a real capacity change.
     const awaitCapacity = (): void => { host.allocator.gpu.whenAvailable?.(wake); host.allocator.cpu.whenAvailable?.(wake); };
     const reserveCpu = (bytes: number): ByteLease | null => {
         const lease = host.allocator.cpu.reserve(bytes);
@@ -131,7 +88,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
     const releaseCpu = (lease: ByteLease): void => { host.allocator.cpu.release(lease); cpuBytes -= lease.bytes; };
     const closeStaged = (staged: Staged): void => { staged.bitmap.close(); releaseCpu(staged.lease); };
 
-    // Synchronous: every byte this slot holds is returned by the time it returns (its decode's bitmap closes when it lands).
     const drop = (slot: Slot): void => {
         slot.dropped = true;
         if (slots.get(slot.view.key) === slot) slots.delete(slot.view.key);
@@ -143,7 +99,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
         gpuBytes -= slot.bytes;
     };
 
-    // One decode in flight for a slot: its lease is held in `inflight` until the decode lands or the slot is dropped.
     const decode = (slot: Slot, lease: ByteLease, make: () => Promise<ImageBitmap>, onStaged: (bitmap: ImageBitmap, held: ByteLease) => void): void => {
         const inflight: Inflight = { lease };
         slot.inflight = inflight; slot.busy = true;
@@ -161,9 +116,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
         });
     };
 
-    // Decodes the picture down to the texture size. Settlement is an invalidate, so the next prepare finds it.
-    // Only a picture beyond the device's texture limit is resampled, on the browser side (off the main thread); a picture within
-    // the limit is uploaded at its own size and the GPU scales it when drawn.
     const startResize = (slot: Slot, image: ImageBitmap): void => {
         const { width, height } = slot.view;
         const lease = reserveCpu(width * height * 4);
@@ -173,7 +125,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             (bitmap, held) => { slot.scaled = { bitmap, lease: held, row: 0, rows: height }; host.invalidate('image-texture-staged'); });
     };
 
-    // Decodes rows [row, row + rows) of the texture-sized source into a bitmap of exactly that band.
     const startBand = (slot: Slot, source: ImageBitmap, row: number, rows: number): void => {
         const lease = reserveCpu(slot.view.width * rows * 4);
         if (!lease) { awaitCapacity(); return; }
@@ -193,8 +144,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
         slot.ready = true;
     };
 
-    // One step toward `ready`. Returns true when the texture is complete this call.
-    // The first-paint grant left in the current frame (see FIRST_PAINT_FRAME_BYTES).
     let firstPaintFrame = -1, firstPaintLeft = 0;
     const advance = (slot: Slot, device: GfxDevice, image: ImageBitmap, budget: FrameBudget, firstPaint: boolean): boolean => {
         const { width, height, sourceWidth, sourceHeight } = slot.view;
@@ -203,7 +152,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             return false;
         }
         const source = slot.scaled ? slot.scaled.bitmap : image;
-        // A hole otherwise: written whole now, from its own bitmap, as canvas2d would draw it.
         if (firstPaint && slot.uploaded === 0 && !slot.band && !slot.busy) {
             if (budget.frameId !== firstPaintFrame) { firstPaintFrame = budget.frameId; firstPaintLeft = FIRST_PAINT_FRAME_BYTES; }
             const bytes = width * height * 4;
@@ -215,7 +163,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
                 return true;
             }
         }
-        // A picture that fits one chunk is written whole, from its own bitmap, once its claim is granted.
         if (slot.uploaded === 0 && !slot.band && width * height * 4 <= IMAGE_CHUNK_BYTES) {
             if (budget.claimUpload(width * height * 4)) {
                 writeRows(slot, device, { x: 0, y: 0, width, height }, source);
@@ -244,7 +191,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             let slot = slots.get(key);
             if (slot?.failed) { drop(slot); return { status: 'unsupported', why: 'upload-failed' }; }
             if (!image) {
-                // Without its bitmap only a ready texture of this device draws; a route asks for the bitmap first otherwise.
                 if (!slot || !slot.ready || slot.device !== device) return { status: 'deferred' };
                 slot.usedFrame = budget.frameId;
                 slot.refs++;
@@ -253,8 +199,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             if (typeof ImageBitmap === 'undefined' || !(image instanceof ImageBitmap)) return { status: 'unsupported', why: 'not-bitmap' };
             const w = image.width, h = image.height;
             if (!(w > 0 && h > 0)) return { status: 'empty' };
-            // A picture's size is its source's, so a texture never needs to grow after its first draw: the same key always
-            // resolves to the same texture size (the source's own, or the device's fit).
             if (slot && (slot.device !== device || slot.view.sourceWidth !== w || slot.view.sourceHeight !== h)) { drop(slot); slot = undefined; }
             if (!slot) {
                 const target = targetSize(device, w, h);
@@ -281,11 +225,8 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             if (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
             const { width: w, height: h, version } = frame;
             if (!(w > 0 && h > 0)) return { status: 'empty' };
-            // A video is never scaled (pictures are, in `targetSize`): a frame past the device's texture limit cannot be a texture.
-            // Refused before a lease is reserved, so the composer counts the CPU fallback instead of createTexture throwing out of admit.
             if (w > device.limits.maxTexture2D || h > device.limits.maxTexture2D) return { status: 'unsupported', why: 'video-size' };
             let slot = slots.get(key);
-            // A node's size is its video's: a change re-creates the texture, but never while a run still draws the old one.
             if (slot && (slot.device !== device || slot.view.sourceWidth !== w || slot.view.sourceHeight !== h)) {
                 if (slot.refs > 0) return { status: 'deferred' };
                 drop(slot); slot = undefined;
@@ -303,10 +244,7 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
                 slots.set(key, slot); gpuBytes += bytes;
             }
             slot.usedFrame = budget.frameId;
-            // The version the texture holds costs nothing: no upload, no new texture.
             if (slot.ready && slot.version === version) { slot.refs++; return { status: 'ready', value: slot.view }; }
-            // A new version is written whole, straight from the frame (the device reads a VideoFrame itself), once the media claim is
-            // granted: one per prepare. A refused claim keeps the texture on the version it has, so nothing is drawn half-written.
             if (!budget.claimUpload(w * h * 4, 'media')) {
                 host.invalidate('video-texture-upload');
                 if (!slot.ready) return { status: 'deferred' };

@@ -1,6 +1,5 @@
 import type { Arrowhead, Size } from '../model/styles';
 
-// geometry.md §3.2: stored widths are world-unit outlines, not label scales.
 export type OutlineKind = 'stroke:pen' | 'stroke:highlighter' | 'figure' | 'connector' | 'polyline';
 export type CalibratedLength =
     | Readonly<{ status: 'pending' }>
@@ -27,7 +26,6 @@ const BASE: Readonly<Record<OutlineKind, Readonly<Record<Size, number>>>> = {
     connector: { s: 2, m: 3.5, l: 5, xl: 10 },
     polyline: { s: 2, m: 3.5, l: 5, xl: 10 },
 };
-// Only the small pen/outline widths have observed paint coverage; all others remain provisional.
 export function widthCalibration(kind: OutlineKind, size: Size): 'measured' | 'provisional' {
     return size === 's' && kind !== 'stroke:highlighter' ? 'measured' : 'provisional';
 }
@@ -59,7 +57,6 @@ export const styleGeometryMetrics: StyleGeometryMetrics = Object.freeze({
         return { length: finiteResult(3 * Math.sqrt(3) / 2 * width), halfSpan: finiteResult(1.5 * width) };
     },
     dash(actualWidth: number): Readonly<{ lengths: readonly [number, number]; dotSpacing: number; status: 'provisional' }> {
-        // geometry §3.1 leaves spacing calibration open; one table keeps paint and picks coherent.
         const width = nonnegative(actualWidth);
         if (width === 0) throw new RangeError('Dash width must be positive');
         return { lengths: [finiteResult(4 * width), finiteResult(3 * width)], dotSpacing: finiteResult(2 * width), status: 'provisional' };
@@ -76,7 +73,6 @@ export const styleGeometryMetrics: StyleGeometryMetrics = Object.freeze({
     },
     attachedGap(size: Size, actualWidth: number, head: Arrowhead): CalibratedLength {
         nonnegative(actualWidth);
-        // The observed horizontal gap does not establish a universal head-specific gap.
         void size; void head;
         return PENDING;
     },

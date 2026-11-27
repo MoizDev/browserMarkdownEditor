@@ -96,7 +96,6 @@ async function hash(bytes: Uint8Array, cooperate: () => Promise<void>): Promise<
     return digest.digest();
 }
 
-/** Contained worker owns each parsed graph. Names are never filesystem paths. */
 export class PdfInkInspector {
     private readonly retained = new Map<string, Retained>();
     private pending = 0;
@@ -199,6 +198,5 @@ export class PdfInkInspector {
     }
     release(id: string): void { this.retained.delete(id); }
     dispose(): void { this.closed = true; this.retained.clear(); }
-    /** Advisory retained source/parsed-graph reservation, not measured JS heap. */
     memoryBytes(): number { let total = 0; for (const entry of this.retained.values()) total += entry.bytes.byteLength * 2; return total; }
 }

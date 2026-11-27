@@ -15,14 +15,11 @@ export interface KeyboardContextOptions {
     readonly camera: CameraController;
     readonly surface: HTMLElement;
     current(): boolean;
-    /** The host opens the one existing board context menu, not a native menu. */
     open(request: KeyboardContextRequest): void;
     error(error: unknown): void;
     cooperate?(): Promise<void>;
 }
 
-/** Keyboard context menus have no physical pointer event. Resolve the active
- * object's actual bounds, keep selection intact, and return a viewport anchor. */
 export function createKeyboardContext(options: KeyboardContextOptions) {
     const { runtime, camera, surface } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     const cooperate = options.cooperate ?? yieldToHost;

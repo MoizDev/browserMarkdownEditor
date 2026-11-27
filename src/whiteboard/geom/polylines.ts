@@ -23,7 +23,6 @@ function tangent(points: readonly Point[], index: number): Vec2 {
     return { x, y };
 }
 
-/** Geometry §9: ordered handles stay intact; duplicate points become explicit degenerate spans. */
 export function polylinePath(node: Readonly<PolylineNode>): readonly PathOp[] {
     const { points, spline } = node;
     if (points.length < 2 || points.length > 5000 || points.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {

@@ -22,7 +22,6 @@ export function withPdfiumMemory<T>(runtime: PdfiumRuntime, bytes: number, run: 
     }
 }
 
-/** PDFium takes a NUL-terminated UTF-8 password; embedded NUL cannot round-trip. */
 export function withPdfiumPassword<T>(runtime: PdfiumRuntime, password: string | undefined, run: (pointer: number) => T): T {
     if (password === undefined) return run(0);
     if (password.includes('\0')) throw new PdfEngineError('UnsupportedSecurity', 'PDF password contains an unsupported NUL');
@@ -37,7 +36,6 @@ export function withPdfiumPassword<T>(runtime: PdfiumRuntime, password: string |
     } finally { bytes.fill(0); }
 }
 
-/** Native UTF-16 lengths include the NUL terminator and are always bytes. */
 export function readPdfiumUtf16(runtime: PdfiumRuntime, pointer: number, bytes: number): string {
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes % 2 !== 0) throw new PdfEngineError('EngineBroken', 'Invalid PDFium UTF-16 length');
     const view = heapView(runtime, pointer, bytes);

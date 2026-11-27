@@ -64,8 +64,6 @@ async function scan(id, arm, identity, page, fetched, drain, supplementalUrls) {
         for (const path of Object.keys(identity.files).filter(path => path.endsWith('.js') && !already.has(path))) {
             const url = new URL(path.split('/').map(encodeURIComponent).join('/'), arm.url).href;
             supplementalUrls.add(url);
-            // This is a browser fetch, not a Node read of dist. Keep its label
-            // separate from scripts the user flow itself requested.
             const response = await page.evaluate(async url => {
                 const response = await fetch(url);
                 const bytes = new Uint8Array(await response.arrayBuffer());
@@ -274,9 +272,6 @@ async function runFlow(id) {
             console.log(`PASS ${id} browser=${browser.version()} driver=${driver} readRetries=${counters.witness.readRetries}`);
             return result;
         } catch (error) {
-            // Once the real app is entered, an unnamed flow/render assertion is
-            // a product failure, never an invalid setup. Identity failures carry
-            // their explicit invalid flag through this boundary.
             if (entered && !error.reason) {
                 error.reason = `${id}-render`;
                 error.detail = error.message;

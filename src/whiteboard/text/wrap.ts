@@ -1,10 +1,6 @@
 import type { ItemizedBlock } from './itemize';
 
 export interface LogicalLine { readonly from: number; readonly to: number }
-/**
- * Greedy UAX #14 wrapping. `advance` measures a whole candidate, preserving shaping
- * across word boundaries; the host excludes trailing hard-break characters from paint.
- */
 export function wrapBlock(block: ItemizedBlock, available: number | null, emergency: boolean, advance: (from: number, to: number) => number): LogicalLine[] {
     const lines: LogicalLine[] = [];
     const breaks = block.breaks;
@@ -20,7 +16,6 @@ export function wrapBlock(block: ItemizedBlock, available: number | null, emerge
         const mandatory = nextMandatory[first] ?? breaks.length - 1;
         let chosen = mandatory;
         if (available !== null) {
-            // Probe from this line, not the end of a potentially million-unit paragraph.
             let probe = first, step = 1, lastFit = first - 1;
             while (probe <= mandatory && advance(from, breaks[probe].offset) <= available) {
                 lastFit = probe;

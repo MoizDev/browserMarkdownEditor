@@ -1,10 +1,3 @@
-// IMP-2, E-IMP-15: the input layout is specified in current-format.md §2.3.
-// Three layouts of a stroke segment occur in real files, told apart by their own fields, not by the schema version:
-//  - `path` (tldraw 4.3+): base64, little-endian; the first point as float32 per channel, each later point as float16
-//    deltas from the previous TRUE value; 3 channels (x, y, z) unless `dim: 2` (5.2+) says x, y only;
-//  - `points` as a base64 string (an earlier compact form): each point x, y, z as absolute float16;
-//  - `points` as an array of {x, y, z?} objects (2.x–4.2).
-/** `pressure` is null where the source holds none (a 2-D segment, a missing or non-finite z). */
 export interface LegacyPoint { readonly x: number; readonly y: number; readonly pressure: number | null }
 export type LegacySegment =
     | { readonly type: 'free' | 'straight'; readonly path: string; readonly dim?: 2 | 3 }
@@ -22,28 +15,22 @@ function half(bits: number): number {
 
 export interface LegacySegmentPoints {
     readonly points: readonly LegacyPoint[];
-    /** Points after the first non-finite x or y, which cannot be placed. */
     readonly dropped: number;
 }
 
 const POINT_LIMIT = 1_000_000;
 
 function bytesOf(base64: string): Uint8Array {
-    // One million points is the native admission ceiling; check before expanding base64.
     if (base64.length > 8_000_032) throw new Error('Stroke segment exceeds the point limit');
     let binary: string;
     try { binary = atob(base64); } catch { throw new Error('Invalid stroke segment encoding'); }
     return Uint8Array.from(binary, char => char.charCodeAt(0));
 }
 
-/** Decodes one segment's points. x/y keep the valid-prefix rule (plan document-model §9.2): with delta encoding one
- * non-finite value poisons every later point of its channel, so the tail is dropped and counted. A non-finite
- * pressure does NOT end the stroke: its point keeps x/y with pressure null, and the caller decides what it carries. */
 export function decodeLegacySegment(segment: LegacySegment): LegacySegmentPoints {
     if (segment.type !== 'free' && segment.type !== 'straight') throw new Error('Unsupported stroke segment');
     const points: LegacyPoint[] = [];
     let total = 0;
-    // Returns false at the first non-finite x or y; the caller stops there.
     const add = (x: number, y: number, z: number | undefined): boolean => {
         if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
         points.push({ x, y, pressure: z !== undefined && Number.isFinite(z) ? z : null });
@@ -53,7 +40,6 @@ export function decodeLegacySegment(segment: LegacySegment): LegacySegmentPoints
         const dim = segment.dim ?? 3;
         if (dim !== 2 && dim !== 3) throw new Error('Unsupported stroke segment');
         const bytes = bytesOf(segment.path);
-        // tldraw writes `path: ''` for a segment with no points: nothing to place, nothing wrong.
         if (!bytes.length) return { points, dropped: 0 };
         const firstBytes = dim * 4, deltaBytes = dim * 2;
         if (bytes.length < firstBytes || (bytes.length - firstBytes) % deltaBytes !== 0

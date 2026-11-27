@@ -17,7 +17,6 @@ export function tileScale(pyramid: TilePyramid, level: number): number {
     validateAddress({ pyramid, level, x: 0, y: 0 });
     return 2 ** level * (pyramid ? ROOT_TWO : 1);
 }
-/** Smallest of the interleaved sqrt(2) bands no lower than the requested scale. */
 export function chooseTileScale(actual: number): TileScale {
     if (!Number.isFinite(actual) || actual <= 0) throw new RangeError('Invalid dense tile scale');
     let band = Math.ceil(2 * Math.log2(actual));
@@ -75,7 +74,6 @@ function intersects(a: Readonly<Rect>, b: Readonly<Rect>): boolean {
     return a.x <= b.x + b.width && b.x <= a.x + a.width && a.y <= b.y + b.height && b.y <= a.y + a.height;
 }
 
-/** Owns references only; the executor owns staging pixels and retirement of published payloads. */
 export class TileHierarchy<T> {
     private readonly intervals = new Map<string, IntervalState>();
     private readonly records = new Map<string, TileRecord<T>>();
@@ -126,8 +124,6 @@ export class TileHierarchy<T> {
             current = tileParent(current);
         }
     }
-    /** Marks stale every record whose tile, padded by its 2 px apron, meets a changed region (world units).
-     * The apron is part of the tile's pixels, so an apron-only neighbour still changes the edge. */
     invalidateRegions(interval: string, revision: number, regions: readonly Rect[]): void {
         for (const region of regions) checkRect(region);
         this.invalidateMatching(interval, revision, record => {

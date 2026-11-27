@@ -2,7 +2,6 @@ import type { MediaLease, MediaStore } from '../media/store';
 import type { MediaEntry } from '../model/media';
 import type { MediaRestorePorts, PinnedMediaRestore } from './saveBuildTypes';
 
-/** Snapshot retained bytes and filenames synchronously, before any save build awaits disk. */
 export function createMediaRestorePin(store: MediaStore, ports: MediaRestorePorts): (revision: number) => PinnedMediaRestore {
     return revision => {
         if (!ports.isCurrent(revision)) throw new DOMException('Board revision changed', 'AbortError');

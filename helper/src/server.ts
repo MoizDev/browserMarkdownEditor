@@ -1,9 +1,3 @@
-// The helper's HTTP surface, bound to 127.0.0.1 only:
-//   GET  /health        — who is on this port (CORS for the editor's exact origin)
-//   GET  /ws            — the panel's WebSocket (Origin + Host checked on upgrade)
-//   POST /mcp/<token>   — the MCP endpoint the agent CLI calls during a run
-// Anything else is 404. See security.ts for why each check exists.
-
 import type { Server, ServerWebSocket } from 'bun';
 import {
     HELPER_APP_ID, HELPER_HOST, MAX_MCP_BODY_BYTES, MAX_WS_MESSAGE_BYTES, PROTOCOL_VERSION,
@@ -58,8 +52,6 @@ export function createFetchHandler(policy: OriginPolicy, getPort: () => number, 
         if (url.pathname === '/health') {
             if (req.method === 'OPTIONS') {
                 if (!isAllowedOrigin(origin, policy)) return text(403, 'forbidden origin');
-                // Chrome's Private Network Access preflight (still sent by versions that
-                // predate Local Network Access) asks this of a loopback server explicitly.
                 const headers: Record<string, string> = {
                     ...corsHeaders(origin!),
                     'Access-Control-Allow-Methods': 'GET',
@@ -71,7 +63,6 @@ export function createFetchHandler(policy: OriginPolicy, getPort: () => number, 
                 return new Response(null, { status: 204, headers });
             }
             if (req.method !== 'GET') return text(405, '', { Allow: 'GET, OPTIONS' });
-            // No Origin = not a browser page (curl, the installer's smoke test): answer without CORS.
             if (origin !== null && !isAllowedOrigin(origin, policy)) return text(403, 'forbidden origin');
             return Response.json(health(), { headers: { 'cache-control': 'no-store', ...(origin ? corsHeaders(origin) : {}) } });
         }
@@ -113,7 +104,6 @@ export function createFetchHandler(policy: OriginPolicy, getPort: () => number, 
     };
 }
 
-/** Binds the first free port of `ports`. Throws when none is free. */
 export function startServer(opts: ServerOptions): RunningServer {
     let port = 0;
     let sockets = 0;
@@ -125,7 +115,6 @@ export function startServer(opts: ServerOptions): RunningServer {
             const server: Server<WsData> = Bun.serve<WsData>({
                 hostname: HELPER_HOST,
                 port: candidate,
-                // Bun's own cap on the request body; the MCP route re-checks exactly.
                 maxRequestBodySize: MAX_WS_MESSAGE_BYTES,
                 fetch,
                 error(e) {
@@ -134,15 +123,6 @@ export function startServer(opts: ServerOptions): RunningServer {
                 },
                 websocket: {
                     maxPayloadLength: MAX_WS_MESSAGE_BYTES,
-                    // Terminal output is the first thing here that can outrun a socket. The
-                    // real control is application-level: the panel's `terminal.ack`s pause
-                    // streaming above TERMINAL_ACK_HIGH (512k chars, at worst ~3 MB as
-                    // JSON-escaped control codes), so this is only an explicit ceiling well
-                    // above that — stated rather than inherited from Bun's default. The
-                    // socket is not closed at it: it also carries an agent run, which a
-                    // terminal flood must not take down. Past it Bun DROPS frames (measured:
-                    // `send` answers 0) — the terminal manager notices and resyncs that
-                    // shell with a snapshot (TerminalManager.dropped).
                     backpressureLimit: 8 * 1024 * 1024,
                     closeOnBackpressureLimit: false,
                     idleTimeout: 120,
@@ -170,7 +150,6 @@ export function startServer(opts: ServerOptions): RunningServer {
     throw Object.assign(new Error(`none of the ports ${opts.ports.join(', ')} is free`), { cause: lastError });
 }
 
-/** Is a VaultAgent already answering on one of the ports? (Avoids two helpers after a reinstall race.) */
 export async function findRunningHelper(ports: readonly number[]): Promise<{ port: number; version: string } | null> {
     for (const port of ports) {
         try {

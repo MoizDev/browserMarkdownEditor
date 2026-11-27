@@ -19,14 +19,11 @@ export interface NativeEditingCapabilityContext {
     readonly host: NativeCanvasHost;
     readonly identity: NativeCanvasIdentity;
     readonly clipboard: NativeClipboardService;
-    /** Lasts for the entire visible view/capability lifetime, including loaded embeds. */
     readonly signal: AbortSignal;
     current(): boolean;
-    /** App-owned source/write proof; for PDF it follows the current verified rebind. */
     canWrite(): boolean;
     requestText(question: BoardTextQuestion): Promise<string | null>;
     notice(message: string): void;
-    /** The board's translated text for a key. */
     t(key: string): string;
 }
 export type NativeEditingCapabilityFactory = (context: NativeEditingCapabilityContext) => Promise<NativeEditingCapabilities>;

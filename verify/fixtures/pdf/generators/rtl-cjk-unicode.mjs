@@ -1,5 +1,3 @@
-// Entirely authored diagnostic outlines and text; proposed CC0-1.0 awaits the owner.
-// No font program, artwork, app module or system font is read by this generator.
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
@@ -14,7 +12,6 @@ export const utf16 = text => {
 };
 export const unicodeString = text => `<feff${utf16(text)}>`;
 
-/** A fixed authored object graph serializer, not a PDF parser or a rasterizer. */
 export function pdfBuilder(identity) {
     const objects = [null, null];
     const reserve = () => { objects.push(null); return objects.length; };
@@ -79,9 +76,6 @@ const ring = (cx, cy, r) => {
     return stroke([...vertices, vertices[0]], 35);
 };
 
-// These are deliberately small diagnostic letterforms, not a typography golden.
-// Arabic entries have distinct initial/medial/final outlines, selected explicitly;
-// the PDF does not ask a platform shaper or system font to invent contextual forms.
 export const glyphs = [
     { key: 'behFinal', unicode: 'ب', contours: [...strokes([[700, 300], [570, 300], [530, 120], [120, 120], [80, 300]]), rectangle(290, -25, 65, 65)] },
     { key: 'behMedial', unicode: 'ب', contours: [...strokes([[0, 300], [300, 300], [350, 480], [400, 300], [700, 300]]), rectangle(325, 80, 65, 65)] },
@@ -105,8 +99,6 @@ export const glyphs = [
     { key: 'c', unicode: 'c', contours: strokes([[550, 540], [460, 620], [180, 620], [80, 500], [80, 170], [190, 50], [470, 50], [560, 140]]) },
 ].map(glyph => ({ width: 700, ...glyph }));
 
-/** Minimal TrueType outlines, serialized from authored polygons only. All points
- *  are on-curve; no hint program, shaping tables, copied metrics or font tools. */
 function trueType(glyphList) {
     const padded = data => Buffer.concat([data, Buffer.alloc((4 - data.length % 4) % 4)]);
     const sum = data => { let n = 0; const bytes = padded(data); for (let i = 0; i < bytes.length; i += 4) n = (n + bytes.readUInt32BE(i)) >>> 0; return n; };
@@ -133,7 +125,6 @@ function trueType(glyphList) {
         shapes.push(data); locations.push(locations.at(-1) + data.length);
     });
     const head = Buffer.alloc(54); head.writeUInt32BE(0x10000, 0); head.writeUInt32BE(0x10000, 4); head.writeUInt32BE(0x5f0f3cf5, 12); head.writeUInt16BE(1000, 18);
-    // TrueType's epoch is 1904; fixed 2000-01-01, not a wall-clock read.
     head.writeBigUInt64BE(3029529600n, 20); head.writeBigUInt64BE(3029529600n, 28);
     [-500, -200, 1300, 900].forEach((n, i) => head.writeInt16BE(n, 36 + i * 2)); head.writeUInt16BE(8, 46); head.writeInt16BE(2, 48);
     const hhea = Buffer.alloc(36); hhea.writeUInt32BE(0x10000); hhea.writeInt16BE(900, 4); hhea.writeInt16BE(-200, 6); hhea.writeUInt16BE(1200, 10); hhea.writeInt16BE(-500, 12); hhea.writeInt16BE(-500, 14); hhea.writeInt16BE(1300, 16); hhea.writeInt16BE(1, 18); hhea.writeUInt16BE(entries.length, 34);
@@ -196,8 +187,6 @@ export async function generateUnicode(out, seed) {
             : `BT /F1 ${size} Tf 1 0 0 1 ${x} ${792 - y} Tm ${codes(def.keys)} Tj ET`;
         lines.find(line => line.custom).operator = content;
         const target = doc.reserve();
-        // RTL annotation text is UTF-16, independent of glyph codes. Its target
-        // is filled only after both destination page objects have stable IDs.
         const pageId = doc.page({ lines, resources: `/F1 ${font} 0 R`, extra: `/Annots [${target} 0 R]` });
         probes.push({ page, pageId, annotationId: target, role: def.role, embedded: !def.fallback, pairedPage: def.pairedPage ?? null, logicalString: def.text,
             sourceVisualUnicode: def.visual ?? def.keys.map(key => glyphs.find(g => g.key === key).unicode).join(''), direction: def.direction,

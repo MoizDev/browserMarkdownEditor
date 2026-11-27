@@ -1,9 +1,6 @@
 import type { Block, RichText } from '../text/richText';
 import { isGraphemeBoundary } from '../text/graphemes';
 
-// R-W18/R-W21: temporary O(existing runs), allocation-free projection lookup.
-// TX-2 replaces these scans with its cached lengths/offsets; TX-1 adds the owed
-// grapheme-boundary check. Never build a whole plain-text string for validation.
 export function scanText(text: RichText | null, offset = -1): number {
     if (text === null) return offset < 0 ? 0 : NaN;
     let position = 0;
@@ -55,7 +52,6 @@ export function spliceBlockCount(text: RichText | null, from: number, to: number
 
 const blockProjection = new WeakMap<Block, string>();
 
-/** Runs may split a grapheme; segment the complete immutable block, not each run. */
 export function isTextGraphemeBoundary(text: RichText | null, offset: number): boolean {
     if (!text) return offset === 0;
     let position = 0;

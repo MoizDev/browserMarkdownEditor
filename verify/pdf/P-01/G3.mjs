@@ -1,5 +1,3 @@
-// Browser-driven compatibility profiles. Each child drives the real app and
-// closes its browser/preview; no build or in-process target arithmetic tests.
 import { spawn } from 'node:child_process';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -18,7 +16,7 @@ let failed = false;
 try {
     for (const name of names) {
         const output = join(scratch, name);
-        await mkdir(output); // A stale child report can never stand in for this run.
+        await mkdir(output);
         const args = [join(ROOT, 'verify/pdf/P-01/G2.mjs'), '--prepared', resolve(options.prepared), '--reference', resolve(options.reference), '--fixture', resolve(options.fixture), '--scratch', output,
             '--toolbox', resolve(options.toolbox), '--port', options.port ?? '6384', '--profile', name, '--phase', 'render'];
         const child = spawn(process.execPath, args, { cwd: ROOT, stdio: 'inherit' });

@@ -1,4 +1,3 @@
-// t21's timing-floor evidence, step 3 ONLY. Not a gate, baseline or preflight bound.
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,8 +52,6 @@ function inference(a, b) {
         relativeHL95: shiftInterval(a, b, { relative: true }),
         absoluteHL95Ms: shiftInterval(a, b),
         median95: { A: quantileInterval(a), B: quantileInterval(b) },
-        // Discard the gate-shaped verdict: this experiment supplies evidence,
-        // not acceptance. Keep precisely the V-04 corrected interval/width.
         v04CorrectedRelative: { interval: corrected.interval, halfWidth: corrected.halfWidth,
             requiredHalfWidth: corrected.requiredHalfWidth, plannedLooks: 10 } };
 }
@@ -108,9 +105,6 @@ try {
     report.observed = [10, 20, 40].filter(n => n <= count).map(n => inference(arms.A.slice(0, n), arms.B.slice(0, n)));
     const observed = inference(arms.A, arms.B);
     report.projections = [10, 20, 40].map(n => {
-        // Root-n location-estimator scaling: van der Vaart, Asymptotic
-        // Statistics (1998), quantile asymptotic normality. This is NOT a
-        // replacement for V-04's exact ranks on actual sessions at that n.
         const scale = Math.sqrt(count / n);
         return { sessionsPerArm: n, anchorSessionsPerArm: count, planningOnly: true, scale,
             relativeHL95HalfWidth: halfWidth(observed.relativeHL95) * scale,

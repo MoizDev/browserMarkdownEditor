@@ -9,14 +9,10 @@ let vaultScope = '';
 const scopeOf = (identity: FindIdentity) => JSON.stringify([identity.vaultId, identity.vaultEpoch]);
 const keyOf = (identity: FindIdentity) => JSON.stringify([identity.vaultId, identity.documentId]);
 
-/** Reading during render is side-effect-free; ownership begins after commit. */
 export function peekPdfFindMemory(identity: FindIdentity): PdfFindMemory | undefined {
     return vaultScope === scopeOf(identity) ? memories.get(keyOf(identity)) : undefined;
 }
 
-/** A byte-generation remount keeps just the query/open bit, never old offsets.
- * The microtask distinguishes that replacement (and StrictMode replay) from a
- * real close. The cap also bounds abandoned/uncommitted host lifetimes. */
 export function retainPdfFindMemory(identity: FindIdentity, memory: PdfFindMemory): () => void {
     const scope = scopeOf(identity), key = keyOf(identity), owner = {};
     if (vaultScope !== scope) { memories.clear(); vaultScope = scope; }
@@ -31,7 +27,6 @@ export function retainPdfFindMemory(identity: FindIdentity, memory: PdfFindMemor
 
 export interface PdfFindTextSpan {
     from: number; to: number; div?: number; br?: number;
-    /** Display-page points, captured from the raw text stream, never a DOM guess. */
     x: number; y: number;
 }
 export interface PdfFindBoundary { node: Node; offset: number }
@@ -40,8 +35,6 @@ export interface PdfFindTextLayer {
     breaks: readonly PdfFindBoundary[];
 }
 
-/** Cache child offsets once; setEndAfter on thousands of BR siblings would
- * otherwise repeatedly count the same long child list. */
 export function pdfFindBreaks(container: HTMLElement): PdfFindBoundary[] {
     const breaks = [...container.querySelectorAll('br')];
     const boundaries = new Map<Node, PdfFindBoundary>();
@@ -71,9 +64,6 @@ function point(div: HTMLElement, offset: number): { node: Text; offset: number }
     return last ? { node: last, offset: last.length } : undefined;
 }
 
-/** TextLayer and the canonical model see identical raw strings/EOLs. Capture
- * their short intervals while the layer consumes its own stream: highlighting
- * 300 already-built pages must not re-extract 300 full canonical geometry maps. */
 export function pdfFindRange(layer: PdfFindTextLayer, hit: Pick<PdfFindHit, 'from' | 'to'>): Range | undefined {
     const { spans, divs, breaks, container } = layer;
     let low = 0, high = spans.length;
@@ -109,8 +99,6 @@ function publish() {
     if (current.size) CSS.highlights.set('pdf-find-current', current); else CSS.highlights.delete('pdf-find-current');
 }
 
-/** Each retained viewer removes only its own ranges. Clearing one pane must
- * not erase the neighbouring PDF's find, including its orange current hit. */
 export function createPdfFindHighlights() {
     const pages = new Map<number, readonly Range[]>();
     let active: Range | undefined;

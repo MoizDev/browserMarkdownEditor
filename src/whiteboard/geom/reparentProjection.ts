@@ -14,7 +14,6 @@ export interface GeometryReparent {
     readonly order: OrderKey;
 }
 
-/** A sparse read-only replacement map; iteration sees the same replacement as get(). */
 class ReplacementMap<K, V> implements ReadonlyMap<K, V> {
     readonly [Symbol.toStringTag] = 'ReplacementMap';
     constructor(private readonly base: ReadonlyMap<K, V>, private readonly replacements: ReadonlyMap<K, V>, private readonly removed: ReadonlySet<K> = new Set()) {}
@@ -57,7 +56,6 @@ class DeltaSet<T> implements ReadonlySet<T> {
     }
 }
 
-/** Project reparented roots without copying the vault or mutating the live child/page indexes. */
 export async function projectGeometryReparents(base: BoardDoc, changes: readonly GeometryReparent[], options: {
     readonly signal: AbortSignal;
     readonly current: () => boolean;
@@ -81,7 +79,6 @@ export async function projectGeometryReparents(base: BoardDoc, changes: readonly
         if (due()) await tick();
     }
     const nodes = new ReplacementMap(base.nodes, replacements);
-    // Reparenting stays within a sheet and cannot introduce a cycle.
     for (const [id, node] of replacements) {
         let parent = node.parent, sheet: SheetId | undefined;
         for (let depth = 0; depth <= 64; depth++) {
@@ -115,7 +112,6 @@ export async function projectGeometryReparents(base: BoardDoc, changes: readonly
             if (due()) await tick();
         }
         for (const node of additions.get(parent) ?? []) { children.push(node); if (due()) await tick(); }
-        // Cooperative stable mergesort retains the model's exact paint-order tie break.
         let sorted = children, buffer = new Array<Node>(children.length);
         for (let width = 1; width < sorted.length; width *= 2) {
             for (let start = 0; start < sorted.length; start += 2 * width) {

@@ -9,16 +9,12 @@ import type { BoardSession } from '../session/BoardSession';
 import { penSliderFromScale } from './penWidth';
 import { selectedNodes, type BoardStyleCommands } from './styleCommands';
 
-/** A style shared by the selection (or the next shape's value): `MIXED` when the items differ, null when none has it. */
 export const MIXED = 'mixed' as const;
 export type Shared<T> = T | typeof MIXED | null;
 
-/** One control of the panel, in the order the panel draws them. */
 export type StyleRow = 'colour' | 'opacity' | 'fill' | 'dash' | 'size' | 'width' | 'font' | 'textAlign' | 'labelAlign'
     | 'shape' | 'route' | 'heads' | 'spline';
 
-/** The styles each kind of node carries; opacity is on every kind and is added separately. Figures, arrows and lines
- * have no width row: their outline width is the size's (setSize writes it), so a second control would only overwrite it. */
 const ROWS_BY_KIND: Readonly<Record<string, readonly StyleRow[]>> = {
     'stroke:pen': ['colour', 'dash', 'width'],
     'stroke:highlighter': ['colour', 'width'],
@@ -29,7 +25,6 @@ const ROWS_BY_KIND: Readonly<Record<string, readonly StyleRow[]>> = {
     polyline: ['colour', 'dash', 'size', 'spline'],
 };
 
-/** What the next shape of each tool carries when nothing is selected. Ink carries its width on the board, not per node. */
 const ROWS_FOR_TOOL: Readonly<Record<string, readonly StyleRow[]>> = {
     select: ['colour', 'fill', 'dash', 'size'],
     pen: ['colour', 'width'],
@@ -41,7 +36,6 @@ const ROWS_FOR_TOOL: Readonly<Record<string, readonly StyleRow[]>> = {
     polyline: ['colour', 'dash', 'size', 'spline'],
 };
 
-/** The rows a node contributes; opacity is handled by the caller because every kind has it. */
 export function rowsForNode(node: Node): readonly StyleRow[] {
     if (node.kind === 'stroke') return ROWS_BY_KIND[node.tool === 'pen' ? 'stroke:pen' : 'stroke:highlighter'];
     return ROWS_BY_KIND[node.kind] ?? [];
@@ -49,9 +43,7 @@ export function rowsForNode(node: Node): readonly StyleRow[] {
 
 export interface StylePanelModel {
     readonly rows: readonly StyleRow[];
-    /** The swatch shown as selected, and the colour the next ink or shape gets (for the collapsed indicator). */
     readonly colour: Shared<Swatch>;
-    /** Every swatch the row offers, with its colour. */
     readonly swatches: readonly { readonly id: Swatch; readonly css: string }[];
     readonly nextColourCss: string;
     readonly indicatorOutline: string;
@@ -68,9 +60,7 @@ export interface StylePanelModel {
     readonly headStart: Shared<Arrowhead>;
     readonly headEnd: Shared<Arrowhead>;
     readonly spline: Shared<'line' | 'cubic'>;
-    /** The width slider position, and whether the selection's widths differ. */
     readonly width: { readonly position: number; readonly mixed: boolean };
-    /** True when the panel describes the selection rather than the next shape. */
     readonly selection: boolean;
 }
 
@@ -86,17 +76,14 @@ export function indicatorOutline(pigment: Rgba, background: Rgba): string {
     return black >= white ? '#000' : '#fff';
 }
 
-/** One value across the items that carry it: the shared value, `MIXED`, or null when none carries it. */
 export function sharedValue<T>(values: readonly T[]): Shared<T> {
     if (!values.length) return null;
     return values.every(value => value === values[0]) ? values[0] : MIXED;
 }
 
-/** The order the panel draws its controls in. */
 const ROW_ORDER: readonly StyleRow[] = ['colour', 'opacity', 'fill', 'dash', 'size', 'width', 'font', 'textAlign', 'labelAlign',
     'shape', 'route', 'heads', 'spline'];
 
-/** The panel's controls for the current tool and selection. Hidden (no rows) when neither has a style. */
 export function stylePanelModel(
     session: BoardSession,
     commands: BoardStyleCommands,
@@ -147,5 +134,4 @@ export function stylePanelModel(
     };
 }
 
-/** The colours the swatch row offers: the palette order, without white (an easter egg in tldraw, kept out here too). */
 export const SWATCH_CHOICES: readonly Swatch[] = SWATCHES.filter(color => color !== 'white');

@@ -1,5 +1,3 @@
-// Build input for the browser gate, never a module test or an app fault hook.
-// Run under the build lock, then npm ci + vite build in the emitted directory.
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';

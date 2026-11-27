@@ -25,8 +25,6 @@ async function ordered<T>(values: Iterable<T>, options: LoadRepairOptions): Prom
     return records;
 }
 
-/** Repair is history-silent. Re-encoding flags and deleted-source tombstones are
- * preparation for the first user edit, not a write or a dirty admission itself. */
 export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOptions): Promise<LoadRepairResult> {
     options = { ...options, cooperate: options.cooperate ?? yieldToHost };
     const sheets = await ordered<Sheet>(draft.input.sheets, options), nodes = await ordered<NodeRecord>(draft.input.nodes ?? [], options);
@@ -82,8 +80,6 @@ export async function repairLoad(draft: LoadRepairDraft, options: LoadRepairOpti
         duplicateMedia.add(i);
     }
     if (duplicateMedia.size) notices.push({ code: 'duplicate-media', count: duplicateMedia.size, nodeIds: [] });
-    // Repair local values before group composition: NaN/Infinity must not spread
-    // from a malformed container into an otherwise valid child transform.
     const values = await repairNodeValues(identities.nodes, media, options);
     notices.push(...values.notices);
     if (values.readOnlyReason) return refuse(values.readOnlyReason);

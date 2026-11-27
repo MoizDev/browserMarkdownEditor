@@ -32,7 +32,6 @@ export class IndexStore {
         if (treeGen <= this.treeGen) return false;
         this.treeGen = treeGen;
         const live = new Set(files.map(file => file.path));
-        // Bootstrap generation zero can precede the first real tree delivery.
         if (treeGen > 0) for (const path of this.records.keys()) if (!live.has(path)) this.remove(path);
         this.files = files;
         this.byPath = new Map(files.map(file => [file.path, file]));

@@ -1,5 +1,3 @@
-/** These are browser downloads, not vault writes. The URL remains alive long enough for
- * Chromium to consume it, then is released even when the pane has unmounted. */
 export function downloadBoardExport(blob: Blob, filename: string): void {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -27,7 +25,6 @@ export function copyBoardPng(capture: Promise<Blob>): Promise<void> {
     return navigator.clipboard.write([new ClipboardItem({ 'image/png': png, 'web image/x-board+png': boardPng })]);
 }
 
-/** SVG copy is plain text, not an HTML or SVG clipboard document. */
 export function copyBoardSvg(capture: Promise<Blob>): Promise<void> {
     const text = capture.then(blob => {
         if (blob.type !== 'image/svg+xml') throw new TypeError('Expected an SVG capture');

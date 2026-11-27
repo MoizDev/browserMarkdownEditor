@@ -24,7 +24,6 @@ const git = (...args) => execFileSync('git', ['-C', sourceRoot, ...args], { enco
 const fail = (reason, detail) => Object.assign(new Error(detail), { reason });
 const chrome = option('--chrome') ?? await pinnedChrome();
 const plant = 'bme-perf-hooks-plant-7f3a';
-// These identify the hook, not ordinary app words such as tree or paths.
 const anchors = [plant, '__perf', 'trash-done', /\.tree\s*=\s*\{\s*paths\s*:/, /\.reports\s*=\s*\(\)\s*=>/];
 const fixture = {
     'trash.md': 'Keep these bytes when trashing and restoring.\n',
@@ -119,8 +118,6 @@ async function openBrowser() {
     };
     const remove = FileSystemDirectoryHandle.prototype.removeEntry;
     FileSystemDirectoryHandle.prototype.removeEntry = async function (name, options) {
-        // Capture the report BEFORE any await: a later report cannot excuse an
-        // earlier deletion. Resolve the native handle independently of the app.
         const call = { t: performance.now(), name, report: window.__perf?.vault?.reports().at(-1) ?? null };
         window.__removals.push(call);
         const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('c15b-fixture');
@@ -150,9 +147,6 @@ async function openBrowser() {
 }
 const row = name => page.locator(`.tree-item[data-path="${name}"]`);
 async function waitFor(fn, arg) {
-    // In the pinned driver an async waitForFunction predicate returned while
-    // a fresh evaluate still read false (trash was still live). Await each
-    // native-FS read ourselves; the interval only schedules the next read.
     const deadline = Date.now() + 15000;
     while (Date.now() < deadline) {
         if (await page.evaluate(fn, arg)) return;
@@ -201,8 +195,6 @@ async function readAssetAfterClose(count) {
         await page.waitForTimeout(25);
     }
     if (completed < count) throw Object.assign(new Error(`completed-close witness timed out: asset.md ${completed}<${count}`), { invalid: true });
-    // Read once AFTER a successful close. Only the browser's transient
-    // NotReadableError gets bounded retries; NotFoundError is never retried.
     let retries = 0;
     while (true) {
         const read = await page.evaluate(async () => {
@@ -250,8 +242,6 @@ try {
         result.identity = { commit: git('rev-parse', 'HEAD'), tree: git('status', '--porcelain', '--untracked-files=all') || 'clean', root: sourceRoot, mode: 'dev' };
         assert.equal(result.identity.commit, expectedCommit);
         assert.equal(result.identity.tree, 'clean', 'dev source tree must be clean');
-        // --dev-server is the dev server's process id: its live argv and cwd prove which worktree it
-        // serves (`ps` fails on a dead pid). argv is split on spaces, so keep paths space-free.
         const pid = Number(devServer);
         assert.ok(Number.isInteger(pid) && pid > 0, '--dev-server must be the dev server process id');
         let server;
@@ -384,7 +374,6 @@ try {
                 assert.ok(!used.has(report.seq), 'one opener cannot cover two native removals');
                 used.add(report.seq);
             });
-            // Outside fixture facts, not the hook's own destination claims.
             const expectedCopies = [
                 ['.Garbage/trash.md', 'trash', 'trash.md'],
                 ['trash.md', 'restore', '.Garbage/trash.md'],
@@ -451,8 +440,6 @@ try {
     await page.waitForLoadState('networkidle');
     await Promise.all(responseTasks);
     if (mode !== 'dev') {
-        // Inventory paths come from build metadata; every asserted content byte
-        // comes from the browser's responses, including these labelled fetches.
         for (const relative of Object.keys(identity.files).filter(name => name.endsWith('.js'))) {
             const assetURL = new URL(relative, url).href;
             if (fetched.has(assetURL)) continue;

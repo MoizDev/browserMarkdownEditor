@@ -15,33 +15,12 @@ import { ASSETS_DIR } from '../utils/assets';
 import { isCanvasFile } from '../utils/fileTypes';
 import { mapPool } from '../utils/pool';
 
-/**
- * Structural equality for two link graphs.
- *
- * The index graph is deterministic for a given vault — nodes follow the file list and
- * links follow document order — so an element-wise walk is exact, and it lets a
- * rebuild that found nothing new keep the previous object identity instead of
- * cascading a re-render (and a graph re-simulation) through the app.
- */
 const EMPTY_GRAPH: GraphData = { nodes: [], links: [], backlinks: {}, outlinks: {} };
 
-/**
- * Is this graph the same one we already handed out?
- *
- * `publishIndexGraph` keeps the PREVIOUS GraphData object when the answer is yes, and
- * that identity is load-bearing: a fresh object propagates into GraphView's
- * effects, which re-seed the simulation (alpha = 1) and tear down and rebuild
- * the RAF loop and the ResizeObserver. Without this, an unrelated tab
- * autosaving visibly re-heated the graph the user was looking at. Only changed
- * link facts/tree revisions request new work; equivalent worker publications
- * must still leave the running layout alone.
- */
 function sameGraph(a: GraphData, b: GraphData): boolean {
   if (a.nodes.length !== b.nodes.length || a.links.length !== b.links.length) return false;
   for (let i = 0; i < a.nodes.length; i++) {
     const x = a.nodes[i], y = b.nodes[i];
-    // `node` too: a tree refresh hands out fresh handles, and the graph's nodes
-    // are what the graph view and backlinks open files through.
     if (x.id !== y.id || x.degree !== y.degree || x.unresolved !== y.unresolved || x.node !== y.node) return false;
   }
   for (let i = 0; i < a.links.length; i++) {
@@ -59,19 +38,12 @@ export interface UseVaultIndexDeps {
   statFile: FileSystemContextValue['statFile'];
   handleIO: FileSystemContextValue['handleIO'];
   requestIndexPermission: FileSystemContextValue['requestIndexPermission'];
-  /** A folder's media listing turned fresh: requeue the asset folders waiting
-   *  on it (useAssetLifecycle — bound late, it is declared after this). */
   indexMediaChanged: () => void;
   tabsRef: React.MutableRefObject<OpenTab[]>;
   documentBuffers: DocumentBufferStore;
   contentOf: (path: string) => string | undefined;
 }
 
-/**
- * The vault index (context/vaultIndex): the link graph behind the graph view,
- * backlinks and the `[[` autocomplete; the search the sidebar and the agent
- * run; and what the reader is told while it builds or cannot.
- */
 export function useVaultIndex(deps: UseVaultIndexDeps) {
   const {
     rootHandle, currentVaultId, fileTree, getVaultActivation, resolveFileHandle, statFile, handleIO,
@@ -80,7 +52,6 @@ export function useVaultIndex(deps: UseVaultIndexDeps) {
   const searchActivation = getVaultActivation();
   const searchToken = useMemo(() => ({ activation: searchActivation }), [searchActivation]);
 
-  // The link graph powering the Neural Brain view and backlinks panel
   const [graphState, setGraph] = useState<{ activation: number; data: GraphData }>(() => ({ activation: getVaultActivation(), data: EMPTY_GRAPH }));
   const graph = graphState.activation === getVaultActivation() ? graphState.data : EMPTY_GRAPH;
   const [graphFreshness, setGraphFreshness] = useState<{ activation: number; stale: boolean } | null>(null);
@@ -94,7 +65,6 @@ export function useVaultIndex(deps: UseVaultIndexDeps) {
   const publishIndexGraph = useCallback((next: GraphData | null, activation: number, current: () => boolean) => {
     const value = next ?? EMPTY_GRAPH;
     if (getVaultActivation() !== activation || !current()) return;
-    // A reply can be superseded between receipt and React executing its updater.
     setGraph(previous => getVaultActivation() !== activation || !current() ? previous
       : previous.activation === activation && sameGraph(previous.data, value) ? previous
         : { activation, data: value });
@@ -103,7 +73,6 @@ export function useVaultIndex(deps: UseVaultIndexDeps) {
   const reportIndexProblem = useCallback((value: unknown) => {
     const problem = value as { kind?: string } | null;
     const kind = problem?.kind ?? 'unavailable';
-    // The index client's word that its worker came back by itself: the same clearing as the sidebar's Retry.
     if (kind === 'available') {
       setIndexUnavailable(false);
       setIndexProblem(previous => previous?.kind === 'unavailable' ? null : previous);
@@ -157,13 +126,6 @@ export function useVaultIndex(deps: UseVaultIndexDeps) {
     }).catch(() => {});
   }, [indexGraphRef, getVaultActivation]);
 
-  // The [[ autocomplete's targets, deduped by link name since wikilinks
-  // resolve by name, not path. It is baked into each document's EditorState
-  // (outside any compartment), and that session-owned state outlives
-  // EditorPane, so the getter must be stable for the APP's life: one created in
-  // EditorPane would go on reading that EditorPane's graph once a graph-view
-  // trip unmounted it, and a note created afterwards would never be offered.
-  // Same rule as openNoteByName, and the same ref-mirror to keep it current.
   const graphRef = useRef<GraphData>(graph);
   useEffect(() => { graphRef.current = graph; }, [graph]);
   const [getWikiLinkTargets] = useState(() => (): WikiLinkTarget[] => {

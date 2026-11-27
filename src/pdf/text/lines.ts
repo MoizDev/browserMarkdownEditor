@@ -1,7 +1,6 @@
 import { GENERATED, LINE_HYPHEN, OUTSIDE, boxAt, character, differentLine, strongRtl, validBox } from './types';
 import type { FigureTag, LineTable, RawPageText } from './types';
 
-/** Canonical-order line runs and page-space unions; no engine or DOM objects. */
 export function buildLines(raw: RawPageText, charU16: Uint32Array): LineTable {
     const lines: number[] = [], boxes: number[] = [], dirs: number[] = [], bidi: number[] = [], clusters: number[] = [];
     const headingLevels = new Map<number, 1 | 2 | 3 | 4 | 5 | 6>();

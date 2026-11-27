@@ -12,7 +12,6 @@ interface PasswordStore {
     answerPdfPassword(owner: symbol, id: number, answer: string | null): void;
 }
 
-/** The lazy tiled boundary supplies the store; each surface offers its identity. */
 export default function PdfPasswordCoordinator({ identity, store, visible }: {
     identity: Pick<ReaderIdentity, 'vaultEpoch' | 'documentId'>; store: PasswordStore; visible: boolean;
 }) {

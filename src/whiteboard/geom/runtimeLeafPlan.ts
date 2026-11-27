@@ -23,7 +23,6 @@ export interface BoardLeafResizePlanOptions {
     readonly ids: readonly NodeId[];
     readonly down: Vec2;
     readonly handle: ResizeHandle;
-    /** Programmatic whole-selection scaling can include a single sticky. */
     readonly scope?: 'single' | 'multi';
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
@@ -39,7 +38,6 @@ export interface BoardLeafResizePlan {
 
 type Leaf = Exclude<Node, { kind: 'opaque' | 'group' | 'connector' }>;
 
-/** A coordinated selection uses one immutable candidate and one history transaction. */
 export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOptions): Promise<BoardLeafResizePlan> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
@@ -67,7 +65,6 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
             if (++count % 256 === 0) { await cooperate(); check(); }
             if (node.locked) continue;
             if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child); }
-            // Opaque nodes are locked, so the check above already skips them; opaque descendants were rejected by hasOpaqueDescendant at the roots.
             else { result.push(node.id); all.add(node.id); }
         }
         if (!result.length) throw new Error(`Group has no resizable content: ${root.id}`);
@@ -103,7 +100,6 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
         const descendants = leaves.get(node.id)!.map(id => doc.nodes.get(id)!);
         snapshots.set(node.id, { node, centreWorld: point((box[0] + box[2]) / 2, (box[1] + box[3]) / 2),
             cornersWorld: [point(box[0], box[1]), point(box[2], box[1]), point(box[2], box[3]), point(box[0], box[3])],
-            // Default, calibration cut by owner: a text side that cannot change width scales uniformly.
             relevantRotations: rotations.get(node.id)!, forceAspect: descendants.some(child => child.kind === 'clip' || child.kind === 'sticky'
                 || textNeedsUniform(child)), worldRotation: pose.rotation });
     } } catch (error) { scope.release(); throw error; }
@@ -154,14 +150,12 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
                         }
                         const fx = factors.x < 0 || (factors.x === 0 && factors.zeroSignX < 0);
                         const fy = factors.y < 0 || (factors.y === 0 && factors.zeroSignY < 0);
-                        // Default, calibration cut by owner: a single crossed axis reflects orientation without shear.
                         const rotationWorld = fx !== fy ? 2 * frame.box.rotation - oldPose.rotation : oldPose.rotation;
                         const result = await prepareBoardLeafResize(node as Leaf, { runtime, doc: candidate, factors,
                             centreWorld, rotationWorld, alignmentRotation: frame.box.rotation, signal: request, current: active, cooperate: options.cooperate });
                         leases.push(result); candidate = result.doc; ops.push(...result.kindOps, ...result.placementOps);
                     }
                 }
-                // Default, calibration cut by owner: selected targets are staged before bound connectors resolve.
                 for (const id of connectors) {
                     check(request); if (!active()) throw new DOMException('Resize preview superseded', 'AbortError');
                     const original = doc.nodes.get(id); if (!original || original.kind !== 'connector') throw new Error('Connector source changed');

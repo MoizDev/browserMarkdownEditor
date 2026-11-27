@@ -5,7 +5,6 @@ import type { PdfPageQualitySnapshot } from './pageQuality';
 
 const quality = createPdfPageQuality();
 const unknown: Readonly<PdfPageQualitySnapshot> = Object.freeze({ state: 'unknown', complete: false });
-// Compact verdicts live until document release; the separate sampler window is bounded.
 const snapshots = new Map<string, Map<number, Readonly<PdfPageQualitySnapshot>>>();
 const listeners = new Set<() => void>();
 
@@ -17,8 +16,6 @@ function notify(): void {
 function update(docKey: string, page: number): void {
     const observed = quality.snapshot(docKey, page), group = snapshots.get(docKey);
     const previous = group?.get(page) ?? unknown;
-    // Losing or resetting sample coverage is not a new verdict. A real suspect
-    // observation may upgrade a prior clean page; degradation never heals here.
     if (previous.state === 'degraded' && observed.state !== 'degraded' ||
         previous.state === 'clean' && observed.state === 'unknown') return;
     const value = previous.state === 'degraded' && observed.state === 'degraded' && previous.complete && !observed.complete

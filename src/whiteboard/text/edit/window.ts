@@ -38,8 +38,6 @@ export function textWindow(text: string, anchor: number, focus: number, previous
     return { start, end, text: text.slice(start, end) };
 }
 
-// Read only the active window, not a million-character projection on every
-// input. Block and run strings remain the immutable model's own strings.
 export function richTextWindow(rich: RichText, anchor: number, focus: number, previous?: TextWindow): TextWindow {
     const total = projectionLength(rich);
     const low = Math.max(0, Math.min(total, Math.min(anchor, focus)));

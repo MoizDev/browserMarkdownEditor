@@ -22,8 +22,6 @@ const ORDER: readonly FormatCommand[] = ['bold', 'italic', 'code', 'link', 'bull
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const ACTIVE = { background: 'var(--board-tool-active, #4a7fe8)', color: 'var(--board-tool-active-fg, #fff)' };
 
-/** The formats a selection carries, read from the text it is in: a format is on only when every character of the selection has
- * it (a block format only when every block the selection touches is that kind). Empty selections carry nothing. */
 export function formatStateIn(text: RichText, from: number, to: number): FormatState {
     const slice = sliceRichText(text, from, to, true);
     const runs = slice.blocks.flatMap(block => block.runs.filter(run => run.text.length > 0));
@@ -35,7 +33,6 @@ export function formatStateIn(text: RichText, from: number, to: number): FormatS
     };
 }
 
-/** The floating "Text formatting" bar. Pointer-down is kept from the editor so the selection survives a click. */
 export function createFormatToolbar(run: (command: FormatCommand) => void): { readonly element: HTMLElement; setState(state: FormatState): void } {
     const bar = document.createElement('div');
     bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', 'Text formatting'); bar.hidden = true;

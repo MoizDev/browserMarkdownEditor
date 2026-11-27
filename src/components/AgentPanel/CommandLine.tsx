@@ -1,6 +1,3 @@
-// A terminal command the user is told to run, with a Copy button — the setup
-// guide's login and install lines, and the agent warnings'.
-
 import { useEffect, useRef, useState } from 'react';
 import { copyText } from '../../utils/clipboard';
 import { Check } from '../icons';

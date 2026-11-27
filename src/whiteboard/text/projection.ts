@@ -14,7 +14,6 @@ interface Leaf {
     readonly kind: 'leaf';
     readonly lengths: readonly number[];
     readonly count: number;
-    /** Includes one separator after the last block; the projection removes the final one. */
     readonly units: number;
     readonly height: 1;
     readonly leaves: 1;
@@ -125,7 +124,6 @@ function indexFor(text: RichText): ProjectionIndex {
     return index;
 }
 
-/** Reuse unchanged immutable block lengths after a splice, without rebuilding all prefix offsets. */
 export function* inheritProjectionSteps(before: RichText, after: RichText, first: number, removed: number,
     inserted: readonly Block[]): Generator<void, void> {
     const old = indexes.get(before);
@@ -136,7 +134,6 @@ export function* inheritProjectionSteps(before: RichText, after: RichText, first
     const [left, tail] = split(old.tree, first), [, right] = split(tail, removed);
     const insertedTree = yield* buildSteps(inserted);
     let tree = join(join(left, insertedTree), right);
-    // Repeated edits can split leaves into tiny pieces. Repack only after substantial fragmentation.
     if (tree && tree.leaves > 4 * Math.ceil(tree.count / LEAF_BLOCKS) + 32) tree = (yield* buildSteps(after.blocks));
     indexes.set(after, indexed(tree));
 }
@@ -144,7 +141,6 @@ export function inheritProjection(before: RichText, after: RichText, first: numb
     finishTextSteps(inheritProjectionSteps(before, after, first, removed, inserted));
 }
 
-/** Newline belongs to the preceding block; the next offset starts the next block. */
 export function projectionPosition(text: RichText, offset: number): TextProjectionPosition {
     if (!Number.isSafeInteger(offset) || offset < 0) throw new RangeError('Invalid text offset');
     const index = indexFor(text);
@@ -163,7 +159,6 @@ export function projectionPosition(text: RichText, offset: number): TextProjecti
 }
 export function projectionLength(text: RichText): number { return indexFor(text).length; }
 
-/** Locate a block by ordinal without walking all earlier blocks. */
 export function projectionBlockStart(text: RichText, blockIndex: number): number {
     const root = indexFor(text).tree;
     if (!root || !Number.isSafeInteger(blockIndex) || blockIndex < 0 || blockIndex >= root.count)
@@ -177,7 +172,6 @@ export function projectionBlockStart(text: RichText, blockIndex: number): number
     return start;
 }
 
-/** Read only intersecting blocks; newline separators are projection characters. */
 export function projectionSlice(text: RichText, from: number, to: number): string {
     if (to < from) throw new RangeError('Reversed text slice');
     const first = projectionPosition(text, from), last = projectionPosition(text, to);

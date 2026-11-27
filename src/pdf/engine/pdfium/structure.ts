@@ -21,7 +21,6 @@ function roleOf(value: string): number {
     return value === 'Figure' ? 11 : 0;
 }
 
-/** Walk a page's structure and marked figure objects with one shared work cap. */
 export function pdfiumStructure(runtime: PdfiumRuntime, page: number, geometry: PageGeometry,
     tagged: boolean, limits: Readonly<EngineLimits>): StructureResult {
     const tree = runtime.call('FPDF_StructTree_GetForPage', page) >>> 0;

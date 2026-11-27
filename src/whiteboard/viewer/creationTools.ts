@@ -32,10 +32,7 @@ import type { BoardPreview } from './preview';
 import { yieldToHost } from '../../platform/yieldToHost';
 
 type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'polyline';
-/** An arrow shorter than this (board units, catalogue B§ constants: "Arrow min length 10 (× scale)") is not created: a too-short drag
- * is a click, so the arrow tool stays armed for another try. */
 const CONNECTOR_MIN_LENGTH = 10;
-/** Touch hold that drops a pending creation. Measured nowhere: a tap is well under this, a deliberate hold well over it. */
 const LONG_PRESS_MS = 500;
 export interface BoardCreationContext {
     readonly runtime: BoardRuntime;
@@ -44,23 +41,16 @@ export interface BoardCreationContext {
     readonly camera: CameraController;
     readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
     registerPending(cancel: () => void): () => void;
-    /** The hold a released shape keeps until it has landed (a `settling` gesture hold: the next press is admitted). */
     settle(): () => void;
-    /** Finished work: a new press, a key or a tool change does not cancel it; the view's end or an undo of it does. */
     registerSettling(cancel: () => void, undoable: boolean): () => void;
-    /** The released shapes land one after another, in the order they were drawn: `ready` when the earlier ones have. */
     creationTurn(): { readonly ready: Promise<void>; done(): void };
     readonly figure?: FigureShape;
     readonly preview: Pick<BoardPreview, 'show' | 'showOps' | 'waitUntilReady' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
     readonly guides?: (guides: readonly BoardSnapGuide[]) => void;
-    /** The arrow target hint, shown while the pointer is over a shape an arrow end would bind to. */
     readonly hint?: (target: NodeId | null, elbow?: ElbowHint | null) => void;
-    /** The bound end's stub while the pointer is over a target, or null: where the release would bind the end (catalogue §7 a.9). */
     readonly binding?: (segments: readonly BindingSegment[] | null) => void;
     readonly alwaysSnap?: () => boolean;
-    /** A toolbar drag: the shape is centred on the pointer at its default size and follows it until release (catalogue T§7, T§12). */
     readonly follow?: boolean;
-    /** Dynamic size mode: text and notes are created at 1 / zoom. */
     readonly dynamicSize?: () => boolean;
     current(): boolean;
     editText(id: Node['id']): void | Promise<void>;
@@ -90,7 +80,6 @@ class CreationGesture implements GestureOwner {
     private previewRequest: AbortController | undefined;
     private previewGeneration = 0;
     private lastMovedAt: number;
-    // When the pointer first left the press point, and the speed (CSS px per ms) of the last move: the start's hold and the end's gate.
     private departedAt: number | undefined;
     private speed = Number.POSITIVE_INFINITY;
     private lastTime: number;
@@ -100,9 +89,7 @@ class CreationGesture implements GestureOwner {
     private ended = false;
     private released = false;
     private longPress: ReturnType<typeof setTimeout> | undefined;
-    // Redraws the end when its hold on a target runs out with no pointer event (the release decides precision the same way).
     private precisionWake: ReturnType<typeof setTimeout> | undefined;
-    /** Set once the creation's transaction has applied: from then on a moved revision is its own, never a reason to retry. */
     private landed = false;
     constructor(private readonly down: RealSample, modifiers: Modifiers, private readonly context: BoardCreationContext) {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
@@ -125,29 +112,22 @@ class CreationGesture implements GestureOwner {
         try { this.draw(); } catch (error) { this.cancel('invalidated'); throw error; }
         if (down.source === 'touch') this.longPress = setTimeout(() => this.holdCancel(), LONG_PRESS_MS);
     }
-    /** A touch held still past the long-press time is a hold, not a tap: the pending shape is dropped, so nothing is left behind. */
     private holdCancel(): void {
         this.longPress = undefined;
         if (this.ended || !this.isClick()) return;
         this.cancel('invalidated');
     }
-    /** The board this shape is drawn on is still the one, editable: nothing it can be prepared again against has gone. */
     private alive(): boolean {
         const session = this.context.runtime.session;
         return !this.controller.signal.aborted && this.context.current() && session.owner === this.owner
             && session.doc === this.document && !session.isReadOnly;
     }
-    /** Nothing it was prepared against has moved: the revision, the selection, the font epoch. */
     private fresh(): boolean {
         const { runtime } = this.context;
         return this.document.rev === this.revision && runtime.selection.getSnapshot() === this.selection
             && (this.fontEpoch === undefined || runtime.render.text.fonts.epoch === this.fontEpoch);
     }
     private valid(): boolean { return this.alive() && this.fresh(); }
-    /** Prepares the shape again against the board as it is now. A shape drawn while the previous one was still landing
-     * was prepared against the revision before it, and that landing (or an erase's, or the tool lock's write) made it
-     * invalid: drawn 20 ms apart with the tool lock on, 3 of 8 rectangles were lost. Only its container can refuse it now:
-     * gone, locked or no longer a container. Its place on top of its siblings and its parent's pose are read again. */
     private rebase(): boolean {
         if (this.fresh()) return true;
         const { runtime } = this.context, doc = this.document;
@@ -173,7 +153,6 @@ class CreationGesture implements GestureOwner {
         const p = this.local(sample), style = this.style, follow = this.follows;
         let dx = p.x - this.base.x, dy = p.y - this.base.y;
         const surface = sampleSurface(sample, this.context.sampleToSurface);
-        // A toolbar drag has no press of its own: it places the shape at the pointer, so it is never a box drawn from the press.
         const moved = !follow && Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= CLICK_SLOP_CSS;
         const drag = moved;
         if (modifiers.shift) {
@@ -205,14 +184,11 @@ class CreationGesture implements GestureOwner {
             case 'text': return createText({ ...base, text: EMPTY_RICH_TEXT, color: style.color, size: style.size, font: style.font,
                 align: style.textAlign, autoSize: !moved, w, scale: 1 });
             case 'sticky': {
-                // A note is centred on the pointer at its default size and follows the pointer while the gesture is held:
-                // tldraw creates the note and enters translate. Snapping (grid, pits) is applied in snapped().
                 const scale = this.noteScale();
                 return createSticky({ ...base, x: p.x - 100 * scale, y: p.y - 100 * scale, text: EMPTY_RICH_TEXT, color: 'yellow', labelColor: style.color,
                 size: style.size, font: style.font, align: style.align, valign: style.valign, growY: 0, fit: null,
                 scale, url: null });
             }
-            // A toolbar drag's line and arrow are 200 px on the diagonal, centred on the pointer (catalogue T§8, T§9).
             case 'polyline': return createPolyline(follow ? { ...this.base, x: p.x - 100, y: p.y - 100, points: [{ x: 0, y: 200 }, { x: 200, y: 0 }],
                 spline: style.spline, color: style.color, dash: style.dash, size: style.size, width }
                 : { ...this.base, points: [{ x: centered ? -dx : 0, y: centered ? -dy : 0 }, moved ? { x: dx, y: dy } : { x: .1, y: .1 }],
@@ -225,14 +201,12 @@ class CreationGesture implements GestureOwner {
                 color: style.color, labelColor: style.color, fill: style.fill, dash: style.dash, size: style.size, font: style.font, label: null, width });
         }
     }
-    /** The node with its end moved to a world point, exactly: the landing point of a snap (BoardSnapResult.landed). */
     private endAt(node: Extract<Node, { kind: 'connector' | 'polyline' }>, world: { readonly x: number; readonly y: number }): Extract<Node, { kind: 'connector' | 'polyline' }> {
         const at = this.local(world);
         if (node.kind === 'connector') return { ...node, end: { ...node.end, x: at.x - node.x, y: at.y - node.y } };
         const last = node.points.length - 1;
         return { ...node, points: node.points.map((p, i) => i === last ? { x: at.x - node.x, y: at.y - node.y } : p) };
     }
-    /** Dynamic size mode (preference isDynamicResizeMode) creates text and notes at 1 / zoom, so they keep their on-screen size. */
     private noteScale(): number {
         const zoom = this.context.camera.camera.z;
         return this.context.dynamicSize?.() && zoom > 0 ? 1 / zoom : 1;
@@ -241,8 +215,6 @@ class CreationGesture implements GestureOwner {
         const node = await this.snappedNode(sample, modifiers, signal);
         return node.kind === 'connector' ? this.gridStart(node) : node;
     }
-    /** An arrow's start is the press point: on the grid when grid mode is on, as a box's origin is (catalogue b.6, the arrow start point).
-     * A bound start is replaced by its anchor when the release resolves it, so only a free start shows the rounded point. */
     private gridStart(node: Extract<Node, { kind: 'connector' }>): Node {
         if (!boardSnapGrid(this.document) || this.parentPose.rotation !== 0) return node;
         const pose = this.parentPose, grid = gridPoint({ x: pose.x + node.x + node.start.x, y: pose.y + node.y + node.start.y });
@@ -251,11 +223,9 @@ class CreationGesture implements GestureOwner {
     private async snappedNode(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Node> {
         const node = this.node(sample, modifiers), surface = sampleSurface(sample, this.context.sampleToSurface);
         const moved = this.follows || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= CLICK_SLOP_CSS;
-        // Every box is created on the grid, clicked or dragged: its origin and dimensions round (catalogue b.6, maybeSnapToGrid).
         if (this.context.runtime.session.doc.view.grid && (node.kind === 'figure' || node.kind === 'frame') && this.parentPose.rotation === 0) {
             this.context.guides?.([]); return gridBox(node, this.parentPose);
         }
-        // A click's note takes an empty adjacent slot within 10 screen px of the pointer before any grid rounding (tldraw's order).
         if (node.kind === 'sticky' && (!moved || this.follows)) {
             const pit = findStickyPit(this.context.runtime.session.doc, node.scale, { x: node.x + 100 * node.scale, y: node.y + 100 * node.scale },
                 node.parent, node.page, 10 / this.context.camera.camera.z);
@@ -264,8 +234,6 @@ class CreationGesture implements GestureOwner {
         if (this.context.runtime.session.doc.view.grid && this.parentPose.rotation === 0 && node.kind === 'sticky') {
             this.context.guides?.([]); return gridAnchored(node, this.parentPose);
         }
-        // Default: creation snapping is off unless Always Snap is inverted by the accelerator. An arrow's free end is the exception:
-        // it follows the grid whenever grid mode is on, and never snaps to objects (catalogue a.3, a.4).
         if ((node.kind !== 'connector' && (this.context.alwaysSnap?.() ?? false) === modifiers.accel)
             || (!this.follows && Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < CLICK_SLOP_CSS)) {
             this.context.guides?.([]); return node;
@@ -281,10 +249,7 @@ class CreationGesture implements GestureOwner {
             };
             const point = endpoint(node);
             if (node.kind === 'connector') {
-                // Ctrl (on macOS too) and Cmd skip binding; a bound end is never snapped, and a free end follows the grid only.
                 if (!modifiers.accel && !modifiers.control) {
-                    // The end's precision is the one the release will take (catalogue §7 a.3): it rested 320 ms on the target, or it arrived
-                    // slower than 0.5 px/ms. Until then the stub shows the imprecise binding, at the centre.
                     const restedMs = sample.time - this.lastMovedAt, endPrecise = restedMs >= PRECISE_HOLD_MS || this.speed < PRECISE_SPEED;
                     const attached = await this.context.resolveAttachment(point, signal, { precise: endPrecise, exact: modifiers.alt, route: node.route,
                         input: sample.source === 'keyboard' ? 'mouse' : sample.source });
@@ -292,7 +257,6 @@ class CreationGesture implements GestureOwner {
                     this.context.hint?.(attached?.target ?? null, elbowHintOf(node.route, attached));
                     if (attached) {
                         this.context.guides?.([]);
-                        // The stub comes from the candidate's geometry, as a handle drag's does. The preview stays free: the release binds it.
                         const bound = { ...node, end: { ...node.end, attach: attached } }, candidate = createAddedBoardDoc(this.document, [bound]);
                         const prepared = await runtime.render.prepareForPick(bound, signal, candidate).catch(() => null);
                         if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
@@ -309,15 +273,12 @@ class CreationGesture implements GestureOwner {
                 return this.node({ ...sample, x: sample.x + (gx.coordinateRepresentable ? gx.coordinate - point.x : 0),
                     y: sample.y + (gy.coordinateRepresentable ? gy.coordinate - point.y : 0) }, modifiers);
             }
-            // An end point snaps to points (corners and centres), as a handle does; it has no width, so no gaps.
             const snapped = await snapBoardBounds({ runtime, bounds: { ...point, width: 0, height: 0 }, selected: [],
                 zoom: this.context.camera.camera.z, current: active, signal, points: true, gaps: false,
-                // A line's new end snaps to an outline like its handles (catalogue b.4); an arrow's end follows the bind-or-grid rule.
                 outline: node.kind === 'polyline' });
             if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
             const moved = this.node({ ...sample, x: sample.x + snapped.delta.x, y: sample.y + snapped.delta.y }, modifiers);
             if (moved.kind !== 'connector' && moved.kind !== 'polyline') throw new Error('Creation kind changed');
-            // A point or outline snap lands the end on its target exactly; sample + delta can miss it by an ulp.
             const reached = endpoint(moved), landed = snapped.landed;
             const next = landed && (landed.x !== undefined || landed.y !== undefined)
                 ? this.endAt(moved, { x: landed.x ?? reached.x, y: landed.y ?? reached.y }) : moved;
@@ -378,9 +339,6 @@ class CreationGesture implements GestureOwner {
             this.context.runtime.tools.keepToolOnce(this.toolEpoch); this.cancel('invalidated'); this.completeTool(); return;
         }
         if (this.context.kind === 'polyline' && this.isClick()) this.context.runtime.tools.keepToolOnce(this.toolEpoch);
-        // A shape the person has released lands, as an erase or a box does (whiteboard-editing): it trades its input hold for a
-        // settling one and registers as settling, not pending. Pending, the next press cancelled it, and while it held an input
-        // hold that press was refused. Escape before release, the view's end, or an undo while it lands still take it back.
         let settle: (() => void) | null = null;
         try {
             settle = this.context.settle();
@@ -395,8 +353,6 @@ class CreationGesture implements GestureOwner {
         void turn.ready.then(() => this.land()).catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); })
             .finally(() => { turn.done(); this.cleanup(); this.completeTool(); });
     }
-    /** Commits, preparing again when the board moved under the commit (an earlier shape or an erase landing meanwhile):
-     * a moved revision is not the person cancelling it. Bounded: a board rewritten on every attempt reports the failure. */
     private async land(): Promise<void> {
         for (let attempt = 0; ; attempt++) {
             if (!this.alive()) throw new DOMException('Creation invalidated', 'AbortError');
@@ -408,8 +364,6 @@ class CreationGesture implements GestureOwner {
     private async enclosedFrameChildren(node: Extract<Node, { kind: 'frame' }>, pose: { x: number; y: number; rotation: number }): Promise<NodeId[]> {
         const { runtime } = this.context, doc = runtime.session.doc, signal = this.controller.signal;
         const scene = runtime.scene ?? await runtime.ready;
-        // A scene still indexing is stepped to ready, as a frame drop and a point query do. Refused, the first frame drawn on a newly
-        // opened board was dropped silently: the scene was still catching up (gpu-f1's commitprobe, DPR 2 dark, both backends).
         while (!scene.ready) {
             signal.throwIfAborted(); if (!this.valid() || runtime.scene !== scene) throw new DOMException('Frame containment source changed', 'AbortError');
             scene.step(64, performance.now() + 3);
@@ -452,9 +406,6 @@ class CreationGesture implements GestureOwner {
         const { render, runtime } = this.context, signal = this.controller.signal;
         let node = await this.snapped(this.sample, this.modifiers, signal);
         if (node.kind === 'connector') {
-            // Precision is earned, not switched (catalogue §7). The start is precise when the press rested on its target 320 ms before
-            // the pointer left; the end when it rested there 320 ms or arrived slower than 0.5 px/ms. A precise end on the start's
-            // shape is forced precise. Creation resolves its ends at release: the drag shows the target, not a binding.
             const startPrecise = this.departedAt !== undefined && this.departedAt - this.down.time >= PRECISE_HOLD_MS;
             const endPrecise = this.sample.time - this.lastMovedAt >= PRECISE_HOLD_MS || this.speed < PRECISE_SPEED;
             const world = (point: { x: number; y: number }) => {
@@ -468,12 +419,10 @@ class CreationGesture implements GestureOwner {
             let end = this.modifiers.accel || this.modifiers.control ? null : await this.context.resolveAttachment(world(node.end), signal,
                 { precise: target => endPrecise || (start?.precise === true && start.target === target), exact: this.modifiers.alt, route: node.route,
                     input: this.sample.source === 'keyboard' ? 'mouse' : this.sample.source });
-            // Both ends on one precise anchor of one shape would be a zero-length arrow: the end steps 0.05 along x (as the handle drag does).
             if (end && start && start.target === end.target && start.anchor.x === end.anchor.x && start.anchor.y === end.anchor.y) {
                 end = { ...end, precise: true, anchor: { x: end.anchor.x + 0.05 <= 1 ? end.anchor.x + 0.05 : end.anchor.x - 0.05, y: end.anchor.y } };
             }
             node = { ...node, start: { ...node.start, attach: start }, end: { ...node.end, attach: end } };
-            // An arrow bound at both ends joins the container its two shapes share (catalogue a.5), unless that container is locked.
             const sessionDoc = runtime.session.doc, container = bindingContainer(sessionDoc, start, end);
             const holder = container !== null && !isSheetParent(sessionDoc, container) ? sessionDoc.nodes.get(container as Node['id']) : undefined;
             if (container !== null && container !== node.parent && (isSheetParent(sessionDoc, container) || (holder && !isLocked(sessionDoc, holder)))) {
@@ -502,7 +451,6 @@ class CreationGesture implements GestureOwner {
             const bounds = new Float64Array(4);
             transformBox(bounds, 0, geometry.bounds.ink, 0, [c, s, -s, c, pose.x, pose.y]);
             const growth = notebookGrowthOp(doc, Math.max(bounds[3], logical.y + logical.height));
-            // A click makes a frame at its default size and captures nothing: only a drag's frame takes the shapes it encloses.
             const adopted = node.kind === 'frame' && !this.isClick() && !this.follows ? await this.enclosedFrameChildren(node, pose) : [];
             const lease = adopted.length ? await render.pinChangeGeometry(adopted, signal, doc, () => this.valid()) : undefined;
             try {
@@ -531,7 +479,6 @@ class CreationGesture implements GestureOwner {
         if (this.context.current() && (node.kind === 'text' || node.kind === 'sticky')) await this.context.editText(node.id);
     }
     cancel(_reason: CancelReason): void { this.ended = true; this.previewGeneration++; this.previewRequest?.abort(); this.controller.abort(); this.cleanup(); }
-    /** The single-use return to Select, after the commit (see PointerRoute.completesTool). */
     private completeTool(): void {
         if (!this.context.current()) return;
         try { this.context.runtime.tools.complete(this.toolStart); } catch (error) { this.context.onError(error); }
@@ -553,14 +500,12 @@ export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> 
         if (id === 'polyline' && modifiers.shift) {
             const { runtime } = context, session = runtime.session, doc = session.doc;
             const choice = runtime.tools.getSnapshot(), prior = runtime.tools.getLastPolyline(), node = prior ? doc.nodes.get(prior.id) : undefined;
-            // Default: an attached terminal stays bound; continuation starts a new line rather than moving the binding.
             if (prior && choice.active.id === 'polyline' && choice.selectionEpoch === prior.epoch && node?.kind === 'polyline'
                 && node.points.length < 5000 && !node.endAttach && !isLocked(doc, node)
                 && sheetOf(doc, node.id) === runtime.selection.getSnapshot().sheet) {
                 const first = node.points[0], last = node.points[node.points.length - 1];
                 const replaceTiny = prior.tiny && node.points.length === 2
                     && Math.hypot(last.x - first.x, last.y - first.y) * context.camera.camera.z < 2;
-                // A click-created tiny endpoint is replaced; subsequent Shift clicks append in the same active tool flow.
                 return polylineHandleGesture(sample, modifiers, { runtime, id: node.id,
                     index: replaceTiny ? node.points.length - 1 : node.points.length, insert: !replaceTiny,
                     angleSnap: false,

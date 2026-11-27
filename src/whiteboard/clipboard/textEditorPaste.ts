@@ -13,17 +13,13 @@ import type { ClipboardHtmlFrameHost } from './htmlFrameHost';
 import type { ClipboardInput, ClipboardIntent, ClipboardTextEditor } from './types';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: clipboard §4.4, text editor splice and C5 private-content
-// contracts; independent orchestration, no upstream engine source.
 export interface TextEditorPasteOptions {
     readonly runtime: BoardRuntime; readonly memory: MemoryAllocator;
     readonly input: ClipboardInput; readonly intent: ClipboardIntent;
     readonly classifier: ClipboardClassifierHost; readonly html: Pick<ClipboardHtmlFrameHost, 'projectHTML'>;
     readonly editor: ClipboardTextEditor; readonly cache?: ClipboardCopy | ClipboardCachePin;
     noticeRefused(items: readonly { readonly name: string; readonly reason: string }[]): void;
-    /** Ends editing, then invokes the real board ingest in this same job. */
     pasteBoard(context: JobContext, cache?: Pick<ClipboardCopy, 'match'>): Promise<void>;
-    /** Checks the captured editor, selection, pane and session after every await. */
     current(): boolean;
     cooperate?(): Promise<void>;
 }
@@ -47,7 +43,6 @@ async function plainFragment(value: string, cooperate: () => Promise<void>): Pro
     blocks.push({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: value.slice(from), marks: {} }] });
     return { blocks };
 }
-/** Non-text returns 'board'; the host ends editing before the normal board ingest. */
 export async function pasteIntoTextEditorInJob(options: TextEditorPasteOptions, context: JobContext): Promise<TextEditorPasteResult> {
     const { runtime } = options, session = runtime.session, doc = session.doc, revision = doc.rev, owner = session.owner;
     const input = captureInput(options.input);

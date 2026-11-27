@@ -1,13 +1,8 @@
 import type { Rect } from '../../platform/render';
 import type { TexturedQuadSpec } from '../../platform/render/compositor.types';
 
-/** Quads per batched draw. Each quad is one 32-byte instance record in the uniform ring, whose slot starts at 1 MiB, so
- * 2048 quads (64 KiB) keep every batch far inside it: a batch over the slot is refused as out-of-budget before drawing. */
 export const QUAD_BATCH_LIMIT = 2048;
 
-/** Quads for batched draws, built frame after frame without allocation: the slots and their rectangles are reused, and
- * each draw reads them before it returns (drawTexturedQuads consumes its quads synchronously). `items` holds the quads
- * added since the last reset, in order, so batches keep the paint order of the per-quad calls they replace. */
 export class QuadList {
     private readonly slots: { sourceRect: Rect; destRect: Rect }[] = [];
     private readonly window: { sourceRect: Rect; destRect: Rect }[] = [];
@@ -35,7 +30,6 @@ export class QuadList {
         this.items.push(slot);
     }
 
-    /** Draws every queued quad in order, in batches of at most QUAD_BATCH_LIMIT, through one reused window array. */
     drawAll(draw: (quads: readonly TexturedQuadSpec[]) => void): void {
         for (let start = 0; start < this.items.length; start += QUAD_BATCH_LIMIT) {
             const end = Math.min(this.items.length, start + QUAD_BATCH_LIMIT);

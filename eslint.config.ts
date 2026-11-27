@@ -7,17 +7,12 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 import { bmePlugin } from './eslint.rules.ts'
 
-// ONE native map feeds the backend, linker and lint. Refuse a damaged map
-// rather than quietly widening the prebuilt development engine's surface.
 const pdfiumMap = JSON.parse(readFileSync(new URL('./src/pdf/engine/pdfium/exports.json', import.meta.url), 'utf8')) as {
   rows: { exports: string[] }[];
 }
 const pdfiumNativeExports = pdfiumMap.rows.flatMap(row => row.exports)
 if (pdfiumNativeExports.length !== 139 || new Set(pdfiumNativeExports).size !== 139) throw new Error('The canonical PDFium map must declare 139 unique native exports')
 
-// The tooltip rule's selectors (explained where the rule is set, below). Named, because
-// a later block that sets no-restricted-syntax replaces the whole option array and must
-// repeat them, never silently drop them.
 const tooltipRestrictions = [
   {
     selector: 'JSXOpeningElement[name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
@@ -45,12 +40,6 @@ const tooltipRestrictions = [
   },
 ]
 
-// Every worker of the app starts from a script declared through platform/workers/script.ts (`workerScript`): a raw
-// `new Worker(url)` stops starting once a newer version replaces this one on the server, in a tab that was working
-// (measured: an open drawing stopped saving, PDF Annotate stopped saving, an open book stopped opening). The global
-// itself is banned as a value (`new Worker`, and an alias such as `const W = Worker`; a `Worker` type is fine), and so is
-// reaching it through an object (`new window.Worker`, `new globalThis.SharedWorker`). The app only: the helper's
-// Bun workers have no deploy to outlive.
 const workerAdvice = 'Start workers through workerScript (platform/workers/script.ts) with a `?worker&url` import, never new Worker().'
 const workerRestrictions = [
   { selector: 'NewExpression[callee.property.name=/^(Shared)?Worker$/]', message: workerAdvice },
@@ -58,8 +47,6 @@ const workerRestrictions = [
 const workerGlobals = [{ name: 'Worker', message: workerAdvice }, { name: 'SharedWorker', message: workerAdvice }]
 
 export default defineConfig([
-  // `planning/` is git-ignored and exists only in the main checkout: its evidence
-  // scripts are records of the planning run, not code of this repository.
   globalIgnores(['dist', 'helper/dist', 'planning']),
   {
     files: ['**/*.{ts,tsx}'],
@@ -79,29 +66,16 @@ export default defineConfig([
       },
     },
     rules: {
-      // Preserve the original rule's intent (ignore intentionally-unused PascalCase/UPPER
-      // vars). Also ignore throwaway function args (the codebase uses params like `_path`
-      // and unused event objects) and unused catch bindings — all pre-existing patterns.
       '@typescript-eslint/no-unused-vars': ['error', {
         args: 'none',
         varsIgnorePattern: '^[A-Z_]',
         caughtErrors: 'none',
       }],
-      // New in react-hooks v7. The app intentionally calls setState inside effects
-      // (rebuild the link-graph; restore the last-opened file on mount). Refactoring
-      // would change behavior we are explicitly preserving.
       'react-hooks/set-state-in-effect': 'off',
-      // Every tooltip is the app's own bubble (utils/tooltip.ts, keyed on
-      // `data-tooltip`); a stray native `title` would draw Chromium's OS box beside
-      // it, late and unthemed. Intrinsic elements only (lowercase name): a
-      // component's `title` prop (ConfirmDialog's) is data, and an SVG `<title>` is a
-      // child, not an attribute. `document.title` is the tab title, not a tooltip.
       'no-restricted-syntax': ['error', ...tooltipRestrictions],
     },
   },
   {
-    // Not in the one place a worker is made, nor in the contained PDF frame's runtime, whose engine code arrives from the
-    // app as a Blob that is already in hand.
     files: ['src/**/*.{ts,tsx}'],
     ignores: ['src/platform/workers/script.ts', 'src/pdf/contained/brokerRuntime.ts'],
     rules: {
@@ -110,8 +84,6 @@ export default defineConfig([
     },
   },
   {
-    // D7 R7: the old optional-break regex backtracked exponentially. PDF find and
-    // its anchors keep the bounded automaton, never a regular expression.
     files: ['src/utils/pdfFind.ts', 'src/utils/pdfTextAnchors.ts'],
     rules: {
       'no-restricted-syntax': ['error', ...tooltipRestrictions, ...workerRestrictions,
@@ -122,10 +94,6 @@ export default defineConfig([
     },
   },
   {
-    // A raw localStorage write bypasses the IndexedDB recovery mirror, so another
-    // window's origin reset could erase it. Tab-only sessionStorage also goes through
-    // storage.ts, but stays out of that mirror: terminal IDs must not cross tabs.
-    // And every cooperative yield goes through platform/yieldToHost.ts (below).
     files: ['src/**/*.{ts,tsx}'],
     ignores: ['src/utils/storage.ts'],
     rules: {
@@ -134,15 +102,11 @@ export default defineConfig([
           ['setItem', 'removeItem', 'clear'].map(property => ({
             object, property, message: 'Use utils/storage.ts for browser storage mutations',
           }))),
-        // Chrome 94–128 have `scheduler` without `yield` (an unguarded call failed every board there), and where it exists
-        // its continuations starve messages and timers (measured in platform/yieldToHost.ts).
         { object: 'scheduler', property: 'yield', message: 'Yield with platform/yieldToHost.ts, the one feature-tested host yield' },
       ],
     },
   },
   {
-    // The VaultAgent helper is a Bun program, not browser code; `shared/` is
-    // imported by both sides, so it may assume neither's globals beyond these.
     files: ['helper/**/*.ts', 'shared/**/*.ts'],
     languageOptions: {
       globals: { ...globals.node, Bun: 'readonly' },
@@ -152,25 +116,16 @@ export default defineConfig([
     },
   },
   {
-    // foliate-js, byte-pinned to upstream (its sha256 is in source-lock.json), so
-    // its own eslint-disable comments cannot be edited — and with no rules run on
-    // .js here, every one of them reports as an unused directive.
     files: ['src/epub/vendor/**/*.js'],
     linterOptions: { reportUnusedDisableDirectives: 'off' },
   },
   {
-    // The FileSystem context module intentionally exports its Provider together with the
-    // useFileSystem hook (a standard React pattern). Don't let the fast-refresh rule
-    // force a structural split of an unchanged file.
     files: ['src/context/**/*.tsx'],
     rules: {
       'react-refresh/only-export-components': 'off',
     },
   },
   {
-    // Browser-run scripts and the run toolbox (verify-in-browser): plain Node
-    // modules whose init-script and page.evaluate closures run in the page, so
-    // both sets of globals are real here.
     files: ['verify/**/*.{js,mjs}'],
     extends: [js.configs.recommended],
     languageOptions: {
@@ -180,13 +135,10 @@ export default defineConfig([
     },
   },
   {
-    // The repo's own rules (eslint.rules.ts). Each was added with the error it
-    // gives on a deliberately violating line, recorded in its commit.
     files: ['**/*.{ts,tsx,js,mjs,cjs,jsx}'],
     ignores: ['src/epub/vendor/**'],
     plugins: { bme: bmePlugin },
     rules: {
-      // G-INV-04. The owner's ban on code-based tests, everywhere.
       'bme/no-tests': 'error',
     },
   },
@@ -198,45 +150,20 @@ export default defineConfig([
     files: ['src/**/*.{ts,tsx}', 'shared/**/*.ts'],
     plugins: { bme: bmePlugin },
     rules: {
-      // G-INV-06's engine zones (contracts C6.3) and I-0's dark zone: the new
-      // engines import no React and no app layer, the whiteboard nothing of
-      // tldraw's (independence protocol), and nothing outside the three engine
-      // folders imports them until the package that wires a switch adds its
-      // importer to `darkExcept` here.
       'bme/import-zones': ['error', [
         {
           files: ['src/platform/render', 'src/whiteboard', 'src/pdf'],
           dark: true,
-          // PdfTiledView is itself a lazy switch target; its engine imports must
-          // stay behind that boundary rather than moving into PdfPane/App.
-          // These hooks are reached only through the lazy PdfTiledView chunk.
-          // Native clipboard adapters are consumed by lazy NativeCanvasEntry;
-          // their document-owned service lends commands to attached views.
-          // Agent reads load this projection only for a real tool call; its closed
-          // source authority is created by App's same canonical session store.
-          // These exact editing adapters are reached only from the lazy NativeCanvasEntry.
-          // PdfPane reads only the lightweight acquired-source slot to keep its
-          // native child mounted through save; acquisition and editing remain lazy.
           darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfPane.tsx', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts', 'src/components/usePdfTiledOutline.tsx', 'src/components/PdfTiledTextSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/NativeCanvasEntry.tsx', 'src/components/whiteboard/NativePdfEntry.tsx', 'src/components/whiteboard/nativeViewLease.ts', 'src/components/whiteboard/nativeClipboardController.ts', 'src/components/whiteboard/useNativeClipboard.ts', 'src/utils/nativeCanvasAgentRead.ts', 'src/utils/nativeCanvasAgentMutation.ts', 'src/utils/closedCanvasSource.ts',
             'src/components/whiteboard/NativeCanvasEditing.tsx', 'src/components/whiteboard/NativeBoardChrome.tsx', 'src/components/whiteboard/NativeBoardChromeHost.tsx',
             'src/components/whiteboard/nativeBoardActions.ts', 'src/components/whiteboard/nativeBoardContextMenu.ts', 'src/components/whiteboard/nativeBoardOperations.ts', 'src/components/whiteboard/nativeCameraOperations.ts',
             'src/components/whiteboard/nativeCommandSource.ts', 'src/components/whiteboard/nativeEditingKeyboard.ts', 'src/components/whiteboard/nativeEditingLease.ts',
             'src/components/whiteboard/nativeEditingCapabilityFactory.ts',
             'src/components/whiteboard/NativePictureCrop.tsx', 'src/components/whiteboard/pictureCropStore.ts', 'src/components/whiteboard/nativePdfEditingLease.ts',
-            // App's lazy canonical PDF source bridge: App awaits this factory only on a PDF source.acquire,
-            // so it is the single non-view importer of the dark PDF session (same reach as NativePdfEntry).
             'src/components/whiteboard/preparePdfInkAttempt.ts',
             'src/components/whiteboard/nativeImportAdapter.ts', 'src/components/whiteboard/nativeLinkOperations.ts', 'src/components/whiteboard/nativeTextClipboard.ts',
             'src/components/whiteboard/useNativeBoardLanguage.ts', 'src/components/whiteboard/useNativeSheetControls.tsx',
-            // The style panel is the board chrome's own switch: NativeBoardChrome renders it, and only the lazy board chunk does.
             'src/components/whiteboard/chrome/StylePanel.tsx', 'src/components/whiteboard/chrome/styleIcons.tsx'],
-          // Switch-wiring files: the platform preview (bme.pdf.platformLayer, P-PL) and the generic
-          // platform pane hook. Dynamic or type-only imports only, so the chunk stays lazy.
-          // pdfSurfaceModules warms the PDF open path (dynamic imports only) from loadPdfPane, itself reached only when a
-          // PDF is opened or the vault holds one.
-          // App's closed-PDF agent seam (src/app/useAgentCanvasAccess) imports the contained host only on an
-          // awaited tiled tool call; its PDF gestures and a new canvas's empty bytes load on the gesture. The DiskBar's
-          // actions ask a PDF's reader for the bytes it shows only on a Keep mine/Reload/Save again click.
           darkLazy: ['src/app/useAgentCanvasAccess.ts', 'src/app/agentCanvas.ts', 'src/app/pdfGestures.ts', 'src/app/diskBarActions.tsx', 'src/app/useCreateEntries.tsx', 'src/utils/agentHost.ts', 'src/utils/recoveryCopy.ts', 'src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx', 'src/components/PdfTiledSurface.tsx', 'src/components/pdfSurfaceModules.ts', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/ViewerHost.tsx', 'src/components/whiteboard/nativeViewPlatform.ts'],
           message: 'The new engines stay dark until their switch is wired',
         },
@@ -257,9 +184,6 @@ export default defineConfig([
           message: 'No tldraw material in the new engines (independence protocol)',
         },
       ]],
-      // G-INV-22. Baseline (contracts R1-18): the two note-text sinks AGENTS.md
-      // names, the constant icon strings of three editor widgets, and the EPUB
-      // shared contained-frame srcdoc. Core turns the icon sinks into DOM builders; then they go.
       'bme/html-sinks': ['error', [
         { file: 'src/editor/tableWidget.ts', names: ['innerHTML'], rhs: 'any' },
         { file: 'src/editor/mermaidWidget.ts', names: ['innerHTML'], rhs: 'any' },
@@ -268,7 +192,6 @@ export default defineConfig([
         { file: 'src/editor/copyCodeWidget.ts', names: ['innerHTML'], rhs: 'constant' },
         { file: 'src/platform/containedFrame.ts', names: ['srcdoc'], rhs: 'constant', identifiers: ['frameHTML'] },
       ]],
-      // G-INV-FS: all File System Access calls stay in src/context/.
       'bme/fs-access': ['error', []],
     },
   },

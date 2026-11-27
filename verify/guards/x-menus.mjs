@@ -2,8 +2,6 @@ import { fastGuard, documentFixtures, openDocument, treeRow } from '../lib/fast.
 
 await fastGuard('X-MENUS', async ({ session }) => {
     await session({ label: 'surfaces', files: await documentFixtures() }, async ({ page, check, meta }) => {
-        // Added after React's listeners. No injected preventDefault: only observe
-        // the actual trusted right-click once the app has handled it.
         await page.evaluate(() => {
             window.__bmeMenuEvents = [];
             window.addEventListener('contextmenu', event => {

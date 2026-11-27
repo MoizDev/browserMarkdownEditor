@@ -28,8 +28,6 @@ export async function assertIdentity(arm) {
         for (const [file, hash] of Object.entries(identity.sources)) {
             assert.equal(sha256(await readFile(identity.root + '/' + file)), hash, `dev source identity ${file}`);
         }
-        // The dev server is a local process on the port we chose. Bind its
-        // actual cwd/config to the clean worktree, not merely a supplied label.
         const pids = [...new Set(execFileSync('lsof', ['-nP', `-iTCP:${new URL(arm.url).port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' }).trim().split(/\s+/))];
         assert.equal(pids.length, 1, 'one dev listener');
         const cwd = execFileSync('lsof', ['-a', '-p', pids[0], '-d', 'cwd', '-Fn'], { encoding: 'utf8' }).split('\n').find(line => line.startsWith('n'))?.slice(1);
@@ -83,8 +81,6 @@ export function observe(context, arm, identity) {
             assert.ok(scripts.length, 'the browser must fetch application scripts');
             if (arm.kind !== 'D') {
                 const fetched = new Set(scripts.map(script => decodeURIComponent(new URL(script.url).pathname).replace(/^\//, '')));
-                // Supplemental bytes still come through this browser context
-                // from this preview; Node supplied paths, never asserted content.
                 for (const path of Object.keys(identity.files).filter(path => /\.(?:m?js)$/.test(path) && !fetched.has(path))) {
                     const response = await context.request.get(new URL(path, arm.url).href).catch(error => {
                         error.invalidExecution = true;

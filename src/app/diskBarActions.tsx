@@ -23,10 +23,6 @@ import type { FlushTab, IndexGraphRef, NativePolicy, PdfRebuildEntry, RecoveryEv
 import type { UseDiskBarActionsDeps } from './useDiskBarActions';
 import { loadChunk } from '../platform/chunkLoad';
 
-/**
- * The DiskBar's buttons. A document only gets a DiskBar when its file changed
- * or went away on disk, so these load with the first click (useDiskBarActions).
- */
 export interface DiskBarActionDeps extends UseDiskBarActionsDeps {
   resolvingRef: React.MutableRefObject<Set<string>>
 }
@@ -87,7 +83,6 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
   const isPdf = isPdfFile(file.name);
   resolvingRef.current.add(id);
   const shortName = (p: string) => p.slice(p.lastIndexOf('/') + 1);
-  /** Capture before any asynchronous build; later edits belong to another revision. */
   const captureMine = () => {
     const session = documentSessions.get(id);
     const checkpoint = documentSessions.checkpoint(id);
@@ -112,15 +107,9 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
       if (typeof content === 'object' && !(content instanceof Uint8Array) && !(content instanceof Blob)) {
         content = await content.run(new AbortController().signal);
       }
-      // A PDF's text buffer is not the file: with no Annotate session there is no ink of the tab's own to build.
       return isPdf && typeof content === 'string' ? null : content;
     } };
   };
-  // A PDF with no Annotate session has nothing unsaved, and its version is the bytes Original shows: the reader's
-  // memory-backed copy, the only place they still exist once another program has replaced the file (it may hold saved
-  // ink). Used only while it is provably the version this document last read or wrote (the baseline). Measured before:
-  // every PDF took the read-only route here (it asked for the pre-native `pdfRenderCache`, which nothing fills), so Keep
-  // mine reloaded the other program's file and kept no copy, and with unsaved ink it failed outright.
   const readerMine = async (): Promise<Blob | null> => {
     if (!isPdf || nativeConflict) return null;
     const { pdfReaderBytes } = await loadChunk(() => import('../pdf/session/sourceFactory'));
@@ -190,7 +179,6 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
       return;
     }
 
-    // A conflict: re-read the disk NOW — it may have moved again since.
     const handle = await resolveFileHandle(path);
     if (!handle) { setDiskState(id, 'deleted'); return; }
 
@@ -201,7 +189,6 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
       const read = isPdf || isNativeDrawingFile(file.name)
         ? { text: '', version: (await readBytesVersioned(handle)).version }
         : await readFileVersioned(handle);
-      // Bytes equal to the disk's are not a second version to keep (hashed only at the same size: a PDF can be hundreds of MB).
       const same = typeof keep === 'string' ? keep === read.text
         : !!keep && (keep instanceof Blob ? keep.size : keep.byteLength) === read.version.size
           // A Blob (a PDF, possibly hundreds of MB) goes through the chunked worker hash, never one whole-file buffer here.
@@ -227,13 +214,9 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
     // 'keep': theirs goes beside the file, then mine is written — against the version just read, so a disk that moved
     // AGAIN in between raises the conflict again rather than being overwritten.
     await drain(id);
-    // The reader's copy is the tab's version only while nothing is unsaved: a board that is not live (emergency read-only,
-    // a generation it no longer matches) can still hold unsaved ink in its buffer, and writing the last SAVED bytes
-    // would call that version kept. Unsaved bytes go the save funnel's way below, which says so if it cannot write them.
     const unsaved = documentBuffers.isDirty(id);
     const reader = isPdf && !nativeConflict && !unsaved ? await readerMine() : null;
     if (isPdf && !nativeConflict && !unsaved && !reader) {
-      // Nothing to write back: offering Keep mine would leave the other program's file under a tab that claims otherwise.
       setTabs(prev => prev.map(t => t.id === id ? { ...t, diskMineLost: true } : t));
       return;
     }
@@ -244,7 +227,6 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
     const copy = await writeConflictCopy(path, disk.bytes);
     const baselineBefore = getBaseline(id);
     if (reader) {
-      // The version Original shows goes back as it was, byte for byte, so the reader stays on it with nothing to reload.
       const result = await writeFileVersioned(handle, reader, disk.version);
       if (result.status === 'deleted') { setDiskState(id, 'deleted'); return; }
       if (result.status === 'changed') { announce(`“${file.name}” changed on disk again. The earlier version was kept as “${shortName(copy)}”.`); return; }
@@ -261,7 +243,6 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
     const entry = pdfRebuildRef.current.get(id);
     if (entry) { entry.baseline = disk.version; entry.copyName = undefined; }
     setDiskState(id, null);
-    // Nothing was written: the file is still theirs. Put the question back rather than call it kept.
     const putBack = () => {
       if (baselineBefore) setBaseline(id, baselineBefore);
       if (entry && baselineBefore) entry.baseline = baselineBefore;
@@ -273,14 +254,9 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
       entry.approved = true;
       setPdfRebuildNotice(id, { state: 'kept', generation: entry.value.role.generation, approved: true, copyName: entry.copyName });
     }
-    // 'rewrite': a board whose ink is all saved is still the version being kept, and its checkpoint is written again.
     const rewritten = !documentBuffers.isDirty(id);
     const outcome = await flushTab(path, 'rewrite');
     if (outcome === 'written') {
-      // Unsaved ink went out as the board's own save, which its live source already paints (useSaveFunnel), so the board
-      // stays as it is. A rewritten checkpoint carries a write id its PDF source never acknowledged, and a later rebind
-      // would refuse the file as not its own: that one reopens on the bytes, once the board's after-write step has run
-      // (replaced under it, the step failed as stale and logged "PDF ink rebind failed").
       if (isPdf && rewritten) {
         try { await documentSessions.get(id)?.adapter.drain?.(); } catch { /* the reopen below replaces it either way */ }
         const now = tabsRef.current.find(t => t.id === id), version = getBaseline(id);

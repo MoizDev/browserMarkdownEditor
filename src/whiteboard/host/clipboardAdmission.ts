@@ -18,24 +18,17 @@ import { acquireNativeBoard } from './nativeAcquisition';
 import { inspectPdfVisualModel } from './pdfVisualPreflight';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: native clipboard admission (C5 acquisition, render-service canonical
-// geometry and encoder bounds) composed from existing host seams; no third-party source.
-
-/** Clipboard native files are always written with a whiteboard header (makeClipboardNativeRecords). */
 const CLIPBOARD_KIND = 'whiteboard' as const;
 
 export interface ClipboardAdmissionContext {
-    /** The owner token the render services are keyed by; it is never guessed from the job identity. */
     readonly token: RenderToken;
     readonly identity: BoardJobIdentity;
     isCurrent(identity: BoardJobIdentity): boolean;
-    /** Reads one media entry's bytes from the copying host; null means the item is missing. */
     readBlob(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     readonly signal: AbortSignal;
     cooperate?(): Promise<void>;
 }
 
-/** An admitted C5 load and its samples, plus the release that retires them. */
 export interface AdmittedClipboardLoad {
     readonly load: RehydratedLoad;
     readonly samples: SampleStore;
@@ -43,8 +36,6 @@ export interface AdmittedClipboardLoad {
     dispose(): void;
 }
 
-/** Union of canonical encoder bounds over every node. A node whose bounds are invalid is refused,
- * never replaced by an AABB guess; a source with no nodes has an empty extent. */
 async function sourceExtent(doc: BoardDoc, bounds: (node: Node) => Bounds, cooperate: () => Promise<void>)
     : Promise<Readonly<{ x: number; y: number; w: number; h: number }>> {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, visited = 0;
@@ -59,11 +50,6 @@ async function sourceExtent(doc: BoardDoc, bounds: (node: Node) => Bounds, coope
     return Object.freeze({ x: minX, y: minY, w: maxX - minX, h: maxY - minY });
 }
 
-/**
- * Turn an admitted C5 load into a clipboard admission: its visual model must be fully known, its
- * referenced media are read once into a store, and its bounds are measured from canonical render
- * geometry. The returned admission owns the load; on refusal the load is disposed here.
- */
 export async function admitLoadedClipboard(owned: AdmittedClipboardLoad, context: ClipboardAdmissionContext): Promise<ExternalClipboardAdmission> {
     const { signal } = context;
     const check = async () => {
@@ -88,8 +74,6 @@ export async function admitLoadedClipboard(owned: AdmittedClipboardLoad, context
         const sheet = doc.sheets.keys().next().value;
         if (sheet === undefined) throw new Error('Clipboard native records contain no sheet');
 
-        // Referenced media are loaded before geometry, so image-dependent bounds are measured, not guessed.
-        // A missing item keeps its placeholder; insertion reports it.
         media = new MediaStore();
         const store = media;
         const references = new Set<MediaId>();
@@ -117,7 +101,6 @@ export async function admitLoadedClipboard(owned: AdmittedClipboardLoad, context
         await check();
 
         const acquisition: BoardClipboardAcquisition = {
-            // Synthetic origin: the external source names no board, and insertion never reuses its samples.
             payload: Object.freeze({ v: 1, nonce: 'external0000000000', from: Object.freeze({ board: 'external', sheet, kind: doc.kind }),
                 bounds, records: Object.freeze([]), media: Object.freeze({}) }),
             load, samples, inline: Object.freeze([]), report: owned.report, originalSourceKind: doc.kind,
@@ -126,7 +109,6 @@ export async function admitLoadedClipboard(owned: AdmittedClipboardLoad, context
         transferred = true;
         return { acquisition, bounds };
     } finally {
-        // Render services and media are needed only for the measured bounds, never by the acquisition.
         for (const lease of leases) lease.release();
         // Awaited first: the admitted board's builds may still read the media and services until it has retired.
         try { if (!transferred) await owned.dispose(); } finally {
@@ -136,10 +118,6 @@ export async function admitLoadedClipboard(owned: AdmittedClipboardLoad, context
     }
 }
 
-/**
- * Admits external native clipboard records (a whole native file) into an owned acquisition. Any loss
- * is refused: a repaired, incomplete, read-only or non-native source is not a clipboard admission.
- */
 export async function admitNativeClipboardRecords(bytes: Blob, context: ClipboardAdmissionContext): Promise<ExternalClipboardAdmission> {
     context.signal.throwIfAborted();
     if (!(bytes instanceof Blob) || (typeof File !== 'undefined' && bytes instanceof File)

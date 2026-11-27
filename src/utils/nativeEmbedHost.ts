@@ -21,8 +21,6 @@ export function createNativeEmbedHost(): NativeEmbedHost {
             approval = platform.isEmbedContainmentApproved;
             return platform.createEmbedContainment({ ...options, manifest });
         },
-        // This delegates to the platform's live private registry; loading its module
-        // or matching manifest fields never manufactures a containment approval.
         approved: (value: unknown): value is EmbedContainment => approval?.(value) ?? false,
     });
 }

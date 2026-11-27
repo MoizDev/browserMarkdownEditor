@@ -17,17 +17,12 @@ import { resolveMediaStorage } from '../media/storage';
 import type { MediaStorageReceipt, StoreMedia } from '../media/storage.types';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: private clipboard media, session job authority and SEC-W4
-// verification contracts; independent pre-transaction staging, no third-party source.
 export interface PreparedClipboardMedia {
-    /** The board the media was staged for. Not its revision: what a stored picture adds or renames is checked again where it
-     * lands (change/insertionLanding.ts), so a stroke committed meanwhile does not throw the paste away. */
     readonly stamp: Readonly<{ runtime: BoardRuntime; owner: Readonly<SessionOwner>; doc: BoardDoc; revision: number }>;
     readonly mediaOps: readonly Op[];
     readonly files: ReadonlyMap<MediaId, string | null>;
     readonly blobs: ReadonlyMap<MediaId, Blob>;
     readonly missing: readonly MediaId[];
-    /** Called inside the same owning job, after the one destination kernel commit. */
     committed(): void;
     /** Release only after the destination transaction has retained its media. */
     release(): void;
@@ -49,9 +44,6 @@ function matches(entry: MediaEntry, info: InspectedMedia, size: number): boolean
     return entry.id === info.id && entry.mime === info.mime && entry.bytes === size && entry.w === info.width && entry.h === info.height
         && entry.animated === info.animated && entry.duration === info.duration;
 }
-/** Data this version cannot interpret, which might name a media file. The old-board importer's own fields are not that
- * (format/legacyRecords.ts): counted, they refused every paste of an old notebook's pictures into a PDF, whose copy is
- * stored under another name, with "Cannot remap media with uninterpreted filename dependencies". */
 function uninterpreted(ext: ExtBag | null, known: ReadonlySet<string>): boolean {
     if (!ext) return false;
     if (ext.raw.size) return true;
@@ -62,8 +54,6 @@ function compatible(a: MediaEntry, b: MediaEntry): boolean {
     return a.id === b.id && a.mime === b.mime && a.bytes === b.bytes && a.w === b.w && a.h === b.h
         && a.animated === b.animated && a.duration === b.duration;
 }
-/** A picture that cannot be pasted here: details this version cannot read may name its file, and here it would be stored
- * under another name. Said in the person's words (the board shows the message as is); the media id is kept for the console. */
 export class ClipboardMediaRefused extends Error {
     constructor(readonly mediaId: string) {
         super('A picture in what you pasted carries details this version of the app cannot read, which may depend on its file '
@@ -84,8 +74,6 @@ export function prepareBoardClipboardMediaInJob(options: PrepareClipboardMediaOp
 function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: JobContext): Promise<PreparedClipboardMedia> {
     const { runtime } = options, source = options.acquisition.load.doc;
     options.signal?.throwIfAborted();
-    // Rehydrated source maps and Blob values remain immutable after acquisition disposal;
-    // copy their metadata cooperatively inside the owning job, not on the event path.
     const sourceInline = options.acquisition.inline;
     const deadlineMs = 180_000;
     let abortOwned: (() => void) | undefined;
@@ -152,9 +140,6 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
                 if (!candidate) { candidate = await options.readBlob(entry, context.signal) ?? undefined; check(); }
                 if (!(candidate instanceof Blob)) {
                     if (!existing) {
-                        // No bytes to store, so nothing is renamed: where unknown data may name the file, the record keeps the
-                        // name it was written with (the picture appears if that file is put in this folder's .Assets). Refusing
-                        // here lost the whole paste of a board whose picture file was missing ("Cannot remap missing media…").
                         const keepName = entry.file !== null && (uninterpreted(entry.ext, IMPORTED_LEGACY_MEDIA_FIELDS)
                             || (preservedRefs.get(id) ?? 0) > 0 || hasUnknownRaw);
                         ops.push({ t: 'media', op: 'add', entry: keepName ? entry : { ...entry, file: null } });

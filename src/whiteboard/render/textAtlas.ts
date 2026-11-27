@@ -2,20 +2,10 @@ import type { ByteLease, GfxDevice, TargetHandle, TextureFormat, TextureHandle }
 import { auditCount } from '../../platform/render/renderAudit';
 import { copyIdentity, identityHash, sameIdentity, type MaskIdentity } from './gpu/textMasks';
 
-// The board text atlas (solo/whiteboard-text-atlas.md): pages of run mask cells, a shelf packer per page, LRU by page and
-// pins held by the runs that draw from it. Two atlases share this code: R8 for mono coverage masks, RGBA for runs with
-// colour glyphs. Built from b2's step-1 module (ba1f43fc); the decision after step 2 dropped the quantised bands, so an
-// entry is keyed by its cell's exact identity (textMasks.ts) and nothing here quantises. Keys are numbers: the identity's
-// hash finds the bucket and an exact field compare confirms it, so a lookup builds no string and allocates nothing.
-
-/** Pages are square and fixed; a mask cell wider or taller than a page is never placed whole. */
 export const ATLAS_PAGE = 2048;
-/** Shelves are rounded to whole 8 px rows, so a row of masks shares one height and the packer stays a few integers. */
 export const SHELF_STEP = 8;
 
-/** A value an index holds by identity: its own copy of the identity, and that identity's hash. */
 export interface Indexed { readonly identity: MaskIdentity; readonly hash: number }
-/** Values by exact identity, in buckets by numeric hash. Holds no strings. `values` copies, so a sweep may delete as it goes. */
 export class IdentityIndex<V extends Indexed> {
     private readonly buckets = new Map<number, V[]>();
     private count = 0;
@@ -46,12 +36,10 @@ export class IdentityIndex<V extends Indexed> {
     }
 }
 
-/** Left to right within a shelf, and a new shelf below the last when the row is full. Pure bookkeeping. */
 export class ShelfPacker {
     private readonly shelves: { y: number; height: number; x: number }[] = [];
     private used = 0;
     constructor(readonly width: number, readonly height: number) {}
-    /** A slot for a w x h mask, or null when no shelf and no new row fits. Heights are rounded up to SHELF_STEP. */
     place(w: number, h: number): { x: number; y: number } | null {
         if (w <= 0 || h <= 0 || w > this.width || h > this.height) return null;
         const rowHeight = Math.ceil(h / SHELF_STEP) * SHELF_STEP;
@@ -68,32 +56,24 @@ export class ShelfPacker {
         this.used += rowHeight;
         return { x: 0, y: shelf.y };
     }
-    /** Forgets every placement: the space is free again. Used for a staging texture, whose cells are converted each frame. */
     reset(): void { this.shelves.length = 0; this.used = 0; }
 }
 
-/** A placed mask cell. `pinned` counts runs that draw it. `dropped` is set once it has left the atlas for good. */
 export interface AtlasEntry extends Indexed {
     readonly page: AtlasPage;
-    /** Top-left of the cell's pixels inside the page, in page px. */
     readonly x: number;
     readonly y: number;
     readonly w: number;
     readonly h: number;
     pinned: number;
-    /** Set when a font change retires the entry: no lookup finds it, its space frees when its last pin drops. */
     retired: boolean;
     dropped: boolean;
 }
 
-/** One GPU page: a texture from the layer's grant, its packer and the entries placed on it. An R8 page also has the render
- * target its coverage is converted into on the GPU (`target`), created on the page's own lease and destroyed with it. */
 export class AtlasPage {
     readonly packer: ShelfPacker;
     readonly entries = new Set<AtlasEntry>();
-    /** Runs that pin an entry on this page, counted at pin time. Kept here so an eviction test is O(1), not a scan of the page. */
     pinned = 0;
-    /** The newest frame that drew any entry on the page: the LRU clock of the page. */
     touched = -1;
     /** Set when the atlas is disposed while this page is pinned: its texture is destroyed by the last unpin, never earlier. */
     retiring = false;
@@ -101,14 +81,11 @@ export class AtlasPage {
     constructor(readonly texture: TextureHandle, readonly lease: ByteLease, readonly format: TextureFormat) {
         this.packer = new ShelfPacker(ATLAS_PAGE, ATLAS_PAGE);
     }
-    /** A page may be evicted when nothing on it is pinned and nothing was drawn in the frame being built. */
     evictable(frame: number): boolean { return this.pinned === 0 && this.touched < frame; }
-    /** Nothing on the page is pinned: no run's draw still reads it. Recency is not part of this. */
     unpinned(): boolean { return this.pinned === 0; }
     touch(frame: number): void { if (frame > this.touched) this.touched = frame; }
 }
 
-/** The layer's grant. The atlas reserves each page's bytes through it and returns them on destruction. */
 export interface AtlasHost {
     reserve(bytes: number): ByteLease | null;
     release(lease: ByteLease): void;
@@ -116,13 +93,10 @@ export interface AtlasHost {
 
 export interface TextAtlasOptions {
     readonly format: TextureFormat;
-    /** Pages allowed at once. The grant may allow fewer: the atlas stops asking when a reserve is refused. */
     readonly maxPages: number;
-    /** The audit surface the counters are filed under (the adapter's surface). */
     readonly surface: string;
 }
 
-/** Keyed entries on shelf-packed pages, LRU eviction of whole pages, and pins held by runs until they retire. */
 export class TextAtlas {
     private readonly index = new IdentityIndex<AtlasEntry>();
     private readonly pages: AtlasPage[] = [];
@@ -132,7 +106,6 @@ export class TextAtlas {
     get pageCount(): number { return this.pages.length; }
     get bytes(): number { return this.pages.reduce((sum, page) => sum + page.lease.bytes, 0); }
 
-    /** A live entry for the identity, touched to the frame. Counts a hit; a miss is the caller's raster, counted there. */
     lookup(probe: MaskIdentity, frame: number): AtlasEntry | null {
         const entry = this.index.find(probe);
         if (!entry || entry.retired) return null;
@@ -141,12 +114,6 @@ export class TextAtlas {
         return entry;
     }
 
-    /** Places a w x h cell under the identity and returns the entry, or 'oversize' when no page can hold it, or the bytes of the page
-     * the grant refused (`denied`): what a refused cell waits for is a page, never its own few bytes. Reported as the cell's bytes, the
-     * governor's sized wake came with the next unrelated release, the cell was refused its page again and the board framed at every
-     * vsync at rest (measured, a notebook beside two dense boards after divider drags on WebGL2: 601 frames per 10 s, each refusing a
-     * 4 MB R8 page as a 2.9 KB cell). The atlas keeps its own copy of the identity. The pixels are written by the caller; the entry is
-     * not drawable before they are. */
     place(probe: MaskIdentity, w: number, h: number, frame: number): AtlasEntry | 'oversize' | { readonly denied: number } {
         if (this.disposed) return { denied: this.pageBytes() };
         if (w > ATLAS_PAGE || h > ATLAS_PAGE) return 'oversize';
@@ -161,21 +128,17 @@ export class TextAtlas {
         return entry;
     }
 
-    /** Writes an entry's pixels into its page sub-rect. `rowBytes` is one row of `pixels`: w for R8, 4w for RGBA. */
     upload(entry: AtlasEntry, pixels: Uint8Array, rowBytes: number): void {
         this.device.writeTexture(entry.page.texture, { x: entry.x, y: entry.y, width: entry.w, height: entry.h },
             { source: pixels, rowBytes, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
     }
 
-    /** Writes a cell's ImageBitmap into its page sub-rect with no readback. The caller closes the bitmap: this only reads it.
-     * Colour pages only; an R8 cell is staged and converted by the route, which owns the staging texture. */
     uploadBitmap(entry: AtlasEntry, bitmap: ImageBitmap): void {
         if (this.options.format !== 'rgba8') throw new RangeError('A bitmap uploads only to an rgba8 atlas page');
         this.device.writeTexture(entry.page.texture, { x: entry.x, y: entry.y, width: entry.w, height: entry.h },
             { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
     }
 
-    /** A run pins every entry its draw reads and unpins once it retires. A pinned page is never evicted or trimmed. */
     pin(entry: AtlasEntry): void { entry.pinned++; entry.page.pinned++; }
     unpin(entry: AtlasEntry): void {
         if (entry.pinned <= 0) throw new RangeError('Unpinning a text atlas entry that is not pinned');
@@ -184,7 +147,6 @@ export class TextAtlas {
         if (entry.pinned === 0 && entry.page.retiring && entry.page.unpinned()) this.destroyRetired(entry.page);
     }
 
-    /** A font changed: retire every entry of that face css. New lookups miss; pinned entries stay valid until their pins drop. */
     retireFace(css: string): number {
         let retired = 0;
         for (const entry of this.index.values()) {
@@ -195,8 +157,6 @@ export class TextAtlas {
         return retired;
     }
 
-    /** Device loss, DPR change or a release: the atlas stops handing out entries. Unpinned pages are destroyed now; pinned
-     * ones are retired and destroyed by their last unpin, so a draw that still reads one never sees it destroyed. */
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
@@ -208,10 +168,7 @@ export class TextAtlas {
         }
     }
 
-    /** Governor pressure: frees whole pages that nothing pins and nothing drew this frame, coldest first, until `bytes` are
-     * freed. A page pinned or drawn this frame is never a victim, so a refusal here never breaks a frame in progress. */
     evict(bytes: number, frame: number): number {
-        // Infinity is a valid request (free everything evictable); NaN and negatives are not.
         if (!(bytes >= 0)) throw new RangeError('Invalid text atlas eviction size');
         let freed = 0;
         while (freed < bytes) {
@@ -224,7 +181,6 @@ export class TextAtlas {
         return freed;
     }
 
-    /** True while the entry is the atlas's live mask cell for its identity: not retired, not dropped, not disposed. */
     holds(entry: AtlasEntry): boolean {
         return !this.disposed && !entry.retired && !entry.dropped;
     }
@@ -239,7 +195,6 @@ export class TextAtlas {
             const at = page?.packer.place(w, h);
             if (page && at) return { page, ...at };
         }
-        // No free space and no new page: evict the coldest page nothing holds, then place on its space.
         let victim: AtlasPage | undefined;
         for (const page of this.pages) {
             if (page.evictable(frame) && (!victim || page.touched < victim.touched)) victim = page;
@@ -259,9 +214,6 @@ export class TextAtlas {
         if (!lease) return null;
         let texture: TextureHandle | null = null;
         try {
-            // An R8 page is a conversion target: the route draws its staged coverage into it, so it must be renderable. Its
-            // texture and target share one lease that stays open until both exist (createTexture closes its lease, so the
-            // target could not be made on it: measured, every R8 page refused with invalid-input).
             if (this.options.format === 'r8') {
                 const pair = this.device.createRenderTexture(ATLAS_PAGE, ATLAS_PAGE, lease, { format: 'r8', copyDst: true });
                 texture = pair.texture;
@@ -289,7 +241,6 @@ export class TextAtlas {
     }
 
     private destroyPage(page: AtlasPage): void {
-        // The page's entries are dropped before it goes: a stand-in record that still names one must not keep the page's set alive.
         page.entries.clear();
         if (page.target) this.device.destroy(page.target);
         this.device.destroy(page.texture);

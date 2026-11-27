@@ -4,8 +4,6 @@ import type { Block, Marks, RichEdit, RichFragment, RichText, RichTextOperations
 import type { ToggleMark } from './format';
 import type { EditSelection } from './host';
 
-// TX-2 owns all rich-text transformations. The editor adapts its immutable
-// fragments to the single transaction/apply path without another model.
 export function richEditAdapter(id: NodeId, key: 'text' | 'label', read: () => RichText, rich: RichTextOperations) {
     const splice = (from: number, to: number, insert: RichFragment, label: string, replaceBlocks?: true): Transaction => ({
         origin: 'tool', label, ops: [{ t: 'splice', id, key, from, to, insert, ...(replaceBlocks ? { replaceBlocks } : {}) }],

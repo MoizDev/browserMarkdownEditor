@@ -1,16 +1,3 @@
-// Which folders are open in the file tree, as a store.
-//
-// A STORE AND NOT STATE, for the reason utils/contextMenu.ts and
-// utils/entryStyleStore.ts give at length: `TreeNode` is memoized so the tree
-// stops re-rendering while the reader types, and a `Set` handed down as a prop
-// is a NEW object on every toggle. Every mounted row's memo then compared
-// unequal — a thousand rows reconciled, each with its own hooks and
-// subscriptions — to turn one chevron. Here a row subscribes to its own path
-// and reads a BOOLEAN, so opening a folder re-renders that folder's row and
-// the rows that appeared under it, and nothing else in the tree.
-//
-// One record for every vault (it always has been), persisted to localStorage.
-
 import { readJSON, writeJSON } from './storage';
 
 const KEY = 'expandedPaths';
@@ -19,13 +6,9 @@ const KEY = 'expandedPaths';
 // before React could mount anything — leaving a blank page. Anything but a list of strings reads as "none open".
 const stored: unknown = readJSON<unknown>(KEY, []);
 let paths = new Set<string>(Array.isArray(stored) ? stored.filter((path): path is string => typeof path === 'string') : []);
-/** Replaced, never mutated: `getExpandedPaths` is a `useSyncExternalStore`
- *  snapshot and has to change identity exactly when the set does. */
 const listeners = new Set<() => void>();
 const rowListeners = new Map<string, Set<() => void>>();
 
-/** The whole set — for the explorer, which needs "is anything open?" and the
- *  drop rules. Identity-stable between changes. */
 export function getExpandedPaths(): ReadonlySet<string> {
     return paths;
 }
@@ -35,7 +18,6 @@ export function subscribeExpandedPaths(listener: () => void): () => void {
     return () => { listeners.delete(listener); };
 }
 
-/** One folder's own answer, as a primitive — what a row subscribes to. */
 export function isExpanded(path: string): boolean {
     return paths.has(path);
 }
@@ -50,8 +32,6 @@ export function subscribeExpanded(path: string, listener: () => void): () => voi
     };
 }
 
-/** Publish `next`, waking the rows whose answer actually moved and nobody
- *  else. `touched` is the paths that could have changed; a toggle names one. */
 function commit(next: Set<string>, touched: Iterable<string>): void {
     const woken = new Set<() => void>();
     for (const path of touched) {
@@ -72,9 +52,6 @@ export function toggleExpanded(path: string): void {
     commit(next, [path]);
 }
 
-/** Open every one of `paths` — Expand all, auto-reveal, and the New-something
- *  buttons opening the way down to their target. One commit for the lot, and
- *  nothing at all when they are already open. */
 export function expandPaths(wanted: readonly string[]): void {
     if (wanted.every(p => paths.has(p))) return;
     const next = new Set(paths);
@@ -82,9 +59,6 @@ export function expandPaths(wanted: readonly string[]): void {
     commit(next, wanted);
 }
 
-/** Close every one of `wanted` — Collapse all, handed THIS vault's folders.
- *  Not a blanket clear: the record covers every vault, and emptying it closed
- *  the folders of vaults the reader was not even looking at. */
 export function collapsePaths(wanted: readonly string[]): void {
     if (!wanted.some(p => paths.has(p))) return;
     const next = new Set(paths);
@@ -92,13 +66,6 @@ export function collapsePaths(wanted: readonly string[]): void {
     commit(next, wanted);
 }
 
-/**
- * Keep the disclosure state with the folder it describes.
- *
- * Keyed by path, so a renamed folder — and everything the reader had opened up
- * inside it — silently collapsed, which after a rename looks like the contents
- * went somewhere. It is the same folder; it answers to a new name.
- */
 export function retargetExpandedPaths(fromPath: string, newPath: string): void {
     if (newPath === fromPath) return;
     const prefix = `${fromPath}/`;

@@ -7,20 +7,6 @@ import { auditCount } from '../../platform/render/renderAudit';
 import { columnOffsets, marginX, paperPageSize, ruleOffsets, type NotebookPaper } from '../../utils/paper';
 import { PAPER_EDGE, PAPER_MARGIN, PAPER_RULE, PAPER_WHITE, PAPER_RULE_WIDTH, PAPER_MARGIN_WIDTH, PAPER_EDGE_WIDTH } from './notebookPaper';
 
-/**
- * Lined, grid and blank notebook paper drawn as ONE procedural pass over the visible pages, straight into the surface pass.
- *
- * Every item of those papers (notebookPaper.ts) is an axis-aligned rectangle: the page fill, each rule (a butt-capped stroke), the
- * margin rule, and the edge stroke (the page box less its inset box). The exact coverage of an axis-aligned rectangle in a pixel is
- * the product of its overlaps in x and y, so the fragment computes, per pixel, the same exact area the exact-area route rasterises,
- * and composites the items in the template's order. Grid crossings are a union: area(H) + area(V) - area(H and V), where the
- * intersection is the product of the two sums of overlaps (the rows span the page in x, the columns span it in y).
- *
- * Why (measured, notebook saturated zoom, 60 Hz kit): the paper's live draws went through the coverage kit per tile position,
- * 668 draws and 679 render-target switches per frame; on a tiled GPU each switch loads and stores an attachment, and the frame cost
- * 13.7-14.6 ms of GPU time, more than a 120 Hz frame. Dotted paper (discs) keeps the composed route.
- */
-
 const UNIFORM_FLOATS = 44;
 
 const SHADER: ShaderModule = {
@@ -101,15 +87,11 @@ void main() {
     },
 };
 
-/** Why the procedural pass does not draw this paper: the composed route draws it instead (counted by the layer). */
 export type ProceduralRefusal = 'dotted' | 'stack' | 'pipeline';
 
 export interface ProceduralPaper {
-    /** Null when this paper and stack can be drawn procedurally, else why not. */
     refusal(paper: Readonly<NotebookPaper>, stack: Readonly<PageStack>): ProceduralRefusal | null;
-    /** True once the pipeline is ready on the host's current device; starts its creation otherwise. */
     ready(): boolean;
-    /** Draws the visible pages of `stack`; returns the indexes of the pages drawn ([first, last]), or null when none is visible. */
     draw(pass: GpuPass, view: ViewState, paper: Readonly<NotebookPaper>, stack: Readonly<PageStack>): readonly [number, number] | null;
     release(): void;
 }
@@ -117,7 +99,6 @@ export interface ProceduralPaper {
 interface Template { readonly paper: Readonly<NotebookPaper>; readonly width: number; readonly height: number;
     readonly rows: readonly [number, number, number]; readonly cols: readonly [number, number, number]; readonly margin: number | null }
 
-/** The offsets as first + k * step, or null when they are not (the generator's loop is an arithmetic series). */
 function series(values: readonly number[], step: number): readonly [number, number, number] | null {
     if (!values.length) return [0, step, 0];
     for (let i = 0; i < values.length; i++) if (Math.abs(values[i] - (values[0] + i * step)) > 1e-6) return null;
@@ -150,7 +131,6 @@ export function createProceduralPaper(host: LayerHost): ProceduralPaper {
             const t = templateOf(paper);
             const first = stack.rects[0];
             if (!t || !first || first.width !== t.width || first.height !== t.height) return 'stack';
-            // One pitch for every page: the fragment finds a pixel's page by division (pageLayout stacks equal pages with one gap).
             const pitch = stack.rects.length > 1 ? stack.rects[1].y - first.y : t.height;
             for (let i = 1; i < stack.rects.length; i++) {
                 const rect = stack.rects[i];
@@ -183,12 +163,10 @@ export function createProceduralPaper(host: LayerHost): ProceduralPaper {
             const surfaceW = Math.round(view.viewport.width * view.viewport.dpr), surfaceH = Math.round(view.viewport.height * view.viewport.dpr);
             const first = stack.rects[0];
             const pitch = stack.rects.length > 1 ? stack.rects[1].y - first.y : t.height;
-            // The visible pages, by the view's world span: the fragment only reads pages in [0, count).
             const top = cam.y, bottom = cam.y + view.viewport.height / cam.z;
             const lo = Math.max(0, Math.floor((top - first.y) / pitch)), hi = Math.min(stack.rects.length - 1, Math.floor((bottom - first.y) / pitch));
             if (hi < lo) return null;
             const firstVisible: Rect = stack.rects[lo];
-            // Device coordinates of the first visible page, in double precision: the shader works near the view, never at a 100 m offset.
             const ox = (firstVisible.x - cam.x) * scale, oy = (firstVisible.y - cam.y) * scale;
             const x0 = Math.max(0, Math.floor(ox)), x1 = Math.min(surfaceW, Math.ceil(ox + t.width * scale));
             const y0 = Math.max(0, Math.floor(oy)), y1 = Math.min(surfaceH, Math.ceil(oy + ((hi - lo) * pitch + t.height) * scale));

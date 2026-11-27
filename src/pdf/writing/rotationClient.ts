@@ -7,15 +7,6 @@ export type PdfRotationResult =
     | { kind: 'unchanged' }
     | { kind: 'update'; bytes: Uint8Array; base: number; pageCount: number; before: number[]; rotations: number[] };
 
-/**
- * Turns pages by appending an incremental update (rotationUpdate.ts), proven before it is returned.
- * Returns bytes only: App still owns the baseline check and its versioned write.
- *
- * Two writers, in turn: one plans the appended section from `source`, a fresh one proves the result
- * (exact prefix, section shape, pdf-lib and PDFium re-reads) — the planner never vouches for itself.
- * The result is assembled HERE from `source`'s own first `base` bytes, so the original reaches the
- * file as a byte-exact prefix by construction, and the verifier checks that again.
- */
 export async function rotatePdfIncrementally(options: {
     source: Blob; turns: { all: number; pages: Array<[number, number]> }; signal: AbortSignal;
 }): Promise<PdfRotationResult> {

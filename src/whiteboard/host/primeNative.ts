@@ -6,8 +6,6 @@ import { recordKey, utf8Length, type EncodedRecord, type RecordIdentity, type Wr
 import type { RehydratedLoad } from '../model/loadTypes';
 import type { MediaId } from '../model/media';
 
-/** Build revision-zero serializer state from the admitted model and its original bytes.
- * Repairs are baseline overrides, not synthetic edits or a save. */
 export async function primeNativeLoad(load: RehydratedLoad, baseline: Blob, encoder: EncoderContext,
     cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<{ prime: SerializerPrime; records: RecordChanges }> {
     const doc = load.doc;

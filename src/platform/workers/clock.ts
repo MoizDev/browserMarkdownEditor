@@ -1,6 +1,5 @@
 export const now = (): number => performance.now();
 
-// Only hang clocks restart after suspension. A caller's deadline still includes time in the queue.
 export function watchClock(tick: (time: number, restarted: boolean, suspended: boolean) => void): () => void {
     let previous = now();
     let restart = false;

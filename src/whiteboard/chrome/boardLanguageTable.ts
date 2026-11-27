@@ -1,20 +1,14 @@
 import type { english } from './i18n/english';
 
-// A board language table is checked at compile time against the English source. A missing key, a placeholder set
-// that differs from English, or an English-equal string that is not a reviewed englishTerms entry fails to type-check,
-// so no runtime lookup ever meets an incomplete table.
-
 type English = typeof english;
 export type MessageKey = keyof English;
 
 export interface EnglishTerm { readonly key: string; readonly text: string; readonly reason: string }
 
-/** The `{name}` placeholders a message uses. */
 type Placeholders<S> = S extends `${string}{${infer N}}${infer R}` ? N | Placeholders<R> : never;
 type SamePlaceholders<A, B> = [Placeholders<A>] extends [Placeholders<B>]
     ? ([Placeholders<B>] extends [Placeholders<A>] ? true : false) : false;
 
-/** A plural family is an English `base.one` / `base.other` pair. A language may add its other CLDR categories. */
 type PluralBase = { [K in MessageKey]: K extends `${infer B}.one` ? B : never }[MessageKey];
 type PluralExtra<T, C extends string> = {
     readonly [B in PluralBase as `${B}.${C}`]?: `${B}.${C}` extends keyof T
@@ -29,7 +23,6 @@ type StringsCheck<T> = {
         : never;
 } & PluralExtras<T>;
 
-/** The keys whose string is identical to the English source: each must be a reviewed englishTerms entry. */
 type EnglishEqual<T> = {
     readonly [K in MessageKey]: K extends keyof T
         ? (T[K] extends English[K] ? (English[K] extends T[K] ? K : never) : never)
@@ -47,7 +40,6 @@ export interface BoardLanguageShape {
     readonly strings: { readonly [key: string]: string };
 }
 
-/** Identity at runtime; the type parameter carries the whole check. */
 export function defineBoardLanguage<const T extends BoardLanguageShape>(
     table: T & { readonly strings: StringsCheck<T['strings']>; readonly englishTerms: TermsCheck<T> },
 ): T {

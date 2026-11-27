@@ -70,7 +70,6 @@ export function marksAt(value: RichText, offset: number): Marks {
     const { x: _x, link, ...marks } = run.marks;
     if (!link) return marks;
     if (local < end) return { ...marks, link };
-    // Formatting may split one link into adjacent runs; only its true end stops extension.
     const range = linkRangeAtBlock(block, local);
     return range && range.url === link && local < range.to ? { ...marks, link } : marks;
 }
@@ -84,8 +83,6 @@ export function linkRangeAt(value: RichText, offset: number): { readonly from: n
 export function insertionFragment(value: RichText, from: number, inserted: string, storedMarks: Marks | null): RichFragment {
     check(value, from);
     const { block } = position(value, from);
-    // Unknown marks belong to their original run; their semantics cannot be
-    // inferred for freshly typed characters, even through a stored-mark value.
     const { x: _x, ...marks } = storedMarks ?? marksAt(value, from);
     const lines = normalizePlainInsertion(inserted).split('\n');
     return { blocks: lines.map((text, index) => ({ ...(index === 0 ? insertionBlock(block) : continuation(block)), runs: [{ text, marks }] })) };
@@ -145,7 +142,6 @@ export function enter(value: RichText, selection: RichSelection): RichEdit {
 export function blocks(value: RichText, from: number, to: number, kind: Block['kind'] | 'indent' | 'outdent'): RichEdit {
     check(value, from, to);
     const first = position(value, from), last = position(value, to);
-    // A selection ending at the start of the next block does not include it.
     const lastIndex = to > from && last.offset === 0 ? Math.max(first.index, last.index - 1) : last.index;
     const selected = value.blocks.slice(first.index, lastIndex + 1);
     const end = first.start + selected.reduce((sum, block) => sum + blockTextLength(block), 0) + selected.length - 1;

@@ -14,7 +14,6 @@ function validNote(value: unknown): value is StoredNote {
         && [note.facts.wikilinks, note.facts.mdLinks, note.facts.embeds].every(a => Array.isArray(a) && a.every(s => typeof s === 'string'));
 }
 
-/** A session keeps its own dirty set even while another window owns the writer lock. */
 export class PersistSession {
     private readonly dirty = new Map<string, Change>();
     private readonly abort = new AbortController();
@@ -143,7 +142,6 @@ export class PersistSession {
                 this.media ??= media;
                 this.reset ||= reset || quota;
                 if (quota) {
-                    // Deletion frees cache space and is independent of vault saves.
                     try {
                         const db = await openIndexDatabase();
                         const tx = db.transaction(['vaults', 'notes', 'texts', 'layouts', 'media'], 'readwrite');

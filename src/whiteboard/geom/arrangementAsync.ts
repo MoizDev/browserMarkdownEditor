@@ -13,7 +13,7 @@ export interface ArrangementAsyncOptions {
     readonly cooperate?: () => Promise<void>;
     readonly origin?: TransactionOrigin;
 }
-const DEFAULT_GAP = 10; // default, calibration cut by owner
+const DEFAULT_GAP = 10;
 interface Runner { check(): void; tick(): Promise<void>; due(): boolean }
 function runner(options: ArrangementAsyncOptions): Runner {
     const cooperate = options.cooperate ?? yieldToHost;
@@ -137,8 +137,6 @@ async function pack(items: readonly ArrangeItem[], before: Rect, run: Runner): P
     return result;
 }
 
-/** Same actual logical geometry and transaction as the synchronous planner,
- * without an unsliced sort, pack build, or translation-plan fanout. */
 export async function arrangementTransactionAsync(doc: BoardDoc, selected: readonly NodeId[], action: ArrangementAction,
     services: ArrangementServices, options: ArrangementAsyncOptions): Promise<Transaction> {
     const run = runner(options), revision = doc.rev, host = doc.host; run.check();

@@ -24,7 +24,6 @@ export interface Webgl2CoverageOptions {
     readonly reset: () => void;
     readonly schedulePoll: (callback: () => void) => () => void;
     readonly programs: () => { readonly classify: WebGLProgram; readonly reduce: WebGLProgram } | null;
-    /** Borrowed four-word view, valid only during this synchronous callback. */
     readonly onCount: (tag: CoverageResultTag, counts: Uint32Array) => void;
     readonly onDrop: (tag: CoverageResultTag) => void;
     readonly onDrained?: () => void;
@@ -44,7 +43,6 @@ interface Ticket {
     proof: (() => boolean) | null;
 }
 
-/** Benchmark-only asynchronous reduction; presentation and readback have separate lifetimes. */
 export class Webgl2Coverage {
     readonly #resources: Webgl2CoverageResources;
     readonly #tickets = new Set<Ticket>();

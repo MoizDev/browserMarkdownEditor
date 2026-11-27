@@ -1,4 +1,3 @@
-// FIPS 180-4, §6.2; ingestion hashes bounded slices rather than materializing a Blob.
 const K = new Uint32Array([
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -78,7 +77,6 @@ class Sha256 {
     }
 }
 
-/** The same digest as `hashMedia`, of bytes already in memory. */
 export async function hashMediaBytes(bytes: Uint8Array, signal?: AbortSignal, yieldWork?: () => Promise<void>): Promise<`sha256:${string}`> {
     const hash = new Sha256();
     for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {

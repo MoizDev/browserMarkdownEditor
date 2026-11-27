@@ -5,8 +5,6 @@ import type { Block, Marks, RichFragment, Run } from '../text/richText';
 import { matchingIdentity, validBoardIdentity } from '../workers/protocol';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: clipboard/security contracts and native rich-text representation;
-// independent isolated HTML extraction, no third-party source.
 const CHUNK = 192 * 1024, LIMIT = SECURITY_LIMITS.clipboardHtmlBytes, MAX_NODES = 2_000_000;
 const pause = yieldToHost;
 const ignored = new Set(['script', 'style', 'form', 'object', 'iframe', 'embed', 'svg', 'math', 'template', 'noscript', 'head',
@@ -114,7 +112,6 @@ async function parse(blob: Blob, mode: 'markers' | 'rich' | 'metadata'): Promise
         if ((visited & 255) === 0 || performance.now() - sliceStart > 4) { await pause(); sliceStart = performance.now(); }
     };
     if (mode === 'metadata') {
-        // The declared image and icon are only addresses here: the preview job resolves and fetches them, never this parser.
         let title = '', description = '', ogImage = '', twitterImage = '', icon = '', count = 0;
         for (let child = doc.head.firstElementChild; child; child = child.nextElementSibling) {
             if (++count > SECURITY_LIMITS.htmlElements) throw new RangeError('Preview metadata is too complex');

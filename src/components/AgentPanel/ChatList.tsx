@@ -1,8 +1,3 @@
-// The header's chat switcher: this vault's chats (from .VaultAgent/chats.json),
-// newest first, a New chat row, and a delete button per chat. Deleting is
-// permanent — after the app's own confirm, it also removes the CLI's own
-// session (chatStore.deleteChat).
-
 import { useState } from 'react';
 import type { KeyboardEvent, MouseEvent } from 'react';
 import { AGENT_LABELS } from '../../../shared/vaultAgentProtocol';

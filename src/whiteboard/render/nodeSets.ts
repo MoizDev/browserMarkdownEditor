@@ -13,7 +13,6 @@ abstract class NodeSet implements ReadonlySet<string> {
     }
 }
 
-/** Immutable input-set views avoid cloning a large selection for every ready frame. */
 export class FilteredInk extends NodeSet {
     constructor(private readonly source: ReadonlySet<string>, private readonly mask: ReadonlySet<string> = empty,
         private readonly include = false) { super(); }

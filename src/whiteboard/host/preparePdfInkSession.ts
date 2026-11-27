@@ -18,7 +18,6 @@ export interface PdfInkSourceState {
     getSnapshot(): PdfInkRebindSnapshot;
     subscribe(listener: () => void): () => void;
     readMedia(id: MediaId, signal: AbortSignal): Promise<Blob>;
-    /** After App advanced the generation over this owner's kept write (`writtenAhead`), rebind to it. */
     adoptWritten(): Promise<void>;
 }
 
@@ -28,7 +27,6 @@ export interface PreparePdfInkSessionOptions {
     readonly signal: AbortSignal;
     readonly deadlineMs: number;
     readonly zMax: number;
-    /** Cold agent acquisition cannot initiate annotation of an unannotated PDF. */
     readonly requireExistingNative?: boolean;
     readonly prepareOwned: typeof prepareOwnedPdfInk;
     readonly createHost: typeof createPdfInkHost;
@@ -44,7 +42,6 @@ export interface PreparePdfInkSessionOptions {
 
 const stale = () => new DOMException('PDF ink session ended', 'AbortError');
 
-/** Preparation is pane-cancellable until take; the accepted source then follows the document owner. */
 export async function preparePdfInkSession(options: PreparePdfInkSessionOptions) {
     const { host, identity, signal } = options, documentId = identity.documentId;
     const current = () => identity.kind === 'pdfInk' && host.isCurrent(identity) &&
@@ -74,7 +71,6 @@ export async function preparePdfInkSession(options: PreparePdfInkSessionOptions)
     return prepareAcceptedPdfInkSession(options, accepted);
 }
 
-/** Takes ownership of a genuine admitted source, including on failure. */
 export async function prepareAcceptedPdfInkSession(options: PreparePdfInkSessionOptions, accepted: PdfRuntimeInkSource,
     onTransfer?: () => void) {
     const { host, identity, signal } = options, documentId = identity.documentId;

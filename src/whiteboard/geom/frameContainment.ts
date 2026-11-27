@@ -3,7 +3,6 @@ import { exactAffinePoint } from './exactAffine';
 import { exactLineBetween, exactPoint, exactSide } from './homogeneous';
 import type { Vec2 } from './path';
 
-/** Closed semantic frame body, evaluated in exact affine coordinates. */
 export function pointInTransformedFrame(point: Vec2, box: Rect, localToWorld: Affine): boolean {
     if (![point.x, point.y, box.x, box.y, box.width, box.height, ...localToWorld].every(Number.isFinite)
         || box.width <= 0 || box.height <= 0 || !Number.isFinite(box.x + box.width) || !Number.isFinite(box.y + box.height))

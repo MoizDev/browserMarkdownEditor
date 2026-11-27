@@ -4,7 +4,6 @@ import type { TextSpliceMap } from './rangeMap';
 import type { RichText } from './richText';
 import { finishTextSteps, finishTextStepsCooperative } from './cooperative';
 
-/** Result coordinates are in the old and new projections, respectively. */
 export interface RichTextChange {
     readonly from: number;
     readonly oldTo: number;
@@ -28,8 +27,6 @@ function* pieces(text: RichText, reverse: boolean): Generator<string> {
     }
 }
 
-// Compare bounded pieces without flattening either document or allocating a
-// grapheme array. Yielding also counts empty runs, not just text units.
 function* common(before: RichText, after: RichText, reverse: boolean, limit: number): Generator<void, number> {
     const left = pieces(before, reverse), right = pieces(after, reverse);
     let a = '', b = '', ai = 0, bi = 0, count = 0, visits = 0;
@@ -61,11 +58,6 @@ function* common(before: RichText, after: RichText, reverse: boolean, limit: num
     return count;
 }
 
-/**
- * The smallest common UTF-16 prefix/suffix is widened together until both old
- * and new endpoints are grapheme boundaries. This handles combining marks,
- * regional indicators, and a CR followed by a projected block separator.
- */
 export function* deriveRichTextChangeSteps(before: RichText, after: RichText): Generator<void, RichTextChange | null> {
     if (before === after) return null;
     yield* ensureProjectionSteps(before);
@@ -96,19 +88,16 @@ export function* deriveRichTextChangeSteps(before: RichText, after: RichText): G
     return { from, oldTo, newTo, map: { from, to: oldTo, insertedLength: newTo - from } };
 }
 
-/** Synchronous form for small changes and callers already inside a transaction. */
 export function deriveRichTextChange(before: RichText, after: RichText): RichTextChange | null {
     return finishTextSteps(deriveRichTextChangeSteps(before, after));
 }
 
 export interface RichTextDiffOptions {
     readonly signal?: AbortSignal;
-    /** Must yield to the host scheduler; called between bounded comparison batches. */
     readonly cooperate: () => Promise<void>;
     readonly sliceMilliseconds?: number;
 }
 
-/** Long external changes can share the same algorithm without monopolizing a frame. */
 export function deriveRichTextChangeCooperative(before: RichText, after: RichText, options: RichTextDiffOptions): Promise<RichTextChange | null> {
     return finishTextStepsCooperative(deriveRichTextChangeSteps(before, after), options);
 }

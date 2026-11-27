@@ -13,7 +13,6 @@ export interface ColourGroupBudget {
 }
 
 export interface ColourGroup2d {
-    /** True only after the whole region has been transformed. No ImageData survives a step. */
     step(budget: ColourGroupBudget): boolean;
 }
 
@@ -22,11 +21,6 @@ const MAX_GUARD = 8;
 
 type GroupContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
-/**
- * The caller owns the offscreen group and its lease, invalidates this job on snapshot change,
- * and keeps the prior display until it completes. claim meters transient CPU scratch, not uploads.
- * No ImageData is retained between steps, so abandoning a job holds no scratch (design §4.2:400–407).
- */
 export function createColourGroup2d(ctx: GroupContext, region: ColourGroupRegion, guard = 1): ColourGroup2d {
     const { x, y, width, height } = region;
     if (![x, y, width, height, guard].every(Number.isSafeInteger) || x < 0 || y < 0 ||

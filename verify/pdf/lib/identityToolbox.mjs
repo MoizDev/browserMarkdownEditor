@@ -1,4 +1,3 @@
-// Report provenance for the in-tree shared toolbox; never import an app module.
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';

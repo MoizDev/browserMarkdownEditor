@@ -5,7 +5,6 @@ import type { LoadSampleWire } from '../model/loadTypes';
 
 export type LegacySampleWire = LoadSampleWire;
 
-// R-W29/31: worker-local handles never cross realms; the host admits this native payload anew.
 export function encodeLegacySample(node: StrokeNode, samples: SampleStore, declaredMaxScale: number): LegacySampleWire {
     const seq = samples.sequence(node.samples), count = seq.count;
     const exponent = pointExponent(declaredMaxScale, node.sx, node.sy);

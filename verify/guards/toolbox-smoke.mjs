@@ -13,11 +13,6 @@ import { createReport } from '../lib/report.mjs';
 import { buildIdentity, bindServedBodies } from '../lib/identity.mjs';
 import { opaqueFrameEpub } from '../lib/epubFixture.mjs';
 
-// One autosave of one inserted sentence; opening/reading/restoring never writes.
-// The note phase ends before the separate EPUB frame control starts workers.
-// No trash or move is requested in either phase.
-// The vault index worker starts at idle in every vault by design (AGENTS.md, context/vaultIndex/);
-// what a markdown session must not start is any OTHER worker (PDF, board, EPUB).
 const nonIndexWorker = record => record.op === 'workerStart' && !/(^|\/)index\.worker\b/.test(new URL(record.url ?? '', 'http://x/').pathname);
 const expectedCounts = { createWritable: 1, close: 1, removeEntry: 0, workerStart: 0 };
 const sentence = 'The toolbox sentence survives autosave and a real reload.';
@@ -113,7 +108,7 @@ try {
             const patched = source.slice(0, start) + fault + 'const storage = navigator.storage;\nconst legacyDirectory = FileSystemDirectoryHandle.prototype;\n' + source.slice(end);
             const receipts = report.data.initMutant ??= [];
             receipts.push({ removed: 'main-window and FSA feature guards', frameFault: 'hide FSA constructors only in subframes', continuation: marker });
-            new Function(patched); // A broken mutation is a patch-time fault (VER-13), never a killed gate.
+            new Function(patched);
             await session.context.addInitScript({ content: patched });
         },
     } : session.context;
@@ -129,7 +124,6 @@ try {
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(app.url);
     await seedVault(page, { name: 'Toolbox Vault', files: fixtures });
-    // Atomically snapshot+reset: even a worker starting during seeding is retained.
     const startupCounters = await resetCounters(page);
     report.data.startupCounters = startupCounters;
     await page.getByRole('button', { name: 'Open Vault', exact: true }).click();
@@ -140,8 +134,6 @@ try {
     await fontsReady(page);
     await assert('opened A through the tree', true, (await editor.innerText()).includes('Original A.'));
     if (options.mode !== 'dev') {
-        // The ENTRY stylesheet, as index.html links it: lazy panes emit index-*.css chunks of their own,
-        // and picking whichever came first measured a chunk the page never loads as a stylesheet.
         const html = await readFile(resolve(app.distDir, 'index.html'), 'utf8');
         const style = app.identity.files.find(file => /^assets\/index-[^/]+\.css$/.test(file.path) && html.includes(file.path));
         if (!style) throw new Error('CSS initiator control requires the emitted app stylesheet');
@@ -157,7 +149,6 @@ try {
     await editor.click();
     await page.keyboard.press('ControlOrMeta+End');
     await typeText(page, `\n\n${sentence}`);
-    // Only read externally: no save command, no app import and no editor dispatch.
     const deadline = Date.now() + 15000;
     let disk = '';
     while (Date.now() < deadline) {
@@ -183,8 +174,6 @@ try {
     catch (error) { closeWaitFault = error.name; }
     await assert('missing completed close fails as harness fault', 'HarnessFault', closeWaitFault);
     await assert('close wait reports the completed count, not opens', 1, report.data.completedCloseWaits.at(-1).observed);
-    // Fault the outside binary witness, not app code: prove transient retries and
-    // exhaustion without depending on an OS lock race happening on this machine.
     await page.evaluate(() => {
         const prototype = FileSystemFileHandle.prototype, original = prototype.getFile;
         window.__bmeWitnessFault = { remaining: 2, restore: () => { prototype.getFile = original; } };

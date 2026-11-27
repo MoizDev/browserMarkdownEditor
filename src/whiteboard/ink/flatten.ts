@@ -1,22 +1,13 @@
-// D-13, ink.md §5–6. Mathematical references: M. Breuß, Numerical Algorithms for Visual
-// Computing I (2008), §5.3, Theorem 7 (convex hull/de Casteljau); J. Gravesen, "The Length
-// of Bézier Curves", Graphics Gems IV, IV.7 (chord/control-polygon length bounds).
-// This is an independent derivation/implementation, not code from that collection or a library.
 export const INK_CENTRELINE_ERROR_DEVICE_PX = 1 / 16;
 export const INK_RADIUS_ERROR_DEVICE_PX = 1 / 16;
 export const INK_CAP_ERROR_DEVICE_PX = 1 / 16;
-// How far a dash or point motif may slide along the curve from its exact arc position, over a whole
-// stroke (ink/outline.ts): half a device pixel ALONG the stroke, which no one can see. Measured on a
-// 260-sample dashed spiral: 1/64 px needed 42k segments, 1/4 px 11k (the board's CPU estimate then
-// passed its 32 MB floor and showed the memory notice), 1/2 px 8.1k, the solid stroke 6.4k.
 export const INK_DASH_PHASE_ERROR_DEVICE_PX = 1 / 2;
 export const INK_MAX_FLAT_PIECES = 262144;
 export const INK_MAX_FLAT_DEPTH = 32;
 export interface CubicArcMap {
     readonly cubic: Float64Array;
-    // stride 9: t0,t1,x0,y0,x1,y1,prefixChordLength,chordLength,controlPolygonUpperLength.
     readonly pieces: Float64Array;
-    readonly length: number; // Chosen polyline arc coordinate, distinct from its enclosure below.
+    readonly length: number;
     readonly lowerLength: number;
     readonly upperLength: number;
     readonly centreErrorWorld: number;
@@ -26,7 +17,7 @@ export interface FlattenOptions {
     readonly centreToleranceWorld: number;
     readonly radiusToleranceWorld: number;
     readonly radiusChange: number;
-    readonly arcToleranceWorld: number; // Infinity when distance-along-curve paint is not used.
+    readonly arcToleranceWorld: number;
     readonly maxPieces?: number;
 }
 
@@ -101,9 +92,6 @@ export class CubicFlattenJob {
             const gap = Math.max(0, upper - lower);
             const flat = Math.max(pointSegmentDistance(c[2], c[3], c[0], c[1], c[6], c[7]),
                 pointSegmentDistance(c[4], c[5], c[0], c[1], c[6], c[7])) + numeric;
-            // The finite segment's error tube is convex, so enclosing ALL controls encloses the
-            // whole curve. Continuity of chord projection gives the reverse directed bound too,
-            // including cusps/backtracking; distance to the infinite chord line is insufficient.
             const radiusFits = !this.options.radiusChange || (upper === 0 || gap <= ratio * lower);
             const arcFits = this.options.arcToleranceWorld === Infinity || gap <= this.options.arcToleranceWorld * (t1 - t0);
             if (flat <= this.options.centreToleranceWorld && radiusFits && arcFits) {

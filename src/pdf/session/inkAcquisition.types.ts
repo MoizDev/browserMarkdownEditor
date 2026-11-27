@@ -28,9 +28,7 @@ export type PdfEditableInkSource = {
 export interface PdfReadOnlyInkSource {
     kind: 'read-only';
     reason: string;
-    /** What the inspection found, for a caller that must explain it in plain words (rotation); absent = not inspected. */
     cause?: PdfInkInspectionFailure | 'inspection-failed' | 'notebook-source';
-    /** Verified against the actual outer snapshot; never an editing capability. */
     notebookSource?: { readonly path: string; readonly exportedAt?: number };
     outerFingerprint?: string;
     isCurrent?(): boolean;

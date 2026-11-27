@@ -1,11 +1,3 @@
-/**
- * Why Annotate is read-only for a PDF, in the person's words: what was found, what it means for the file, and what they
- * can do. The inspection's codes reached the screen as they were ("PDF ink is read-only: invalid-write-mark."), as did
- * its phases and error classes. The codes stay in the acquisition's `cause` for the code that branches on them.
- *
- * Damaged and undecided are told apart, as the page turn's refusals are (app/pdfGestures.ts `rotationRefusal`): an
- * inspection that could not decide (too large, ambiguous, nested, failed) must not tell anyone their annotations are damaged.
- */
 const READ = 'You can still read it in Original.';
 const KEPT = 'so it is not opened for annotating and the file is left as it is.';
 
@@ -19,8 +11,6 @@ export function inkReadOnlyText(reason: PdfInkRefusal | string): string {
         case 'encrypted': return `This PDF is encrypted, so it cannot be annotated here. ${READ}`;
         case 'signed': return `This PDF is signed, and annotating it would break the signature. ${READ} To annotate it, create an unsigned copy and annotate that.`;
         case 'invalid-write-mark':
-            // What the mark is for: it proves the file is still as this app saved it. Writing now would rebuild the pages from
-            // the embedded original and discard the other change (PdfPane's foreign-mark notice says the same).
             return `This PDF was changed by another program after its annotations were saved here, or saved by a newer version of this app. Annotating it now would discard that change, ${KEPT} ${READ}`;
         case 'missing-attachment': case 'invalid-marker':
             return `The annotations saved inside this PDF are incomplete or damaged, ${KEPT} ${READ}`;
@@ -35,7 +25,6 @@ export function inkReadOnlyText(reason: PdfInkRefusal | string): string {
     }
 }
 
-/** The same for converting Classic annotations: the original is never changed by a refusal. */
 export function legacyConversionRefusalText(reason: PdfInkRefusal | string): string {
     const kept = 'The original PDF and its Classic annotations are unchanged.';
     switch (reason) {
@@ -49,7 +38,6 @@ export function legacyConversionRefusalText(reason: PdfInkRefusal | string): str
     }
 }
 
-/** A refusal, thrown under a name its catchers know, so it is shown as written rather than as an unexpected failure. */
 export const PDF_INK_REFUSAL = 'PdfInkReadOnly';
 export function inkRefusal(message: string): Error { return Object.assign(new Error(message), { name: PDF_INK_REFUSAL }); }
 export function isInkRefusal(cause: unknown): cause is Error {

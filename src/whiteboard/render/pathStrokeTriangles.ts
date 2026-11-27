@@ -2,25 +2,18 @@ import type { LineCap, LineJoin, PathCommand } from '../../platform/types';
 import { flattenCubic } from '../geom/flatten';
 import type { Vec2 } from '../geom/path';
 
-/** Canvas stroke semantics as a UNION of convex pieces: every segment rectangle, join wedge, cap and
- * dash interval is convex and drawn with a union stencil, so overlap never counts twice. Geometry is
- * built in local units (canvas strokes are transformed with the path), then rebased to `origin`. */
 export interface StrokeGeometryOptions {
-    /** Local line width, > 0. */
     readonly width: number;
     readonly cap: LineCap;
     readonly join: LineJoin;
     readonly miterLimit: number;
-    /** Dash lengths in local units (even count, non-negative) and phase; absent means solid. */
     readonly dash?: Readonly<{ array: readonly number[]; phase: number }>;
-    /** Maximum deviation of flattened curves and round outlines, in local units. */
     readonly tolerance: number;
     readonly origin: readonly [x: number, y: number];
     readonly maxTriangles?: number;
 }
 
 export interface StrokeTriangles {
-    /** Origin-relative triangles, six values each; every triangle belongs to the union. */
     readonly triangles: Float64Array;
     readonly bounds: Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
 }
@@ -30,7 +23,6 @@ const MIN_CIRCLE_SEGMENTS = 8, MAX_CIRCLE_SEGMENTS = 128;
 
 export interface Polyline { points: Vec2[]; closed: boolean }
 
-/** The subpaths of a command list, flattened: the stroke route's outline (the area route's contours) and its triangles share them. */
 export function flattenPolylines(commands: readonly PathCommand[], tolerance: number): Polyline[] | null {
     if (!(tolerance > 0) || !Number.isFinite(tolerance)) throw new RangeError('Invalid stroke flattening tolerance');
     const lines: Polyline[] = [];
@@ -38,7 +30,6 @@ export function flattenPolylines(commands: readonly PathCommand[], tolerance: nu
     const add = (point: Vec2) => {
         if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new RangeError('Non-finite stroke vertex');
         if (!current) {
-            // Segments after a closepath start from the subpath's first point (canvas semantics).
             if (!closedStart) throw new RangeError('Path segment before move');
             current = { points: [closedStart], closed: false };
             lines.push(current); count++;
@@ -71,7 +62,6 @@ export function flattenPolylines(commands: readonly PathCommand[], tolerance: nu
     return lines;
 }
 
-/** Consecutive duplicates vanish; a closing duplicate of the first point also vanishes. */
 function clean(points: readonly Vec2[], closed: boolean): Vec2[] {
     const out: Vec2[] = [];
     for (const point of points) {
@@ -82,8 +72,6 @@ function clean(points: readonly Vec2[], closed: boolean): Vec2[] {
     return out;
 }
 
-/** Dash intervals along a polyline, each an open piece. Phase and pattern follow canvas: a total
- * phase is reduced modulo the pattern length, and zero-length on-intervals become dots. */
 /** Dash steps one stroke may take, across all its subpaths. A dash of 1e-6 on a 1000-unit line is 5×10⁸ steps, each a new
  * interval, before any triangle exists, so the count is bounded where the intervals are made, not only at the triangles. */
 const MAX_DASH_STEPS = 262_144;
@@ -122,11 +110,7 @@ function dashPieces(line: Polyline, array: readonly number[], phase: number, bud
     return pieces;
 }
 
-/** Strokes are emitted in local units and rebased to origin. Circles are inscribed polygons whose
- * sagitta is within tolerance (design §5.1), so the union never bulges past the canonical arc. */
 class Sink {
-    /** Origin-relative vertices, two values each, in a buffer that doubles as it fills: the outline is copied out once at the end
-     * (`count` values are in use), where a boxed number array was copied at the end and a literal array was built per triangle. */
     private values = new Float64Array(0);
     private count = 0;
     minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
@@ -146,7 +130,6 @@ class Sink {
         this.minX = Math.min(this.minX, x); this.maxX = Math.max(this.maxX, x);
         this.minY = Math.min(this.minY, y); this.maxY = Math.max(this.maxY, y);
     }
-    /** The emitted triangles as an exact-size copy. */
     triangles(): Float64Array { return this.values.slice(0, this.count); }
     get size(): number { return this.count; }
     quad(a: Vec2, b: Vec2, c: Vec2, d: Vec2): void { this.tri(a, b, c); this.tri(a, c, d); }
@@ -183,26 +166,20 @@ function emitPolyline(sink: Sink, points: readonly Vec2[], closed: boolean, opti
         const nx = -d.y * h, ny = d.x * h;
         sink.quad({ x: a.x + nx, y: a.y + ny }, { x: b.x + nx, y: b.y + ny }, { x: b.x - nx, y: b.y - ny }, { x: a.x - nx, y: a.y - ny });
     }
-    // Joins: every vertex of a closed outline, interior vertices of an open one.
-    // Open outlines join only interior vertices; closed outlines join every vertex, including the first.
     const first = closed ? 0 : 1, last = closed ? n : n - 1;
     for (let i = first; i < last; i++) {
         const v = points[i];
         const dIn = dirs[(i - 1 + segmentCount) % segmentCount], dOut = dirs[i % segmentCount];
         if (options.join === 'round') { sink.circle(v, h, tol); continue; }
         const cross = dIn.x * dOut.y - dIn.y * dOut.x, dot = dIn.x * dOut.x + dIn.y * dOut.y;
-        if (Math.abs(cross) < 1e-12 && dot > 0) continue;  // collinear: the rectangles already meet
-        // Outer side of the turn is opposite the turning direction; normals have length h.
+        if (Math.abs(cross) < 1e-12 && dot > 0) continue;
         const side = cross > 0 ? -1 : 1;
         const n1 = { x: side * -dIn.y * h, y: side * dIn.x * h }, n2 = { x: side * -dOut.y * h, y: side * dOut.x * h };
-        // k = 1 + cos φ, φ the angle between the two normals. k → 0 is a reversal: the wedge has no area.
         const k = 1 + (n1.x * n2.x + n1.y * n2.y) / (h * h);
         if (k <= 1e-12) continue;
         const bevel = (): void => sink.tri(v, { x: v.x + n1.x, y: v.y + n1.y }, { x: v.x + n2.x, y: v.y + n2.y });
         if (options.join === 'bevel') { bevel(); continue; }
-        // Miter length / width = 1 / cos(φ/2) = sqrt(2 / k); beyond the limit canvas falls back to bevel.
         if (Math.sqrt(2 / k) > options.miterLimit) { bevel(); continue; }
-        // Tip of the miter along the bisector: v + (n1 + n2) / k for normals of length h.
         const tip = { x: v.x + (n1.x + n2.x) / k, y: v.y + (n1.y + n2.y) / k };
         sink.quad(v, { x: v.x + n1.x, y: v.y + n1.y }, tip, { x: v.x + n2.x, y: v.y + n2.y });
     }
@@ -220,8 +197,6 @@ function emitPolyline(sink: Sink, points: readonly Vec2[], closed: boolean, opti
     }
 }
 
-/** Stroke outline as convex pieces, or null when the work bound is exceeded (the caller then uses the
- * exact canonical raster for the item). Degenerate input is validated, never silently repaired. */
 export function pathStrokeTriangles(commands: readonly PathCommand[], options: StrokeGeometryOptions): StrokeTriangles | null {
     if (!(options.width > 0) || !Number.isFinite(options.width)) throw new RangeError('Invalid stroke width');
     if (!Number.isFinite(options.miterLimit) || options.miterLimit <= 0) throw new RangeError('Invalid stroke miter limit');

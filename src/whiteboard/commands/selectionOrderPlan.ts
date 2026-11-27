@@ -11,8 +11,6 @@ export interface SelectionOrderRun {
     readonly ids: readonly NodeId[];
 }
 
-/** Build stable sibling runs before opening the history transaction; the
- * commit only allocates current order keys and applies these prepared runs. */
 export async function prepareSelectionOrderPlan(doc: BoardDoc, roots: readonly Node[], direction: SelectionOrder, options: {
     readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<readonly SelectionOrderRun[]> {

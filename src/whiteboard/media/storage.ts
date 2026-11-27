@@ -34,9 +34,6 @@ function check(state: ReceiptState, checkRevision = true): void {
     }
 }
 
-/** The App calls this only after its actual filesystem write or writable-source
- * retention. The issuer independently verifies the inspection, running job and
- * canonical byte store; a null filename is never an embedded-media authority. */
 export function issueMediaStorageReceipt(request: MediaStorageRequest, destination: MediaStorageDestination): MediaStorageReceipt {
     const { runtime, context, entry, blob, inspection } = request, session = runtime.session, document = session.doc, revision = document.rev;
     runtime.jobs.assertContext(context); context.assertCurrent();
@@ -98,8 +95,6 @@ export function issueMediaStorageReceipt(request: MediaStorageRequest, destinati
         return receipt;
     } catch (error) {
         state = null; hold.release();
-        // Source retention transfers only on successful issuance; the caller
-        // still owns its real PDF source lease on every throwing path here.
         throw error;
     }
 }

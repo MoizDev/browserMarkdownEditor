@@ -34,8 +34,6 @@ export function isPdfTextReadingRecord(value: unknown): value is PdfTextReadingR
         (value.pageDigest === undefined || hash(value.pageDigest)) && (value.textAnchor === undefined || anchor(value.textAnchor));
 }
 
-/** Reading never mutates the stored object. A future record contributes only
- * known camera/surface fields; even an unfamiliar anchor is not cloned or used. */
 export function readPdfTextRecord(value: unknown): PdfTextRecordRead | undefined {
     if (!base(value)) return;
     const anchorUsable = value.v === 1 && value.extractionSchema <= 2;
@@ -49,8 +47,6 @@ export function readPdfTextRecord(value: unknown): PdfTextRecordRead | undefined
         if (typeof value.pageDigest === 'string') record.pageDigest = value.pageDigest;
         if (value.textAnchor !== undefined) record.textAnchor = { ...value.textAnchor as PdfTextAnchor };
     }
-    // Legacy emphasis opened Text implicitly. Preserve its camera and anchor,
-    // but only an explicit manual Text choice may restore that surface.
     if (record.surface === 'text' && record.textChoice !== 'manual') record.surface = 'original';
     return { record, storedSchema: value.extractionSchema, storedV: value.v, anchorUsable };
 }

@@ -21,13 +21,8 @@ import type { FrameBudget, FrameToken, GpuReleaseReason, OffscreenPasses } from 
 
 const benchmarkDomain = __BME_BENCH__ ? await import('./benchmarkPaintDomain') : null;
 
-/** The textured-quad pipeline, typed as PipelineDesc so its literal stencil state stays `enabled: false`. */
-/** The shared atlas side (Layer.atlas): one rgba8 target of this size, 17 MB, leased once per frame and shelf-packed. */
 const ATLAS_SIZE = 2064;
-/** The batch buffer's floor, in floats (64 quads of 8). It never shrinks below this. */
 const BATCH_FLOOR_FLOATS = 64 * 8;
-/** Batches in a row that used under a quarter of the buffer before it shrinks back to what they need. Measured by reading only:
- * a long idle run after one large batch is the case this covers, and a short dip does not reallocate. */
 const BATCH_IDLE_LIMIT = 120;
 
 function quadDescriptor(shader: ShaderModule): PipelineDesc {
@@ -39,9 +34,7 @@ function quadDescriptor(shader: ShaderModule): PipelineDesc {
 export interface GpuCompositorOptions {
     readonly owner: Webgl2Owner;
     readonly canvas: HTMLCanvasElement;
-    /** The pane this compositor draws for, reported to the present audit; absent, the audit reports null. */
     readonly paneId?: string;
-    /** Runtime's budgeted, generation-checked broker-grant route, NOT raw owner.resizeSurface. */
     readonly target: SurfaceCommitTarget;
     readonly invalidate: (reason: string) => void;
     readonly onError: (error: unknown) => void;
@@ -73,11 +66,6 @@ function envelope(rect: Rect, width: number, height: number): RectI {
         height: Math.max(0, Math.min(height, Math.ceil(rect.y + rect.height)) - y) };
 }
 
-/** A layer cannot end the compositor's pass or pop another layer's clips/groups (C4.3:544–547).
- * Unbalanced scope rejects the encode instead of silently changing the next layer's picture.
- */
-/** Runs cleanup of a pass whose frame is already failing: the failure in flight is the one reported, so an error from the cleanup is
- * dropped rather than replacing it (measured: a layer's invalid-input from its own scope check hid the error that threw). */
 function quietly(action: () => void): void {
     try { action(); } catch { /* the failure in flight is the one reported */ }
 }
@@ -88,13 +76,9 @@ type PassDesc = Parameters<GpuPass['acquireTarget']>[0];
 type GroupOptions = Parameters<GpuPass['beginGroup']>[1];
 type CompositeOptions = Parameters<GpuPass['composite']>[2];
 
-/** A layer's view of one pass. One instance per use, never pooled: a layer that kept a pass past its frame finds it inactive
- * ('aborted'), which a reused object could not tell from the next frame's pass. Its methods are the prototype's, so a use costs this
- * object and its scope list; the closure form built about seventeen objects per layer per frame, and again per offscreen tile pass. */
 class ScopedPass implements GpuPass {
     readonly #scopes: PassScope[] = [];
     #active = true;
-    /** `onEnd`: the offscreen form, which the layer ends itself. Without it end() is refused: the compositor ends the surface pass. */
     constructor(readonly raw: GpuPass, private readonly onEnd: ((pass: ScopedPass) => void) | null = null) {}
     #check(): void { if (!this.#active) throw new ArenaError('aborted'); }
     #pop(kind: PassScope['kind'], token: ClipToken | GroupToken | CoverageToken): void {
@@ -132,25 +116,17 @@ class ScopedPass implements GpuPass {
         this.onEnd(this);
     }
     finish(): void { this.#active = false; if (this.#scopes.length) throw new ArenaError('invalid-input'); }
-    // A layer that threw is abandoned, not finished: its open scopes are ended on the raw pass, innermost first, without throwing,
-    // so the error that abandoned it is the one reported. A coverage scope needs the output it would have composited; an abandoned
-    // layer composites nothing, so that scope is only dropped.
     abandon(): void {
         this.#active = false;
         while (this.#scopes.length) {
             const top = this.#scopes.pop()!;
             if (top.kind === 'clip') quietly(() => this.raw.popClip(top.token));
             else if (top.kind === 'group') quietly(() => this.raw.endGroup(top.token));
-            // An area scope composites nothing when it ends, so an abandoned one is closed like a group.
             else if (top.kind === 'area') quietly(() => this.raw.endArea(top.token));
         }
     }
 }
 
-/** Normal frames draw directly to the stencil-less displayed surface (design §4, §10).
- * Lifecycle owns layers, native contexts and surface reservations. This object only borrows layers,
- * freezes their bindings, and owns its helper handles and unsubmitted encoders (C4.1–C4.3).
- */
 export class GpuCompositor implements PaneCompositor {
     readonly backend = 'webgl2' as const;
     readonly surface: HTMLCanvasElement;
@@ -170,7 +146,6 @@ export class GpuCompositor implements PaneCompositor {
     #shortfalls: IsolationShortfall[] = [];
     #active: DrawScope | null = null;
     #lastSubmissionSerial = 0;
-    /** Audit only: the camera scale at this compositor's previous encode, for the present's zooming flag. */
     #lastScale: number | null = null;
     #quad: PipelineHandle | null = null;
     #batchQuad: PipelineHandle | null = null;
@@ -181,42 +156,27 @@ export class GpuCompositor implements PaneCompositor {
     #disposed = false;
     #available = true;
     #retryPending = false;
-    /** The binding whose draw is running, and the bindings whose draw a full uniform ring deferred this frame (gpu-h12's 4c118264:
-     * the ring grows to 16 slots / 32 MiB, so this is rare). A null entry is a deferral outside any layer's draw: it refuses. */
     #drawingBinding: CompositorLayer | null = null;
     #deferredBindings = new Set<CompositorLayer | null>();
     #report: CompositorCoverage | null = null;
     readonly #encodings = new Set<FrameEncoder>();
-    /** The layers whose offscreen passes an encoder recorded, told once whether that frame was submitted (Layer.offscreenSettled). */
     readonly #settling = new Map<FrameEncoder, CompositorLayer['layer'][]>();
-    /** The frame's draw scope, reused: one record and one pass set for the compositor's life, emptied per encode. A pass from an
-     * earlier frame is not in the set (each is removed when its layer finishes, and the set is cleared), so it is refused as before. */
     #frameScope: DrawScope | null = null;
     #scopeFor(encoder: FrameEncoder, view: ViewState): DrawScope {
         const scope = this.#frameScope ??= { encoder, view, passes: new Set() };
         scope.encoder = encoder; scope.view = view; scope.passes.clear();
         return scope;
     }
-    /** The offscreen encode in progress: one record and one `begin` object for the compositor's life, so a layer's offscreen encode
-     * builds no closure per layer per frame (it built a `begin` and a `close` per layer, and a spread pass plus a list per tile pass). */
     readonly #offscreen: { encoder: FrameEncoder | null; drawScope: DrawScope | null; layer: CompositorLayer['layer'] | null; auditId: string;
         passes: number; open: ScopedPass | null; counted: GpuPass | null; readonly api: OffscreenPasses } = {
         encoder: null, drawScope: null, layer: null, auditId: 'layer', passes: 0, open: null, counted: null,
         api: { begin: (target, viewport, options) => this.#beginOffscreen(target, viewport, options) } };
     readonly #quadData = new Float32Array(16);
-    /** Batched quads: one instance record (dst x0,y0,x1,y1 and src x,y,w,h) per quad, grown to the largest batch so far, and the batch's uniform block. */
     #batchData = new Float32Array(BATCH_FLOOR_FLOATS);
-    /** Consecutive batches that used less than a quarter of the buffer; the buffer shrinks after BATCH_IDLE_LIMIT of them. */
     #batchIdle = 0;
     readonly #batchUniforms = new Float32Array(16);
-    /** This frame's atlas (Layer.atlas): its lease and shelf cursor, created by the first atlas tile; null until then. */
     #atlas: { lease: TargetLease | null; x: number; y: number; rowH: number } | null = null;
-    /** Layer tile texture → its region of the atlas, for the samples that follow in this frame. */
     readonly #atlasRegions = new Map<TextureHandle, { texture: TextureHandle; x: number; y: number }>();
-    /** Each open offscreen pass's extent in device pixels, both the scope and the audit proxy the layer was given. A quad's destination
-     * is in its pass's pixels: mapped against the pane's surface instead, the CPU route's raster laid into a 516-px tile pass came out
-     * at the tile-to-pane ratio (measured, the 5,642-stroke board at fit on WebGL2: one tile's picture drawn at 0.5 × 0.6, the rest of
-     * it blank, while every tile counted exact). */
     readonly #passExtents = new WeakMap<GpuPass, { readonly width: number; readonly height: number }>();
 
     constructor(options: GpuCompositorOptions) {
@@ -278,9 +238,6 @@ export class GpuCompositor implements PaneCompositor {
                 binding.isolation.opacity > 1 || !['normal', 'multiply'].includes(binding.isolation.blend))) {
                 throw new ArenaError('invalid-input');
             }
-            // Keep callback receiver semantics without reading the caller's mutable binding again. `critical` is copied too: the
-            // refusal gate reads it, and a copy without it reads every incomplete layer as critical (measured on the large drawing:
-            // the board's definition answered no, yet each incomplete band refused the frame, because the copy had dropped it).
             return Object.freeze({ id: binding.id, layer: binding.layer, group: binding.group,
                 isolation: binding.isolation ? Object.freeze({ ...binding.isolation }) : undefined,
                 coverage: binding.coverage.bind(binding),
@@ -350,7 +307,6 @@ export class GpuCompositor implements PaneCompositor {
             plan.own((inverted && binding.group === 'document' ? 1 : 0) + 1,
                 binding.isolation.blend === 'multiply', binding.isolation.bounds?.(frame) ?? full);
         }
-        // Admitted at prepare, like every other target: the frame borrows the atlas from these slots and never allocates it.
         if (snapshot.layers.some(binding => binding.layer.atlas === true)) {
             const bounds = { x: 0, y: 0, width: ATLAS_SIZE, height: ATLAS_SIZE };
             plan.declare({ depth: 0, maskDepth: 0, bounds, targets: { count: 1, bounds } });
@@ -373,9 +329,6 @@ export class GpuCompositor implements PaneCompositor {
         this.#isolationPlan = null;
         if (!plan || !this.#prepared || this.#prepared.frameId !== frame.frameId || !sameToken(this.#prepared.token, frame.token) ||
             !this.#options.owner.frameResourcesReady) { auditCount('compositor', 'refuse:finish-gate'); return; }
-        // Admission only reserves the frame's isolation targets, and without it no frame can present. Deferring it to a
-        // frame whose optional prepare window was left over never came while a live stroke used that window each frame
-        // (measured: 49 of 115 refused notebook frames in one stroke).
         try {
             if (!this.#options.owner.admitIsolation(plan.finish())) {
                 auditCount('compositor', 'refuse:isolation-budget');
@@ -390,9 +343,6 @@ export class GpuCompositor implements PaneCompositor {
         }
     }
 
-    /** See PaneCompositor.encodeOffscreen: the refused frame's offscreen-only encode, for a frame the scheduler skips as unchanged. Off-screen
-     * tile work used to run only inside a presented frame, so finishing a ring tile presented the unchanged picture again (measured: 52 of
-     * 134 zoom presents pixel-identical to the one before). */
     encodeOffscreen(frame: ScheduledFrame): ScheduledEncoding | null {
         this.#check();
         const prepared = this.#prepared;
@@ -416,15 +366,11 @@ export class GpuCompositor implements PaneCompositor {
             return null;
         }
         let encoder: FrameEncoder | null = null;
-        // Audit only: `frame` spans encode to presentation, as the pane's own frame timer does; off, no clock is read.
         const timed = renderAuditEnabled();
         const encodeStarted = timed ? performance.now() : 0;
         try {
             const zooming = timed && this.#zoomStep(frame.view.camera.z);
             if (timed) auditDrawnStart();
-            // Only a critical layer's missing content refuses the frame. A non-critical layer presents with its stand-in (what it
-            // drew), so one incomplete layer cannot hold back every other layer on a quiet board (PLAN issue 3, the 0-presents class).
-            // The verdicts are read once into three facts the report needs; no array per frame.
             let refuse = false, allComplete = true, allSharp = true, anyStale = false;
             for (let i = 0; i < snapshot.layers.length; i++) {
                 const layer = snapshot.layers[i];
@@ -453,8 +399,6 @@ export class GpuCompositor implements PaneCompositor {
             const bounds = { x: 0, y: 0, width: snapshot.metrics.backingWidth, height: snapshot.metrics.backingHeight };
             const drawScope = this.#scopeFor(encoder, frame.view);
             this.#active = drawScope;
-            // Every layer's offscreen passes are recorded before the surface pass; the frame replays independent ones grouped
-            // by program and target (webgl2Frame.ts #order), since a layer's own draws are not reordered here.
             let offscreen = 0;
             this.#atlas = null;
             this.#atlasRegions.clear();
@@ -465,7 +409,6 @@ export class GpuCompositor implements PaneCompositor {
             this.#active = drawScope;
             let document: GroupToken | null = null;
             try {
-                // Invert the COMPOSITED page+ink once; chrome remains outside (C2.5; design §4.1).
                 for (const binding of snapshot.layers) {
                     if (binding.group === 'chrome' && document) { pass.endGroup(document); document = null; }
                     if (binding.group === 'document' && snapshot.appearance.inverted && !document) {
@@ -482,7 +425,6 @@ export class GpuCompositor implements PaneCompositor {
                     drawScope.passes.add(scope);
                     const auditId = (binding as { id?: string }).id ?? 'layer';
                     auditCount(auditId, 'gpu-layer');
-                    // Audit only: count the layer's own draw calls (quads included; gpu-draw minus gpu-quad is its shader work).
                     const layerTarget = renderAuditEnabled() ? new Proxy(scope, { get(target, key) {
                         const value = Reflect.get(target, key, target) as unknown;
                         if (key === 'draw' && typeof value === 'function') return (cmd: unknown) => { auditCount(auditId, 'gpu-draw'); return (value as (c: unknown) => void).call(target, cmd); };
@@ -511,9 +453,6 @@ export class GpuCompositor implements PaneCompositor {
                 this.#active = null;
                 if (document) quietly(() => pass.endGroup(document!));
             }
-            // A deferred draw never reaches the surface as a complete frame: a critical layer that lost a draw refuses the frame
-            // (the previous complete picture stays, and the frame is retried), while a non-critical layer presents what it drew
-            // and the report says the layers are not complete. Either way the next frame is requested.
             const deferred = this.#deferredBindings.size > 0;
             if (deferred) this.#options.invalidate('gpu-uniform-ring-deferred');
             let criticalDeferred = false;
@@ -548,8 +487,6 @@ export class GpuCompositor implements PaneCompositor {
                             auditStage('compositor', 'frame', now - encodeStarted);
                         }
                         this.#lastSubmissionSerial = submitted.serial;
-                        // Publish the canonical CSS extent with the completed framebuffer, not
-                        // during metrics preparation while the previous picture is still displayed.
                         this.surface.style.width = `${snapshot.metrics!.viewport.width}px`;
                         this.surface.style.height = `${snapshot.metrics!.viewport.height}px`;
                         done = true;
@@ -593,7 +530,6 @@ export class GpuCompositor implements PaneCompositor {
         }
     }
 
-    /** Discards an encoder's recorded frame: every layer whose offscreen passes it held hears that they never reached the device. */
     #discard(encoder: FrameEncoder): void {
         try { this.#options.owner.discardFrame(encoder); }
         finally { this.#settle(encoder, false); }
@@ -608,17 +544,12 @@ export class GpuCompositor implements PaneCompositor {
         }
     }
 
-    /** Audit only: whether the camera scale moved since the previous encode, then remembers this one. */
     #zoomStep(scale: number): boolean {
         const zooming = this.#lastScale !== null && scale !== this.#lastScale;
         this.#lastScale = scale;
         return zooming;
     }
 
-    /** A refused frame still encodes every layer's offscreen passes and submits them, so the tiles they compose land and a later
-     * frame can complete; only the surface pass is skipped. Measured in the notebook pan: 205 refused frames, 1640 tile encodings
-     * and no tile completed, because a refused frame encoded nothing. No report is set for this frame, so coverage() answers
-     * presented: false and the pane never claims it. */
     #encodeRefused(snapshot: Snapshot, frame: ScheduledFrame): ScheduledEncoding | null {
         let encoder: FrameEncoder | null = null;
         try {
@@ -631,16 +562,11 @@ export class GpuCompositor implements PaneCompositor {
             this.#atlasRegions.clear();
             try { offscreen = this.#encodeOffscreen(snapshot, frame, encoder, drawScope); } finally { this.#active = null; }
             if (!offscreen) {
-                // Nothing was recorded, so nothing a layer counted at encode can be lost: its layers settle as submitted. Told the
-                // frame was discarded, the board's tile composer asked for the next frame to redo conversions that never existed,
-                // at every unchanged frame: measured, a notebook at rest prepared 60 frames a second for good, drawing its ~450
-                // visible strokes live in each.
                 this.#encodings.delete(encoder);
                 try { this.#options.owner.discardFrame(encoder); } finally { this.#settle(encoder, true); }
                 return null;
             }
             auditCount('compositor', 'offscreen-on-refuse', offscreen);
-            // A deferred offscreen tile is retried on the next frame: its layer is not complete until it composes.
             if (this.#deferredBindings.size > 0) this.#options.invalidate('gpu-uniform-ring-deferred');
             const owned = encoder;
             let done = false;
@@ -714,9 +640,6 @@ export class GpuCompositor implements PaneCompositor {
         paintPageScope(ctx, this.page(view, index), paint);
     }
 
-    /** Capture uses the same generation/ring and layer-host helpers as an onscreen frame,
-     * but never touches its surface or presentation state (C4.5; design §4.6).
-     */
     withCapturePass(encoder: FrameEncoder, pass: GpuPass, view: ViewState, paint: (scope: GpuPass) => void): void {
         this.#check();
         if (this.#active || !this.#available || !this.#quad || !this.#linear || !this.#nearest) throw new ArenaError('out-of-budget');
@@ -727,7 +650,6 @@ export class GpuCompositor implements PaneCompositor {
         finally { this.#active = null; if (painted) scoped.finish(); else scoped.abandon(); }
     }
 
-    /** Host methods are scoped capabilities, not retained access to a previous frame's ring (C4.3). */
     uniforms(bytes: ArrayBufferView): UniformSlice {
         if (!this.#active || !this.#active.passes.size) throw new ArenaError('invalid-input');
         return this.#active.encoder.uniforms(bytes);
@@ -738,15 +660,11 @@ export class GpuCompositor implements PaneCompositor {
         this.#active.encoder.uniformsInto(bytes, into);
     }
 
-    /** A layer's own refusal during encode (LayerHost.markIncomplete). Recorded against the binding being encoded; encode decides
-     * after the surface pass (a critical layer refuses the frame, a non-critical one presents with layersComplete false). */
     #markIncomplete(reason: string): void {
         auditCount('compositor', `layer-incomplete:${reason}`);
         this.#deferredBindings.add(this.#drawingBinding);
     }
 
-    /** A draw's uniform block. A full ring throws out-of-budget with the frame intact: this draw is skipped (counted), the layer
-     * whose draw it was is marked incomplete for this frame, and encode decides what that means for the frame. */
     #slice(bytes: ArrayBufferView): UniformSlice | null {
         try { return this.uniforms(bytes); }
         catch (error) {
@@ -789,7 +707,6 @@ export class GpuCompositor implements PaneCompositor {
         const { width, height } = this.#extentOf(pass, active.view);
         const scissor = envelope(destRect, width, height);
         if (!scissor.width || !scissor.height) return;
-        // A tile drawn into the shared atlas is sampled from its region: the same texels, shifted by the region's origin.
         const region = this.#atlasRegions.get(gpuTexture);
         const sampledTexture = region ? region.texture : gpuTexture;
         const sampled = region ? this.#options.owner.textureInfo(region.texture) : info;
@@ -810,8 +727,6 @@ export class GpuCompositor implements PaneCompositor {
                 sampler: options.sampling === 'nearest' ? this.#nearest : this.#linear }] } });
     }
 
-    /** Several quads of one texture, in one instanced draw. The same options apply to every quad, and each quad is validated
-     * and clipped exactly as drawTexturedQuad does. A canvas target loops its drawImage: each quad is one drawImage, as before. */
     drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
     drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
     drawTexturedQuads(pass: GpuPass | CanvasRenderingContext2D, texture: TextureHandle | DrawableImage,
@@ -829,14 +744,12 @@ export class GpuCompositor implements PaneCompositor {
             options.sampling !== undefined && !['nearest', 'linear'].includes(options.sampling)) throw new ArenaError('invalid-input');
         const info = this.#options.owner.textureInfo(gpuTexture);
         if (info.format !== 'rgba8') throw new ArenaError('invalid-input');
-        // An atlas tile's quads sample its region of the shared texture: one texture for the whole batch, shifted per quad.
         const region = this.#atlasRegions.get(gpuTexture);
         const ox = region ? region.x : 0, oy = region ? region.y : 0;
         const sampledTexture = region ? region.texture : gpuTexture;
         const sampledInfo = region ? this.#options.owner.textureInfo(region.texture) : info;
         if (region) auditCount('compositor', 'atlas-sample', quads.length);
         const { width, height } = this.#extentOf(pass, active.view);
-        // Every quad is checked before anything is drawn, so a bad quad refuses the whole batch and draws none of it.
         const batch = this.#batchBuffer(quads.length * 8);
         let count = 0, left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
         for (const quad of quads) {
@@ -857,7 +770,6 @@ export class GpuCompositor implements PaneCompositor {
             right = Math.max(right, scissor.x + scissor.width); bottom = Math.max(bottom, scissor.y + scissor.height);
         }
         if (!count) return;
-        // The block is the single quad's layout: viewport, then texture size with opacity (the coverage class is bench-only).
         this.#batchUniforms.set([0, 0, width, height, 0, 0, 0, 0, 0, 0, 0, 0, sampledInfo.width, sampledInfo.height, opacity,
             __BME_BENCH__ ? options.coverage === 'current' ? 3 : options.coverage === 'standin' ? 2 : 0 : 0]);
         const uniforms = this.#slice(this.#batchUniforms);
@@ -868,7 +780,6 @@ export class GpuCompositor implements PaneCompositor {
             scissor: { x: left, y: top, width: right - left, height: bottom - top },
             ...(__BME_BENCH__ && options.coverage && options.coverage !== 'none' ? {
                 coverageClass: options.coverage === 'standin' ? 2 as const : 3 as const,
-                // A batch shares one stand-in ratio; the single path measures it per quad, so this is the declared one.
                 ...(options.coverage === 'standin' ? { standInRatio: options.standInRatio ?? 1 } : {}),
             } : {}),
             bindings: { uniforms: [{ binding: 0, slice: uniforms }], textures: [{ binding: 0, texture: sampledTexture,
@@ -898,11 +809,6 @@ export class GpuCompositor implements PaneCompositor {
         this.#quad = null; this.#batchQuad = null; this.#linear = null; this.#nearest = null;
     }
 
-    /** Each layer's offscreen passes, in layer order, before the surface pass: one pass open at a time, every scope closed. */
-    /** Places one offscreen tile in this frame's shared atlas (Layer.atlas, default off). A tile the atlas cannot take draws its
-     * own target as before, counted under fallback:atlas-* by its reason. The atlas is one lease per frame; each tile takes a
-     * shelf region with a one-texel margin, and the margin is cleared with the region, so sampling at a tile's edge reads
-     * transparent texels, never the neighbour. Only clear passes without stencil use it: a load pass would read stale texels. */
     #atlasRegion(encoder: FrameEncoder, target: TargetHandle, viewport: RectI, options: { clear: RgbaP | null; stencil: boolean }):
         { target: TargetHandle; viewport: RectI; clear: RectI } | null {
         if (!options.clear) { auditCount('compositor', 'fallback:atlas-load'); return null; }
@@ -920,7 +826,6 @@ export class GpuCompositor implements PaneCompositor {
         const origin = { x: atlas.x, y: atlas.y };
         atlas.x += w; atlas.rowH = Math.max(atlas.rowH, h);
         const region = { x: origin.x + pad, y: origin.y + pad, width: viewport.width, height: viewport.height };
-        // The layer keeps sampling its own texture; the registry sends those samples to the region for the rest of the frame.
         this.#atlasRegions.set(this.#options.owner.targetTexture(target), { texture: atlas.lease.texture, x: region.x, y: region.y });
         auditCount('compositor', 'atlas-region');
         return { target: atlas.lease.target, viewport: region, clear: { x: origin.x, y: origin.y, width: w, height: h } };
@@ -956,7 +861,6 @@ export class GpuCompositor implements PaneCompositor {
         } finally { run.encoder = null; run.drawScope = null; run.layer = null; }
     }
 
-    /** Opens one offscreen pass for the layer being encoded (Layer.encodeOffscreen's `begin`). One pass is open at a time. */
     #beginOffscreen(target: TargetHandle, viewport: RectI, options: { clear: RgbaP | null; stencil: boolean; orClear?: RgbaP }): GpuPass {
         const run = this.#offscreen, encoder = run.encoder, drawScope = run.drawScope, layer = run.layer;
         if (!encoder || !drawScope || !layer || run.open) throw new ArenaError('invalid-input');
@@ -969,7 +873,6 @@ export class GpuCompositor implements PaneCompositor {
         run.passes++;
         const auditId = run.auditId;
         auditCount(auditId, 'offscreen-pass');
-        // Audit only: the layer's draws counted through a proxy, which the scope admits as well (the layer receives the proxy).
         const counted: GpuPass = renderAuditEnabled() ? new Proxy(scope, { get(t, key) {
             const value = Reflect.get(t, key, t) as unknown;
             if (key === 'draw' && typeof value === 'function') return (cmd: unknown) => { auditCount(auditId, 'gpu-draw'); return (value as (c: unknown) => void).call(t, cmd); };
@@ -982,7 +885,6 @@ export class GpuCompositor implements PaneCompositor {
         return counted;
     }
 
-    /** The layer's own end of its open offscreen pass; an end of any other pass is refused. */
     readonly #endOffscreen = (pass: ScopedPass): void => {
         if (this.#offscreen.open !== pass) throw new ArenaError('invalid-input');
         this.#closeOffscreen(false);
@@ -998,7 +900,6 @@ export class GpuCompositor implements PaneCompositor {
         else { current.finish(); current.raw.end(); }
     }
 
-    /** The pixel extent a draw into `pass` is mapped against: an offscreen pass's own viewport, else the surface's. */
     #extentOf(pass: GpuPass, view: ViewState): { readonly width: number; readonly height: number } {
         return this.#passExtents.get(pass)
             ?? { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
@@ -1010,10 +911,6 @@ export class GpuCompositor implements PaneCompositor {
             this.surface.width === snapshot.metrics.backingWidth && this.surface.height === snapshot.metrics.backingHeight &&
             snapshot.layers.every(binding => frame.layers.some(meta => meta.layer === binding.layer));
     }
-    /** Compiles the single and the batched quad together: a batch is useless without its single fallback, and one promise
-     * keeps both handles in step. allSettled, so a failure of one still releases the other instead of leaking it. */
-    /** The buffer for a batch of `floats`: grown when it is too small, and shrunk back once `BATCH_IDLE_LIMIT` batches in a row
-     * used under a quarter of it, so one large batch does not keep its memory for the compositor's life. */
     #batchBuffer(floats: number): Float32Array {
         const current = this.#batchData;
         if (current.length < floats) { this.#batchIdle = 0; return (this.#batchData = new Float32Array(floats)); }

@@ -1,4 +1,3 @@
-// Pure display limits; handle identity and the IndexedDB list live in context.
 export const MAX_STORED_VAULTS = 30;
 export const DEFAULT_RECENT_VAULT_LIMIT = 10;
 

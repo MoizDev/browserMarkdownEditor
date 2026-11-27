@@ -1,12 +1,3 @@
-// Writing "<name> (annotated).pdf". See utils/pdfAnnotation.ts for the format.
-//
-// DELIBERATELY pdf-lib ONLY, with no pdf.js import: this module is loaded into a
-// Web Worker (utils/pdfBuild.worker.ts), which has no DOM. Importing the
-// renderer here would drag document/canvas code into the worker and bloat it.
-//
-// It lives apart from pdfAnnotation.ts for that reason alone — the two halves
-// are one feature.
-
 import { FileEmbedder, PDFDict, PDFDocument, PDFHexString, PDFName, PDFString, ParseSpeeds, degrees, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix, setLineJoin, LineJoinStyle } from 'pdf-lib';
 import type { PDFPage, PDFImage } from 'pdf-lib';
 import { NOTEBOOK_SOURCE_ATTACHMENT, type NotebookSource } from './pdfFormat';
@@ -19,57 +10,16 @@ import { rebuildAttachmentTree, verifyAttachmentTree } from './pdfAttachmentTree
 import { artifactHash, immutableArtifact } from './pdfWriteArtifacts';
 import { inspectPdfBytesWriteSafety } from './pdfWriteSafety';
 
-/**
- * pdf-lib's own pacing, switched off — for every load and save in the worker.
- *
- * By default `load()` stops on a `setTimeout(0)` every 100 objects and `save()`
- * every 50, so that a main-thread caller can paint in between. What that costs
- * is the browser's call, not pdf-lib's: a chained zero-delay timer is clamped to
- * ≥4ms, and a HIDDEN page's timers run once a SECOND. Measured on a 1,105-page,
- * 7,032-object PDF: 176 ticks, 1.3-1.5s for ~0.3s of actual parse + serialize —
- * and with the window minimized, still unfinished after ten minutes. The cost
- * tracked OBJECT COUNT, not bytes or work. A worker has nobody to yield to, so
- * the ticks buy nothing here; this is why the pdf-lib callers live in one.
- */
 export const LOAD_WITHOUT_TICKS = { parseSpeed: ParseSpeeds.Fastest } as const;
 export const SAVE_WITHOUT_TICKS = { objectsPerTick: Infinity } as const;
 
-/**
- * How a page's annotations were authored versus how pdf-lib will draw them.
- *
- * THE TRAP: a "landscape" PDF is usually a PORTRAIT page carrying /Rotate 90,
- * and the two libraries disagree about it. pdf.js APPLIES the flag, so the
- * canvas — and therefore every annotation authored on it — is landscape. pdf-lib
- * IGNORES it: getSize() reports the raw MediaBox (portrait), and drawing happens
- * in unrotated user space. Stamping at face value therefore lands the
- * annotations rotated 90° against the page they belong to.
- *
- * So this returns the size the annotations were authored at, plus the matrix
- * that carries that display space into the page's user space. pdf-lib's
- * drawImage places an image's bottom-left at (x,y) and rotates CCW about that
- * point, which is where the anchors come from:
- *
- *   /Rotate    anchor (x, y)    image w x h     rotate
- *   0          (0,  0)          mW x mH           0
- *   90         (mW, 0)          mH x mW          90
- *   180        (mW, mH)         mW x mH         180
- *   270        (0,  mH)         mH x mW         270
- *
- * where mW/mH are the MediaBox dims. Every case covers exactly [0,mW]x[0,mH].
- * `ctm` is that same mapping written as a matrix, for the vector path — which
- * has to place many separate strokes rather than one page-sized image, so it
- * concatenates the transform once and draws inside it.
- */
 function displaySpace(page: PDFPage) {
     const { width: mW, height: mH } = page.getSize();
     const angle = ((page.getRotation().angle % 360) + 360) % 360;
-    // Annotations were authored at the DISPLAYED size, which swaps on a quarter turn.
     const quarterTurned = angle === 90 || angle === 270;
     const width = quarterTurned ? mH : mW;
     const height = quarterTurned ? mW : mH;
 
-    // Display space is y-UP with its origin at the displayed page's bottom-left.
-    // Each matrix below sends (u, v) there to the matching point in user space.
     const ctm: [number, number, number, number, number, number] =
         angle === 90 ? [0, 1, -1, 0, mW, 0]
             : angle === 180 ? [-1, 0, 0, -1, mW, mH]
@@ -79,7 +29,6 @@ function displaySpace(page: PDFPage) {
     return { angle, width, height, ctm };
 }
 
-/** Stamp a page-sized bitmap overlay, honouring the page's /Rotate flag. */
 function stampRaster(page: PDFPage, png: PDFImage): void {
     const { angle, width, height } = displaySpace(page);
     const { width: mW, height: mH } = page.getSize();
@@ -88,16 +37,6 @@ function stampRaster(page: PDFPage, png: PDFImage): void {
     page.drawImage(png, { x, y, width, height, rotate: degrees(angle) });
 }
 
-/**
- * Draw the annotations as real paths — sharp at any zoom, and typically an order
- * of magnitude smaller than the equivalent PNG.
- *
- * Ops arrive in page-local SVG space (origin top-left, y down). `drawSvgPath`
- * already emits `scale(1, -1)` to work that way, so the only conversion needed
- * is flipping each origin into the y-up space established by the CTM below —
- * which is also why every op's rotation arrives pre-negated (see
- * pdfVector.decompose).
- */
 function stampVector(page: PDFPage, ops: VectorOp[]): void {
     if (!ops.length) return;
     const { height, ctm } = displaySpace(page);
@@ -105,9 +44,6 @@ function stampVector(page: PDFPage, ops: VectorOp[]): void {
     page.pushOperators(
         pushGraphicsState(),
         concatTransformationMatrix(...ctm),
-        // tldraw's export sets stroke-linejoin="round" on the root <svg>, and
-        // drawSvgPath has no option for it — PDF's default is a miter, which
-        // spikes the corners of dashed strokes. Set once for the whole layer.
         setLineJoin(LineJoinStyle.Round),
     );
 
@@ -121,9 +57,6 @@ function stampVector(page: PDFPage, ops: VectorOp[]): void {
             // them with `in`, and adds a black border when NEITHER appears.
             color: op.fill ? rgb(op.fill.r, op.fill.g, op.fill.b) : undefined,
             borderColor: op.stroke ? rgb(op.stroke.r, op.stroke.g, op.stroke.b) : undefined,
-            // An opacity embeds a graphics-state dictionary per call, and pdf-lib
-            // does not dedupe them. Opaque is the overwhelmingly common case
-            // (only the highlighter is translucent), so don't pay for it there.
             opacity: op.fill && op.fillOpacity < 1 ? op.fillOpacity : undefined,
             borderOpacity: op.stroke && op.strokeOpacity < 1 ? op.strokeOpacity : undefined,
             borderWidth: op.stroke ? op.strokeWidth : 0,
@@ -135,21 +68,6 @@ function stampVector(page: PDFPage, ops: VectorOp[]): void {
     page.pushOperators(popGraphicsState());
 }
 
-/**
- * Write the annotated PDF: `original`'s pages with `overlays` drawn on top,
- * carrying the pristine original and the snapshot as attachments.
- *
- * THE LOAD-BEARING RULE: `original` must always be the pristine source, never
- * the currently-stamped file. Rebuilding from stamped pages re-stamps strokes
- * over themselves, so every save would darken the annotations and grow the file.
- *
- * COST: a vector page is cheap (path operators, no image encode); a rasterized
- * one is ~150ms (pdf-lib's embedPng dominates) and scales with the number of
- * RASTERIZED pages, not the document's size — measured at ~4.2s for 30 of them.
- * That is why this runs in a worker.
- *
- * @param overlays per page index; undefined = that page has no annotations
- */
 export async function buildAnnotatedPdf(
     original: Uint8Array,
     snapshot: string,
@@ -158,20 +76,6 @@ export async function buildAnnotatedPdf(
 ): Promise<{ bytes: Uint8Array; aliases: string[] }> {
     const refusal = pdfSnapshotRefusal(snapshot);
     if (refusal) throw new PdfBuildRefused(refusal);
-    // No defensive copy of `original`, on two independent grounds:
-    //
-    //  1. OWNERSHIP. This module is reached ONLY from pdfBuild.worker.ts, and the
-    //     worker received `original` as a structured clone — nothing outside
-    //     this thread can see it. The main thread's copy lives untouched in
-    //     pdfRenderCache and is what every subsequent save rebuilds from.
-    //  2. pdf-lib DOES NOT MUTATE IT (verified against 1.17.1): load() hands the
-    //     array straight to a parser whose only reader, ByteStream, indexes it
-    //     read-only and copies out with Uint8Array.slice; attach() stores the
-    //     reference in a FileEmbedder that deflates from it at save time.
-    //
-    // Re-check both if this is ever called from the main thread, or on a pdf-lib
-    // upgrade. The two .slice()s this replaces cost a full extra copy of the
-    // document EACH, on a path that runs every ~2.5s while annotating.
     const originalSafety = await inspectPdfBytesWriteSafety(original);
     if (originalSafety.kind !== 'safe') throw new PdfBuildRefused({ reason: 'unsafe-pdf', safety: originalSafety.kind });
     if (outer) {
@@ -195,8 +99,6 @@ export async function buildAnnotatedPdf(
         const [a, b, c, d, e, f] = geometry.toUserSpace;
         if (a * d - b * c === 0) throw new Error(`Singular display geometry for PDF page ${i + 1}.`);
 
-        // The Form's bounding box clips the page-local display list. Both kinds
-        // of ink use the very same inverse viewport when the Form is placed.
         const layers = overlay.layers ?? [overlay];
         const identity: unknown[] = [];
         for (const layer of layers) identity.push([layer.raster?.length ? await artifactHash(layer.raster) : '', layer.vector ?? []]);
@@ -223,7 +125,6 @@ export async function buildAnnotatedPdf(
             if (entry instanceof PDFDict) resources.set(key, entry.clone());
         }
         page.node.set(PDFName.of('Resources'), resources);
-        // Form space is bottom-up; the viewport inverse expects top-down.
         page.pushOperators(pushGraphicsState(), concatTransformationMatrix(a, b, -c, -d,
             c * geometry.height + e, d * geometry.height + f));
         page.drawPage(embedded, { x: 0, y: 0, width: geometry.width, height: geometry.height });
@@ -250,27 +151,10 @@ export async function buildAnnotatedPdf(
     return { bytes: result, aliases: expected.aliases };
 }
 
-/* ── Notebooks ──────────────────────────────────────────────────────────── */
-
-/** Ruled paper, as PDF drawing colours. Kept in step with paper.ts's SVG by
- *  hand: that file is imported by the main bundle and must stay free of
- *  pdf-lib's `rgb`, so the two cannot share a constant. Change both when the rule changes. */
-const RULE_RGB = rgb(0.765, 0.827, 0.910);      // #c3d3e8
-const MARGIN_RGB = rgb(0.914, 0.722, 0.741);    // #e9b8bd
+const RULE_RGB = rgb(0.765, 0.827, 0.910);
+const MARGIN_RGB = rgb(0.914, 0.722, 0.741);
 const RULE_WIDTH = 0.75;
 
-/**
- * Write a notebook out as a PDF: ruled pages with the writing drawn onto them.
- *
- * The ruling is drawn, not rasterized — so an exported notebook is vector
- * through and through, prints at any size, and costs a few hundred bytes a page
- * rather than an image. It deliberately mirrors the board's paper
- * (whiteboard/host/notebookPaper.ts), because what is exported has to be the
- * paper that was written on.
- *
- * No attachments and no round trip: unlike an annotated PDF this is an OUTPUT,
- * and the `.notebook` file beside it stays the editable original.
- */
 export async function buildNotebookPdf(
     paper: NotebookPaper,
     overlays: Array<PageOverlay | undefined> = [],
@@ -286,7 +170,6 @@ export async function buildNotebookPdf(
     for (let i = 0; i < paper.pageCount; i++) {
         const page = doc.addPage([width, height]);
 
-        // paper.ts works top-down (SVG); PDF user space is bottom-up.
         for (const y of rules) {
             page.drawLine({ start: { x: 0, y: height - y }, end: { x: width, y: height - y }, thickness: RULE_WIDTH, color: RULE_RGB });
         }
@@ -304,9 +187,6 @@ export async function buildNotebookPdf(
             page.drawLine({ start: { x: margin, y: 0 }, end: { x: margin, y: height }, thickness: 1, color: MARGIN_RGB });
         }
 
-        // No page rotation to undo here — these pages are made portrait or
-        // landscape outright — but displaySpace() handles /Rotate 0 as the
-        // identity, so the two canvases share one stamping path.
         const overlay = overlays[i];
         if (!overlay) continue;
         for (const layer of overlay.layers ?? [overlay]) {
@@ -316,10 +196,6 @@ export async function buildNotebookPdf(
     }
 
     if (source) {
-        // Which notebook this came out of. Only a POINTER — the notebook itself
-        // is not embedded, because this file is an output and the notebook is
-        // the original that stays put and keeps being edited. Annotating this
-        // PDF follows the pointer back rather than forking a third file.
         const marker = 'local-vault-pdf/v1;role=notebook-source;format=notebook-source';
         const ref = await FileEmbedder.for(new TextEncoder().encode(JSON.stringify(source)), NOTEBOOK_SOURCE_ATTACHMENT, {
             mimeType: 'application/json',
@@ -327,8 +203,6 @@ export async function buildNotebookPdf(
         }).embedIntoContext(doc.context);
         doc.catalog.set(PDFName.of('Names'), doc.context.obj({ EmbeddedFiles: { Names: [PDFHexString.fromText(NOTEBOOK_SOURCE_ATTACHMENT), ref] } }));
         doc.catalog.set(PDFName.of('AF'), doc.context.obj([ref]));
-        // Said in the document properties too, where any PDF viewer will show
-        // it — the attachment is for this app, this line is for a person.
         doc.setProducer(`Exported from ${source.path}`);
     }
 

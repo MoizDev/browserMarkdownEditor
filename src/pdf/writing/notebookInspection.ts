@@ -67,7 +67,6 @@ function assertUniqueAssociations(doc: PDFDocument): void {
 
 export interface PdfNotebookPointer { path: string; exportedAt?: number }
 
-/** The same full-union, bounded pointer reader serves discovery and output verification. */
 export function readPdfNotebookPointer(doc: PDFDocument): PdfNotebookPointer {
     assertUniqueTreeNames(doc);
     assertUniqueAssociations(doc);
@@ -95,7 +94,6 @@ export function readPdfNotebookPointer(doc: PDFDocument): PdfNotebookPointer {
     return { path, ...(exportedAt !== undefined ? { exportedAt } : {}) };
 }
 
-/** Independent contained-reader inspection of the actual generated output. */
 export async function inspectPdfNotebook(outer: Blob, expectedPath: string, cooperate: () => Promise<void>): Promise<{ path: string; pageCount: number }> {
     if (!(outer instanceof Blob) || typeof File !== 'undefined' && outer instanceof File || outer.size < 1 || outer.size > 0x7fffffff ||
         !validNotebookSourcePath(expectedPath)) throw new Error('Invalid notebook PDF inspection source');

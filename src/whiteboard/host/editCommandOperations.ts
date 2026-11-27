@@ -13,13 +13,10 @@ type Operation = { state(): State; run(): void | Promise<void> };
 const enabled: State = Object.freeze({ enabled: true });
 const disabled = (reason: string): State => ({ enabled: false, reason });
 
-/** Commands use the session's selection and transaction authority, not a pane-local copy. */
 export function createEditCommandOperations(options: {
     readonly runtime: BoardRuntime;
     readonly current: () => boolean;
-    /** This view's own editable state; a mutating command re-checks it at run time, not only when shown. */
     readonly canWrite: () => boolean;
-    /** Quiet status for a delete that kept locked descendants (R-11). */
     readonly notice: (message: string) => void;
     readonly frameName: () => string;
     readonly zoom: () => number;
@@ -116,7 +113,6 @@ export function createEditCommandOperations(options: {
         ungroup: operation(() => { const state = selectionState(1, 'structural'); return state.enabled ? selectionState(1, 'ungroup') : state; },
             () => commands.ungroup(selected()).then(() => {})),
         frameSelection: operation(structural, () => commands.frameSelection(selected(), options.frameName()).then(() => {})),
-        // Removing a frame keeps its children; only the container goes (R-11 keeps locked ones in the parent too).
         removeFrame: operation(() => {
             const state = selectionState(1, 'structural'); if (!state.enabled) return state;
             return eligibility().roots.every(node => node.kind === 'frame') ? enabled : disabled('Select frames to remove');

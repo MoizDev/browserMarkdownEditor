@@ -9,50 +9,41 @@ import type { DotMetric, InkDot, InkWidth } from './width';
 import { inkCoverageBytes, packInkCoverage } from './packedCoverage';
 
 export interface DashPattern {
-    readonly lengths: readonly number[]; // Positive even-count on/off lengths in world units; no guessed recipe.
+    readonly lengths: readonly number[];
     readonly phase: number;
 }
 export interface ArcPointMotifs {
-    readonly spacing: number; // Exact round dots at these arc positions, NOT short on-intervals.
+    readonly spacing: number;
     readonly phase: number;
 }
 export interface CoverageOptions {
     readonly deviceScale: number;
     readonly closed?: boolean;
-    /** A closed stroke's closing neighbour (ink/curve.ts curveClosure), carried with the options so a
-     * worker materializes the very geometry the caller would; the coverage job itself does not read it. */
     readonly closure?: CurveClosure;
     readonly dotMetric?: DotMetric;
-    readonly dot?: InkDot | null; // Cached WHOLE-stroke classification, mandatory for partial chunks.
+    readonly dot?: InkDot | null;
     readonly dash?: DashPattern;
     readonly pointMotifs?: ArcPointMotifs;
     readonly arcPrefix?: Readonly<{ distanceWorld: number; errorWorld: number; }>;
-    readonly radiusSlopeBound?: number; // Whole-stroke bound required for partial pressure/dash chunks.
+    readonly radiusSlopeBound?: number;
     readonly maxPrimitives?: number;
 }
-/** A chunk's coverage as it is kept and drawn, picked, clipped and bounded: its rows and the bounds and errors certified for
- * them. Its arrays are views on one buffer (packedCoverage.ts). */
 export interface InkCoverage {
-    readonly segments: Float64Array; // stride 6: x0,y0,r0,x1,y1,r1; endpoint-disc convex hulls.
-    // Segment-row indices (into segments, stride 6) where a run of contiguous rows begins, ascending. A run breaks at a dash
-    // off-interval, so the first row after one starts a run; the first emitted row of a chunk always starts one.
+    readonly segments: Float64Array;
     readonly segmentRunStarts: Uint32Array;
-    readonly discs: Float64Array; // stride 3: x,y,r; explicit taps and round point motifs.
-    readonly centreline: Float64Array; // stride 4, undashed canonical centreline approximation.
+    readonly discs: Float64Array;
+    readonly centreline: Float64Array;
     readonly boundsLocal: Readonly<{ x: number; y: number; w: number; h: number; }>;
     readonly centrelineBoundsLocal: Readonly<{ x: number; y: number; w: number; h: number; }>;
-    /** The chunk's curve (its realized samples' cubics) box: a stroke's pick box. */
     readonly curveBoundsLocal: Readonly<{ x: number; y: number; w: number; h: number; }>;
     readonly centreErrorWorld: number;
     readonly radiusErrorWorld: number;
     readonly dashPhaseErrorWorld: number;
-    readonly lengthWorld: number; // Arc-coordinate estimate to carry into the next chunk's prefix.
+    readonly lengthWorld: number;
     readonly lengthLowerWorld: number;
     readonly lengthUpperWorld: number;
     readonly closed: boolean;
 }
-/** The job's whole result: the coverage plus the curve, radii and arc maps it was flattened from. Only the job's own caller
- * (the worker's level-of-detail derivation) reads these; what is kept is the coverage alone (`packInkCoverage`). */
 export interface InkCoverageBuild extends InkCoverage {
     readonly geometry: CurveGeometry;
     readonly radii: Float64Array;
@@ -72,7 +63,6 @@ class Rows {
         }
         return this.stride * this.count++;
     }
-    /** The rows written, as a view (the packed coverage copies them once). */
     rows(): Float64Array { return this.data.subarray(0, this.count * this.stride); }
 }
 class DashCursor {
@@ -194,11 +184,6 @@ export class InkCoverageJob {
             && (source.firstSpan > 0 || !this.reachesEnd) && options.radiusSlopeBound === undefined)) {
             throw new RangeError('Partial pressure/dash geometry needs a certified whole-stroke radius-slope bound');
         }
-        // A dash or dot is placed by arc length, so an arc-length error SLIDES the pattern along the drawn
-        // curve; it moves no outline off the centreline. It has its own budget (INK_DASH_PHASE_ERROR_DEVICE_PX),
-        // no longer a share of the centre tolerance: once freehand spans became real curves, certifying
-        // 1/64 px of drift made a dashed spiral wait for memory forever (measured beside the constant).
-        // The radius term still bounds a pressure stroke's width error.
         const phaseBudget = Math.min(INK_DASH_PHASE_ERROR_DEVICE_PX / options.deviceScale,
             this.radiusSlope ? this.radiusTolerance / (4 * this.radiusSlope) : Infinity);
         this.phaseBudget = phaseBudget;
@@ -242,7 +227,6 @@ export class InkCoverageJob {
         if (!this.resultValue) throw new Error('Ink coverage is not complete');
         return this.resultValue;
     }
-    /** The coverage alone, as it is kept: it holds none of the curve, radii or arc maps the result also carries. */
     get coverage(): InkCoverage {
         if (!this.coverageValue) throw new Error('Ink coverage is not complete');
         return this.coverageValue;
@@ -303,8 +287,6 @@ export class InkCoverageJob {
         }
         const dash = this.dash;
         if (this.pointSpacing) {
-            // Point motifs at a shared arc boundary belong to the following leaf. Skipping zero
-            // spans before emitting uses the same R-W24 right-continuous radius as ordinary dashes.
             if (map.upperLength === 0 || this.nextPoint >= this.arcPosition + length) {
                 this.arcPosition += length; this.row++; this.leafStarted = false; return;
             }
@@ -315,10 +297,6 @@ export class InkCoverageJob {
             this.nextPoint = next; return;
         }
         if (dash && dash.remaining === 0) { dash.advance(); return; }
-        // R-W24: dash intervals are half-open [start,end). At coincident samples the radius is
-        // right-continuous (LATER sample wins). A dash ending there keeps its earlier left-limit
-        // cap: advance the cursor above BEFORE considering a zero-length span. Intermediate zero
-        // spans add no separate disc; the following moving span starts at the final later radius.
         if (dash && map.upperLength === 0) {
             if (!(dash.index & 1) && this.reachesEnd && !this.closed && this.span + 1 === g.spanCount) this.disc(bx, by, r1);
             this.row++; this.progress = 0; this.leafStarted = false; return;
@@ -399,9 +377,6 @@ export class InkCoverageJob {
     }
 }
 
-// ink.md §6.1: conv(D(a,r0),D(b,r1)) = union_t D((1-t)a+tb,(1-t)r0+tr1).
-// Reference for the offset viewpoint only: CGAL 2D Minkowski Sums manual, "Offsetting a Polygon".
-// Tangent normals below follow directly from n·(b-a)=r0-r1; no library code/boolean union.
 export const INK_OUTLINE_FILL_RULE = 'nonzero' as const;
 
 type OutlineWork = Generator<PathCommand | undefined, void>;
@@ -413,8 +388,6 @@ function* outlineArc(x: number, y: number, radius: number, start: number, sweep:
     for (; ;) {
         const angle = sweep / count, c = Math.cos(angle / 2), s = Math.sin(angle / 2);
         const d = s * (1 - c) / (2 * (1 + c));
-        // For k=4/3*tan(theta/4), rho²-1 = d²*u²*(1-u²)², |u|<=1.
-        // max u²(1-u²)²=4/27 and sqrt(1+v)-1<=v/2: radial error <=2*r*d²/27.
         const enough = 2 * radius * d * d / 27 + arithmetic <= tolerance;
         yield undefined;
         if (enough) break;
@@ -438,8 +411,6 @@ function* outlineDisc(x: number, y: number, radius: number, tolerance: number, m
 function* outlineWork(coverage: InkCoverage, deviceScale: number, maxCommands: number): OutlineWork {
     const tolerance = INK_CAP_ERROR_DEVICE_PX / deviceScale, a = coverage.segments;
     for (let i = 0; i < a.length; i += 6) {
-        // Even empty primitives consume a slice: a million zero-radius rows must not hide inside
-        // one iterator.next(). Arc refinement and each output cubic have the same bounded unit.
         yield undefined;
         const ax = a[i], ay = a[i + 1], r0 = a[i + 2], bx = a[i + 3], by = a[i + 4], r1 = a[i + 5];
         const dx = bx - ax, dy = by - ay, distance = Math.hypot(dx, dy), difference = r1 - r0;
@@ -468,8 +439,6 @@ function* outlineWork(coverage: InkCoverage, deviceScale: number, maxCommands: n
 
 // Emission is append-only into the caller's UNPUBLISHED path. Every subpath has positive
 // orientation: fill the entire completed path ONCE with nonzero winding, never each capsule.
-// Work units bound geometry operations, not wall time/GC or the sink's own cost; Layer.prepare
-// checks its deadline between step(1) calls. Cancellation/error means discard the partial path.
 export class InkOutlineJob {
     private iterator: OutlineWork | undefined;
     private emit: ((command: PathCommand) => void) | undefined;

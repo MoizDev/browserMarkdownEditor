@@ -1,4 +1,3 @@
-// Reference-only marker faults. The version guard reads network tuples independently.
 import { createHash } from 'node:crypto';
 const sha = value => createHash('sha256').update(value).digest('hex');
 export const markerSpecs = [

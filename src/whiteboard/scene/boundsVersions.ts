@@ -4,32 +4,21 @@ import { BoundsQuality, validBox } from './bounds';
 import type { Box } from './bounds';
 import type { SceneBounds } from './types';
 
-// Provenance: scene snapshot revision and geometry bounds contracts; independent
-// persistent overlay design, no third-party source.
 type Value = Readonly<{ quality: SceneBounds['quality']; ink: Box | null; selectable: Box | null }>;
-/** One published revision's changes. `nodes` holds every node whose bounds or ordering inputs may have
- * moved, with the value it had before this revision and the value after. `null` means absent. */
 export interface BoundsRevisionChange {
     readonly revision: number;
-    /** A sheet or page changed: every region of this revision must be treated as unknown. */
     readonly structural: boolean;
     readonly nodes: ReadonlyMap<NodeId, { readonly before: Value | null; readonly after: Value | null }>;
 }
-/** History is bounded by revisions and by the node entries it retains; older revisions are not reconstructed. */
 const HISTORY_REVISIONS = 512, HISTORY_NODES = 65_536;
-/** Where pixels may have changed between two revisions: `full` means the span cannot be bounded, so
- * every region is unknown; otherwise only the listed world rectangles (ink, old and new) changed. */
 export type RegionChanges = { readonly full: true } | { readonly full: false; readonly regions: readonly Rect[] };
 export const FULL_REGION_CHANGES: RegionChanges = Object.freeze({ full: true });
-/** Appends the ink rectangle of a settled value. Pending, cold or inkless values are unknown. */
 function appendInk(value: Value, out: Rect[]): boolean {
     if (value.quality === BoundsQuality.Pending || value.quality === BoundsQuality.ColdLayout || !value.ink) return false;
     const [x0, y0, x1, y1] = value.ink;
     out.push(Object.freeze({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 }));
     return true;
 }
-/** Old and new ink of every node a span touched. A dirty node whose box is unchanged still counts,
- * because a paint-only edit changes pixels inside an unchanged box. */
 export function regionChanges(changes: readonly BoundsRevisionChange[] | null): RegionChanges {
     if (!changes) return FULL_REGION_CHANGES;
     const regions: Rect[] = [];
@@ -91,12 +80,10 @@ class BoundsView implements ReadonlyMap<NodeId, SceneBounds> {
     }
 }
 
-/** Updates are touched-only; every view stamps its own revision without rewriting older values. */
 export class BoundsVersions {
     private current: BoundsView;
     private readonly history: BoundsRevisionChange[] = [];
     private retainedNodes = 0;
-    /** Revisions at or below this one have been dropped from `history`. */
     private historyFloor = -1;
     constructor(initialRevision: number) {
         revision(initialRevision);
@@ -118,7 +105,6 @@ export class BoundsVersions {
             else { if (!had) size++; values.set(id, copyValue(value)); }
             if ((++count & 255) === 0) yield;
         }
-        // Dirty ids whose bounds are unchanged (a reorder, say) still name a region the caches must see.
         const nodes = new Map<NodeId, { before: Value | null; after: Value | null }>();
         const note = (id: NodeId) => {
             if (nodes.has(id)) return;
@@ -130,7 +116,6 @@ export class BoundsVersions {
         if (scope?.ids) for (const id of scope.ids) { note(id); if ((++count & 255) === 0) yield; }
         let root: Layer = values.size ? { prior: old.root, values, depth: old.root.depth + 1 } : old.root;
         if (root.depth > MAX_LAYER_DEPTH) {
-            // A new root of its own: views pinned on the old layers keep reading them unchanged.
             const folded = new Map<NodeId, Value>(), seen = new Set<NodeId>();
             for (let layer: Layer | null = root; layer; layer = layer.prior) {
                 for (const [id, value] of layer.values) {
@@ -151,8 +136,6 @@ export class BoundsVersions {
         }
     }
     changedRegionsSince(from: number, to: number): RegionChanges { return regionChanges(this.changesSince(from, to)); }
-    /** Every node a publication in (from, to] touched, or null when that span is not retained or a structural change makes every
-     * node unknown. A dirty node whose box is unchanged is still named (a paint-only edit changes its pixels). */
     changedNodesSince(from: number, to: number): ReadonlySet<NodeId> | null {
         const changes = this.changesSince(from, to);
         if (!changes) return null;
@@ -163,7 +146,6 @@ export class BoundsVersions {
         }
         return ids;
     }
-    /** Every published change in (from, to], in order, or null when that span is not fully retained. */
     changesSince(from: number, to: number): readonly BoundsRevisionChange[] | null {
         if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from > to || from < this.historyFloor) return null;
         const newest = this.history.length ? this.history[this.history.length - 1].revision : this.historyFloor;

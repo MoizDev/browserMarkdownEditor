@@ -7,7 +7,6 @@ export interface DensityObservation {
     readonly estimatedGpuMs: number;
 }
 
-/** Hysteresis advances only on real, consecutive observations, never on an idle timer. */
 export class DensityController {
     private mode: DensityMode = 'direct';
     private frame: number | null = null;

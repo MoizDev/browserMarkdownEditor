@@ -3,7 +3,6 @@ import type { WriterSource } from '../../pdf/writing/protocol';
 import type { RecoveryMediaAsset } from '../../utils/recoveryCopy';
 import { boardRecoveryMedia, type BoardRecoveryRecipe } from '../format/recoveryRecipe';
 
-/** Pure journal data: neither the original PDF tab nor its worker survives in the recipe. */
 export interface PdfRecoveryRecipe {
     readonly version: 1;
     readonly board: BoardRecoveryRecipe;
@@ -31,12 +30,9 @@ export function validate(recipe: PdfRecoveryRecipe): void {
     }
 }
 
-/** Capture this alongside the dirty board recipe, while the PDF source lease is held. */
 export function createPdfRecoveryRecipe(board: BoardRecoveryRecipe, input: Omit<PdfRecoveryRecipe, 'version' | 'board'>): PdfRecoveryRecipe {
     const recipe: PdfRecoveryRecipe = { ...input, board, version: 1 };
     validate(recipe);
-    // Structured clone severs the caller's maps, arrays and typed buffers as well
-    // as rejecting callbacks. Blob slices retain owned bytes, never a disk File.
     const copy = structuredClone(recipe);
     return { ...copy, source: { ...copy.source, pristine: copy.source.pristine.slice(0, copy.source.pristine.size, copy.source.pristine.type),
         outer: copy.source.outer.slice(0, copy.source.outer.size, copy.source.outer.type) } };

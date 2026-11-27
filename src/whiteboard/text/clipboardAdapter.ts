@@ -18,16 +18,12 @@ export interface TextClipboardAdapterOptions {
     readonly classifier: ClipboardClassifierHost;
     readonly html: ClipboardHtmlFrameHost;
     readonly memory: MemoryAllocator;
-    /** Captures the real source sheet, encoder and resource holders at the gesture. */
     copyHost(): TextCopySnapshotHost;
     identity(): BoardJobIdentity;
     isCurrent(identity: BoardJobIdentity): boolean;
-    /** Core owns the OS event and forwards non-text content after editing has ended. */
-    /** The pin is borrowed until the returned board paste settles; Core must not reacquire the window cache. */
     pasteBoard(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal, cache: ClipboardCachePin | null): Promise<void>;
 }
 
-/** Semantic text clipboard endpoint for Core's one DOM/OS clipboard controller. */
 export function createTextClipboardAdapter(options: TextClipboardAdapterOptions) {
     let disposed = false, serial = 0, pending: AbortController | null = null;
     const lifetime = new AbortController();
@@ -40,7 +36,6 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
     };
     return {
         signal: lifetime.signal,
-        /** Prime h2's real clipboard cache; Core then calls its copyEvent/copyMenu. */
         prepareCopy(): CopySnapshot | null {
             if (disposed) return null;
             // A failed capture must not leave the previous range available to an OS event.
@@ -56,7 +51,6 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
             return snapshot;
         },
         isCurrent: current,
-        /** Use as ClipboardCopy.prepareCut for a snapshot with textSelection. */
         prepareCut(snapshot: CopySnapshot): { commit(): void; release(): void } {
             if (!current(snapshot) || !snapshot.textSelection) throw new Error('Text selection changed; cut again');
             const selection = { ...snapshot.textSelection }, revision = snapshot.revision;
@@ -72,10 +66,7 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
                 release() { if (!released) { released = true; proof.release(); } },
             };
         },
-        /** ClipboardInput is sampled by Core during the event, before DataTransfer expires. */
-        /** Call at the OS gesture; the caller owns and releases this pin after the whole paste. */
         capturePaste(): ClipboardCachePin | null { return options.copy.pin(); },
-        /** The caller lends the gesture-captured pin, including an explicit null, for this operation. */
         async paste(input: ClipboardInput, intent: TextPasteIntent, signal: AbortSignal, cache: ClipboardCachePin | null): Promise<boolean> {
             let controller: AbortController | undefined;
             try {
@@ -97,7 +88,6 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
                     || after.revision !== owner.revision || after.selection.anchor !== owner.selection.anchor || after.selection.focus !== owner.selection.focus) return false;
                 if (content.kind === 'empty') return false;
                 if (content.kind === 'text') return options.editor.pasteText(content.fragment, { signal: combined, cooperate: yieldToHost });
-                // The board paste takes ownership before ending this editor; closing it may dispose this adapter.
                 if (pending === controller) pending = null;
                 const boardSignal = AbortSignal.any([signal, controller.signal]);
                 options.editor.manager.close();
@@ -113,7 +103,6 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
     };
 }
 
-/** Pin before an asynchronous OS read and retain sole ownership until the paste has settled. */
 export function pasteWithCapturedClipboard(
     adapter: Pick<ReturnType<typeof createTextClipboardAdapter>, 'capturePaste' | 'paste' | 'signal'>,
     acquire: (signal: AbortSignal) => Promise<ClipboardInput>, intent: TextPasteIntent, signal: AbortSignal,
@@ -144,7 +133,6 @@ export interface TextClipboardDocumentOwner {
     }): () => void;
 }
 
-/** Borrow the document owner's one C2 instance and return its text authority with one lifetime. */
 export function bindTextClipboardAdapter(owner: TextClipboardDocumentOwner, options: Omit<TextClipboardAdapterOptions, 'copy'>) {
     const adapter = createTextClipboardAdapter({ ...options, copy: owner.clipboardCopy });
     let unbind: () => void;

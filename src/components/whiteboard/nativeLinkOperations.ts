@@ -11,7 +11,6 @@ import type { BoardTextQuestion } from './useNativeBoardDialogs';
 type LinkableNode = Extract<Node, { readonly kind: 'figure' | 'sticky' | 'picture' | 'linkcard' | 'embed' }>;
 const LINKABLE: ReadonlySet<string> = new Set(['figure', 'sticky', 'picture', 'linkcard', 'embed']);
 
-/** The dialog captures a real node/text revision; its answer cannot edit a replacement selection. */
 export function createNativeLinkOperations(options: {
     readonly runtime: BoardRuntime;
     readonly lease: NativeViewLease;
@@ -20,13 +19,11 @@ export function createNativeLinkOperations(options: {
     readonly requestText: (question: BoardTextQuestion) => Promise<string | null>;
     readonly requestTextChoice: (question: BoardTextQuestion) => Promise<{ readonly value: string } | 'alt' | null>;
     readonly notice: (message: string) => void;
-    /** The board's translated text for a key; the Edit link dialog's own words come from its table. */
     readonly t: (key: string) => string;
 }) {
     const { runtime, lease } = options, session = runtime.session, doc = session.doc;
     if (lease.runtime !== runtime) throw new Error('Link actions need the attached board session');
     const environment = { appOrigin: location.origin };
-    // Every kind the model gives a URL can carry a link; a link card and an embed are the two that must keep one.
     const selected = () => {
         const selection = runtime.selection.getSnapshot();
         const node = selection.selected.length === 1 ? doc.nodes.get(selection.selected[0]) : undefined;
@@ -40,7 +37,6 @@ export function createNativeLinkOperations(options: {
         if (node && !isLocked(doc, node)) return { enabled: true };
         return { enabled: false, reason: 'Select text or one unlocked picture, figure, note or card' };
     };
-    // Links open in a new tab, which the dialog says; an address that is not a valid URL is refused in the field, not later.
     const ask = (initial: string, allowEmpty: boolean) => options.requestTextChoice({ title: options.t('chrome.editLink'), body: options.t('dialog.linkNewTab'),
         confirmLabel: options.t('chrome.continue'), altLabel: allowEmpty ? options.t('dialog.clear') : undefined,
         input: { label: options.t('dialog.url'), initialValue: initial, placeholder: 'https://…', validate(value) {
@@ -61,7 +57,6 @@ export function createNativeLinkOperations(options: {
     const editCard = async () => {
         const node = selected(), selection = runtime.selection.getSnapshot(), revision = doc.rev;
         if (!node || isLocked(doc, node)) return;
-        // A card needs its address; any other item loses its link when the field is left empty.
         const card = node.kind === 'linkcard' || node.kind === 'embed';
         const answer = await ask(node.url ?? '', !card);
         if (answer === null) return;

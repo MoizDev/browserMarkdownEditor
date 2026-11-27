@@ -13,8 +13,6 @@ export interface PdfTiledTextSurfaceProps extends Pick<PdfReadingTextProps,
     filePath: string;
     findMemory: PdfFindMemory;
     checkpoint: PdfViewPos;
-    /** Omit for a fresh Original-to-Text mapping; provide for restoration. */
     anchor?: PdfTextAnchor;
-    /** Lets the pane map back from Text without taking ownership of the reader. */
     onReader?(reader: PdfTextReader | undefined): void;
 }

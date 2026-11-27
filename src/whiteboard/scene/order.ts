@@ -1,5 +1,3 @@
-// render.md §2/6: paint order is independent of spatial/material order. Fixed-size leaves keep
-// edits to splices of touched runs; Fenwick counts provide ranks without renumbering every node.
 export const PAINT_ORDER_CHUNK = 256;
 const EMPTY = new Uint32Array(0);
 export interface PaintOrderChunk { readonly slots: Uint32Array; readonly count: number }
@@ -83,8 +81,6 @@ export class PaintOrder {
             added.add(slot); incoming[i] = slot; maxSlot = Math.max(maxSlot, slot);
             if ((++work & 255) === 0) yield;
         }
-        // Growing the location table must also be sliced; TypedArray.fill/set on
-        // a million entries would otherwise defeat a cooperative splice.
         if (maxSlot >= this.locations.length) {
             let size = this.locations.length;
             while (size <= maxSlot) size *= 2;
@@ -156,7 +152,6 @@ export class PaintOrder {
         const target = fromSheet === toSheet && toRank > first + count ? toRank - count : toRank;
         yield* this.spliceSteps(toSheet, target, 0, slots);
     }
-    /** Cold construction only; callers seal before exposing ranks or accepting edits. */
     appendBootstrap(sheetId: number, input: ArrayLike<number>, first: number, count: number): void {
         if (!Number.isInteger(count) || count < 0 || count > PAINT_ORDER_CHUNK || first < 0 || first + count > input.length) throw new RangeError('Invalid bootstrap order chunk');
         if (!count) return;

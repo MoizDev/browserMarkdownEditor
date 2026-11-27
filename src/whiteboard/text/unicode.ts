@@ -2,7 +2,6 @@ import { bidiBrackets, unicodeTables } from './unicodeTables';
 
 type Property = 'lineBreak' | 'bidiClass' | 'eastAsianWidth' | 'category' | 'extendedPictographic';
 
-/** Unicode 17.0 properties, independent of the browser's ICU version. */
 export function unicodeProperty(property: Property, codePoint: number): string {
     if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) throw new RangeError('Invalid Unicode code point');
     const table = unicodeTables[property];
@@ -17,7 +16,6 @@ export function unicodeProperty(property: Property, codePoint: number): string {
     throw new Error('Incomplete Unicode property table');
 }
 
-/** UAX #9 paired bracket mapping; undefined for non-brackets. */
 export function bidiBracket(codePoint: number): { pair: number; open: boolean } | undefined {
     let lo = 0, hi = bidiBrackets.length / 3 - 1;
     while (lo <= hi) {

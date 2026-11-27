@@ -34,14 +34,9 @@ async function completedCloses(page, { name, path, count, timeoutMs = 10000, int
     } finally { observation.elapsedMs = performance.now() - started; }
 }
 
-/** Install before creating a page. Restored handles need prototype grants too.
- * @param {import('playwright').BrowserContext} context
- * @param {{name: string}} options
- */
 export async function installVault(context, { name }) {
     if (!name || /[/\\]/.test(name)) throw new Error('The OPFS vault needs one nonempty folder name');
     await context.addInitScript(({ name }) => {
-        // The picker belongs to the host, never the opaque reader/engine realm.
         if (window !== window.top) return;
         let storage;
         try { storage = navigator.storage; } catch { return; }
@@ -68,10 +63,6 @@ function checkedPath(path) {
     return parts;
 }
 
-/** Seed after goto, before Open Vault. Text or bytes; binary never travels as text.
- * @param {import('playwright').Page} page
- * @param {{name: string, files: Record<string, string | Uint8Array>}} options
- */
 export async function seedVault(page, { name, files }) {
     const entries = Object.entries(files).map(([path, data]) => ({ parts: checkedPath(path),
         bytes: [...(typeof data === 'string' ? new TextEncoder().encode(data) : data)] }));
@@ -88,11 +79,6 @@ export async function seedVault(page, { name, files }) {
     }, { name, entries });
 }
 
-/** Fresh handles, outside the app's filesystem path. Reads are visible to window counters.
- * @param {import('playwright').Page} page
- * @param {{name: string, path: string, binary?: boolean}} options
- * @returns {Promise<string | Buffer>}
- */
 export async function readVaultFile(page, { name, path, binary = false }) {
     const result = await page.evaluate(async ({ name, parts }) => {
         try {
@@ -114,15 +100,6 @@ export async function readVaultFile(page, { name, path, binary = false }) {
     return binary ? Buffer.from(result.bytes) : new TextDecoder().decode(new Uint8Array(result.bytes));
 }
 
-/** Fresh-handle outside witness. Default bound: 20 attempts, 19 × 25 ms delays.
- * Retries only NotReadableError, never a missing file, and never returns stale bytes.
- * report is required so a transient lock cannot disappear from the run's evidence.
- * @param {import('playwright').Page} page
- * @param {{name: string, path: string, binary?: boolean, attempts?: number, delayMs?: number,
- *   afterCompletedCloses?: {path: string, count: number, timeoutMs?: number, intervalMs?: number},
- *   report: Awaited<ReturnType<typeof import('./report.mjs').createReport>>}} options
- * @returns {Promise<string | Buffer>}
- */
 export async function readWitness(page, { name, path, binary = false, attempts = 20, delayMs = 25, report, afterCompletedCloses }) {
     if (!report?.data) throw new Error('readWitness requires the run report for retry attribution');
     if (!Number.isInteger(attempts) || attempts < 1 || attempts > 100 || !Number.isFinite(delayMs) || delayMs < 0 || delayMs > 1000) {
@@ -149,14 +126,6 @@ export async function readWitness(page, { name, path, binary = false, attempts =
     }
 }
 
-/** Await native async filesystem conditions, never waitForFunction's Promise truthiness.
- * Each predicate evaluation is awaited; a stalled native call is bounded by the same deadline.
- * @template T
- * @param {import('playwright').Page} page
- * @param {(arg: T) => boolean | Promise<boolean>} condition A browser function, no Node closures.
- * @param {{timeoutMs?: number, intervalMs?: number, arg?: T,
- *   report: Awaited<ReturnType<typeof import('./report.mjs').createReport>>}} options
- */
 export async function waitForVault(page, condition, { timeoutMs = 10000, intervalMs = 50, report, arg } = {}) {
     if (!report?.data) throw new Error('waitForVault requires the run report');
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300000 || !Number.isFinite(intervalMs) || intervalMs <= 0) {
@@ -182,11 +151,6 @@ export async function waitForVault(page, condition, { timeoutMs = 10000, interva
     } finally { observation.elapsedMs = performance.now() - started; }
 }
 
-/** External writes, real OPFS move records, or copy+delete (different observer arm).
- * @param {import('playwright').Page} page
- * @param {{name: string, operation: 'write'|'delete'|'move'|'copy-delete', path: string,
- *   destination?: string, data?: string | Uint8Array}} options
- */
 export async function outsideChange(page, { name, operation, path, destination, data }) {
     if (!['write', 'delete', 'move', 'copy-delete'].includes(operation)) throw new Error(`Unknown outside operation: ${operation}`);
     const parts = checkedPath(path);

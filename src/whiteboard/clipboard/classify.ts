@@ -7,15 +7,12 @@ export interface HtmlClipboardMarkers {
     readonly hasPrivate: boolean;
     readonly privatePayload: string | null;
     readonly legacyPayload: string | null;
-    /** Keeps extracted marker strings accounted until the selected decoder owns them. */
     release?(): void;
 }
 export interface ClipboardClassifierHost {
     /** Opaque, network-denied HTML realm; never parse HTML in the vault origin. */
     markers(html: string, signal: AbortSignal): Promise<HtmlClipboardMarkers>;
-    /** This window's own last copy, recognised without parsing (copy.ts `ownPayload`). */
     ownPayload?(html: string): string | null;
-    /** Bounded worker preflight for large inputs, and JSON shape detection. */
     jsonKind(text: string, signal: AbortSignal): Promise<'excalidraw' | 'native-records' | null>;
     readonly appOrigin: string;
 }
@@ -78,7 +75,6 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
         const dropped = input.uriList ? await firstUri(input.uriList, host.appOrigin, signal) : null;
         return dropped ? { kind: 'url', url: dropped } : { kind: 'empty' };
     }
-    // Plain paste takes only non-blank text; a blank or absent text falls through to the normal order, so a copied picture still pastes.
     const plainOnly = intent === 'paste-plain' || intent === 'paste-plain-inverted';
     if (plainOnly && input.text !== null && input.text.trim()) return plain(input.text, signal);
     let markers: HtmlClipboardMarkers | null = null;
@@ -100,8 +96,6 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
     if (input.text !== null) {
         const text = input.text, start = await leading(input.text, signal);
         if (text[start] === '{' || text[start] === '[') {
-            // Syntax/unrecognized input is a null result. A worker budget,
-            // identity or transport failure must not silently become plain text.
             const kind = await host.jsonKind(text, signal);
             signal.throwIfAborted();
             if (kind === 'excalidraw') return { kind, text };

@@ -1,5 +1,4 @@
 import type { DiskStat, DiskVersion } from '../utils/diskVersion';
-// Import-light runtime seam, structurally compatible with the host reading types.
 export interface ReaderToken { vaultId: string; vaultEpoch: number; documentId: string; byteGeneration: number }
 export interface ReaderIdentity extends ReaderToken { path: string; diskRev: number; rawVersion?: DiskVersion }
 export interface ReadOnlyFileSnapshot { snapshotId: string; blob: Blob; stat: DiskStat; fingerprint(signal?: AbortSignal): Promise<DiskVersion>; dispose(): void }

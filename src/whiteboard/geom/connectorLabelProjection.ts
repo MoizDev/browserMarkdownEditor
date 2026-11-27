@@ -73,13 +73,9 @@ function elbowProjection(geometry: ConnectorGeometry, point: Vec2, fallback: num
     return { fraction: clamp(bestAlong / total), distance: bestDistance, point: bestPoint, degenerate: false };
 }
 
-/** Project a label handle onto the visible body, preserving its fraction when
- * the body or radial projection is degenerate rather than inventing movement. */
-/** `snapWorld`, when given, snaps a projection that lands within that world distance of the path's centre onto the
- * centre (fraction 0.5), so the middle of a connector is reachable by dragging. The caller sets it from a screen distance. */
 export function projectConnectorLabel(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, point: Vec2, snapWorld?: number): ConnectorLabelProjection {
     finitePoint(point);
-    const fallback = typeof node.labelAt === 'number' && Number.isFinite(node.labelAt) ? clamp(node.labelAt) : 0.5; // default, calibration cut by owner
+    const fallback = typeof node.labelAt === 'number' && Number.isFinite(node.labelAt) ? clamp(node.labelAt) : 0.5;
     if (node.route === 'elbow') return elbowProjection(geometry, point, fallback);
     const metric = styleGeometryMetrics.bendThreshold(node.size, node.width);
     const threshold = metric.status === 'bracket' ? metric.min : metric.status === 'provisional' ? metric.value : node.width * 3;

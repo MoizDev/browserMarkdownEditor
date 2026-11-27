@@ -9,11 +9,6 @@ function arrayIndex(key: PropertyKey, length: number): number | null {
     return Number.isSafeInteger(index) && index >= 0 && index < length && String(index) === key ? index : null;
 }
 
-/**
- * The spell worker can return hundreds of thousands of ranges. Keep the packed transfer and
- * materialize only the words that viewport painting, hit testing or the menu actually reads.
- * The array surface remains compatible with indexed reads, iteration and Array methods.
- */
 export function packedMisspellings(text: string, ranges: Uint32Array): readonly Misspelling[] {
     if (ranges.length % 2) throw new TypeError('Invalid packed spelling ranges');
     const length = ranges.length / 2;

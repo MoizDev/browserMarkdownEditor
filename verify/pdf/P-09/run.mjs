@@ -1,4 +1,3 @@
-// Real app only: tree -> Annotate -> pen -> Save, with independent OPFS output inspection.
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -98,8 +97,6 @@ try {
       if (event.target instanceof Element && event.target.closest('.pdf-role-notice')) setTimeout(() => window.__p09.contextMenus.push(event.defaultPrevented), 0);
     }, true);
     addEventListener('keydown', event => {
-      // Native dispatch can checkpoint microtasks BETWEEN listeners. A task
-      // observes preventDefault after App's later window listener has run.
       if (event.metaKey && event.key.toLowerCase() === 's') setTimeout(() => window.__p09.saveKeys.push(event.defaultPrevented), 0);
     }, true);
     const post = Worker.prototype.postMessage;
@@ -181,8 +178,6 @@ try {
   if (entry === 'restore' || entry === 'reload') {
     await page.waitForFunction(() => document.querySelector('.pdf-role-notice') || document.querySelector('.tl-container'));
     if (entry === 'restore') {
-      // Neural Brain unmounts EditorPane without changing tab.mode: returning
-      // mounts PdfPane with initial mode='edit', not a second toggle handler.
       await page.getByRole('button', { name: 'Neural Brain — graph view', exact: true }).click();
       await page.waitForSelector('.pdf-pane', { state: 'detached' });
       await page.getByRole('button', { name: 'Back to the editor', exact: true }).click();
@@ -265,8 +260,6 @@ try {
   await requireWitness(saveGesture === true, 'The forced Save key did not reach the app handler');
   if (report.editable && expectation !== 'funnel') await page.waitForFunction(before => window.__p09.closes.length > before, report.beforeForcedSave.closes, { timeout: 60000 });
   await page.screenshot({ path: path.join(output, `${variant}-${entry}.png`) });
-  // A save promise can outlive the gesture; a View/Annotate round trip provides
-  // an app-owned completion boundary rather than a sleep-based zero-write proof.
   if (expectation !== 'funnel') {
     await toggle.click();
     await page.waitForSelector('.pdf-viewer-page canvas[data-p09-painted="yes"]', { timeout: 60000 });
@@ -287,7 +280,6 @@ try {
     report.savedDrawIds = [...ids];
     await requireWitness(ids.size >= originalDraws.length + 1 && originalDraws.every(record => ids.has(record.id)), 'The actual saved snapshot lost an existing or newly drawn stroke');
   }
-  // Painted text is read from the real viewer's text layer, not app internals.
   report.outerText = expectation === 'funnel' ? report.outerTextBefore : await page.locator('.textLayer').first().textContent();
   if (process.env.FAULT === 'worker-death-at-read') {
     await checkIdentity(); report.workerDeath = deathFault.check();

@@ -1,5 +1,3 @@
-/* The app's context-menu surface and rows (index.css .context-menu, .context-menu-item), so the sheet
-   menu reads as one of the app's menus in both themes. Only position and width are its own. */
 .board-sheet-menu {
     position: fixed;
     z-index: 100;
@@ -25,7 +23,6 @@
 }
 
 .board-sheet-list {
-    /* The rows scroll inside a pinned or auto-fit list, so the create button and the grip stay in view. */
     max-height: min(56vh, 800px);
     overflow: auto;
 }
@@ -35,7 +32,6 @@
 .board-sheet-row[data-drop='before'] { box-shadow: inset 0 2px 0 var(--interactive-accent); }
 .board-sheet-row[data-drop='after'] { box-shadow: inset 0 -2px 0 var(--interactive-accent); }
 
-/* The grip is a thin strip under the list; its bar lights up once the list has a pinned height. */
 .board-sheet-grip {
     position: relative;
     height: 8px;

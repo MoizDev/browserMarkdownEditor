@@ -13,7 +13,6 @@ import { readOwnRotationSection, readPageTree } from './rotationUpdate';
 const nameText = (name: PDFName) => name.asString().slice(1).replace(/#([0-9a-fA-F]{2})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
 const hex = (bytes: Uint8Array) => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
-/** pdf-lib's view of a value, spelled canonically: two spellings of one value compare equal. */
 function canonical(value: PDFObject | undefined, depth = 0): string {
     if (depth > 64) throw new PdfEngineError('InvalidPdf', 'PDF page value nesting exceeds its limit');
     if (value === undefined) return 'undefined';
@@ -29,7 +28,6 @@ function canonical(value: PDFObject | undefined, depth = 0): string {
     }
     throw new PdfEngineError('InvalidPdf', 'Unexpected PDF page value');
 }
-/** The same spelling for this writer's own reader, so the two parsers can be compared value for value. */
 function canonicalValue(value: PdfValue, depth = 0): string {
     if (depth > 64) throw new PdfEngineError('InvalidPdf', 'PDF page value nesting exceeds its limit');
     switch (value.kind) {
@@ -53,10 +51,8 @@ async function load(bytes: Uint8Array): Promise<PDFDocument> {
 }
 export const fail = (message: string) => new PdfEngineError('InvalidPdf', `Rotated PDF failed verification: ${message}`);
 
-/** Which appended sections a turn may replace or write, and what besides turned pages they may redefine. */
 export interface TurnSection {
     read(bytes: Uint8Array): Promise<{ base: number; objects: ReadonlySet<number> } | null>;
-    /** Objects other than pages the section must redefine (all of them), or none. */
     readonly extra: ReadonlySet<number>;
 }
 export const PAGE_TURN: TurnSection = {
@@ -64,7 +60,6 @@ export const PAGE_TURN: TurnSection = {
     extra: new Set(),
 };
 
-/** The independent proof of a page turn, shared by plain and annotated PDFs (see verifyNativeRotation). */
 export async function verifyPageTurn(runtime: PdfiumRuntime, input: Uint8Array, output: Uint8Array, base: number, expected: readonly number[],
     context: WorkerContext, own: TurnSection): Promise<void> {
     if (!Number.isSafeInteger(base) || base <= 0 || base > input.length || base > output.length || !Array.isArray(expected)) throw fail('the prefix length is invalid');
@@ -81,7 +76,6 @@ export async function verifyPageTurn(runtime: PdfiumRuntime, input: Uint8Array, 
         if (section && !redefined.delete(num)) throw fail('the appended section leaves out an object it must replace');
     }
     await context.slice();
-    // Two different parsers: this writer's own reads the untouched prefix, pdf-lib the whole result.
     const prefix = input.subarray(0, base);
     const oldPages = await readPageTree(await PdfObjectReader.open(prefix), () => context.slice());
     const after = await load(output);
@@ -107,9 +101,6 @@ export async function verifyPageTurn(runtime: PdfiumRuntime, input: Uint8Array, 
         native.assertEditable();
         const count = native.pageCount();
         if (count !== original.pageCount() || count !== expected.length) throw fail('PDFium reads a different page count');
-        // Loading a page parses its content, so PDFium's own reading is checked on a bounded, spread sample: up to 24
-        // turned pages (size swapped or kept as the turn says, and the exact /Rotate) and 8 untouched ones (size kept).
-        // pdf-lib has already checked every page.
         const untouched = oldPages.flatMap((_, i) => turned.has(oldPages[i].num) ? [] : [i]);
         const spread = (list: number[], max: number) => list.filter((_, k) => k % Math.max(1, Math.ceil(list.length / max)) === 0);
         for (const index of [...spread(turnedPages, 24), ...spread(untouched, 8)]) {

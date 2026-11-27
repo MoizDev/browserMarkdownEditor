@@ -20,7 +20,6 @@ export interface PdfDocumentIdentity {
     source: 'outer' | 'original';
 }
 
-/** No paths, hashes, reader byteGeneration or view/session serial enter this cache key. */
 export function pdfDocKey(identity: PdfDocumentIdentity): PdfDocKey {
     if (!Number.isSafeInteger(identity.vaultEpoch) || identity.vaultEpoch < 0 ||
         !Number.isSafeInteger(identity.bytesGeneration) || identity.bytesGeneration < 0 ||
@@ -42,7 +41,6 @@ export function parsePdfDocKey(value: string): PdfDocumentIdentity {
 }
 
 export interface EngineInitArgs {
-    /** Host-verified WASM Blob URL minted in the opaque broker; never a Module in C5. */
     engineUrl: string;
     wasmBytes: number;
     buildId: string;
@@ -59,14 +57,12 @@ export type TileVariant = TileEmphasisArgs;
 export type PageTileArgs = PageArgs & TileVariant & {
     reqId: number;
     scale: number;
-    /** Interior in the integer device-page grid. Reply includes exactly a 1px apron on each side. */
     rect: DeviceRect;
     profileKey: string;
     annotations: boolean;
     forms: boolean;
 };
 export type PageTileResult = PageTileArgs & {
-    /** Opaque RGBA; internal engine bleed cropped, off-page apron filled white. */
     pixels: ArrayBuffer;
     w: number;
     h: number;
@@ -75,8 +71,6 @@ export type PageTileResult = PageTileArgs & {
     emphasisResult?: { eligibleGlyphs: number; changedPixels: number };
 };
 
-/** Maps cannot cross C5's plain-data boundary. The worker serializes LineTable's
- * heading map to tuples; every other selection array is transferred, not cloned. */
 export interface PageSelectionModel extends Omit<LineTable, 'headingLevels' | 'figures'> {
     charU16: Uint32Array;
     loose: Float32Array;
@@ -98,7 +92,6 @@ export interface PageTextReply {
 }
 export interface PdfWorkerStats { heapBytes: number; docs: number; pagesLoaded: number; blockCacheBytes: number }
 
-/** Operations are a type refinement of C5, never a competing transport/envelope. */
 export interface PdfEngineOps {
     'engine.init': { args: EngineInitArgs; result: BackendInfo & { initMs: number; heapBytes: number } };
     'doc.open': { args: DocOpenArgs; result: DocInfo };

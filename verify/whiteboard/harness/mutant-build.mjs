@@ -1,4 +1,3 @@
-// Source logic mutants are real production builds, prepared BEFORE any browser run starts.
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
@@ -29,8 +28,6 @@ export async function buildMutant({ sourceTree, sourceCommit, scratchRoot, name,
   const directory = await fs.mkdtemp(path.join(root, `${name}-`));
   const jobPath = path.join(directory, 'job.json');
   await fs.writeFile(jobPath, JSON.stringify({ source, sourceCommit, directory, patch, identity, markerSpecs, receiptName }));
-  // The archive, independent dependency copy and Vite build run in their own process, so a
-  // failed build leaves only its scratch directory and never the caller's state.
   await command(process.execPath, [modulePath, '--job', jobPath]);
   return JSON.parse(await fs.readFile(path.join(directory, 'manifest.json'), 'utf8'));
 }

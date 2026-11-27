@@ -34,41 +34,23 @@ const benchmarkMemory = __BME_BENCH__ ? await import('../benchmarkMemory') : nul
 // One native storage convention (rendering-design.md §2.2/2.5; vr-lead ruling):
 // textures and render targets are GL-native bottom-left. Canonical top-left bitmaps
 // upload into budgeted, fenced staging targets, then Y-reversed framebuffer blits.
-// Byte uploads reverse rows; readback reverses once. No pixel-store flip is assumed for
-// ImageBitmap or VideoFrame sources: both are staged top-left and reversed by the blit, as bitmaps always were.
 
-/** Cache-bound allocators reserve actual bytes before any native/CPU allocation (design:603).
- * returnLease is the governor's FINAL return, not the layer-facing close adapter.
- * schedulePoll registers shared-frame maintenance and returns cancellation; each wait
- * cancels its registration after one callback. No backend rAF exists.
- */
 export interface Webgl2Services {
     readonly measurementPaneId?: string;
     working: MemoryAllocator;
     program: MemoryAllocator;
     gpuStaging: MemoryAllocator;
     cpuStaging: MemoryAllocator;
-    /** The uniform ring's CPU scratch: foreground memory, since the frame that writes it needs it now (admitted while the pool fits).
-     * Absent, the scratch takes cpuStaging. */
     uniformCpu?: MemoryAllocator;
-    /** The uniform ring's GPU slots: foreground GPU memory, for the same reason. Absent, the ring takes working. */
     uniformGpu?: MemoryAllocator;
     returnLease(lease: ByteLease): void;
     schedulePoll(callback: () => void): () => void;
-    /** Unrecoverable device fault: stop view GPU work and permanently abandon the broker
-     * reservation, preserving the document session and presenting its 2D path. */
     onFailure(code: GfxError): void;
-    /** Runtime adaptive-budget feedback, never a benchmark-only hook or guessed prepare time. */
     recordUpload?(bytes: number, elapsedMs: number): void;
-    /** Mandatory frame-ring batch: its final packed length is known only at submit. */
     recordUniformUpload?(bytes: number, elapsedMs: number): void;
-    /** Age of the oldest genuinely unsignalled fence; the host supplies input-health evidence. */
     observeFenceAge?(oldestPendingMs: number): void;
-    /** Native GPU time only; disjoint samples are discarded, never replaced with CPU timing. */
     observeGpuTiming?(p95Ms: number, samples: number, disjoint: boolean): void;
-    /** Native offscreen attachment incompleteness, distinct from unsupported features or loss. */
     onFramebufferFailure?(): void;
-    /** Called only when a failed encode schedules the next bounded ring capacity. */
     recordUniformGrowth?(previousBytes: number, nextBytes: number): void;
 }
 
@@ -79,19 +61,14 @@ interface OffscreenSurface {
     readonly height: number;
 }
 
-/** Platform-internal owner only; layers never receive an arena or raw GL (design:88). */
 export interface Webgl2Owner extends BrokerGpuOwner, GpuIsolationAdmission {
     readonly resources: GfxDevice;
-    /** Availability only; per-frame completeness comes from the scheduler's observed calls,
-     * never a claim that an unobserved frame had zero upload cost. */
     readonly uploadMeterAvailable: boolean;
     readonly uniformRingBytes: number;
     discardFrame(encoder: FrameEncoder): void;
     acquireTarget(request: TargetRequest): TargetLease | null;
     releaseTarget(lease: TargetLease): void;
-    /** Platform quad helpers need physical storage dimensions, never a native texture. */
     textureInfo(texture: TextureHandle): Readonly<{ width: number; height: number; format: TextureFormat; usedRect: RectI }>;
-    /** The colour texture a target was created over (its atlas region key). Read-only; never allocates. */
     targetTexture(target: TargetHandle): TextureHandle;
     closeLease(lease: ByteLease): void;
     memory(): ArenaMemory;
@@ -189,27 +166,19 @@ interface RawRead { bytes: Uint8Array<ArrayBuffer>; lease: ByteLease; }
 interface UniformSlot {
     handle: BufferHandle;
     native: NativeBuffer;
-    /** The slot's GPU size in bytes. Its bytes are staged in the device's one scratch while it is the active slot (see below). */
     size: number;
-    /** The newest serial among the frames that wrote into this slot: the slot is reusable once it completes. */
     serial: number;
-    /** Frames that hold the slot (written into it and not yet finished). Several frames share one slot while it has room. */
     owners: number;
     valid: boolean;
-    /** Bytes written so far (an append cursor; a reused slot starts again at 0 only when no frame holds it). */
     used: number;
-    /** The first byte of the slot that the scratch holds: [base, used) is pending upload, everything below is already on the GPU. */
     base: number;
 }
 interface FrameWork {
     encoding: ArenaEncoding;
     controller: ControlledFrame | null;
     signal: AbortSignal;
-    /** The slot the frame writes into now. */
     slot: UniformSlot | null;
-    /** Every slot the frame holds, in order; each is released with the frame. */
     slots: UniformSlot[];
-    /** The frame's own uniform bytes, the size the ring is later sized from. */
     written: number;
     passes: boolean;
     surface: boolean;
@@ -217,7 +186,6 @@ interface FrameWork {
     issued: number | null;
     finished: boolean;
     coverage?: CoveragePlan | null;
-    /** Quad pins for this frame, one per composition program: pinned once per frame, reused by every quad. */
     quadPins: Map<object, QuadPin>;
 }
 type CoveragePlan = { tag: CoverageFrameTag; domain: BenchmarkPaintDomain; root: CoverageRoot | null; missing: boolean; standInRatio: number; width: number; height: number };
@@ -248,9 +216,7 @@ void main() {
 function count(value: number, positive = false): void {
     if (!Number.isSafeInteger(value) || value < (positive ? 1 : 0)) throw new ArenaError('invalid-input', { site: 'count', value, positive });
 }
-/** Bytes per device px of a texture format: an R8 texel is one byte; RGBA8 and R32F are four. */
 function pixelBytes(format: TextureFormat): number { return format === 'r8' ? 1 : 4; }
-/** The GL internal format of a texture format. R32F is only ever used by area targets (see api.ts TextureFormat). */
 function glInternal(gl: WebGL2RenderingContext, format: TextureFormat): number {
     return format === 'rgba8' ? gl.RGBA8 : format === 'r32f' ? gl.R32F : gl.R8;
 }
@@ -261,12 +227,7 @@ function byteSize(...factors: number[]): number {
     return bytes;
 }
 
-// The uniform ring. Three slots is the nominal ring (rendering-design.md:280): frames in flight share them, each writing past the
-// bytes before it. The ring grows to UNIFORM_RING_MAX_SLOTS only when every slot is full or still in flight, and each slot's size
-// follows the largest frame encoded so far (ringSizeFor), 1 MiB to 8 MiB.
 const UNIFORM_RING_SLOTS = 3;
-// The bounds on growth: a count and the ring's total bytes (CPU mirror and GPU buffer each). Past them a write is refused,
-// counted as gpu:uniform-ring-busy, and the frame defers that one draw (webgl2Frame.ts); it never cancels the frame.
 const UNIFORM_RING_MAX_SLOTS = 16;
 const UNIFORM_RING_MAX_BYTES = 32 << 20;
 const UNIFORM_RING_MIN = 1 << 20;
@@ -280,12 +241,10 @@ function alignUp(value: number, alignment: number): number {
     return Math.ceil(value / alignment) * alignment;
 }
 
-/** Levels of a full chain: halve each axis down to 1 texel. */
 function mipLevels(width: number, height: number): number {
     return Math.floor(Math.log2(Math.max(width, height))) + 1;
 }
 
-/** Bytes of a full chain. Each level is charged at its own extent, never as a fixed fraction of level 0. */
 function mipChainBytes(width: number, height: number, channels: number, levels: number): number {
     let bytes = 0;
     for (let level = 0; level < levels; level++) {
@@ -302,7 +261,6 @@ function uniqueUses<T extends string>(uses: readonly T[], allowed: readonly T[])
     return [...new Set(uses)];
 }
 
-/** The broker alone creates contexts; this adapter binds generation-scoped budget services. */
 export function createWebgl2Factory(services: Webgl2Services): (preparation: GpuPreparation) => Promise<Webgl2Owner> {
     return preparation => Webgl2Device.prepare(preparation, services);
 }
@@ -323,8 +281,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #timer: Webgl2Timer;
     readonly #isolation: Webgl2IsolationPool;
     readonly #sampleCounts = new Map<number, ReadonlySet<number>>();
-    // The GL state the replay has issued, so a draw that repeats it issues nothing. Each entry is unknown (undefined or
-    // false) until the replay sets it. #forgetState clears them, and every raw write outside the helpers below calls it.
     #cProgram: WebGLProgram | null | undefined;
     #cFramebuffer: WebGLFramebuffer | null | undefined;
     #cBlend: PipelineDesc['blend'] | undefined;
@@ -333,12 +289,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #cScissor = new Int32Array(4);
     #cScissorKnown = false;
     #cMask = -1;
-    // Program, blend and framebuffer changes the current replay issued (the audit's gl:state).
     #replaySwitches = 0;
-    // Inside a replay a draw leaves its state for the next draw (the cache above is what makes that cheap) and marks the device
-    // dirty; the baseline (#reset) is restored once, before a raw write (`gl()`) or at the replay's end. Reset after every draw,
-    // the cache never hit across draws: measured, a dense notebook's settling frame of ~2,700 draws spent 55 of 90 s main thread
-    // in #reset (about 45 GL calls per draw), 117 ms of submit per frame.
     #replaying = false;
     #dirty = false;
     #bufferSizeVerified = false;
@@ -347,7 +298,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #maxElementIndex: number;
     readonly #handles = new Set<Handle>();
     readonly #ownedLeases = new Map<ByteLease, MemoryAllocator>();
-    // Each CPU lease returns to the allocator it was reserved from (the ring's foreground allocator is not cpuStaging).
     readonly #cpuLeases = new Map<ByteLease, { bytes: number; allocator: MemoryAllocator }>();
     #cpuBytes = 0;
     readonly #programs = new Map<string, Promise<PipelineHandle>>();
@@ -380,19 +330,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #textureUnits = new Set<number>();
     readonly #uniformUnits = new Set<number>();
     readonly #uniformGrowths: { previous: number; next: number }[] = [];
-    /** The size of each ring slot for frames not yet encoded. Only grows, to the largest frame so far (noteFrameBytes). */
     #uniformBytes = UNIFORM_RING_MIN;
-    /** The largest frame's uniform bytes so far: the ring is sized from it, so growth is a one-off, not a recurring stall. */
     #uniformPeak = 0;
-    /** The resident CPU scratch the active slot stages into, and the slot it stages for (see #stage). */
     #uniformScratch: { data: Uint8Array<ArrayBuffer>; lease: ByteLease } | null = null;
     #uniformActive: UniformSlot | null = null;
     #surfaceRevision = 0;
-    // The default framebuffer's completeness at the surface revision it was checked for. checkFramebufferStatus is a synchronous round
-    // trip to the GPU process, and the scheduler commits the surface every frame: asked each time, a frame behind a deep GPU queue
-    // waited for all of it (measured: LARGE=11, 17-24 ms in commitMetrics at every drag's start and release, a 30-40 ms hitch).
     #completeAt: { revision: number; complete: boolean } | null = null;
-    /** The new-size target a raise draws into while the displayed canvas keeps its old picture (openOffscreen). */
     #offscreen: OffscreenSurface | null = null;
     #composition: PipelineHandle | null = null;
     #gridComposition: PipelineHandle | null = null;
@@ -447,7 +390,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             this.cancelCoverage = serial => { const ticket = this.#coverageTickets.get(serial); this.#coverageTickets.delete(serial); ticket?.cancel(); };
         }
         this.uploadMeterAvailable = typeof services.recordUpload === 'function';
-        // Query once per generation, never to reconstruct state in a frame (design:276–277).
         const parameter = (name: number): number => {
             const value: unknown = gl.getParameter(name);
             if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) throw new ArenaError('unsupported');
@@ -475,7 +417,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             this.#sampleCounts.set(format, new Set(samples instanceof Int32Array ? samples : []));
         }
         this.#parallel = gl.getExtension('KHR_parallel_shader_compile');
-        // R32F is renderable only with EXT_color_buffer_float; ADD, MIN and MAX blending of it only with EXT_float_blend.
         this.areaTargets = gl.getExtension('EXT_color_buffer_float') !== null && gl.getExtension('EXT_float_blend') !== null;
         this.#timer = new Webgl2Timer(gl, services.observeGpuTiming);
         gl.drawingBufferColorSpace = RENDER_CONSTANTS.colorSpace;
@@ -504,10 +445,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             () => this.#reserve(this.#services.working, 0), lease => this.closeLease(lease),
             (base, request, metadata) => this.#isolationAlias(base, request, metadata),
             lease => { this.#destroyDirect(lease.target); this.#destroyDirect(lease.texture); });
-        // This is the broker's reservation signal, not the pane-hide work signal.
-        // After its abort the broker may synchronously destroy a context whose canvas
-        // listeners are already removed; observe actual loss after that task, not zero
-        // the retirement ledger merely because healthy disposal was requested.
         const abandoned = () => queueMicrotask(() => {
             if (!this.#lost && this.#gl?.isContextLost()) this.abandon();
         });
@@ -692,10 +629,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
-    /** A layer's lease grants one resource: the device owns it from here and returns it when the resource retires. Layers
-     * could not close their grants (GfxDevice had no closeLease), so every destroyed tile stayed charged (measured: 17 wet
-     * tile leases, 18 MB, held for one stroke while its texture count was 1). Internal multi-resource paths use the
-     * private variants and close their own. */
     createTexture(width: number, height: number, format: TextureFormat, uses: readonly TextureUse[], lease: ByteLease,
         options?: { mips?: boolean }): TextureHandle {
         if (options !== undefined && (typeof options !== 'object' || options.mips !== undefined && typeof options.mips !== 'boolean')) {
@@ -711,7 +644,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#usable();
         this.#extent(width, height, this.limits.maxTexture2D);
         if (format !== 'rgba8' && format !== 'r8' && format !== 'r32f') throw new ArenaError('invalid-input');
-        // An r32f texture is an area target: only where the device offers float targets, and never mipmapped.
         if (format === 'r32f' && (!this.areaTargets || mips)) throw new ArenaError('unsupported');
         if (mips && (width < 1 || height < 1)) throw new ArenaError('invalid-input');
         const checked = uniqueUses(uses, ['sample', 'render', 'copy-src', 'copy-dst']);
@@ -730,8 +662,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (!texture.uses.includes('copy-dst') || src.premultiplied !== true || src.colorSpace !== 'srgb' || src.origin !== 'top-left') {
             throw new ArenaError('invalid-input');
         }
-        // An r8 texture takes its single channel from a PixelUpload only. A bitmap is RGBA: blitting it into R8 would
-        // keep one channel without any error, so it is refused here rather than after the staging copy.
         if (texture.format === 'r8' && !('rowBytes' in src)) throw new ArenaError('invalid-input', { site: 'writeTexture:r8-bitmap', rect: { ...rect }, format: texture.format });
         if (!rect.width || !rect.height) return;
         const encoding = this.#arena.beginEncoding();
@@ -757,7 +687,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 this.#checkUpload();
                 this.#issue(encoding);
             } else {
-                // A VideoFrame has no width or height of its own; its display size is the size WebGL reads it at.
                 const size = 'displayWidth' in src.source ? { width: src.source.displayWidth, height: src.source.displayHeight } : src.source;
                 if (size.width !== rect.width || size.height !== rect.height) throw new ArenaError('invalid-input', { site: 'writeTexture:size', rect: { ...rect }, source: { width: size.width, height: size.height }, format: texture.format });
                 staging = this.acquireTarget({ width: rect.width, height: rect.height, format: 'rgba8', samples: 1, stencil: false, purpose: 'group' });
@@ -775,7 +704,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 this.#checkUpload();
                 this.#issue(encoding);
             }
-            this.#usable(); // Upload is not publication after generation loss (design:771).
+            this.#usable();
         } catch (error) {
             this.#cancelEncoding(encoding);
             throw this.#failure(error);
@@ -817,8 +746,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             cached = this.#owned('sampler', { filter }, 0, this.#services.program);
             this.#samplers.set(filter, cached);
         }
-        // Two native samplers, but independent public handles: destroying one layer's
-        // handle must not invalidate another layer's reference to the same descriptor.
         return this.#owned('sampler', { reference: cached }, 0, this.#services.program);
     }
 
@@ -826,8 +753,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#usable();
         const texture = this.#arena.validate(mask, 'texture');
         if (!texture.uses.includes('sample')) throw new ArenaError('invalid-input');
-        // Red carries coverage in R8 or an explicitly charged RGBA8 mask fallback;
-        // creating a clip never silently substitutes a four-byte colour allocation.
         for (const value of [deviceBounds.x, deviceBounds.y, deviceBounds.width, deviceBounds.height]) count(value);
         return this.#owned('clip', { mask, bounds: { ...deviceBounds } }, 0, this.#services.working, [mask, ...this.#textureBacking(mask)]);
     }
@@ -875,7 +800,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (grid !== 1 && grid !== 4) throw new ArenaError('invalid-input');
         if (grid !== 1 && samples !== 1) throw new ArenaError('invalid-input');
         if (lease.bytes < coverageTargetBytes(width, height, samples, grid)) throw new ArenaError('out-of-budget');
-        // A grid target holds one r8 texel per subsample (no MSAA); the device-size rgba8 colour target is unchanged.
         const texture = this.#createTexture(width * grid, height * grid, grid === 1 ? 'rgba8' : 'r8', ['render', 'sample'], lease);
         try {
             const target = this.createTarget(texture, { samples, stencil: true }, lease);
@@ -887,14 +811,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
-    /** The overlap atlas (grid 16): `slotsAcross`×`slotsDown` slots of one tile each, one r8 texel per 1/16 device px and a stencil
-     * at the same texel size. The lease is charged exactly coverageTargetBytes(…, 1, 16). A slot is drawn through beginCoverage.
-     * A throw leaves the lease open for the caller to release (as createCoverageTarget does). */
     createCoverageAtlas(slotsAcross: number, slotsDown: number, lease: ByteLease): CoverageTarget {
         this.#usable();
         if (!Number.isSafeInteger(slotsAcross) || !Number.isSafeInteger(slotsDown) || slotsAcross <= 0 || slotsDown <= 0) throw new ArenaError('invalid-input');
-        // No grid-16 program (not yet compiled, or refused): the refusal is counted here, and the caller takes its grid-4 route. The
-        // lease is the caller's to release on a throw, as for createCoverageTarget.
         if (!this.#grid16Composition) { auditCount('gpu', 'fallback:grid16-unavailable'); throw new ArenaError('invalid-resource'); }
         const width = slotsAcross * COVERAGE_ATLAS_TILE, height = slotsDown * COVERAGE_ATLAS_TILE;
         if (lease.bytes < coverageTargetBytes(width, height, 1, 16)) throw new ArenaError('out-of-budget');
@@ -912,7 +831,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: TextureFormat; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle } {
         this.#usable();
         const format = options?.format ?? 'rgba8';
-        // A float area target is one R32F texel per device px and needs EXT_color_buffer_float; without it, it is refused.
         if (format === 'r32f' && !this.areaTargets) throw new ArenaError('unsupported');
         if (lease.bytes < width * height * pixelBytes(format)) throw new ArenaError('out-of-budget');
         const uses: TextureUse[] = ['render', 'sample', ...(options?.copyDst ? ['copy-dst' as const] : [])];
@@ -1022,10 +940,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             byteSize(width, height) > RENDER_CONSTANTS.maxSurfacePixels) throw new ArenaError('invalid-input');
     }
 
-    /** Opens the new-size target for a raise. The displayed canvas is not touched: its old picture stays on screen until
-     * commitSurface presents this frame. Opening the same size again keeps the open target. A zero size supersedes an open
-     * target (it is dropped). False when the size is zero or the browser refuses the target; the caller then keeps the
-     * displayed picture. */
     openOffscreen(width: number, height: number): boolean {
         const gl = this.#usable();
         this.#checkSurfaceSize(width, height);
@@ -1048,8 +962,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
             gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
             gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-            // The commit checks the target before it touches the canvas (commitSurface): read here too, it was a second synchronous
-            // round trip per raise. The benchmark build keeps it.
             const complete = !__BME_BENCH__ || gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
             const clean = !__BME_BENCH__ || gl.getError() === gl.NO_ERROR;
             this.#forgetState();
@@ -1066,9 +978,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         return true;
     }
 
-    /** Presents the open target: the canvas takes the target's size (which clears the displayed picture), the target is
-     * blitted to the default framebuffer, and the target is released. The caller calls this only for a frame that is complete,
-     * in the same task as that frame's draw, so no task ever shows the cleared canvas. Null when nothing is open. */
     commitSurface(): SurfaceResizeResult | null {
         const offscreen = this.#offscreen;
         if (!offscreen) return null;
@@ -1094,8 +1003,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         gl.drawBuffers([gl.BACK]);
         gl.disable(gl.SCISSOR_TEST);
         gl.blitFramebuffer(0, 0, offscreen.width, offscreen.height, 0, 0, offscreen.width, offscreen.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-        // The blit's own error is the result in the benchmark build. The default framebuffer's status is always complete, so it says
-        // nothing about this copy; the source was checked above (the one synchronous read of a raise), and the blit's arguments are valid.
         const complete = !__BME_BENCH__ || gl.getError() === gl.NO_ERROR;
         if (!complete) auditCount('gpu', 'commit-blit-failed');
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -1104,7 +1011,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         return { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight, complete, generation: this.generation };
     }
 
-    /** Abandon of an open raise (hidden, context lost, refused): the displayed picture is untouched. Idempotent. */
     closeOffscreen(): void { this.#dropOffscreen(); }
 
     #dropOffscreen(): void {
@@ -1124,7 +1030,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const gl = this.#healthy();
         if (this.#disposed) throw new ArenaError('aborted');
         this.#checkSurfaceSize(width, height);
-        // An immediate resize supersedes any open raise: its target was sized for a request that is no longer current.
         this.#dropOffscreen();
         const canvas = this.#canvas!;
         if (canvas.width !== width || canvas.height !== height) {
@@ -1143,9 +1048,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#healthy();
         this.#paused = width === 0 || height === 0;
         this.#reset();
-        // A zero-size canvas still reports a 1x1 drawing buffer, but it holds no backing. Reporting 1x1 failed
-        // every shrink, which zeroes first and checks for 0x0 (measured: a notebook's 936x728 -> 748x582 resize
-        // returned 1x1 'buffer-mismatch', and the pane fell back to canvas2d for good).
         if (this.#paused) return { width: 0, height: 0, complete, generation: this.generation };
         return { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight, complete, generation: this.generation };
     }
@@ -1223,9 +1125,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (failures.length) throw this.#failure(failures[0]);
     }
 
-    /** Required runtime fallback decision, only during normal generation preparation (design:368).
-     * This is private product startup work, not an exported verification entry point.
-     */
     async #qualify(signal: AbortSignal): Promise<void> {
         const combined = AbortSignal.any([signal, this.#work.signal]);
         if (combined.aborted) throw new ArenaError('aborted');
@@ -1260,7 +1159,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             finally { this.#reset(); }
             const raw = await this.#readRaw(texture, { x: 0, y: 0, width: 2, height: 2 }, combined, 4);
             try {
-                // Two channel levels tolerate fixed-point clear/blend rounding, not wrong alpha/colour.
                 const expected = [143, 32, 64, 191, 16, 96, 64, 191, 16, 32, 96, 191, 32, 64, 128, 128];
                 if (raw.bytes.some((value, i) => Math.abs(value - expected[i]) > 2)) throw new ArenaError('unsupported');
             } finally { this.#returnCpu(raw.lease); }
@@ -1276,18 +1174,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     async #prepareComposition(signal: AbortSignal): Promise<void> {
         this.#composition = await this.#program(COMPOSITION_SHADER, AbortSignal.any([signal, this.#work.signal]));
         this.#gridComposition = await this.#program(GRID_RESOLVE_SHADER, AbortSignal.any([signal, this.#work.signal]));
-        // The grid-16 resolve is optional: a compile or link failure there must not take the grid 1 and 4 composition down with it.
-        // Without it no atlas is admitted (createCoverageAtlas refuses), so the caller falls back to grid 4 and counts it.
         const both = AbortSignal.any([signal, this.#work.signal]);
         try { this.#grid16Composition = await this.#program(GRID16_RESOLVE_SHADER, both); }
         catch (error) {
             if (both.aborted) throw error;
-            // Counted once, here: every atlas request after it is refused and counted under fallback:grid16-unavailable.
             auditCount('gpu', 'grid16-compile-failed');
             this.#grid16Composition = null;
         }
-        // The area resolve is optional: only the union ink route calls it. A compile failure there must not take the grid 1 and 4
-        // composition down with it, so the area route is refused (counted by its caller) and the rest of the device stays up.
         const area = AbortSignal.any([signal, this.#work.signal]);
         try { this.#areaComposition = await this.#program(AREA_RESOLVE_SHADER, area); }
         catch (error) {
@@ -1313,7 +1206,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             this.writeTexture(handle, { x: 0, y: 0, width: 1, height: 1 }, {
                 source: new Uint8Array([255]), rowBytes: 1, premultiplied: true, colorSpace: 'srgb', origin: 'top-left',
             });
-            // Once per device: the single-channel upload path is proven here, not on every upload.
             const gl = this.#healthy();
             if (gl.getError() !== gl.NO_ERROR) throw new ArenaError('unsupported');
             this.#white = handle;
@@ -1323,11 +1215,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     #checkUpload(): void {
-        // Upload admission is separate from draw submission. A failed copy must not
-        // publish a new CPU index summary or stale uniforms as if the GPU accepted it.
-        // Production does not read the GL error flag here: gl.getError is a synchronous round trip to the GPU process, paid on
-        // every upload in the frame path. Arguments are validated before each call; a lost context is seen by #healthy with
-        // no read. The benchmark build keeps the read. The device proves its r8 upload path once, in #ensureWhite.
         const gl = this.#healthy();
         if (!__BME_BENCH__) return;
         const error = gl.getError();
@@ -1387,7 +1274,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         } catch (error) { this.#destroyDirect(texture); throw error; }
     }
 
-    /** Only opaque metadata is minted here; storage and its lease were admitted in prepare. */
     #isolationAlias(base: TargetLease, request: TargetRequest, metadata: ByteLease): TargetLease {
         const texture = this.#allocate('texture', { reference: base.texture }, 0, metadata);
         this.#arena.validate(texture, 'texture').usedRect = { x: 0, y: 0, width: request.width, height: request.height };
@@ -1452,7 +1338,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                         color: this.#frameTexture(work.encoding, root.texture, native.colorTexture),
                         usedRect: { x: 0, y: 0, width: root.width, height: root.height }, retained: { colorStored: false, stencilStored: false } };
                 }
-                // A raise draws its new size here while the displayed canvas keeps the old picture (commitSurface presents it).
                 const offscreen = this.#offscreen;
                 if (offscreen) {
                     return { handle, framebuffer: offscreen.framebuffer, resolveFramebuffer: offscreen.framebuffer, ...(__BME_BENCH__ ? { coverage: null } : {}),
@@ -1472,7 +1357,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         };
         return {
             signal: work.signal, uniformAlignment: this.limits.uniformAlignment, maxViewport: this.limits.maxViewport,
-            // The frame's raw GL writes (scissor, colour mask, blits, clears) all come through here, so the cache forgets first.
             healthy: check, gl: () => { check(); if (this.#dirty) this.#reset(); else this.#forgetState(); return this.#healthy(); }, reset: () => this.#reset(),
             buffer: handle => {
                 const native = this.#pin(work.encoding, handle, 'buffer');
@@ -1490,8 +1374,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 return { descriptor: native.descriptor, draw: (command, context) => {
                     this.#draw(native, program, command, context);
                     if (__BME_BENCH__ && work.coverage && command.coverageClass) {
-                        // Ordinary ink/MSAA groups need no plane. Only an accepted backdrop
-                        // draw missing its own attachment makes this measurement unavailable.
                         if (!context.target.coverage) work.coverage.missing = true;
                         if (command.coverageClass === 2 && command.standInRatio !== undefined &&
                             Number.isFinite(command.standInRatio) && command.standInRatio > 0) {
@@ -1530,7 +1412,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 return pin;
             },
             runQuad: (pin, command) => {
-                // The pin came from quad() above, which returns the native objects this frame pinned; the frame keeps them opaque.
                 this.#drawQuad(pin.program as NativeProgram, pin.sampler as Objects['sampler'], command);
             },
             acquireTarget: request => this.#isolation.borrow(work.encoding, request, true),
@@ -1594,7 +1475,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         let ticket: { commit(): void; cancel(): void; retireAfter?(completed: () => boolean): void } | null = null;
         try {
             gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
-            // Optional scene qualification/reduction must never skip the product colour blit.
             try {
                 if (plan.domain.vector) {
                     gl.drawBuffers([gl.NONE, gl.COLOR_ATTACHMENT1]); gl.enable(gl.SCISSOR_TEST);
@@ -1630,7 +1510,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         return { buffer: slot.handle, offset, bytes: bytes.byteLength };
     }
 
-    /** Rewrites a caller-owned record to name the bytes, with no allocation. Fields change only after the write succeeds. */
     #frameUniformsInto(work: FrameWork, bytes: ArrayBufferView, into: UniformSlice): void {
         const { slot, offset } = this.#writeUniforms(work, bytes);
         into.buffer = slot.handle;
@@ -1638,10 +1517,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         into.bytes = bytes.byteLength;
     }
 
-    /** Copies one record into the ring. Frames in flight share a slot while it has room (each writes past the bytes before it), and
-     * a frame that finds no room takes another slot. A write never fails for size. Its bytes are staged in the device's one resident
-     * scratch while their slot is the active one, and uploaded when the slot is left or when a frame that wrote them submits.
-     * What still refuses is the memory governor (reserve) and the bounded ring (UNIFORM_RING_MAX_SLOTS), both counted. */
     #writeUniforms(work: FrameWork, bytes: ArrayBufferView): { slot: UniformSlot; offset: number } {
         count(bytes.byteLength, true);
         const alignment = this.limits.uniformAlignment;
@@ -1655,7 +1530,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#stage(slot);
         let offset = alignUp(slot.used, alignment);
         if (offset - slot.base + bytes.byteLength > scratch.length) {
-            // The scratch is full: upload what it holds, then stage the write from the slot's next byte.
             this.#flush(slot);
             offset = alignUp(slot.used, alignment);
         }
@@ -1666,8 +1540,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         return { slot, offset };
     }
 
-    /** The resident scratch, pre-sized to the ring's slot size and kept while the device lives. It grows only with the ring's size
-     * (counted), and a growth first uploads the active slot's pending bytes, so no staged byte is lost. */
     #scratchFor(minBytes: number): Uint8Array<ArrayBuffer> {
         const wanted = Math.max(this.#uniformBytes, alignUp(minBytes, this.limits.uniformAlignment));
         if (this.#uniformScratch && this.#uniformScratch.data.length >= wanted) return this.#uniformScratch.data;
@@ -1689,7 +1561,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#uniformScratch = null;
     }
 
-    /** Makes `slot` the one the scratch stages: the previous active slot is uploaded first, so the scratch never holds two slots. */
     #stage(slot: UniformSlot): void {
         if (this.#uniformActive === slot) return;
         if (this.#uniformActive) this.#flush(this.#uniformActive);
@@ -1697,8 +1568,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         slot.base = alignUp(slot.used, this.limits.uniformAlignment);
     }
 
-    /** Uploads a slot's pending bytes [base, used) from the scratch, and moves its base past them: everything before the base is
-     * on the GPU and is never sent again. */
     #flush(slot: UniformSlot): void {
         if (slot.used > slot.base) {
             const scratch = this.#uniformScratch!.data;
@@ -1720,12 +1589,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         slot.base = alignUp(slot.used, this.limits.uniformAlignment);
     }
 
-    /** A slot this frame can write `minBytes` into: a slot other frames hold that has room past their bytes, or a free slot whose
-     * frames have all completed (reset to empty), or a new one. The ring grows past UNIFORM_RING_SLOTS only when every slot is
-     * full or still in flight (counted); a growth of the ring's size only changes the slots created after it. */
     #uniformSlot(work: FrameWork, minBytes: number): UniformSlot {
         const alignment = this.limits.uniformAlignment;
-        // A free slot of an old size is retired once its GPU work has completed; in-flight storage is never destroyed.
         for (let i = this.#uniformSlots.length - 1; i >= 0; i--) {
             const slot = this.#uniformSlots[i];
             if (slot.owners === 0 && (!slot.valid || slot.size < this.#uniformBytes) && this.#complete(slot.serial)) {
@@ -1738,7 +1603,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         for (const candidate of this.#uniformSlots) {
             if (!candidate.valid) continue;
             if (candidate.owners === 0 && !this.#complete(candidate.serial)) continue;
-            // A slot held by other frames is written past their bytes; a free one starts again at 0.
             const start = candidate.owners > 0 ? alignUp(candidate.used, alignment) : 0;
             if (start + minBytes > candidate.size) continue;
             slot = candidate;
@@ -1752,8 +1616,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 throw new ArenaError('out-of-budget');
             }
             if (this.#uniformSlots.length >= UNIFORM_RING_SLOTS) {
-                // Why no slot was reusable: held by a frame that has not finished (a leak if it never does), or free but its GPU
-                // work still in flight. Counted per creation, so the sums say which one keeps the ring growing.
                 let held = 0, pending = 0;
                 for (const candidate of this.#uniformSlots) {
                     if (candidate.owners > 0) held++;
@@ -1764,9 +1626,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             }
             let handle: BufferHandle | null = null;
             try {
-                // 'vertex' too: a batched textured-quad draw binds its instance records as a vertex slice from this same ring
-                // (compositor.ts drawTexturedQuads). The device refuses a vertex slice whose buffer lacks the use, which demoted
-                // the pane mid-draw (seen in the final run's audit: pane:fallback:pane-2d:gpu-error:invalid-input).
                 try { handle = this.#owned('buffer', { bytes: size, uses: ['uniform', 'vertex', 'copy-dst'] }, size, this.#services.uniformGpu ?? this.#services.working); }
                 catch (error) { if (error instanceof ArenaError && error.code === 'out-of-budget') auditCount('gpu', 'uniform-gpu-refused', 1, { bytes: size }); throw error; }
                 slot = { handle, native: this.#arena.validate(handle, 'buffer'), size, serial: 0, owners: 0, valid: true, used: 0, base: 0 };
@@ -1778,14 +1637,11 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         return slot;
     }
 
-    /** Uploads the bytes the frame's slots still hold in the scratch (a slot the frame has left was uploaded when it was left). */
     #uploadUniforms(work: FrameWork): void {
         this.#noteFrameBytes(work.written);
         for (const slot of work.slots) if (slot.used > slot.base) this.#flush(slot);
     }
 
-    /** Sizes the ring from the largest frame so far (with headroom), so the next frames of a similar size never overflow. Growth is
-     * counted and reported like the ruled growth; it never resizes a slot a submission still uses (uniformSlot retires old sizes). */
     #noteFrameBytes(bytes: number): void {
         if (bytes <= this.#uniformPeak) return;
         this.#uniformPeak = bytes;
@@ -1851,7 +1707,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
-    /** Every GL state the cache holds is unknown again: the next draw issues it. Called wherever the state may have moved. */
     #forgetState(): void {
         this.#cProgram = undefined;
         this.#cFramebuffer = undefined;
@@ -1867,7 +1722,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#replaying = true;
     }
 
-    /** Ends the replay, a thrown one included (the frame calls it in a finally): the baseline is restored once for the whole replay. */
     #endReplay(): number {
         this.#replaying = false;
         if (this.#dirty) this.#reset(); else this.#forgetState();
@@ -1880,8 +1734,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
         this.#cFramebuffer = framebuffer;
         this.#replaySwitches++;
-        // On a tiled GPU (Apple through ANGLE Metal) each change of bound target ends a render pass and starts another, loading and
-        // storing the attachment: the count per frame is the load-insensitive proxy for that cost (audit only).
         if (renderAuditEnabled()) auditCount('gpu', framebuffer ? 'target-switch' : 'target-switch:surface');
     }
 
@@ -1903,8 +1755,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #viewport(context: DrawContext, scissor: RectI): void {
         this.#bindTarget(context.target.framebuffer);
         const gl = this.#usable();
-        // Viewport and scissor are held as device rectangles; a repeated rectangle issues nothing (a draw in a pass mostly repeats it).
-        // A grid scope rasterises device geometry at `scale` texels per pixel: the same rectangle, scaled about its origin.
         const s = context.scale;
         const vw = context.viewport.width * s, vh = context.viewport.height * s;
         const vx = (context.viewport.x - context.originX) * s, vy = context.target.height - (context.viewport.y - context.originY) * s - vh;
@@ -1946,21 +1796,16 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#replaySwitches++;
         if (blend === 'replace') gl.disable(gl.BLEND);
         else if (blend === 'modulate') {
-            // Multiply by the source colour and keep the destination alpha: one fixed-function step per fragment, so a
-            // multiply slice's items accumulate without a shader pass or a backdrop copy.
             gl.enable(gl.BLEND);
             gl.blendEquation(gl.FUNC_ADD);
             gl.blendFuncSeparate(gl.ZERO, gl.SRC_COLOR, gl.ZERO, gl.ONE);
         } else if (blend === 'min' || blend === 'max') {
-            // Float area targets only: each texel keeps the minimum or maximum of what is written (EXT_float_blend). The
-            // factors are ignored by MIN and MAX, so the flag pass writes its edge id as the source value.
             gl.enable(gl.BLEND);
             gl.blendEquation(blend === 'min' ? gl.MIN : gl.MAX);
             gl.blendFunc(gl.ONE, gl.ONE);
         } else {
             gl.enable(gl.BLEND);
             gl.blendEquation(blend === 'mask-max' ? gl.MAX : gl.FUNC_ADD);
-            // 'add' sums premultiplied colour (ONE, ONE): jittered coverage passes accumulate into one supersampled result.
             gl.blendFunc(gl.ONE, blend === 'source-over' ? gl.ONE_MINUS_SRC_ALPHA : gl.ONE);
         }
     }
@@ -2025,7 +1870,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         } finally { this.#afterDraw(); }
     }
 
-    /** A draw inside a replay leaves its state (see #dirty); outside one it restores the baseline at once. */
     #afterDraw(): void {
         if (this.#replaying) this.#dirty = true;
         else this.#reset();
@@ -2153,7 +1997,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (samples === 4 && (!this.#sampleCounts.get(internal)?.has(4) || stencil && !this.#sampleCounts.get(gl.DEPTH24_STENCIL8)?.has(4))) {
             throw new ArenaError('unsupported');
         }
-        // Resolve texture is already charged separately; unknown native depth/stencil uses 8 B/px/sample.
         return byteSize(texture.width, texture.height,
             (samples === 4 ? pixelBytes(texture.format) * 4 : 0) + (stencil ? 8 * samples : 0));
     }
@@ -2176,7 +2019,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         count(desc.shader.revision);
         if (!['triangles', 'triangle-strip'].includes(desc.topology) || !['rgba8', 'r8', 'r32f'].includes(desc.colorFormat) ||
             ![1, 4].includes(desc.samples) || !['replace', 'source-over', 'mask-max', 'add', 'modulate', 'min', 'max'].includes(desc.blend) ||
-            // A float target is single-sampled, and only area pipelines (add, min, max) may write it.
             desc.colorFormat === 'r32f' && (desc.samples !== 1 || !this.areaTargets || !['add', 'min', 'max', 'replace'].includes(desc.blend)) ||
             (desc.blend === 'min' || desc.blend === 'max') && desc.colorFormat !== 'r32f' ||
             typeof desc.alphaToCoverage !== 'boolean' ||
@@ -2225,7 +2067,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 attribute.step !== 'vertex' && attribute.step !== 'instance') throw new ArenaError('invalid-input');
             bindings.add(attribute.location);
         }
-        // Snapshot at creation, not a deep-equality comparison in the per-draw hot path.
         return structuredClone(desc);
     }
 
@@ -2300,7 +2141,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pack.buffer);
             gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
             gl.readPixels(rect.x, texture.height - rect.y - rect.height, rect.width, rect.height, gl.RGBA, gl.UNSIGNED_BYTE, 0);
-            // Readback is not a hot draw path; refuse unsupported/failed reads, not a blank success.
             if (gl.getError() !== gl.NO_ERROR) { this.#healthy(); throw new ArenaError('unsupported'); }
             const serial = this.#issue(encoding);
             this.#reset();
@@ -2392,8 +2232,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             try {
                 const latest = this.#fences.size ? this.#serial : 0;
                 if (latest && !this.#complete(latest)) {
-                    // A later fence can still be pending after older ones signal. Report only an
-                    // actually checked pending fence, and bound work within the scheduler's poll.
                     for (let checked = 0; checked < 8; checked++) {
                         const oldest = this.#fences.keys().next().value as number | undefined;
                         if (oldest === undefined) break;
@@ -2419,9 +2257,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#brokenFence = true;
         this.#pollCancel?.();
         this.#pollCancel = null;
-        // Do not spin or reuse storage whose completion is unknowable. The host moves
-        // to 2D and abandons the broker reservation; the abort observer above then drops
-        // the ledger only after actual loss. Document/model state is never touched.
         this.#work.abort();
         for (const frame of this.#frames.values()) frame.controller?.cancel();
         if (!this.#disposed) this.#services.onFailure('allocation');
@@ -2437,8 +2272,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         });
     }
     async #task(signal: AbortSignal): Promise<void> {
-        // Admission belongs to the shared scheduler. A separate task keeps the no-KHR
-        // link-status fallback out of a draw callback; a hidden window cannot start it.
         do {
             await this.#nextPoll(signal);
             await new Promise<void>((resolve, reject) => {
@@ -2470,9 +2303,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                     const target = desc.pack ? gl.PIXEL_PACK_BUFFER : gl.COPY_WRITE_BUFFER;
                     gl.bindBuffer(target, buffer);
                     gl.bufferData(target, desc.bytes, desc.pack ? gl.STREAM_READ : gl.DYNAMIC_DRAW);
-                    // The size read back is a synchronous wait on the GPU process, so it proves the allocation path once per device;
-                    // a later failed allocation is the context loss the broker already handles. Read per buffer, a zoom into a dense
-                    // notebook spent 7.9 of 15 s of main thread in getBufferParameter as its tiles' area kits made their buffers.
                     if (!this.#bufferSizeVerified) {
                         if (gl.getBufferParameter(target, gl.BUFFER_SIZE) !== desc.bytes) throw new ArenaError('allocation');
                         this.#bufferSizeVerified = true;
@@ -2496,16 +2326,11 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 try {
                     gl.bindTexture(gl.TEXTURE_2D, texture);
                     gl.texStorage2D(gl.TEXTURE_2D, desc.levels ?? 1, glInternal(gl, desc.format), desc.width, desc.height);
-                    // A float texture is not filterable without OES_texture_float_linear, and an area target is only ever
-                    // read with texelFetch: nearest keeps it complete on every device that offers it.
                     const filter = desc.format === 'r32f' ? gl.NEAREST : gl.LINEAR;
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-                    // Not read in production: gl.getError is a synchronous round trip to the GPU process, and tiles allocate textures inside
-                    // frames, so a compose behind a deep GPU queue waited for all of it. The bytes are reserved with the governor before
-                    // this point and a lost context is seen by #healthy; the benchmark build keeps the read (as #checkUpload does).
                     if (__BME_BENCH__ && gl.getError() !== gl.NO_ERROR) { this.#healthy(); throw new ArenaError('allocation'); }
                     object = { ...desc, levels: desc.levels ?? 1, texture };
                 } catch (error) { if (!gl.isContextLost()) gl.deleteTexture(texture); throw error; }
@@ -2600,9 +2425,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             return target;
         } catch (error) { if (!gl.isContextLost()) this.#deleteTarget(target); throw error; }
     }
-    // Completeness depends on the attachments' formats and sample counts, not on the texture: each kind is checked once per device.
-    // Asked for every target (checkFramebufferStatus is a synchronous round trip), each tile's target made inside a frame waited on the
-    // GPU queue.
     readonly #completeKinds = new Set<string>();
     #assertFramebuffer(kind: string): void {
         if (this.#completeKinds.has(kind)) return;
@@ -2698,9 +2520,6 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
-    /** Known backend baseline, never reconstructed with getParameter (design:276–277).
-     * Touched binding sets are bounded by device limits; cached VAOs never keep a deleted buffer alive.
-     */
     #reset(): void {
         this.#dirty = false;
         this.#forgetState();

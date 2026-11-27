@@ -16,8 +16,6 @@ class PdfBuildContext {
         readonly writeId: string, readonly override: SerializerRecordOverride) {}
 }
 
-/** PDF authority is supplied by the actual pooled acquisition and its host validator.
- * Drawing/notebook routes never import the PDF implementation to manufacture that authority. */
 export function createPdfInkBuildCapture(options: {
     runtime(): BoardRuntime;
     sources: ReturnType<typeof createPdfInkSourceOwner>;
@@ -37,7 +35,6 @@ export function createPdfInkBuildCapture(options: {
     return {
         captureBuild(revision: number): BoardBuildCapture {
             const runtime = options.runtime(), doc = runtime.session.doc;
-            // Save capture pins the content revision; non-dirtying commits (pen, tool, UI) move doc.rev without changing content.
             if (!options.currentOwner() || doc.kind !== 'pdf-ink' || doc.host.kind !== 'pdf-ink' || runtime.session.contentRevision !== revision) {
                 throw new Error('A current PDF ink revision is required');
             }
@@ -47,8 +44,6 @@ export function createPdfInkBuildCapture(options: {
                 if (!encoded.ok) throw new Error(encoded.error.reason);
                 const override = { identity: encoded.value.identity, bytes: new TextEncoder().encode(encoded.value.text) };
                 const context = Object.freeze(new PdfBuildContext(owner, revision, lease.source, pinned.writeId, copyOverride(override)));
-                // The source owner retains this acquisition until pinBuild in the same synchronous
-                // capture stack. A failed serializer checkpoint therefore cannot leak a PDF lease.
                 return { context, overrides: [override] };
             } finally { lease.release(); }
         },
@@ -87,8 +82,6 @@ export function createPdfInkBuildCapture(options: {
         pdfCopy(board: BoardRecoveryRecipe, value: unknown) {
             if (!board.delta) throw new Error('PDF recovery copy requires a captured board delta');
             const context = contextFor(value, board.delta.revision), key = recordKey(context.override.identity);
-            // Only the copy gets the frozen HOST fork. The matching-baseline journal still
-            // describes the admitted live model, whose host was deliberately never mutated.
             const overrides = [...(board.overrides ?? []).filter(row => recordKey(row.identity) !== key).map(copyOverride),
                 copyOverride(context.override)];
             return createPdfRecoveryRecipe({ ...board, overrides }, { source: context.acquisition.source,

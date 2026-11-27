@@ -14,7 +14,6 @@ export interface InlineMath extends CharRange {
     latex: string;
 }
 
-/** Reproduce the global block regex's consuming pairing, including rejected pairs. */
 export function pairMathTokens(doc: Text, tokens: readonly number[], code: readonly CharRange[]): BlockPair[] {
     const pairs: BlockPair[] = [];
     let i = 0;
@@ -30,7 +29,6 @@ export function pairMathTokens(doc: Text, tokens: readonly number[], code: reado
     return pairs;
 }
 
-/** Resume pairing before the first edited line and reuse the suffix once pairing converges. */
 export function updateBlockPairs(previous: readonly BlockPair[], oldDoc: Text, doc: Text,
     changes: ChangeDesc, tokens: readonly number[], code: readonly CharRange[], codeChanged: readonly CharRange[]): BlockPair[] {
     let firstOld = oldDoc.length, lastNew = 0;
@@ -87,7 +85,6 @@ export function filterInlineMath(raw: readonly LineMatch[], code: readonly CharR
     });
 }
 
-/** Re-filter only matches reached by changed code or accepted block math. */
 export function updateInlineMath(raw: readonly LineMatch[], previous: readonly InlineMath[], changes: ChangeDesc,
     code: readonly CharRange[], blocks: readonly BlockPair[], dirty: readonly CharRange[]): InlineMath[] {
     const old = new Map<string, InlineMath>();

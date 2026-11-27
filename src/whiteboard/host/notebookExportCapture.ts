@@ -8,7 +8,6 @@ import { createExportImageResolver } from '../export/exportImage';
 import { streamPageDisplayList } from '../export/streamPage';
 import { writeIncrementalPdfPage, type IncrementalPdfPage } from '../export/incrementalPdf';
 
-/** Pins the notebook's real paper and scene at one revision; the caller owns its release. */
 export function pinNativeNotebookExport({ runtime, revision, current, onError }: {
     readonly runtime: BoardRuntime; readonly revision: number; readonly current: () => boolean; readonly onError: (error: unknown) => void;
 }): { readonly revision: number; readonly snapshot: NotebookExportSnapshot; release(): void } {
@@ -26,7 +25,6 @@ export function pinNativeNotebookExport({ runtime, revision, current, onError }:
     } catch (error) { pin.release(); throw error; }
 }
 
-/** App's captured media reader is session-owned, not a pane image reader. */
 export function pinNotebookExportWithMedia(options: {
     readonly runtime: BoardRuntime;
     readonly readMedia: (entry: Readonly<MediaEntry>, signal: AbortSignal) => Promise<Blob>;

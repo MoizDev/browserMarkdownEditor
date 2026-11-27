@@ -8,9 +8,6 @@ import type { Node, NodeRecord } from '../model/nodes';
 import type { NextStyles, ToolId } from '../model/styles';
 import type { RichFragment } from '../text/richText';
 
-// change-and-history.md §2.1, H-1/H-2: immutable identity and preserved data are not setters.
-// R-W23: explicit sets invalidate the native-token ext.raw entries named by
-// model/fileFields.ts; CH-1 captures/restores ext in the transaction and its inverse.
 type SetOpFor<N extends Node> = N extends Node ? {
     [K in Exclude<keyof N, 'id' | 'kind' | 'ext' | 'raw'>]: {
         readonly t: 'set';
@@ -25,7 +22,7 @@ export type PropValue = NodeSetOp['value'];
 
 export interface BoardProps {
     readonly 'host.paper': Readonly<NotebookPaper>;
-    readonly 'host.pdf': RawJson; // R-W5/R-W19: opaque writer bookkeeping, history-silent and non-dirtying.
+    readonly 'host.pdf': RawJson;
     readonly 'ui.tool': ToolId;
     readonly 'ui.next': NextStyles;
     readonly 'ui.penWidth': number;
@@ -54,8 +51,6 @@ export type ContentOp =
     | { readonly t: 'media'; readonly op: 'drop'; readonly id: MediaId; readonly restoreMissing?: true }
     | { readonly t: 'media'; readonly op: 'set-file'; readonly id: MediaId; readonly file: string | null };
 
-// R-W26: inspectable inverse data, not a string-property escape for tools/readers.
-// Only apply constructs these when capturing an inverse; undo/redo replay them.
 export type ExtTarget = 'node' | 'sheet' | 'media' | 'pen' | 'view' | 'paper' | 'host';
 export interface ExtOp {
     readonly t: 'ext';
@@ -63,8 +58,6 @@ export interface ExtOp {
     readonly id?: string;
     readonly value: ExtBag | null;
 }
-// Rollback-only inverse: file bookkeeping never enters history, including its
-// raw metadata. Keeping the restore in this op avoids an independently recorded ext op.
 type MediaFileRestore = Extract<ContentOp, { readonly t: 'media'; readonly op: 'set-file' }> & { readonly restoreExt: ExtBag | null };
 export type Op = ContentOp | ExtOp | MediaFileRestore;
 
@@ -86,20 +79,16 @@ export interface AppliedLease { release(): void }
 export interface Applied {
     readonly forward: readonly Op[];
     readonly inverse: readonly Op[];
-    /** Index-aligned inverse groups; concatenating them in reverse yields inverse. */
     readonly inverseGroups: readonly (readonly Op[])[];
     readonly touched: TouchedSet;
     readonly dirtying: boolean;
     readonly recorded: boolean;
     readonly sampleRefs: readonly SampleRef[];
-    // C4 owns one receipt lease; a consumer retaining the receipt keeps another.
-    // Releasing the last lease releases its immutable forward/inverse samples.
     retain(): AppliedLease;
     release(): void;
 }
 
 export interface OpSink { push(op: Op): void }
-// H-3: a builder's savepoints are private to that builder and expire on commit/abort.
 export interface TxBuilder extends OpSink {
     savepoint(): number;
     rollbackTo(savepoint: number): void;
@@ -108,8 +97,6 @@ export interface TxBuilder extends OpSink {
 }
 export type CommandBuilder = Omit<TxBuilder, 'commit'>;
 
-// change-and-history.md §2.2, H-4/H-6: the one policy table. Scene masks describe
-// derived work; they do not grant another writer or put any derived data in undo.
 export const SceneImpact = {
     none: 0, paint: 1, bounds: 2, children: 4, text: 8, descendants: 16,
     attachments: 32, ancestors: 64, sheets: 128, pages: 256, chrome: 512, geometry: 1024,

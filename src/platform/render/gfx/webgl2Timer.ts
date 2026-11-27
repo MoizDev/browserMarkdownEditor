@@ -3,18 +3,13 @@ import { auditFrameRecord, auditFrameTime, auditStage, renderAuditEnabled, type 
 
 type TimerExtension = { readonly TIME_ELAPSED_EXT: number; readonly GPU_DISJOINT_EXT: number };
 
-/** Optional native GPU duration, not CPU submission or fence latency (design §6.4).
- * Query storage and work are bounded; disjoint intervals invalidate the whole sample window.
- */
 export class Webgl2Timer {
     readonly #gl: WebGL2RenderingContext;
     readonly #extension: TimerExtension | null;
     readonly #report: ((p95Ms: number, samples: number, disjoint: boolean) => void) | undefined;
     readonly #pending: WebGLQuery[] = [];
-    /** Each pending query's frame record (audit only, else null): a slow result names the frame's work. */
     readonly #records: (FrameRecord | null)[] = [];
     readonly #samples: number[] = [];
-    /** Reused for the p95 over a full window, so each report sorts in place rather than copying the window. */
     readonly #sorted = new Float64Array(RENDER_CONSTANTS.slowGpuSampleCount);
     #active: WebGLQuery | null = null;
 
@@ -42,10 +37,6 @@ export class Webgl2Timer {
         this.#active = null;
     }
 
-    /** Never waits on the GPU: a result is read only once its availability says it is ready. By reading: the disjoint flag
-     * used to be read on every poll tick while any query was pending, a synchronous round trip for nothing, so it is read
-     * only when a result is ready to be judged, and a flag set earlier is kept until then (conservative: it can only drop
-     * samples, never admit an invalid one). */
     poll(): void {
         const ext = this.#extension;
         if (!ext || !this.#pending.length) return;

@@ -1,10 +1,3 @@
-// One tool the agent used. Our own vault_/canvas_ tools read as a sentence
-// ("Edited Notes/Ideas.md") with the change card under it — a diff for text,
-// a line for a move/trash/canvas edit — and the call's input and output one
-// click away. The agent's own tools (its shell, file reads and edits, web,
-// skills, sub-agents) are chips: their effects never pass through the app, so
-// there is no change card to show — only the sentence and the raw call.
-
 import { useState } from 'react';
 import type { ChatItem } from './chatStore';
 import type { AgentChange } from '../../types/vaultAgent';
@@ -25,7 +18,6 @@ function str(input: unknown, key: string): string {
     return '';
 }
 
-/** [while running, once done, what it acted on]. */
 function describeOwn(rawName: string, input: unknown): [string, string, string] {
     const name = rawName.replace(/^mcp__vault__/, '');
     const path = str(input, 'path');
@@ -47,12 +39,6 @@ function describeOwn(rawName: string, input: unknown): [string, string, string] 
     }
 }
 
-/** A CLI's own tools name files by absolute path, and the row ellipsizes at its
- *  END — "Read /Users/me/Developer/…" would hide the very file it read. Keep the
- *  name and, when it is short, its folder: Codex works in a folder named by a
- *  36-character session id, which alone filled the row and hid "+2 more"
- *  (measured: 1532px of text in a 273px box). The full path is in the call's
- *  input, one click away. */
 function shortPath(path: string): string {
     const sep = path.includes('/') ? '/' : '\\';
     const segments = path.split(sep).filter(Boolean);
@@ -61,15 +47,10 @@ function shortPath(path: string): string {
     return parent.length > 20 ? `…${sep}${name}` : `…${sep}${parent}${sep}${name}`;
 }
 
-/** The file a CLI's own file tool acted on: Claude says `file_path` (and
- *  `notebook_path`), OpenCode `filePath`, Codex `path`. */
 function file(input: unknown): string {
     return shortPath(str(input, 'file_path') || str(input, 'filePath') || str(input, 'path') || str(input, 'notebook_path'));
 }
 
-/** A patch can touch several files; one row fits only the first. Codex's item
- *  lists them (`paths`); OpenCode's `apply_patch` (its edit tool for GPT models)
- *  carries only the patch text, whose `*** Update File: <path>` lines name them. */
 function patchTarget(input: unknown): string {
     const record = input && typeof input === 'object' ? input as Record<string, unknown> : {};
     const named = Array.isArray(record.paths)
@@ -82,10 +63,6 @@ function patchTarget(input: unknown): string {
     return named.length > 1 ? `${first} +${named.length - 1} more` : first;
 }
 
-/** The agent's own tools, whatever each CLI calls them. Exact names first:
- *  `read`, `write` and `edit` recur inside other tools' names — a substring
- *  test would call `TodoWrite` a file write, or an MCP server's `edit_issue`
- *  a file edit. The substring fallbacks catch the rest by family. */
 function describeForeign(name: string, input: unknown): [string, string, string] {
     const n = name.toLowerCase();
     switch (n) {
@@ -108,14 +85,11 @@ function describeForeign(name: string, input: unknown): [string, string, string]
         case 'view_image': return ['Viewing', 'Viewed', shortPath(str(input, 'path'))];
         case 'websearch':
         case 'web_search':
-            // Codex reports a page it opened as a web_search item with `{url}`.
             if (str(input, 'url')) return ['Opening', 'Opened', str(input, 'url')];
             return ['Searching the web for', 'Searched the web for', str(input, 'query') || str(input, 'q')];
         case 'webfetch':
         case 'web_fetch': return ['Opening', 'Opened', str(input, 'url')];
     }
-    // Another MCP server's tool (Codex names it `server.tool`) is no web search
-    // however it is named — `github.search_issues` must not read as one.
     if (n.includes('.')) return ['Using', 'Used', name];
     if (n.includes('search')) return ['Searching the web for', 'Searched the web for', str(input, 'query') || str(input, 'q')];
     if (n.includes('fetch')) return ['Opening', 'Opened', str(input, 'url')];
@@ -161,7 +135,6 @@ function ChangeCard({ change, host }: { change: AgentChange; host: AgentHost }) 
             return (
                 <div className="agent-change-line">
                     <span>
-                        {/* The summary already names what was added/changed/removed. */}
                         {change.summary || [
                             change.created ? `${change.created} added` : '',
                             change.updated ? `${change.updated} changed` : '',
@@ -192,7 +165,6 @@ export function ToolCallCard({ item, host }: { item: ToolItem; host: AgentHost }
                         ? <Orb variant="S3" size={14} label="Running" />
                         : item.status === 'error' ? <AlertCircle size={13} /> : <Check size={13} />}
                 </span>
-                {/* "Creating X failed", never "Created X failed". */}
                 <span className="agent-tool-verb">{item.status === 'done' ? done : running}</span>
                 {target && <span className="agent-tool-target">{target}</span>}
                 {item.status === 'error' && <span className="agent-tool-failed">failed</span>}

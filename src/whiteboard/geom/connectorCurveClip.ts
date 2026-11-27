@@ -47,9 +47,6 @@ function* sortBands(input: readonly RootBand[]): Generator<void, RootBand[]> {
     return values;
 }
 
-/** Certified straight-body crossings of closed line/cubic attachment contours.
- * Bernstein variation bounds isolate every simple crossing. Tangencies,
- * collinear overlap and unresolved overlapping roots fail explicitly. */
 export function* curvedConnectorLineCrossings(start: Vec2, end: Vec2, length: number, contours: readonly ExactConnectorContour[],
     error: number, maxPieces: number): Generator<void, readonly ExactConnectorCrossing[]> {
     if (![start.x, start.y, end.x, end.y, length, error].every(Number.isFinite) || length <= 0 || error <= 0

@@ -15,10 +15,6 @@ const GLYPH_BATCH = 256;
 
 function integer(value: unknown): value is number { return typeof value === 'number' && Number.isSafeInteger(value); }
 
-/**
- * HarfBuzz's public JS getGlyphInfos/getGlyphPositions build an object per glyph. Its JSON
- * serializer can instead read a bounded range from the same shaped buffer without re-shaping.
- */
 export async function* outlineGlyphBatches(hb: HarfBuzz, buffer: HarfBuzzBuffer,
     context: WorkerContext): AsyncGenerator<readonly OutlineGlyph[]> {
     const count = buffer.getLength();
@@ -29,8 +25,6 @@ export async function* outlineGlyphBatches(hb: HarfBuzz, buffer: HarfBuzzBuffer,
         const end = Math.min(count, start + GLYPH_BATCH);
         const text = buffer.serialize({ start, end, format: hb.BufferSerializeFormat.JSON,
             flags: hb.BufferSerializeFlag.NO_GLYPH_NAMES | hb.BufferSerializeFlag.NO_CLUSTERS });
-        // HarfBuzz uses the absolute glyph index for its opening delimiter, so a range
-        // beginning after zero starts with a comma instead of '[' even though it ends in ']'.
         const json = start === 0 ? text : text.startsWith(',') ? `[${text.slice(1)}` : '';
         let value: unknown;
         try { value = JSON.parse(json); } catch { throw new TypeError('Invalid serialized HarfBuzz glyphs'); }

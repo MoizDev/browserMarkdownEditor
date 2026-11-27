@@ -1,6 +1,5 @@
 import type { PlainTextOptions } from './plainText';
 
-/** Drive the same pure traversal synchronously when the caller already holds an atomic transaction. */
 export function finishTextSteps<T>(steps: Generator<void, T>): T {
     let completed = false;
     try {
@@ -13,10 +12,8 @@ export function finishTextSteps<T>(steps: Generator<void, T>): T {
     }
 }
 
-/** The default host yield: one macrotask, so input and paint run between slices of text work. */
 export { yieldToHost } from '../../platform/yieldToHost';
 
-/** Cancellation closes the traversal before its unpublished fragments can outlive the caller. */
 export async function finishTextStepsCooperative<T>(steps: Generator<void, T>, options: PlainTextOptions): Promise<T> {
     const budget = options.sliceMilliseconds ?? 3;
     if (!Number.isFinite(budget) || budget <= 0) throw new RangeError('Invalid text operation time slice');

@@ -3,14 +3,12 @@ import type { RenderToken } from '../../platform/render/types';
 const HASH = /^[0-9a-f]{64}$/;
 const WRITE_ID = /^[0-9a-f]{32}$/;
 
-/** The actual admitted source a rebind proves: its own token, its pristine identity and, once written, the write it came from. */
 export interface PaintSourceWitness {
     readonly token: RenderToken;
     readonly pristineFingerprint: string;
     readonly writeId: string | null;
 }
 
-/** What the runtime already holds and must not change: the owner, the vault and the pristine identity it was admitted with. */
 export interface PaintSourceExpectation {
     readonly documentId: string;
     readonly session: number;
@@ -18,9 +16,7 @@ export interface PaintSourceExpectation {
 }
 
 export interface PaintSourceAdmission {
-    /** A frozen copy of the witness token, the only token future pins may adopt. */
     readonly token: RenderToken;
-    /** True when the witness is the token already in force, so nothing is adopted. */
     readonly unchanged: boolean;
 }
 
@@ -28,12 +24,6 @@ function sameOwner(token: RenderToken, expected: PaintSourceExpectation, current
     return token.documentId === expected.documentId && token.session === expected.session && token.vaultEpoch === current.vaultEpoch;
 }
 
-/**
- * Admits a rebind proof against the token currently in force. Only the same
- * owner, document and vault may rebind; the byte generation may stay or advance,
- * never regress; and the pristine identity must match the one admitted at
- * creation, so a different PDF cannot be adopted under this session.
- */
 export function admitPaintSourceRebind(current: RenderToken, expected: PaintSourceExpectation,
     witness: PaintSourceWitness, isCurrent: () => boolean): PaintSourceAdmission {
     if (!isCurrent()) throw new DOMException('Paint source rebind is no longer current', 'AbortError');

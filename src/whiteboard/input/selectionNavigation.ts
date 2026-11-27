@@ -9,13 +9,11 @@ export type NavigationDirection = 'left' | 'right' | 'up' | 'down';
 export interface SelectionNavigationOptions {
     readonly runtime: BoardRuntime;
     readonly current: () => boolean;
-    /** Cancels the preceding reveal before projecting the new selected node. */
     readonly reveal: (id: NodeId | null) => void;
     readonly error: (error: unknown) => void;
     readonly cooperate?: () => Promise<void>;
 }
 
-/** Navigation changes session selection only; camera movement belongs to the shared reveal owner. */
 export function createSelectionNavigation(options: SelectionNavigationOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     const cooperate = options.cooperate ?? yieldToHost;

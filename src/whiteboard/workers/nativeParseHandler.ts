@@ -13,11 +13,9 @@ async function* blobBytes(blob: Blob): AsyncIterable<Uint8Array> {
     } finally { reader.releaseLock(); }
 }
 
-/** Projection is not admission: C5 revalidates and repairs the ordered records. */
 export async function parseNative(payload: unknown, context: WorkerContext): Promise<ParseNativeReply> {
     const request = validateNativeRequest(payload);
     const samples: LoadSampleWire[] = [], owner = {};
-    // Owned sample text, counted as UTF-16 string storage. Object headers are not counted, so this is a floor.
     let sampleBytes = 0;
     const cooperate = () => { reportBoardMemory(context, owner, sampleBytes); return context.slice(); };
     try {

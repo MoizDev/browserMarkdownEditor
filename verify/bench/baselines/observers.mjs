@@ -1,4 +1,3 @@
-// Init-script instrumentation only. No app module, editor instance or paused target.
 export function installObservation({ startup, kind, target, drop, expectedText }) {
     if (window !== window.top) return;
     const state = window.__v08 = { firstPixels: null, readable: null, raf: [], longTasks: [],

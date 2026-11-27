@@ -74,8 +74,6 @@ try {
             assert.ok(baseline, 'The browser mutant lost its baseline fixture identity');
             assert.notEqual(record.sha256, baseline.sha256, 'The browser mutant did not change the seeded vault; V-05 is unproven');
             report.mutatedInput = { id: record.id, member: 'Every construct.md', originalSha256: baseline.sha256, mutantSha256: record.sha256, operation: 'checker embed renamed to absent missing-v05-mutant.png by the scratch vault generator' };
-            // Only the declared mutant's bytes differ. All other identities, including this
-            // record's generator/version/seed, remain under the ordinary frozen-manifest check.
             return { ...record, sha256: baseline.sha256, bytes: baseline.bytes };
         });
         assert.deepEqual(observed.sort((a, b) => compareNames(a.id, b.id)), expected.sort((a, b) => compareNames(a.id, b.id)), 'VER-06: generated fixture identity changed; review the corpus, do not weaken its gate');
@@ -139,8 +137,6 @@ try {
     await page.waitForFunction(() => [...document.querySelectorAll('.pdf-viewer-page canvas')].some(canvas => canvas.width > 0 && canvas.height > 0));
     await page.waitForFunction(() => document.querySelector('.pdf-viewer-page .textLayer')?.textContent?.includes('GEN-01-p01-control-r0'));
     await page.evaluate(() => document.fonts.ready);
-    // Read the compositor's screenshot, not the app canvas's drawing context: acquiring a
-    // context changes the surface and would fail outright when this pane becomes WebGL.
     const pagePng = PNG.sync.read(await page.locator('.pdf-viewer-page canvas').first().screenshot({ path: resolve(out, 'geometry-page.png') }));
     let nonWhite = 0;
     let colored = 0;

@@ -1,9 +1,6 @@
 import type { JobContext } from '../security/admission';
 import { insertClipboardText, type InsertClipboardTextOptions } from './insertText';
 
-// Provenance: single session job and external literal clipboard placement;
-// independent orchestration, no upstream engine source.
-/** Caller holds the running session job; no second job is enqueued. */
 export async function pasteClipboardTextInJob(options: InsertClipboardTextOptions, context: JobContext): Promise<string | null> {
     const { runtime } = options;
     runtime.jobs.assertContext(context); context.assertCurrent();

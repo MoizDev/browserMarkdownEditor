@@ -19,8 +19,6 @@ export interface NotebookArrangeOptions {
     cooperate?(): Promise<void>;
 }
 
-/** Use the canonical arrangement transaction, projecting it only to determine
- * page growth and ownership before the single real apply. */
 export async function arrangeNotebook(options: NotebookArrangeOptions): Promise<void> {
     const { runtime, signal } = options, session = runtime.session, doc = session.doc;
     if (doc.host.kind !== 'notebook') throw new Error('Notebook arrangement requires notebook paper');

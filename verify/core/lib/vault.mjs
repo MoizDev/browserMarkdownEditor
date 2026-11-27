@@ -1,5 +1,3 @@
-/** Fresh named OPFS roots only. Changing __bmePickVault changes the native picker stand-in, not
- * app state; the run must still click the real Open Vault / switch-vault controls. */
 export async function installVault(context, { name }) {
     await context.addInitScript(({ name }) => {
         const grant = handle => {
@@ -31,7 +29,6 @@ export async function seedVault(page, { name, files }) {
     }, { name, files });
 }
 
-/** Fresh native read each attempt; only Chrome's transient NotReadableError is retryable. */
 export async function readWitness(page, { name, path, attempts = 20, record = () => {} }) {
     for (let attempt = 1; attempt <= attempts; attempt++) {
         const result = await page.evaluate(async ({ name, path }) => {
@@ -55,7 +52,6 @@ export async function readWitness(page, { name, path, attempts = 20, record = ()
     }
 }
 
-/** Async predicates are awaited by page.evaluate, never handed to waitForFunction. */
 export async function waitForVault(page, condition, { arg, timeoutMs = 10000, intervalMs = 50, record = () => {} } = {}) {
     const end = Date.now() + timeoutMs;
     let polls = 0;

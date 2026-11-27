@@ -7,7 +7,6 @@ import type { PointQuery } from './types';
 
 const PENDING: ClippedPointResult = Object.freeze({ status: 'pending' });
 
-/** Exact fill membership plus clipped stroke witnesses for a head or label. */
 export function createClippedFilledPointJob(path: readonly PathOp[], query: PointQuery, options: {
     readonly frames: readonly PointClipContour[];
     readonly fill: boolean;

@@ -5,7 +5,6 @@ import { tiledPoolAdapter } from './poolAdapter';
 import { createPdfTiledSourceFactory } from './sourceFactory';
 import { installPdfTiledSourceFactory } from './sourceRuntime';
 
-/** The contained host installs one pool; opening a source remains lazy. */
 export function installTiledPdfPool(pool: PdfPool, isFocused: (documentId: string) => boolean): () => void {
     const factory = createPdfTiledSourceFactory(tiledPoolAdapter(pool, (document, emphasis) => createPdfTileProducer({
         document,

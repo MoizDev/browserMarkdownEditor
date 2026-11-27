@@ -1,16 +1,3 @@
-// Compile the helper into one self-contained executable.
-//
-//   bun helper/scripts/build.ts                          host OS/arch → helper/dist/vaultagent[.exe]
-//   bun helper/scripts/build.ts --target bun-darwin-x64 --outfile helper/dist/vaultagent-darwin-x64
-//
-// Baked in with --define (see src/buildInfo.ts):
-//   version  --version X   or env VAULTAGENT_VERSION   (default: the source version)
-//   origins  --origins "https://a,https://b" or env VAULTAGENT_ALLOWED_ORIGINS
-//            — EXTRA allowed origins; the production origin is always included.
-//   releases --releases-base http://127.0.0.1:47890/releases or env VAULTAGENT_RELEASES_BASE
-//            — where self-update looks for releases (default: the GitHub Releases page).
-//            Tests only (a fake release server); release builds never set it.
-
 import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { normalizeOrigin } from '../src/security.ts';
@@ -58,7 +45,6 @@ mkdirSync(dirname(outfile), { recursive: true });
 const cmd = [
     process.execPath, 'build', '--compile', '--minify', '--sourcemap=none',
     ...(target ? [`--target=${target}`] : []),
-    // No console window flashing up at every login on Windows.
     ...(windows ? ['--windows-hide-console'] : []),
     `--define`, `__VAULTAGENT_VERSION__=${JSON.stringify(version)}`,
     `--define`, `__VAULTAGENT_EXTRA_ORIGINS__=${JSON.stringify(origins.join(','))}`,

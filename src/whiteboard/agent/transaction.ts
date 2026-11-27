@@ -26,9 +26,7 @@ export interface AgentOpResult {
 }
 export interface AgentOpContext {
     readonly builder: CommandBuilder;
-    /** Resolves only successful earlier creations, never the current/future op. */
     resolve(reference: string): NodeId;
-    /** The batch owns this lease until its commit or failure has been released; see applyAgentOperations. */
     keep(lease: SampleLease): void;
 }
 export interface AgentApplyHost {
@@ -47,8 +45,6 @@ function lookup(session: BoardSession, prior: ReadonlyMap<number, AgentOpResult>
         if (!id) throw new AgentOpRefused(`${reference} created no shape`);
         return id;
     }
-    // Imported ids are opaque and may themselves contain shape:. Exact matches
-    // win before attempting the historical optional prefix spelling.
     const exact = reference as NodeId;
     if (session.doc.nodes.has(exact)) return exact;
     const alternate = (reference.startsWith('shape:') ? reference.slice(6) : `shape:${reference}`) as NodeId;
@@ -56,8 +52,6 @@ function lookup(session: BoardSession, prior: ReadonlyMap<number, AgentOpResult>
     throw new AgentOpRefused(`no shape ${reference}`);
 }
 
-// F-AGENT-002/003/004/005/012/013: the shared runner owns the single builder,
-// op savepoints and receipt. No async work occurs between begin and commit.
 export async function applyAgentOperations(host: AgentApplyHost, ops: readonly CanvasOp[], signal: AbortSignal): Promise<AgentApplyResult> {
     if (signal.aborted) throw new AgentApplyCancelled();
     if (ops.length < 1 || ops.length > 200) throw new RangeError('Expected 1 to 200 canvas operations');

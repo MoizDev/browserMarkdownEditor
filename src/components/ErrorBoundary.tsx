@@ -3,19 +3,6 @@ import { chunkFailureOf, classifyChunkFailure, type ChunkLoadError } from '../pl
 import { retryFailedModuleSlots } from './moduleSlot';
 import { runCrashCheckpoint } from '../utils/crashCheckpoint';
 
-/*
- * Error boundaries, so one part that fails to draw takes down only itself.
- *
- * Before these there was none in the app, and React 19 unmounts the whole root on an uncaught render error: a lazy
- * chunk that 404'd after a redeploy (Settings, a board's pane) or any render-time bug left a BLANK PAGE, with every
- * open document's unsaved edits gone with it (measured: Settings' chunk 404, one click → `#root` empty). Now each
- * document pane and each lazy panel has its own boundary with Try again; the workspace has one that keeps App — and
- * with it the save machinery — mounted; and main.tsx has a last one for App itself.
- */
-
-/** What a failure screen can do with the app's save machinery: write out pending work, then reload — never over
- *  work that is still unsaved. Provided by App (useUpdateNotice); absent above App, where main.tsx's root boundary
- *  goes through utils/crashCheckpoint.ts instead. */
 export interface AppRecovery {
     /** Resolves false (and reloads nothing) while edits are still unsaved. */
     saveAndReload(): Promise<boolean>;
@@ -24,7 +11,6 @@ const AppRecoveryContext = createContext<AppRecovery | null>(null);
 export const AppRecoveryProvider = AppRecoveryContext.Provider;
 
 interface BoundaryProps {
-    /** Named in the console line, so a report says which part failed. */
     label: string;
     fallback: (error: unknown, retry: () => void) => ReactNode;
     children?: ReactNode;
@@ -43,7 +29,6 @@ export class ErrorBoundary extends Component<BoundaryProps, BoundaryState> {
         console.error(`${this.props.label} failed to draw:`, error, info.componentStack);
     }
 
-    /** Remount the children: lazy modules that failed load again (moduleSlot), everything else renders afresh. */
     retry = (): void => {
         retryFailedModuleSlots();
         this.setState(state => ({ failed: false, error: undefined, attempt: state.attempt + 1 }));
@@ -55,8 +40,6 @@ export class ErrorBoundary extends Component<BoundaryProps, BoundaryState> {
     }
 }
 
-/** The failure, classified once: a chunk that is gone, one that did not arrive, or a bug. A worker whose script could not
- *  be delivered carries that as its error's `cause` (platform/workers/client.ts). */
 function useClassified(error: unknown): ChunkLoadError | null {
     const [classified, setClassified] = useState<ChunkLoadError | null>(() => chunkFailureOf(error));
     useEffect(() => {
@@ -77,11 +60,9 @@ function errorText(error: unknown): string {
 interface FailureProps {
     error: unknown;
     retry: () => void;
-    /** What failed, in the person's words: "Settings", "Notes.md". */
     what: ReactNode;
 }
 
-/** A pane's or panel's failure, in the unreadable pane's own look (DocumentPane's `.unread-pane`). */
 export function PartFailure({ error, retry, what }: FailureProps) {
     const chunk = useClassified(error);
     const recovery = useContext(AppRecoveryContext);
@@ -118,7 +99,6 @@ export function PartFailure({ error, retry, what }: FailureProps) {
     );
 }
 
-/** `PartFailure` filling the box it is put in (a pane's body, a panel). */
 export function PartFailureBox(props: FailureProps) {
     return (
         <div className="pdf-pane-message unread-pane part-failure" role="alert">
@@ -127,7 +107,6 @@ export function PartFailureBox(props: FailureProps) {
     );
 }
 
-/** The workspace's last line: App stays mounted, so its pending saves can still be written before a reload. */
 export function AppFailure({ error, retry }: { error: unknown; retry: () => void }) {
     const recovery = useContext(AppRecoveryContext);
     const [state, setState] = useState<'idle' | 'saving' | 'unsaved'>('idle');
@@ -157,11 +136,6 @@ export function AppFailure({ error, retry }: { error: unknown; retry: () => void
     );
 }
 
-/**
- * main.tsx's last line, for a failure in App itself (its hooks) or above it. App is already unmounted when this draws,
- * so its pending work is written through the checkpoint App registered (utils/crashCheckpoint.ts) before a reload —
- * and a reload over work that could not be written is only ever the person's explicit choice.
- */
 export function RootFailure({ error }: { error: unknown }) {
     const [state, setState] = useState<'idle' | 'saving' | 'unsaved'>('idle');
     const saveThenReload = () => {

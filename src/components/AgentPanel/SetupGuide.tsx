@@ -1,7 +1,3 @@
-// The agent panel's setup screens. The connection screens themselves are the
-// shared HelperGate (the terminal dock shows the same ones); this file is the
-// agent's copy for them, plus the warning above the composer.
-
 import type { ReactNode } from 'react';
 import { AGENT_IDS, AGENT_LABELS } from '../../../shared/vaultAgentProtocol';
 import type { AgentId, AgentStatus } from '../../../shared/vaultAgentProtocol';
@@ -62,7 +58,6 @@ export function SetupGuide(props: SetupGuideProps) {
     );
 }
 
-/** The chosen agent cannot take a message — said above the composer. */
 export function AgentWarning({ agent, status, onRecheck }: {
     agent: AgentId;
     status: AgentStatus | null;

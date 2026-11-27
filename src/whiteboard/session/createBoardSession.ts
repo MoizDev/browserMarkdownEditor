@@ -24,7 +24,6 @@ function addTouched(target: ReturnType<typeof emptyTouched>, source: TouchedSet)
     for (const value of source.media) target.media.add(value);
 }
 
-/** The App session store owns one factory result, independent of attached panes. */
 export function createBoardSession(options: BoardSessionFactoryOptions): ComposedBoardSession {
     const { doc, samples, media, selection, serializer, records, encoder, journal } = options;
     const owner: SourceOwner = Object.freeze({ documentId: options.owner.documentId, session: options.owner.session });
@@ -52,13 +51,9 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
     };
     const checkpoints = new Map<number, { checkpoint: SerializerCheckpoint; context: unknown }>();
     const outstanding = new Set<Promise<unknown>>();
-    // Revoked at dispose: every build that can still read a pinned source observes this signal.
     const lifetime = new AbortController();
     let cachedSource: { revision: number; handle: ReturnType<typeof boardContentSource>; context: unknown } | undefined;
     const retireSource = () => { const previous = cachedSource; cachedSource = undefined; previous?.handle.release(); };
-    // Runs after dispose has revoked new work. Each release waits for the work that may still read the thing
-    // it releases: a journal drain may start a build, so the loop runs until nothing is outstanding, and a
-    // failed drain still lets the outstanding builds settle before anything is claimed released.
     let retired: Promise<void> | undefined;
     const retire = async (): Promise<void> => {
         const failures: unknown[] = [];
@@ -78,7 +73,6 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         void work.then(settled, settled);
         return work;
     };
-    // The person's edits still on their way in (a subset of `outstanding`, which also holds builds): what `settle` waits for.
     const edits = new Set<Promise<unknown>>();
     const readonlyReason = () => options.readOnlyReason() ?? (applyController.isReadOnly ? 'The board cannot be saved safely; reload to continue.' : null);
     const guardLive = () => {
@@ -201,7 +195,6 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         finishGesture: options.finishGesture,
         finishComposition: options.finishComposition,
         captureJournal: () => { const source = capture(); return journal.capture(source, cachedSource!.context); },
-        // A journal append superseded by a newer revision or a closing session is cancelled work: the next dirty batch journals it.
         journalError: error => { if (!isCancellation(error)) options.onFailure(error); },
     });
     const mediaReferenceSnapshot = () => {
@@ -252,30 +245,21 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             guardLive();
             if (recovering) throw new ApplyFailed('read-only', 'Recovery is in progress');
             if (applyController.isReadOnly) throw new ApplyFailed('read-only', 'Cannot capture a board after an unsafe transaction failure', true);
-            // Capturing committed content is not an edit: native acquisition needs
-            // its R0 checkpoint while the temporary admission seal is still set.
-            // Read-only capture must not try to finish an uncommitted user gesture.
-            // An autosave checkpoint can land mid-drag: finishing the gesture here cancelled every live
-            // Select/Eraser drag (seen in the app). Hide, close and unmount finish gestures on their own path.
             try { if (!readonlyReason()) scheduler.flushCommitted(); return capture(); }
             finally { notifyPending(); }
         },
         acknowledge(revision: number, outcome: 'written' | 'conflict' | 'failed') {
             if (notifyingPending) throw new ApplyFailed('stale-session', 'Cannot mutate during pending-work notification');
-            // A first format conversion can write admitted revision zero without a model edit.
-            // Its built checkpoint is still the durable baseline; pruning makes repeats inert.
             if (disposed || outcome !== 'written' || revision < savedRevision || revision > contentRevision) return;
             const captured = checkpoints.get(revision);
             if (!captured?.checkpoint.product()) return;
             savedRevision = revision;
-            // The durable write still needs serializer/PDF acknowledgement if journalling fails.
             try { journal.acknowledge(revision, captured.checkpoint.baseline()); }
             catch (error) { reportPendingError(error); }
             scheduler.setJournalPending(savedRevision < contentRevision);
             const finishWritten = async () => {
                 try { await captured.checkpoint.written(); }
                 catch (error) { reportPendingError(error); }
-                // PDF source rebinding follows the real durable write even if its serializer failed.
                 await options.afterWritten?.(revision, captured.context);
             };
             void track(finishWritten()).catch(reportPendingError);
@@ -283,7 +267,6 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             notifyPending();
         },
         async drain() {
-            // A journal append may start another session-owned build while draining.
             do {
                 while (outstanding.size) await Promise.allSettled([...outstanding]);
                 await scheduler.drain();
@@ -297,8 +280,6 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
             return track(work);
         },
         async settle() {
-            // A held gesture or a queued key lands through the gesture queue: an empty task runs once every hold has let go.
-            // Refused (the session ended or turned read-only), nothing more will land.
             for (;;) {
                 if (disposed) return;
                 if (queue.isGestureActive) {
@@ -327,8 +308,6 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         flushNow() { guard(); try { scheduler.flushNow(); } finally { notifyPending(); } },
         pageHide() { if (!disposed) scheduler.pageHide(); },
         hidden() { if (!disposed) scheduler.hidden(); },
-        /** Revokes synchronously; the returned promise settles only once every tracked build has settled and
-         * the sources, media leases and pinned checkpoints it could read have been released. */
         dispose(): Promise<void> {
             if (retired) return retired;
             // Revoke first: new builds refuse, running builds abort. Physical sources are released only after

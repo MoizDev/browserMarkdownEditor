@@ -12,38 +12,18 @@ import type { JobOptions } from '../security/admission';
 import { createLiveAgentBackend } from './agentProjection';
 import type { BoardRuntime } from './runtime';
 
-/** What the App owner supplies for one source. None of it is read from the DOM.
- *
- * Contract (Core integrates against this exactly):
- * - `isCurrent()` is true only while this App owner, its board session and its disk baseline are the live
- *   ones. It is consulted before the scene is awaited, after it, immediately before the writer commits, and
- *   by every read. Once it returns false it must never return true again for this facade.
- * - `writeBlock()` returns a human-readable reason when the source must not be written (locked, emergency
- *   read-only, baseline conflict), or null when writing is allowed. It is consulted on the same schedule as
- *   `isCurrent()`, so a block raised during preflight refuses the batch before any writer begins.
- * - `sheet()` and `page()` are App source metadata. They are read at job start and fenced on every check,
- *   so a sheet or page change during preflight aborts the batch rather than writing to a stale target.
- * - `retire()` on the facade must be called before the App releases the session. It aborts and awaits
- *   only facade-owned work; the document's canonical job authority keeps serving everything else. */
 export interface NativeAgentSource {
-    /** The App's source identity: this owner, document and disk baseline are still the live ones. */
     isCurrent(): boolean;
-    /** Why this source may not be written right now (locked, emergency, baseline conflict), or null. */
     writeBlock(): string | null;
-    /** Sheet metadata from the App source, not the visible view. */
     sheet(): SheetId;
-    /** Zero-based visible physical page from the App source; ignored on an unpaged board. */
     page(): number;
 }
 export interface NativeAgentMutation {
     shapes(query: ShapeQuery, options: JobOptions): Promise<ShapePage>;
-    /** Whole-batch, all-or-nothing: one C2 transaction read back through the canonical adapter. */
     apply(ops: CanvasOp[], options: JobOptions & { readonly expectedRevision?: number }): Promise<AgentApplyResult>;
-    /** Aborts and awaits only this facade's own work. The canonical runtime jobs and document stay live. */
     retire(): Promise<void>;
 }
 
-/** Ids a batch names that exist now. Preflight pins their exact geometry before any writer begins. */
 function referencedIds(ops: readonly CanvasOp[], doc: BoardDoc): NodeId[] {
     const found = new Set<NodeId>();
     const visit = (value: unknown, depth: number): void => {
@@ -61,15 +41,10 @@ function referencedIds(ops: readonly CanvasOp[], doc: BoardDoc): NodeId[] {
     return [...found];
 }
 
-/** The native mutation facade belongs to the App-owned runtime: no view, second session, camera or store.
- * Geometry is the canonical logical geometry of the STAGED document, so earlier creates and updates
- * in the same batch are seen exactly as the writer will see them. */
 export function createNativeAgentMutation(options: { readonly runtime: BoardRuntime; readonly source: NativeAgentSource }): NativeAgentMutation {
     const { runtime, source } = options;
-    // The facade's own cancellation. It never touches runtime.jobs, which also serves clipboard, media and the document.
     const facade = new AbortController();
     const tracked = new Set<Promise<unknown>>();
-    // Staged reads are synchronous inside one writer; cancellation is observed at the job boundaries.
     const syncSignal = new AbortController().signal;
     const live = () => !facade.signal.aborted && source.isCurrent();
     const projection = () => {
@@ -78,7 +53,6 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
             localBox: node => reader.localBox(node), resolvedTip: reader.resolvedTip,
             resolvedPolylineTip: reader.resolvedPolylineTip });
     };
-    // An unreadable or read-only admission refuses content writes with its own reason (F-AGENT-012): the original bytes stay.
     const writeRefusal = (): string | null => source.writeBlock() ?? (runtime.session.isReadOnly ? runtime.session.readOnlyReason ?? 'This board is read-only.' : null);
     const host: AgentAdapterHost = {
         get session() { return runtime.session; },
@@ -88,15 +62,12 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
         page: () => source.page(),
         isCurrent: live,
         readOnlyReason: () => facade.signal.aborted ? 'Board source has ended' : writeRefusal(),
-        // Admission is synchronous and inside the one writer; the batch releases the lease on every outcome.
         admitSamples: builder => runtime.samples.commit(builder),
         target: (node, page) => projection().target(node, page),
         localBox: node => projection().localBox(node),
     };
-    // The live backend serves reads through the canonical job authority; the writer below reuses one job context.
     const reads = createLiveAgentBackend(host, runtime.jobs);
     const adapter = createBoardAgentAdapter(host);
-    // Every job this facade starts is tracked and aborted by retire(). Each job is one canonical runtime job.
     const scoped = (job: JobOptions): { signal: AbortSignal; deadlineMs: number } => ({
         signal: job.signal ? AbortSignal.any([job.signal, facade.signal]) : facade.signal, deadlineMs: job.deadlineMs,
     });
@@ -115,7 +86,6 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
             try { captured = structuredClone(ops); } catch (error) { return Promise.reject(error); }
             const expected = job.expectedRevision ?? runtime.session.doc.rev, expectedSheet = source.sheet(), expectedPage = source.page();
             if (!Number.isSafeInteger(expected) || expected < 0) return Promise.reject(new RangeError('Invalid expected board revision'));
-            // One canonical job runs the whole write: readiness, pins, font warm-up and the writer. Nothing queues between them.
             return track(runtime.jobs.run(async context => {
                 runtime.jobs.assertContext(context);
                 await runtime.ready;
@@ -152,8 +122,6 @@ export function createNativeAgentMutation(options: { readonly runtime: BoardRunt
         async retire() {
             if (!facade.signal.aborted) facade.abort(new DOMException('Board source has ended', 'AbortError'));
             while (tracked.size) await Promise.allSettled([...tracked]);
-            // Abort replies may settle before their underlying work. Drain the captured authority tail
-            // before releasing a source lease, without disposing or cancelling any other document job.
             await runtime.jobs.drain();
         },
     };

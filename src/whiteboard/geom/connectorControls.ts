@@ -20,9 +20,7 @@ export interface ConnectorControlOptions {
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
-    /** World distance within which a dragged label snaps to the path centre (a screen distance at the current zoom). */
     readonly labelSnapWorld?: number;
-    /** World distances within which an arc's bend snaps to straight (centre) and an elbow's midpoint to the middle of its range. */
     readonly handleSnapWorld?: Readonly<{ centre: number; mid: number }>;
 }
 export interface ConnectorControlPreview {
@@ -41,15 +39,11 @@ function controlValue(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry
     if (![a.x, a.y, b.x, b.y, dx, dy, length].every(Number.isFinite)) throw new RangeError('Connector control geometry overflows');
     if (control === 'label') return { t: 'set', id: node.id, key: 'labelAt', value: connectorLabelFraction(node, geometry, point, snapWorld) };
     if (control === 'elbow') {
-        // Default, calibration cut by owner: the dominant route axis controls the elbow midpoint.
         const dominantX = Math.abs(dx) >= Math.abs(dy), origin = dominantX ? a.x : a.y, span = dominantX ? dx : dy;
         const value = Math.abs(dx) >= Math.abs(dy) ? (dx ? (point.x - a.x) / dx : 0.5) : (dy ? (point.y - a.y) / dy : 0.5);
         if (!Number.isFinite(value)) throw new RangeError('Connector elbow control overflows');
-        // Within the mid radius of the middle of the range, the midpoint snaps there (catalogue B§ elbow midpoint snap 10).
         const axisLength = Math.abs(dx) >= Math.abs(dy) ? Math.abs(dx) : Math.abs(dy);
         let mid = handleSnap && Math.abs(value - 0.5) * axisLength <= handleSnap.mid ? 0.5 : clamp(value);
-        // Otherwise the midline snaps to the nearest parallel segment of an elbow that shares a bound shape, within the same radius
-        // (catalogue a.6). The midline runs along the dominant axis, so its candidates are the segments parallel to it.
         if (handleSnap && mid !== 0.5 && span !== 0) {
             const current = dominantX ? point.x : point.y;
             let best: number | undefined;
@@ -60,13 +54,10 @@ function controlValue(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry
     }
     let bend = length ? (point.x - (a.x / 2 + b.x / 2)) * (-dy / length) + (point.y - (a.y / 2 + b.y / 2)) * (dx / length) : 0;
     if (!Number.isFinite(bend)) throw new RangeError('Connector bend control overflows');
-    // Near the chord the bend snaps to straight: an arc's middle handle centres on the chord (catalogue B§ arc centre snap 16).
     if (handleSnap && Math.abs(bend) <= handleSnap.centre) bend = 0;
     return { t: 'set', id: node.id, key: 'bend', value: Math.max(-1_000_000, Math.min(1_000_000, bend)) };
 }
 
-/** World coordinates of the segments parallel to an elbow's midline (along its dominant axis) in other elbows that share a bound
- * shape with it: the midline snaps to them (catalogue a.6). */
 async function sharedElbowLines(runtime: BoardRuntime, doc: Readonly<BoardDoc>, node: Readonly<ConnectorNode>, geometry: ConnectorGeometry,
     signal: AbortSignal, cooperate?: () => Promise<void>): Promise<number[]> {
     const targets = new Set([node.start.attach?.target, node.end.attach?.target].filter((id): id is NodeId => !!id));
@@ -92,7 +83,6 @@ async function sharedElbowLines(runtime: BoardRuntime, doc: Readonly<BoardDoc>, 
     return lines;
 }
 
-/** The source and staged geometry stay pinned until commit or explicit release. */
 export async function prepareConnectorControl(options: ConnectorControlOptions): Promise<ConnectorControlPreview> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;

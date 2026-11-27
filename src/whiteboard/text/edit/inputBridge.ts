@@ -3,7 +3,6 @@ import type { PointerRoute } from '../../input/pointerRouter';
 import type { TextPointer } from './pointer';
 import type { TextInputBridge, TextInputHit, TextInputRoutingPorts } from './managerTypes';
 
-/** Adapts the pane's existing input router; no parallel pointer capture or camera owner. */
 export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBridge {
     const { manager } = ports;
     let pending: AbortController | null = null;
@@ -27,8 +26,6 @@ export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBr
         cancelPending();
         if (!ports.isCurrent()) return false;
         if (manager.current && ports.containsActive(x, y)) {
-            // The first click of this double-click selected the text and the second opened it with a caret; the double-click
-            // selects all of its words, as on a text that was already selected.
             if (ports.openedByClick?.()) manager.current.editor.selectAll();
             return true;
         }
@@ -55,7 +52,6 @@ export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBr
             };
             const target = ports.locate(x, y, request.signal);
             if (isDeferred(target)) {
-                // The pending double click is consumed, but never owns pointer capture.
                 void Promise.resolve(target).then(resolve).catch(error => {
                     try { report(error); } catch { /* Error reporting must not leave a rejected input task. */ }
                 });
@@ -71,7 +67,6 @@ export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBr
             window.removeEventListener('pointerup', release, true);
             window.removeEventListener('pointercancel', cancel, true);
             if (Math.hypot(up.clientX - down.x, up.clientY - down.y) > 8) return;
-            // Next task: Select's own release has finished first, so it cannot undo the selection the label edit needs.
             setTimeout(() => {
                 if (!ports.isCurrent()) return;
                 const controller = new AbortController();
@@ -93,21 +88,13 @@ export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBr
         const binding = manager.current;
         if (!ports.isCurrent() || !binding) return null;
         const handle = event.pointerType === 'touch' ? ports.hitHandle(event.clientX, event.clientY) : null;
-        // With the input blurred (focus left for a chrome control, measured: the caret stayed and a drag from the shape only
-        // selected text), a press on the editing shape ends the edit and goes to Select, so a drag moves the shape (catalogue S§16).
         const inside = ports.containsActive(event.clientX, event.clientY);
         if (!handle && (!inside || !binding.editor.hasFocus())) {
             manager.close();
-            // A release without a drag on another shape's label edits that label (catalogue S§16): Select takes the press
-            // and selects the shape, then the label opens once that press has finished.
             if (!inside) editOnRelease(event);
             return null;
         }
-        // A press the editor keeps keeps focus too: the browser's mousedown default would move it to the board root, and the next
-        // press on the text would then read as a blurred editor (measured: a drag inside the label dropped the typing focus).
         if (event.pointerType !== 'touch') event.preventDefault();
-        // The second click of a double-click whose first click opened this edit: a double-click on a text edits all of its words.
-        // Taken as a double-click inside an edit, it selected only the word under the pointer.
         if (clicks === 2 && !handle && ports.openedByClick?.()) {
             binding.editor.selectAll();
             const still: Tool<unknown> = { id: 'text-selection', begin: first => ({ kind: 'node-edit', pointerIds: new Set([first.pointerId]),

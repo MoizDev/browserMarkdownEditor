@@ -11,7 +11,6 @@ export class UnsupportedLegacyClipboard extends Error {
     constructor() { super('This clipboard content uses an unsupported board version or format'); this.name = 'UnsupportedLegacyClipboard'; }
 }
 export interface LegacyClipboardDecodeLease {
-    /** Raw decoded JSON and original assets-array JSON; neither has undergone model admission. */
     readonly content: Blob;
     readonly assets: Blob;
     readonly decodedUnits: number;
@@ -34,8 +33,6 @@ export async function decodeLegacyClipboard(options: {
     const identity = Object.freeze({ ...options.identity });
     const check = () => { options.signal?.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Legacy clipboard became stale', 'AbortError'); };
     check();
-    // Dictionary is at most four entries per encoded character and two per
-    // output unit. Charge both input copies and the maximum bounded output.
     const encodedBound = Math.min(envelope.size, INPUT_LIMIT), codes = Math.min(OUTPUT_LIMIT, 2 * encodedBound + 1);
     const outputBound = Math.min(OUTPUT_LIMIT, codes * (codes + 1) / 2);
     const dictionary = Math.min(4 * encodedBound + 8, 2 * outputBound + 4) * 4;

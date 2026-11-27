@@ -10,7 +10,6 @@ export interface PdfVersionBridge {
     readonly variant: string;
     readonly target: RenderToken;
     readonly pageCount: number;
-    /** Only these already-borrowed pages need an exact target geometry lookup. */
     readonly requiredPages: readonly number[];
     readonly geometries: readonly Readonly<PageGeometry>[];
     readonly pixels: MirrorVersionBridge<PdfMirrorPixels>;
@@ -30,7 +29,6 @@ function sameGeometry(a: Readonly<PageGeometry>, b: Readonly<PageGeometry>): boo
         a.userUnit === b.userUnit && a.toUserSpace.every((number, index) => number === b.toUserSpace[index]);
 }
 
-/** Borrow only the last visible mirror; missing old exact geometry is not a proof. */
 export function beginPdfVersionBridge(options: {
     readonly previous: PdfSessionMirrors;
     readonly target: RenderToken;
@@ -85,7 +83,6 @@ export function beginPdfVersionBridge(options: {
     } finally { borrow.release(); }
 }
 
-/** The target must independently supply the same exact geometry for every borrowed page. */
 export function finishPdfVersionBridge(options: {
     readonly bridge: PdfVersionBridge | null;
     readonly token: RenderToken;

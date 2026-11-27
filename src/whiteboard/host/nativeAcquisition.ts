@@ -7,8 +7,6 @@ import { createNativeLoadClient } from '../workers/nativeLoadClient';
 import type { NativeLoadReply } from '../workers/nativeLoad';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: C5 admission, worker identity and model sample-lease contracts;
-// independent host seam, no third-party source.
 export type NativeBoardAcquisition =
     | { readonly status: 'editable'; readonly load: RehydratedLoad; readonly samples: SampleStore;
         readonly report: NativeLoadReply; dispose(): void }
@@ -25,9 +23,6 @@ export interface NativeAcquisitionOptions {
     readonly onFailure?: (error: unknown) => void;
 }
 
-/** The supplied Blob is the caller's already-copied baseline, not a disk File.
- * The returned load owns creator leases until the live session has retained the
- * samples; only then may the caller call load.release() or dispose acquisition. */
 export async function acquireNativeBoard(options: NativeAcquisitionOptions): Promise<NativeBoardAcquisition> {
     if (!(options.bytes instanceof Blob) || (typeof File !== 'undefined' && options.bytes instanceof File)) {
         throw new TypeError('Native acquisition requires copied bytes as a Blob, not a File');
@@ -54,8 +49,6 @@ export async function acquireNativeBoard(options: NativeAcquisitionOptions): Pro
         const result = await client.load(options.bytes, options.kind, options.pdfPages,
             { signal: options.signal, deadlineMs: options.deadlineMs });
         owned = result.load;
-        // The worker parsed once and has nothing more to do: ended now, its heap goes with it, rather than idling until the
-        // acquisition is disposed, which for an old board is after its whole preparation (two such workers per open).
         client.dispose();
         options.signal?.throwIfAborted();
         if (!result.load) return { status: 'read-only', original: options.bytes, report: result.reply, dispose };

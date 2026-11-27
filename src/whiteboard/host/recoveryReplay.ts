@@ -9,8 +9,6 @@ import type { Node } from '../model/nodes';
 import { rehydrateLoad } from '../model/loadProjection';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: C-20 recovery recipe, C5 re-admission and transactional model
-// contracts; independent planner, no third-party source.
 export async function recoverBoardJournal(payload: unknown, options: {
     doc: BoardDoc; samples: SampleStore; apply: (tx: Transaction) => Applied; signal: AbortSignal;
     cooperate?: () => Promise<void>; projectMedia?: (entry: MediaEntry) => MediaEntry;
@@ -79,7 +77,6 @@ export async function recoverBoardJournal(payload: unknown, options: {
                 if (projected.id !== id) throw new Error('Recovery media projection changed identity');
                 desiredMedia.set(id, projected);
             }
-            // Opaque records cannot be created, removed or edited by a transaction.
             for (const node of doc.nodes.values()) {
                 if (due()) await cooperate();
                 const next = desired.nodes.get(node.id);

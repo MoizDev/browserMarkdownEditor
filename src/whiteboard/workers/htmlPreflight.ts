@@ -1,8 +1,6 @@
 import type { WorkerContext } from '../../platform/workers';
 import { SECURITY_LIMITS } from '../security/limits';
 
-// Provenance: SEC-W1/W3 lexical HTML limits before contained DOM parsing;
-// independent bounded tokenizer, no upstream engine source.
 const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
 const RAW = new Set(['script', 'style', 'textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes', 'plaintext']);
 const P_BREAK = new Set(['address', 'article', 'aside', 'blockquote', 'div', 'dl', 'fieldset', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'main', 'menu', 'nav', 'ol', 'p', 'pre', 'section', 'table', 'ul']);

@@ -10,7 +10,6 @@ export interface PdfNativeEmphasisResult {
     reason?: 'renderer-version' | 'glyph-data' | 'page-budget';
 }
 
-/** Header status is pure data; asking for availability must not load a renderer. */
 export function pdfNativeEmphasisAvailability(result?: PdfNativeEmphasisResult): EmphasisAvailability {
     if (!result) return { kind: 'inactive', reason: 'Checking original PDF text for Word emphasis' };
     if (result.supported && result.eligible > 0) return { kind: 'toggle' };

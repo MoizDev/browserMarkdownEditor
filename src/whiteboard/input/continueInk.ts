@@ -34,8 +34,6 @@ export interface InkContinuation {
     commit(endpoint: RealSample, signal: AbortSignal, snapAngle: boolean): Promise<DryInkIdentity | null>;
 }
 
-/** The last real pen stroke is session-owned. Its original samples stay leased until
- * the complete continuation has been admitted or cancelled; no partial run is saved. */
 export function createInkContinuation(options: InkContinuationOptions): (sample: RealSample) => InkContinuation | null {
     return () => {
         const { session, samples } = options, doc = session.doc, owner = session.owner, revision = doc.rev;
@@ -104,7 +102,6 @@ export function createInkContinuation(options: InkContinuationOptions): (sample:
                     check(); wet = samples.retain(lease.ref);
                     const growth = (() => {
                         if (doc.host.kind !== 'notebook' || !summary) return null;
-                        // The curve's enclosure, grown for a non-uniform scale as scene/bounds.ts derives.
                         const [sx, sy, w, h] = summary.curveBounds, pose = worldPose(doc, node.id);
                         const k = Math.max(Math.abs(node.sx), Math.abs(node.sy));
                         const ex = (k - Math.abs(node.sx)) * summary.maxReach, ey = (k - Math.abs(node.sy)) * summary.maxReach;

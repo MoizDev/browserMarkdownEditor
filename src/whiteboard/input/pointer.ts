@@ -6,7 +6,6 @@ export interface PresentedMapping {
   clientToSurface(x: number, y: number): { readonly x: number; readonly y: number }
 }
 
-/** Freeze the DOM rectangle and camera from one actually presented frame. */
 export function presentedMapping(time: number,
   rect: Readonly<{ left: number; top: number; width: number; height: number }>,
   viewport: Readonly<{ width: number; height: number }>,
@@ -22,18 +21,14 @@ export function presentedMapping(time: number,
   } })
 }
 
-// Record mappings only after presentation, not when a future camera is scheduled.
 export class MappingHistory {
   private entries: PresentedMapping[] = []
-  /** `shown`: the view has presented a frame since it was last shown (its owner knows; hiding forgets the frame). */
   constructor(private readonly onExpired: () => void = () => {}, private readonly shown: () => boolean = () => true) {}
-  /** A new press can be placed: there is a presented frame of this showing to place it with. */
   ready(): boolean { return this.entries.length > 0 && this.shown() }
   present(mapping: PresentedMapping): void {
     if (!Number.isFinite(mapping.time) || typeof mapping.clientToWorld !== 'function' || typeof mapping.clientToSurface !== 'function'
       || (this.entries.length && mapping.time < this.entries[this.entries.length - 1].time)) throw new Error('Invalid presented input mapping')
     this.entries.push(mapping)
-    // Retain at least 250 ms even at very high frame rates.
     while (this.entries.length > 64 && mapping.time - this.entries[1].time >= 250) this.entries.shift()
   }
   private at(time: number): PresentedMapping {
@@ -84,7 +79,6 @@ interface Contact {
   readonly id: number
   watermark: number
   suffix: string[]
-  /** Raw points already delivered since the last pointermove, including equal-time points. */
   rawSinceMove: Map<string, number>
 }
 
@@ -99,8 +93,6 @@ function tuple(event: PointerEvent): string {
 export class PointerAcquisition {
   private readonly contacts = new Map<number, Contact>()
   private sequence = 0
-  /** The last primary press, for counting runs of clicks: a pointerdown's `detail` is always 0 in Chromium, so the board counts
-   * them itself. Read from `detail`, a double- or triple-click inside a text being edited never selected a word or a paragraph. */
   private press: { readonly id: number; readonly kind: string; readonly x: number; readonly y: number; readonly time: number; readonly clicks: number; dragged: boolean } | null = null
   private readonly previousTouchAction: string
   private disposed = false
@@ -162,8 +154,6 @@ export class PointerAcquisition {
       if (item.pointerId !== contact.id || !Number.isFinite(item.timeStamp) || item.timeStamp < previous) throw new Error('Unordered pointer batch')
       previous = item.timeStamp
       const key = tuple(item)
-      // Earlier timestamps are already rejected by the watermark; retain the full
-      // equal-time raw suffix so coarse browser clocks cannot reintroduce duplicates.
       if (raw && item.timeStamp > contact.watermark) contact.rawSinceMove.clear()
       if (raw && contact.rawSinceMove.has(key)) continue
       if (!raw) {
@@ -187,10 +177,6 @@ export class PointerAcquisition {
 
   private down = (event: PointerEvent): void => {
     if (this.contacts.has(event.pointerId)) return
-    // Before the first presented frame of a showing there is nothing to place a press with: it is not taken at all (the
-    // surface shows the busy cursor meanwhile). Taken, it failed with "No presented input mapping" and the stroke was lost
-    // (measured: every stroke drawn during "Loading drawing…" on a dense board, and after each tab switch, until its frame).
-    // Only a new press waits; a contact already down keeps its mappings, and the chrome and keys are not involved.
     if (!this.mappings.ready()) return
     try {
       const sample = { ...this.sample(event), clicks: this.clicks(event) }
@@ -201,7 +187,6 @@ export class PointerAcquisition {
     } catch (error) { this.sink.error?.(error, event.pointerId) }
   }
 
-  /** Only a press that stayed a click continues a run; one from another kind of pointer, too late or too far away starts one. */
   private clicks(event: PointerEvent): number {
     if (event.button !== 0) return 1
     const previous = this.press, source = event.pointerType === 'pen' || event.pointerType === 'touch' ? event.pointerType : 'mouse'
@@ -255,7 +240,6 @@ export class PointerAcquisition {
     finally { try { if (this.root.hasPointerCapture(id)) this.root.releasePointerCapture(id) } catch { /* Capture may have ended already. */ } }
   }
   private cancel = (event: PointerEvent): void => {
-    // A press the system took back (palm rejection, a system gesture) was no click: the next press starts a new run.
     if (this.press?.id === event.pointerId) this.press.dragged = true
     this.end(event.pointerId, 'cancel')
   }

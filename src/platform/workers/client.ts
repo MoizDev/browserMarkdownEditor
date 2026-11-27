@@ -11,17 +11,9 @@ const benchmarkPerf = __BME_BENCH__ ? await import('./perf') : null;
 const clients = new Map<string, Client>();
 const silence = [20000, 20000, 60000, 60000];
 const backoff = [0, 250, 1000, 4000];
-// How long a failed client refuses at once before the next request may start a fresh worker, by consecutive failure.
-// A failure used to be terminal for the page: one slow hello (10 s) or one crash burst of the shared parse, geometry or
-// decode worker failed every later board open until a reload. Respawn happens only when a request asks for it, so a
-// worker that keeps failing is retried at most once per step and never loops on its own.
 const failedRetryMs = [1_000, 5_000, 30_000, 120_000];
 const failureMemoryMs = 600_000;
 const helloMs = 10_000;
-// While the script is still being fetched (a kept script, platform/workers/script.ts) there is no worker to say hello yet:
-// the fetch's own 15 s deadline speaks first, as "taking too long to download". Timed from spawn, the hello clock
-// fired at 10 s instead and the board said "Could not open canvas: bme-worker-host-v1: Worker hello timed out after 10
-// seconds" (measured with the serializer's script held 20 s). Bounds a spawn that never settles, a contained port's too.
 const spawnPendingMs = 20_000;
 const marker = 'bme-worker-host-v1';
 
@@ -180,8 +172,6 @@ class Client implements WorkerClient {
                 for (const job of this.pending.values()) {
                     if (job.phase !== 'queued' || (this.state !== 'ready' && job.bootstrap !== connection.generation)) continue;
                     if (this.expired(job)) continue;
-                    // Bound outstanding background dispatch, including cancelled work awaiting its
-                    // late reply. Interactive work must never wait behind this bound.
                     if (job.options.priority !== 0 && connection.sent.size >= 256) continue;
                     try {
                         if (!job.admitted && !job.permit) {
@@ -198,8 +188,6 @@ class Client implements WorkerClient {
                                     pause: () => { if (job.admission === admission) this.pause(job, true); },
                                     resume: () => { if (job.admission === admission) this.pause(job, false); },
                                 });
-                                // Admission callbacks can synchronously settle another job and re-enter
-                                // the client. The pump serialises them; a cancelled admission releases too.
                                 if (!this.pending.has(job.id)) { job.permit.release(); continue; }
                             }
                         }
@@ -250,14 +238,11 @@ class Client implements WorkerClient {
         if (job.phase === 'settled') return;
         const terminate = name === 'Deadline' && job.phase !== 'queued' && job.options.terminateOnDeadline === true && !!this.connection;
         if (job.phase !== 'queued') this.control({ v: 1, cancel: job.id });
-        // Do not pump a newly admitted job onto the incarnation we are about to terminate.
         if (terminate) this.state = 'recycling';
         this.settle(job, this.error(name, message));
         if (terminate) void this.recycle('posted request deadline', { lazy: true }).catch(() => {});
     }
 
-    // The only promise-settling site. Sent cancelled jobs stay in connection.sent until their one
-    // late reply (disposed) or termination, so a non-cooperating cancelled job is still watched.
     private settle(job: Job, error?: WorkerHostError, result?: unknown): void {
         if (job.phase === 'settled') return;
         job.phase = 'settled';
@@ -347,7 +332,6 @@ class Client implements WorkerClient {
                 },
                 hello: false, started: this.spawningAt, sent: new Map(), polling: false, poll: 0, polled: now(), eventsAt: now(), events: 0,
             };
-            // The hello clock starts with the worker itself, not with the fetch of its script.
             this.spawningAt = connection.started = now();
             const message = (event: MessageEvent<unknown>) => this.receive(connection, event.data);
             const messageerror = () => this.crash(connection, 'Worker message could not be deserialised');
@@ -355,10 +339,7 @@ class Client implements WorkerClient {
                 if (this.connection !== connection) return;
                 event.preventDefault();
                 if (connection.hello) { this.crash(connection, 'Worker error'); return; }
-                // A kept copy of its script would not run (damaged bytes, or blob workers refused by a policy or an
-                // extension): the copy is dropped and the worker starts again at once from the network, as it always did.
                 if (dropKeptCopy(endpoint, event)) { this.disconnect(); this.spawn(); return; }
-                // Its script may be gone from the server (a newer version replaced this one): only the server can say.
                 void startFailure(endpoint, event).then(cause => {
                     if (this.connection === connection && !connection.hello) this.fail('Worker failed before its hello', cause);
                 });
@@ -384,8 +365,6 @@ class Client implements WorkerClient {
             if (!('hello' in data) || data.hello.protocol !== this.spec.protocol) { this.fail('Worker protocol mismatch'); return; }
             connection.hello = true;
             this.syncClock();
-            // A bootstrap facade marks initialisation requests without letting unrelated callers
-            // jump ahead of onStart. Its generation fence also catches an async hook after a crash.
             const bootstrap = Object.create(this) as WorkerClient;
             bootstrap.request = <T>(op: string, args: unknown, options: RequestOptions) => this.enqueue<T>(op, args, options, connection.generation);
             void Promise.resolve().then(() => this.spec.onStart?.(bootstrap)).then(() => {
@@ -545,7 +524,6 @@ class Client implements WorkerClient {
         connection.sent.clear();
     }
 
-    /** `cause`: the worker's script could not be delivered (gone from the server, or unreachable) — what its callers show. */
     private fail(reason: string, cause?: ChunkLoadError | null): void {
         const time = now();
         this.failures = time - this.failedAt > failureMemoryMs ? 1 : this.failures + 1;
@@ -565,7 +543,6 @@ class Client implements WorkerClient {
         this.spawn();
     };
 
-    /** Back to idle, so the request that asked spawns a fresh worker; the failure count keeps the next cool-down growing. */
     private revive(): void {
         this.failure = undefined;
         this.crashes = [];
@@ -579,7 +556,6 @@ class Client implements WorkerClient {
         if (this.state === 'failed') return Promise.reject(this.failure);
         if (this.recyclePromise && !options.lazy) return this.recyclePromise;
         this.state = 'recycling';
-        // Cancel posted work rather than drain forever on WASM; unposted calls survive.
         const posted = [...(this.connection?.sent.values() ?? [])];
         this.disconnect();
         for (const job of posted) this.cancel(job, 'Cancelled', `Worker recycled: ${reason}`);
@@ -615,7 +591,6 @@ class Client implements WorkerClient {
 
     private record(job: Job, phase: 'request' | 'post' | 'settle'): void {
         if (!benchmarkPerf) return;
-        // An injected permit provider has its own ledger, not the shared governor's.
         const counts = this.spec.permits && this.spec.permits !== cpuGovernor ? { held: -1, queued: -1 } : workerPermitCounts();
         benchmarkPerf.recordWorkerPerf({ worker: this.spec.name, generation: job.perfGeneration ?? this.generation,
             requestId: job.id, priority: job.options.priority, phase, time: now(), requestTime: job.perfAsked!,
@@ -628,8 +603,6 @@ class Client implements WorkerClient {
     }
 
     private error(name: string, message: string, poisoned = false, cause?: ChunkLoadError): WorkerHostError {
-        // A script that could not be delivered is said in the person's words (chunkLoad.ts), since callers show a failure's
-        // message as it is: "bme-worker-host-v1: Worker failed before its hello" reached the canvas pane after a deploy.
         if (cause) return new WorkerHostError(name, cause.message, false, poisoned, { cause });
         return new WorkerHostError(name, `${marker}: ${message}`, name === 'WorkerCrashed', poisoned);
     }

@@ -21,8 +21,6 @@ async function until(condition, description, ms = 10000) {
 }
 const textOf = result => result.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
 
-// Local protocol stand-in, not an executor shortcut. Replace only this function with V-02's
-// helper fixture when available; discovery, connection, run and tool execution stay in the app.
 async function helperStandIn(context) {
     let socket;
     let runId;
@@ -54,8 +52,6 @@ async function helperStandIn(context) {
                 assert(call, 'A result must belong to a recorded tool call');
                 calls.delete(message.callId);
                 call.resolve(message.result);
-                // Stop acknowledged cancellation, not tool completion. Deliberately keep this run
-                // open until its in-flight tool replies, catching a silent drop in chatStore.
                 if (cancelling && !calls.size) done(cancelling, 'cancelled');
                 return;
             }
@@ -100,7 +96,6 @@ const targets = [];
 const observation = { browser: browser.version(), pin, mode, arms: {}, errors, targets };
 try {
     assert.equal(browser.version(), pin.version, 'The pinned engine is part of this gate identity');
-    // No outside service receives fixture text or any request from the app.
     await context.route('**/*', route => {
         const url = new URL(route.request().url());
         return url.origin === origin || url.protocol === 'data:' || url.protocol === 'blob:'
@@ -232,8 +227,6 @@ try {
     }
 
     if (mode === 'all' || mode === 'deadline' || mode === 'stop' || mode === 'output-cap' || mode === 'long-query') {
-        // A separate, native filesystem write invalidates the real cache. 34 a's is 256 times the
-        // measured 26-a near miss's search space; the no-termination mutant also witnesses its tail.
         await page.evaluate(async () => {
             const folder = await (await navigator.storage.getDirectory()).getDirectoryHandle('regex-fixture');
             const handle = await folder.getFileHandle('evil.md');
@@ -255,8 +248,6 @@ try {
         const before = Date.now();
         const result = await helper.call({ query: '(a+)+$', regex: true });
         const resultAt = Date.now();
-        // The condition is CDP target lifetime, not a claimed terminate counter. On the mutant this
-        // deliberately observes through 3× the budget before reporting the missing detach.
         try { await until(() => !!worker.detached, 'the matcher worker actually detaches', Math.max(1, before + 15000 - Date.now())); }
         catch (error) { observation.arms.deadlineDetachError = String(error); }
         let timeline;
@@ -291,8 +282,6 @@ try {
         const details = await page.evaluate(() => window.__c07Workers);
         const arm = observation.arms.deadline = { result, responseMs: resultAt - before, detachMs: worker.detached ? worker.detached - before : null, timeline, workers: details };
         await writeFile(resolve(output, 'deadline.json'), JSON.stringify(arm, null, 2));
-        // c-lead ruling: Chromium keeps uncooperative JS on-core for kForcibleTerminationDelay
-        // (2 s) after terminate(). Assert that real trace-bound CPU tail, never just the promise.
         assert(timeline.workerTaskEndMs !== null && timeline.workerTaskEndMs <= 8500, `Worker task ended at ${timeline.workerTaskEndMs} ms, beyond 5 s + 2 s engine grace + 1.5 s tolerance`);
         assert.equal(timeline.terminateCalls, 1, 'Terminate must be called exactly once on the timed-out worker');
         assert(timeline.terminateMs >= 4500 && timeline.terminateMs <= 6500, `Terminate called at ${timeline.terminateMs} ms, not the 5 s deadline`);

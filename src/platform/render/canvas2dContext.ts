@@ -10,7 +10,6 @@ export function registerCanvasIsolation(ctx: CanvasRenderingContext2D, painter: 
     isolationOwners.set(ctx, painter);
 }
 
-/** Context ownership, not the currently selected backend, chooses the admitted 2D pool. */
 export function paintCanvasIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions,
     paint: (isolatedCtx: CanvasRenderingContext2D) => void): void {
     const owner = isolationOwners.get(ctx);
@@ -28,10 +27,6 @@ export function imageExtent(source: CanvasImageSource): { width: number; height:
     return { width: (source as ImageBitmap).width, height: (source as ImageBitmap).height };
 }
 
-/** A bounded effect/band still exposes DEVICE identity to a layer. Its native backing starts at
- * (-origin), including when a shared scope installs an absolute transform. Binding every native
- * method preserves the browser's context brand; a producer never sees a second RAF or canvas owner.
- */
 export function deviceContext(native: CanvasRenderingContext2D, origin: { x: number; y: number }, image: CanvasImageCall): CanvasRenderingContext2D {
     const methods = new Map<PropertyKey, unknown>();
     const reset = () => native.setTransform(1, 0, 0, 1, -origin.x, -origin.y);

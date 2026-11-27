@@ -73,8 +73,6 @@ function applyPlacement(builder: OpSink, node: Node, parent: ParentId, local: Lo
     setIfChanged(builder, node, 'rotation', local.rotation);
     if (order !== undefined) setIfChanged(builder, node, 'order', order);
 }
-// The normalization sink is private to commit; public commands add their own
-// savepoint, while normalization is covered by the whole transaction's rollback.
 export function stageReparent(doc: BoardDoc, sink: OpSink, node: Node, parent: ParentId, geometry?: ChangeGeometry, order?: OrderKey): void {
     if (node.kind === 'opaque') refuseChange('opaque', 'Opaque nodes cannot be reparented', node.id);
     const local = poseInParent(doc, node, parent, worldPose(doc, node.id), geometry);
@@ -84,9 +82,6 @@ export function reparentNode(doc: BoardDoc, builder: CommandBuilder, node: Node,
     command(builder, () => stageReparent(doc, builder, node, parent, geometry, order));
 }
 
-// Opaque siblings are fixed pins (RV-22). Re-key each intervening interval,
-// preserving its paint order; refuse BEFORE changing anything if no short keys
-// fit without moving a pin. Imported pin keys themselves remain verbatim.
 export function rekeyParent(doc: BoardDoc, builder: OpSink, parent: ParentId): void {
     const siblings = childrenOf(doc, parent), ops: Op[] = [];
     let lower: OrderKey | null = null, start = 0;
@@ -149,8 +144,6 @@ interface DeleteRoot { readonly root: Node; readonly kept: readonly KeptNode[]; 
 export function deleteNodes(doc: BoardDoc, builder: CommandBuilder, ids: Iterable<NodeId>, geometry?: ChangeGeometry): DeleteResult {
     return command(builder, () => {
         const plans: DeleteRoot[] = [], kept: NodeId[] = [], deleted: NodeId[] = [];
-        // Analyze the whole command before the first push, notably opaque guards
-        // and geometry. A later refusal still has the builder savepoint as backup.
         for (const root of selectedRoots(doc, ids)) {
             if (root.kind === 'opaque') refuseChange('opaque', 'Opaque nodes cannot be deleted', root.id);
             if (isLocked(doc, root)) { kept.push(root.id); continue; }
@@ -192,7 +185,6 @@ export function moveNodesToSheet(doc: BoardDoc, builder: CommandBuilder, ids: It
     return command(builder, () => {
         if (!doc.sheets.has(target)) refuseChange('V-1', 'Destination sheet does not exist');
         const roots = selectedRoots(doc, ids), moved: NodeId[] = [];
-        // Same-sheet selection is a no-op, not an accidental ungroup command.
         const plans = roots.filter(node => sheetOf(doc, node.id) !== target).map(node => {
             if (node.kind === 'opaque') refuseChange('opaque', 'Opaque nodes cannot be moved to another sheet', node.id);
             if (isLocked(doc, node)) refuseChange('schema', 'Locked nodes cannot be moved', node.id);

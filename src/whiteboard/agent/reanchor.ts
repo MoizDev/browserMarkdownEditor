@@ -6,9 +6,6 @@ import type { NodeId } from '../model/ids';
 import { boardPageStack } from '../model/pages';
 import { AgentOpRefused } from './errors';
 
-// F-AGENT-007: root ownership follows the geometric centre (a gap belongs to
-// the following page). Reanchoring preserves the exact world pose and remains
-// inside the operation's savepoint, including any just-staged paper growth.
 export function reanchorAgentRoot(doc: BoardDoc, builder: CommandBuilder, id: NodeId, geometry: ChangeGeometry): void {
     const node = doc.nodes.get(id);
     if (!node || doc.kind === 'whiteboard' || !isSheetParent(doc, node.parent)) return;

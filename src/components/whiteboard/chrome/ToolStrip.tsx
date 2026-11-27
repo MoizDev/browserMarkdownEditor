@@ -29,11 +29,8 @@ export interface ToolStripProps {
     readonly disabled?: boolean;
     readonly disabledReason?: (choice: ToolChoice) => string | undefined;
     readonly select: (choice: ToolChoice) => void;
-    /** Present only while the selected tool can be locked (a single-use tool); the lock sits above the bar. */
     readonly lock?: ToolLockView;
-    /** The tools the bar shows now, after the fit: the number keys press these, so the chrome publishes them. */
     readonly onShown?: (shown: readonly ToolChoice[]) => void;
-    /** A press on a bar tool that is then dragged off the bar onto the board. The board decides whether that tool has a drag. */
     readonly dragTool?: (choice: ToolChoice, event: PointerEvent, bar: Element) => boolean;
 }
 
@@ -45,15 +42,12 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
     const [open, setOpen] = useState(false);
     const root = useRef<HTMLDivElement>(null);
     const fit = useFittingTools(root, primary.length);
-    // The bar's tools that do not fit its row move to the front of More tools, in order, rather than scrolling inside
-    // the bar: a scrolled row left a sliver of a cut-off icon beside the chevron in a narrow pane.
     const shown = fit < primary.length ? primary.slice(0, fit) : primary;
     const overflow = fit < primary.length ? [...primary.slice(fit), ...more] : more;
     useEffect(() => { onShown?.(shown); });
     useEffect(() => () => onShown?.([]), [onShown]);
     const trigger = useRef<HTMLButtonElement>(null);
     const popup = useRef<HTMLDivElement>(null);
-    // Escape returns the keyboard to the board, not to the chevron: the chevron is outside the board's keyboard root.
     const close = useCallback(() => {
         setOpen(false);
         focusBoardInteraction(root.current);
@@ -84,11 +78,9 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
             data-tooltip={reason ?? label}
             aria-pressed={sameTool(choice, selected)}
             disabled={disabled || reason !== undefined}
-            // Only a press that stays on the bar is a click; one that leaves it is a drag onto the board (ChromeToolDrag).
             onPointerDown={dragTool ? event => {
                 const bar = event.currentTarget.closest<HTMLElement>('.board-chrome-tool-strip, .board-chrome-more');
                 if (!bar || event.button !== 0 || !dragTool(choice, event.nativeEvent, bar)) return;
-                // Leaving the More popover starts the drop: the popover closes as the shape starts, as it does on a click.
                 if (!bar.classList.contains('board-chrome-more')) return;
                 const leave = (move: PointerEvent) => {
                     const box = bar.getBoundingClientRect();
@@ -106,7 +98,6 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
 
     const moreDisabled = disabled || overflow.every(choice => disabledReason?.(choice) !== undefined);
     const moreReason = moreDisabled ? overflow.map(choice => disabledReason?.(choice)).find(reason => reason !== undefined) : undefined;
-    // A tool living in the popover still shows on the bar: the chevron takes the active look while it is selected.
     const moreCurrent = overflow.some(choice => sameTool(choice, selected));
     return <div className="board-chrome-tools" ref={root}>
         {lock && <button type="button" className="board-chrome-tool board-chrome-tool-icon board-chrome-tool-lock"
@@ -127,9 +118,6 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
     </div>;
 }
 
-/** How many of the bar's tools fit its row. The row is the chrome's bottom grid; when the zoom controls sit beside the
- *  bar (ViewerHost has not set `data-chrome-stacked`) they take a column on each side, the centred bar the rest. Sizes
- *  are read from the rendered bar (button step, the strip's own padding and chevron), never assumed. */
 function useFittingTools(root: RefObject<HTMLDivElement | null>, count: number): number {
     const [fit, setFit] = useState(count);
     useLayoutEffect(() => {

@@ -26,7 +26,6 @@ const layoutGrid: IconNode[] = [['rect', { width: 7, height: 7, x: 3, y: 3, rx: 
 const contrast: IconNode[] = [['circle', { cx: 12, cy: 12, r: 10 }], ['path', { d: 'M12 18a6 6 0 0 0 0-12v12z' }]];
 export const readOnlyIcons = { lock, copyPlus, pages: layoutGrid, invert: contrast } as const;
 
-/** The bar's icon buttons other than the menu and the sheet name. */
 export const headerIcons = { menu, chevronDown, actions: ellipsisVertical } as const;
 
 /** The navigation panel and the helper buttons: Lucide's plus, minus, chevrons, arrow-left and x (ISC), the same
@@ -45,7 +44,6 @@ const search: IconNode[] = [['circle', { cx: 11, cy: 11, r: 8 }], ['path', { d: 
 const check: IconNode[] = [['path', { d: 'M20 6 9 17l-5-5' }]];
 export const paletteIcons = { search, chevronRight, chevronLeft, check } as const;
 
-/** Undo, Redo, Delete and Duplicate in the bar, keyed by the command each one runs. */
 export const headerCommandIcons: Readonly<Record<'undo' | 'redo' | 'delete' | 'duplicate', IconNode[]>> = {
     undo, redo, delete: trash, duplicate: copy,
 };
@@ -88,7 +86,6 @@ const selectGroup: IconNode[] = [['path', { d: 'M5 3a2 2 0 0 0-2 2' }], ['path',
     ['path', { d: 'M21 9v1' }], ['path', { d: 'M3 14v1' }], ['path', { d: 'M21 14v1' }]];
 const ungroup: IconNode[] = [['rect', { x: 11, y: 14, width: 10, height: 7, rx: 2 }], ['rect', { x: 3, y: 3, width: 10, height: 7, rx: 2 }]];
 
-/** The picture toolbar and the crop bar. Drawn in the same 24-unit, 2-stroke style as the icons above. */
 const pictureReplace: IconNode[] = [['rect', { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ['circle', { cx: 9, cy: 9, r: 2 }],
     ['path', { d: 'm21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21' }]];
 const pictureCrop: IconNode[] = [['path', { d: 'M6 2v14a2 2 0 0 0 2 2h14' }], ['path', { d: 'M18 22V8a2 2 0 0 0-2-2H2' }]];
@@ -98,10 +95,8 @@ const pictureFit: IconNode[] = [['path', { d: 'M8 3H5a2 2 0 0 0-2 2v3' }], ['pat
     ['path', { d: 'M3 16v3a2 2 0 0 0 2 2h3' }], ['path', { d: 'M16 21h3a2 2 0 0 0 2-2v-3' }]];
 const pictureCheck: IconNode[] = [['path', { d: 'M20 6 9 17l-5-5' }]];
 
-/** The picture toolbar's and the crop bar's icons, keyed by what each button does. */
 export const pictureIcons = { replace: pictureReplace, crop: pictureCrop, download: pictureDownload, fit: pictureFit, check: pictureCheck } as const;
 
-/** The Actions grid, keyed by the command each button runs; the group slot carries ungroup for a group. */
 export const actionIcons: Partial<Record<BoardCommand, IconNode[]>> = {
     alignLeft: alignStartVertical, alignHorizontal: alignCenterVertical, alignRight: alignEndVertical,
     stretchHorizontal, alignTop: alignStartHorizontal, alignVertical: alignCenterHorizontal, alignBottom: alignEndHorizontal,

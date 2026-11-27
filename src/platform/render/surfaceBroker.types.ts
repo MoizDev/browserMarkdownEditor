@@ -17,7 +17,6 @@ export interface SurfaceStamp {
 export interface SurfaceView {
     readonly visible: boolean;
     readonly focused: boolean;
-    /** Latest measured CSS extent, for eligibility only. surfaceMetrics owns backing dimensions. */
     readonly cssWidth: number;
     readonly cssHeight: number;
     readonly lastInputAt: number;
@@ -25,10 +24,7 @@ export interface SurfaceView {
 
 export type ContextDisposeReason = 'disposed' | 'revoked' | 'context-lost' |
     'creation-failed' | 'stale' | 'cpu-pinned' | 'restore-timeout' | 'pressure';
-/** A GPU defect reported by the owner (a lost draw, a failed readiness check), named by its owner. */
 export type GpuErrorReason = `gpu-error:${string}`;
-/** `budget`: the visible-context cap is full, so this pane shows live 2D and upgrades when a context frees. */
-/** `gpu-unavailable`: this browser has no usable graphics card for this pane (see GpuUnavailableCause); never memory pressure. */
 export type CpuFallbackReason = 'capacity' | 'budget' | 'out-of-budget' | 'creation-failed' | 'context-lost' |
     'cpu-pinned' | 'restore-timeout' | 'pressure' | 'gpu-unavailable' | GpuErrorReason;
 export type { GpuUnavailableCause };
@@ -39,26 +35,18 @@ export interface SurfaceResizeResult {
     readonly height: number;
     readonly complete: boolean;
     readonly generation: number;
-    /** The memory governor refused the new backing's bytes. That is pressure already signalled to the governor, not a
-     * framebuffer fault: a refusal must not degrade the pane a second time. Measured at DPR 2: the 2D back buffer of a
-     * fallback pane at quality 1.0 was refused and reported as 'incomplete' (the WebGL2 status was complete on all 274 resizes). */
     readonly refused?: boolean;
 }
 
 export type ResizeSurface = (width: number, height: number) => SurfaceResizeResult;
 
-/** Platform adapter only: layers never receive the raw context or this owner. */
 export interface BrokerGpuOwner {
     readonly limits: Readonly<GfxLimits>;
-    /** Backend owns canvas resize and the one drawing-buffer/framebuffer check after a commit. */
     readonly resizeSurface: ResizeSurface;
-    /** A raise builds at the new size off the displayed canvas: open, then present it when its frame is complete. */
     openOffscreen(width: number, height: number): boolean;
     commitSurface(): SurfaceResizeResult | null;
     closeOffscreen(): void;
-    /** Release working handles through the arena; hidden keeps only device-owned programs. */
     releaseGpu(reason: GpuReleaseReason): void;
-    /** Dispose/abandon the remaining programs and arena; safe after releaseGpu and loss. */
     dispose(reason: ContextDisposeReason): void;
 }
 
@@ -72,7 +60,6 @@ export interface GpuPreparation {
 export interface GpuGrant {
     readonly canvas: HTMLCanvasElement;
     readonly limits: Readonly<GfxLimits>;
-    /** Called only by surfaceMetrics in the shared frame, with the current governor grant. */
     readonly resizeSurface: ResizeSurface;
     readonly openOffscreen: (width: number, height: number) => boolean;
     readonly commitSurface: () => SurfaceResizeResult | null;
@@ -88,38 +75,17 @@ export type GpuRequestResult = { readonly kind: 'gpu'; readonly grant: GpuGrant;
 export interface SurfaceCallbacks {
     /** Same-task stop of frames/input/view jobs and synchronous edit checkpoint; never await a save. */
     beforeHide(): void;
-    /** The broker has actually zeroed this native canvas; its backing lease may now be returned. */
     onSurfaceZeroed?(canvas: HTMLCanvasElement): void;
-    /**
-     * Resolve only after the generation's asynchronous colour/alpha capability check passes.
-     * This factory owns partial-init cleanup on rejection/abort. A late successful owner is disposed
-     * by the broker. It must not publish GPU resources to layers before onGpuReady.
-     */
     prepareGpu(preparation: GpuPreparation): Promise<BrokerGpuOwner>;
-    /**
-     * Schedule admitted rebuilding, not a canvas swap; markPresented guards the later swap.
-     * The adapter's prepared device supplies generation-owned limits to surfaceMetrics, which
-     * commits the current grant in the shared frame and checks the resulting drawing buffer.
-     */
     onGpuReady(grant: GpuGrant): void;
-    /** A native context capability was unavailable; repeated attempts inform pressure policy. */
     onCapabilityFailure?(): void;
-    /**
-     * Present through a DIFFERENT 2D canvas, retaining the input/overlay host. Detach a lost GL
-     * canvas solely for restoration notification; never request another context type on it.
-     */
     onCpuFallback(reason: CpuFallbackReason): void;
-    /** A capacity event, not a polling loop. Submit a fresh tagged request if still needed. */
     onSlotAvailable(): void;
-    /** Stable App-owned status-line callback; once per session, including across view remounts. */
     onPinned(): void;
-    /** The pane runs on canvas2d because no usable GPU exists for it. Once per cause: a device cause once per app session, a
-     * document's repeated GPU errors once per document session. A transient fallback (budget, bridge, memory, loss) never calls it. */
     onGpuUnavailable?(cause: GpuUnavailableCause): void;
 }
 
 export interface SurfaceBrokerConfiguration {
-    /** App-wide native-context reserve allocator, bound once at platform startup (never import). */
     readonly contextAllocator: MemoryAllocator;
 }
 
@@ -143,14 +109,9 @@ export interface SurfaceLease {
     /** Byte changes invalidate pending publications; rename/move must not call this. */
     updateToken(token: RenderToken): void;
     requestGpu(canvas: HTMLCanvasElement, stamp: SurfaceStamp): Promise<GpuRequestResult>;
-    /** Pure check of markPresented's preconditions: nothing is recorded. */
     canMarkPresented(stamp: SurfaceStamp, generation: number): boolean;
     markPresented(stamp: SurfaceStamp, generation: number): boolean;
-    /** An unrecoverable qualified-backend fault abandons this reservation and returns to CPU. */
     failGpu(stamp: SurfaceStamp, generation: number, reason: GpuFailureReason, latch: boolean): void;
-    /** One fresh attempt after an outright failure, on explicit user action or a later show. A restore timeout is retried by the
-     * broker itself on a back-off while the pane is visible (5 s, doubling, to 60 s), so it is not permanent: a context lost
-     * with no restore used to leave the pane on 2D for the whole session, until it was hidden and shown. */
     retry(): void;
     snapshot(): SurfaceSnapshot;
     dispose(): void;

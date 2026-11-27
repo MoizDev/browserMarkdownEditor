@@ -1,4 +1,3 @@
-// ink.md §2.1, M-10: numeric handles refer to sealed sample records, not node-owned arrays.
 export type SampleRef = number;
 export type SamplePressure =
     | { readonly kind: 'none' }
@@ -6,21 +5,19 @@ export type SamplePressure =
     | { readonly kind: 'u16'; readonly values: Uint16Array }
     | { readonly kind: 'u32'; readonly values: Uint32Array };
 
-// Published typed arrays are immutable by ownership. Consumers never write or create
-// per-frame subarray views; read() clips a range at a chunk boundary instead.
 export interface SampleChunk {
     readonly originX: number;
     readonly originY: number;
-    readonly positions: Float32Array | Float64Array; // Interleaved anchor-local x,y.
-    readonly first: number; // First sample's index within the record.
+    readonly positions: Float32Array | Float64Array;
+    readonly first: number;
     readonly count: number;
-    readonly firstX: number; // Exact Float64 endpoints in stroke-local space.
+    readonly firstX: number;
     readonly firstY: number;
     readonly lastX: number;
     readonly lastY: number;
     readonly pressure: SamplePressure;
-    readonly runStarts: Uint16Array; // Chunk-local sample indices; 0 starts the first run.
-    readonly runKinds: Uint8Array; // 0 freehand, 1 straight; source transitions survive import.
+    readonly runStarts: Uint16Array;
+    readonly runKinds: Uint8Array;
 }
 
 export interface SampleBlockView {
@@ -31,25 +28,22 @@ export interface SampleBlockView {
 
 export interface SampleLease {
     readonly ref: SampleRef;
-    release(): void; // Idempotent; live nodes, history and snapshots each own their lease.
+    release(): void;
 }
 
 export interface SampleSummary {
     readonly localBounds: readonly [x: number, y: number, w: number, h: number];
-    // A proven enclosure of the freehand CURVE through the samples (ink/reach.ts), which bulges
-    // outside the sample box, and the farthest any control lies from its sample, both unscaled local.
     readonly curveBounds: readonly [x: number, y: number, w: number, h: number];
     readonly maxReach: number;
     readonly maxPressure: number | null;
 }
 
 export interface SampleStoreReader {
-    /** Sealed conservative metadata only; never forces native-point decoding. */
     summary?(ref: SampleRef): SampleSummary | null;
     has(ref: SampleRef): boolean;
     count(ref: SampleRef): number;
-    pressureMode(ref: SampleRef): 'real' | 'none'; // Sealed metadata; no view allocation or decode.
-    byteSize(ref: SampleRef): number; // Owned decoded typed payload + conservative UTF-16 native backing, no decode.
+    pressureMode(ref: SampleRef): 'real' | 'none';
+    byteSize(ref: SampleRef): number;
     read(ref: SampleRef, first: number, count: number): SampleBlockView;
     retain(ref: SampleRef): SampleLease;
 }

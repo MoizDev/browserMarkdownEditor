@@ -4,7 +4,7 @@ import type { SampleSequence } from './samples';
 import type { CubicArcMap } from './flatten';
 
 export interface InkWidth {
-    readonly width: number; // Actual stored world width, already converted by StyleGeometryMetrics.
+    readonly width: number;
     readonly model: WidthModel;
     readonly pressure: 'real' | 'none';
 }
@@ -15,9 +15,6 @@ export interface DotMetric {
 }
 export interface InkDot { readonly x: number; readonly y: number; readonly radius: number; }
 
-// A tap's dot is the stroke's own round cap: same centre, same radius. The provisional larger dot
-// (DOT-M1 knots) was replaced when the pen moved on by the smaller start cap, so laid ink vanished
-// (measured: 23 px removed at the start of a PDF stroke); the owner's rule is that laid ink never moves.
 export const DOT_METRIC_PROVISIONAL: DotMetric = Object.freeze({
     id: 'dot-cap-v1',
     status: 'the dot equals the stroke cap',
@@ -66,8 +63,6 @@ export function strokeDot(samples: SampleSequence, style: InkWidth, metric: DotM
     return Object.freeze({ x, y, radius });
 }
 
-// R-13/T-GEO-WIDTH: realize resize/reflection in POINTS before materializing the local curve.
-// The same actual stored width/profile then makes circular caps; never scale an existing outline.
 export function realizeStrokePoints(samples: SampleSequence, sx: number, sy: number): SampleSequence {
     if (!Number.isFinite(sx) || !Number.isFinite(sy)) throw new RangeError('Invalid stroke point factors');
     const coordinate = (value: number, factor: number) => {
@@ -83,7 +78,6 @@ export function realizeStrokePoints(samples: SampleSequence, sx: number, sy: num
 }
 
 export function interpolateRadius(r0: number, r1: number, fraction: number): number {
-    // rMax is the radius at p=1, not an upper clamp. Zero is a genuine taper.
     return (1 - fraction) * r0 + fraction * r1;
 }
 export function radiusAtCurveParameter(map: CubicArcMap, r0: number, r1: number, t: number): number {
@@ -104,8 +98,5 @@ export function radiusAtCurveParameter(map: CubicArcMap, r0: number, r1: number,
     const dx = rows[offset + 4] - rows[offset + 2], dy = rows[offset + 5] - rows[offset + 3];
     const square = dx * dx + dy * dy;
     const fraction = square ? Math.max(0, Math.min(1, ((x - rows[offset + 2]) * dx + (y - rows[offset + 3]) * dy) / square)) : 0;
-    // Partial true arc exceeds its chord projection by at most the leaf's arc/chord gap.
-    // Prefix and total length enclosures bound the resulting radius error (flatten.ts); this
-    // projection is NOT linear interpolation in t, which would distort pressure at unequal speed.
     return interpolateRadius(r0, r1, (rows[offset + 6] + fraction * rows[offset + 7]) / map.length);
 }

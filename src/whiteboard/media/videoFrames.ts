@@ -6,23 +6,14 @@ import type { PaintFrameAssembler } from '../render/frameTypes';
 import type { PaintImageLease } from '../render/resources';
 import { isMediaTileKey } from './mips';
 
-// Provenance: video playback presentation facts for paint leases; independent per-view
-// registry of presented frames. A video node has one stable image key; each advance of its
-// picture is a new version of that key, so the image route keeps one texture per node and
-// re-uploads it in place when the version moves.
-
-/** The image key of a video node: stable for the node's life. The frame it names is the node's latest one. */
 export const VIDEO_FRAME_PREFIX = 'frame/';
 export function videoFrameKey(node: string): string {
     return `${VIDEO_FRAME_PREFIX}${encodeURIComponent(node)}`;
 }
 
-/** What a presented frame is made of: the frame the element decoded (no copy), or an immutable bitmap (animated pictures). */
 export type VideoFrameSource = ImageBitmap | VideoFrame;
 
-/** A lease on a node's frame: the paint image lease, plus the frame's version within the node's stable key. */
 export interface VideoFrameLease extends PaintImageLease {
-    /** Counts the node's advances; the same key with a larger version is a new picture. */
     readonly version: number;
 }
 
@@ -35,75 +26,42 @@ interface Frame {
     readonly height: number;
     readonly lease: ByteLease;
     refs: number;
-    /** Superseded or stopped: no new lease may take it, and it closes when its last holder lets go. */
     retired: boolean;
     closed: boolean;
 }
 
 export interface VideoFrameRegistry {
-    /** Charges bytes to this view's memory before anything allocates them; null when disposed or when memory is refused. */
     reserve(bytes: number): ByteLease | null;
-    /** Gives back a charge that no frame or decoder took. */
     release(lease: ByteLease): void;
-    /**
-     * Calls `listener` once, in a microtask after capacity is released (a frame closed or a charge given back), so a refused
-     * admission can retry. Returns the unsubscribe; a listener is never called after its unsubscribe.
-     */
     onRoom(listener: () => void): () => void;
-    /**
-     * Charges a new presented frame. Null defers it: memory is refused, or this view already holds RETAINED_VERSIONS
-     * superseded frames for paints still in flight. The caller asks again on its next advance, and drops nothing that is held.
-     */
     admitFrame(bytes: number): ByteLease | null;
-    /** Takes ownership of the frame's source and its charge. Refusal (disposed) closes the source, releases the charge and returns false. */
     present(node: string, source: VideoFrameSource, lease: ByteLease): boolean;
-    /** Stops a node: its latest frame retires, and nothing new can be leased for it. */
     retire(node: string): void;
-    /**
-     * A lease on the node's latest frame, named by its stable key. A lease holds its frame's source for as long as it is held,
-     * even after a newer frame supersedes it; a key taken after that resolves to the newer frame.
-     */
     lease(key: string, signal: AbortSignal): Promise<VideoFrameLease>;
-    /** Synchronous hold on a key that is still present. Release pairs with the holder's own release. */
     retainKey(key: string): () => void;
-    /**
-     * Holds every video image a decorated frame names, by its node's key, so each still resolves while the frame is retained.
-     * Throws if one of them is already gone. The release is idempotent and must run after the holder's own physical work retires.
-     */
     retainFrame(frame: PaintSource): () => void;
-    /** Node → its stable key, for every node with a live frame. Identity changes exactly when `version` does. */
     readonly keys: ReadonlyMap<string, string>;
     readonly version: number;
-    /** True once a drawn frame has shown this node's image (its poster or a presented frame). */
     drawn(node: string): boolean;
-    /** Called with the frame that was actually drawn, so the row that starts playback appears only after an image was shown. */
     markDrawn(frame: PaintSource): void;
     dispose(): void;
 }
 
-/** The video image keys a frame names, in the order the frame draws them. */
 function videoKeysOf(frame: PaintSource): string[] {
     const keys: string[] = [];
     for (const item of paintItemsOf(frame)) if (item.kind === 'image' && item.imageKey.startsWith(VIDEO_FRAME_PREFIX)) keys.push(item.imageKey);
     return keys;
 }
 
-/** The pixel size of a presented source. A VideoFrame's display size is the size the image draws at. */
 function sizeOf(source: VideoFrameSource): { width: number; height: number } {
     if (source instanceof ImageBitmap) return { width: source.width, height: source.height };
     return { width: source.displayWidth, height: source.displayHeight };
 }
 
-/**
- * Superseded frames one view may keep alive for paints in flight. Each holds its source and charge until released, so a
- * slow paint must not let them pile up: beyond this count the next frame is deferred, never a held one closed.
- */
 const RETAINED_VERSIONS = 2;
 
 export function createVideoFrameRegistry(options: { readonly memory: MemoryAllocator; readonly invalidate: () => void }): VideoFrameRegistry {
     const { memory } = options;
-    // Every frame not yet closed: each node's latest, plus the superseded ones a paint still holds. `latest` maps a node's
-    // stable key to its latest frame, and `sequence` counts each node's presented frames, which are its versions.
     const frames = new Set<Frame>(), latest = new Map<string, Frame>(), sequence = new Map<string, number>(), shown = new Set<string>();
     let keys: ReadonlyMap<string, string> = new Map(), version = 0, disposed = false;
     const publish = () => { version++; keys = new Map([...latest.values()].map(frame => [frame.node, frame.key])); options.invalidate(); };
@@ -127,7 +85,6 @@ export function createVideoFrameRegistry(options: { readonly memory: MemoryAlloc
     };
     const retireFrame = (frame: Frame) => { frame.retired = true; if (frame.refs === 0) drop(frame); };
     const aborted = () => new DOMException('Video frame is no longer current', 'AbortError');
-    // A retired frame still held is one a paint holds, so this is the held-version count the cap reads.
     const heldVersions = () => { let held = 0; for (const frame of frames) if (frame.retired) held++; return held; };
     const hold = (key: string): (() => void) => {
         const frame = latest.get(key);
@@ -212,38 +169,24 @@ export function createVideoFrameRegistry(options: { readonly memory: MemoryAlloc
     };
 }
 
-/** The overlay the view's paint pipeline wraps around its frame assembler. */
 export interface VideoFrameOverlay {
     wrap(frames: PaintFrameAssembler): PaintFrameAssembler;
     drawn(frame: PaintSource): void;
 }
-/** The tile keys a drawn frame names, so the view can release the rasters it no longer shows. */
 function tileKeysOf(frame: PaintSource): Set<string> {
     const keys = new Set<string>();
     for (const item of paintItemsOf(frame)) if (item.kind === 'image' && isMediaTileKey(item.imageKey)) keys.add(item.imageKey);
     return keys;
 }
-/**
- * `afterDraw` runs once per drawn frame, so the view's animation clock sees each frame the view showed. `demand` receives the
- * tile keys that frame drew: the view's picture rasters outside them are released.
- */
 export function videoFrameOverlay(registry: VideoFrameRegistry, afterDraw: () => void = () => {},
     demand: (keys: ReadonlySet<string>) => void = () => {}): VideoFrameOverlay {
     return { wrap: frames => liveVideoFrames(frames, registry),
         drawn: frame => { registry.markDrawn(frame); demand(tileKeysOf(frame)); afterDraw(); } };
 }
 
-/**
- * Serves each playing picture's latest presented frame from the node's stable image key. The assembler
- * keys its frames by identity, so a decorated frame is mapped back to the original it was made from for every call that
- * the assembler owns: presented, retain, isCurrent and retire. An original is retired only when no decorated
- * version of it is still held and it is no longer the newest one.
- */
-/** A decorated frame's original, by identity: every frame the assembler hands out is either an original or one of these. */
 const originalOfDecorated = new WeakMap<PaintSource, PaintSource>();
 export function originalOf(frame: PaintSource): PaintSource { return originalOfDecorated.get(frame) ?? frame; }
 
-/** One image item of an original frame, and the list it sits in. Found once per original frame, so a decorate reads only these. */
 interface ImageSlot { readonly list: readonly unknown[]; readonly at: number; readonly item: PaintImageItem }
 const imageSlots = new WeakMap<PaintSource, readonly ImageSlot[]>();
 function slotsOf(frame: PaintSource): readonly ImageSlot[] {
@@ -262,11 +205,6 @@ function slotsOf(frame: PaintSource): readonly ImageSlot[] {
     return slots;
 }
 
-/**
- * The frame the assembler serves for a playing picture: a new object per registry advance (the canvas2d reference's snapshot
- * restarts on object identity, and that restart is what takes the new picture's lease: canvasPaintAdapter.ts:250-252).
- * Everything else is shared with the original: only the video image items are replaced, and only the arrays that hold them are copied.
- */
 function decorateFrame(frame: PaintSource, keys: ReadonlyMap<string, string>): PaintSource {
     const copies = new Map<readonly unknown[], unknown[]>();
     for (const slot of slotsOf(frame)) {
@@ -316,8 +254,6 @@ export function liveVideoFrames(base: PaintFrameAssembler, registry: VideoFrameR
         isCurrent: frame => base.isCurrent(original(frame)),
         presented: frame => base.presented(original(frame)),
         retain(frame) {
-            // Synchronous, and composed: the source the assembler pins for the original, and the video images this exact
-            // decorated frame names. Both release together, once, after the holder's physical work has retired.
             const pinnedImages = registry.retainFrame(frame);
             try {
                 const releaseSource = base.retain(original(frame));

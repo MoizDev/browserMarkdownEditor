@@ -1,5 +1,3 @@
-// Browser-run support only: source identity, emitted maps and outside observations.
-// No application module is imported or invoked by a gate.
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { readFile, access } from 'node:fs/promises';
@@ -56,8 +54,6 @@ export function workSite(source) {
     return { source: 'src/components/PdfViewer.tsx', firstLine: start + 1, lastLine: end + 1 };
 }
 
-/** Stack attribution is functional-only observation. Source maps identify the
- * existing getContext caller; they never execute/import source in the page. */
 export async function attributeCanvases(snapshot, prepared, origin) {
     const maps = new Map(), sourceSite = prepared.workSite;
     const roleAt = async stack => {
@@ -79,8 +75,6 @@ export async function attributeCanvases(snapshot, prepared, origin) {
             const source = position.source.replaceAll('\\', '/');
             if (source.endsWith(sourceSite.source) && position.line >= sourceSite.firstLine && position.line <= sourceSite.lastLine) return { role: 'work', ...position };
             if (source.includes('/pdfNativeEmphasis')) return { role: 'probe', ...position };
-            // The closest mapped frame owns the context. Looking farther up
-            // would mislabel a probe called by renderLoop as a work canvas.
             return { role: 'other', ...position };
         }
         return { role: 'unattributed' };
@@ -108,8 +102,6 @@ export async function waitForCanvasIdle(page, prepared, origin, timeoutMs = 3000
             requestAnimationFrame(frame);
         }), ids);
         if (quiet) return snapshot;
-        // Browser state, not a fixed warm-up delay: a new allocation forces a
-        // new map attribution before another three-frame quiescence attempt.
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
     }
     const snapshot = await attributeCanvases(await page.evaluate(() => window.__d1Outside.snapshot()), prepared, origin);
@@ -131,8 +123,6 @@ export async function publicGeometry(page, index = 0) {
     }, index);
 }
 export function observedTrigger({ page, canvas: rect, need }) {
-    // Public painted-band bounds plus the visible intersection recover the
-    // half-margin contract, independently of the app's target/predicate module.
     const left = rect.x <= 0.5 ? rect.x : (rect.x + need.x) / 2;
     const top = rect.y <= 0.5 ? rect.y : (rect.y + need.y) / 2;
     const right = rect.x + rect.w >= page.width - 0.5 ? rect.x + rect.w : (rect.x + rect.w + need.x + need.w) / 2;

@@ -5,8 +5,6 @@ import { closeWorkerResult, validBoardIdentity, type BoardJobIdentity } from '..
 import type { ExcalidrawWireDocument } from '../workers/excalidrawClipboard';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: public Excalidraw clipboard fields and shared worker admission;
-// independent parse host, no upstream engine source.
 export interface ExcalidrawWireLease extends ExcalidrawWireDocument { release(): void }
 export async function readExcalidrawClipboard(options: {
     readonly bytes: Blob; readonly identity: BoardJobIdentity; readonly memory: MemoryAllocator;

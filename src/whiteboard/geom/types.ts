@@ -18,8 +18,6 @@ export interface NarrowResult {
     readonly distanceCss: number;
     readonly part: 'body' | 'label' | 'title' | 'head' | 'handle' | 'none';
 }
-// Provider-owned text, ink, attachment and realised-path descriptors are injected rather than
-// recast as competing schemas while their owning lanes finish their public contracts.
 export interface GeometryContext<TextProvider, InkProvider> {
     readonly session: number;
     readonly revision: number;

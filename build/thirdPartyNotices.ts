@@ -2,9 +2,6 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Plugin } from 'vite'
 
-// The decoder is deliberately worker-only, but its MIT notice must also survive
-// deployment. Generate from the installed, exact-pinned package rather than edit
-// the repository's generated notice inventory or rely on minifier comments.
 export function deploymentNotices(root: string): string {
   const base = readFileSync(join(root, 'THIRD_PARTY_NOTICES'), 'utf8')
   const directory = join(root, 'node_modules/lz-string')

@@ -22,7 +22,6 @@ if (process.argv.includes('--prepare')) {
     process.exit(0);
 }
 
-// Charter §0: product sanity, not the deferred PL0 fault matrix, clock or mutant proof.
 const report = await createReport({ scratch, name: 'C-07b-sanity', fixtures: { 'control.md': 'needle control', 'fault.md': 'needle fault', 'other.md': 'other vault marker' } });
 let app;
 let session;
@@ -91,8 +90,6 @@ try {
     report.assert('recovery reuses its replacement worker', 2, counters.records.filter(record => record.op === 'workerStart' && record.url.includes('matcher')).length);
     report.data.results = { failed, recovered };
 
-    // Tool replies precede chatStore's coalesced render. Wait for the second card rather than
-    // clicking whichever card happens to be last in the previous frame.
     const card = page.locator('.agent-tool').nth(1);
     await card.waitFor();
     await card.locator('.agent-tool-row').click();
@@ -107,7 +104,6 @@ try {
 
     helper.finishRun();
     await page.getByRole('button', { name: 'Stop', exact: true }).waitFor({ state: 'hidden' });
-    // Change only the native picker fixture; the actual switch still goes through the app menu.
     await page.evaluate(() => {
         window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('worker-other');
     });

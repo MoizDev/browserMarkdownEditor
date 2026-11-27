@@ -9,10 +9,8 @@ export interface MirrorVersionBridgeOptions<T extends object> {
     readonly from: MirrorView;
     readonly toToken: RenderToken;
     readonly toSourceRole: string;
-    /** The caller has checked page count, page size/rotation and appearance before issuing this. */
     readonly geometryDigest: string;
     readonly currentTarget: () => RenderToken | null;
-    /** Signals "still updating"; it does not mark stale pixels current. */
     onExpired(): void;
 }
 
@@ -22,9 +20,6 @@ export interface MirrorVersionBridge<T extends object> {
     release(): void;
 }
 
-/** A borrow pins the old session's actual tokens, even after its closing barrier moves those bytes
- * to mirror-retiring. This is not a cross-session lease transfer or a new current-version cache.
- */
 export function createMirrorVersionBridge<T extends object>(options: MirrorVersionBridgeOptions<T>): MirrorVersionBridge<T> | null {
     const from: MirrorView = { ...options.from, token: { ...options.from.token },
         view: { camera: { ...options.from.view.camera }, viewport: { ...options.from.view.viewport } } };

@@ -5,8 +5,6 @@ import type { MediaEntry, MediaId } from '../model/media';
 import type { UiBlock } from '../model/styles';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: board model ownership and scene snapshot contracts; independent
-// persistent overlay implementation, no third-party source.
 export interface SceneMetadata {
     readonly kind: BoardKind;
     readonly sheets: ReadonlyMap<SheetId, Sheet>;
@@ -80,7 +78,6 @@ function small(doc: BoardDoc, host: HostBlock): Pick<SceneMetadata, 'kind' | 'ui
         host, preserved: { ...doc.preserved, version: [...doc.preserved.version] as [number, number] } };
 }
 
-/** Async because initial media and preserved-reference tables can be document-sized. */
 export async function captureSceneMetadata(doc: BoardDoc, cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<SceneMetadata> {
     return (await SceneMetadataStore.create(doc, cooperate, signal)).pin();
 }
@@ -129,7 +126,6 @@ export class SceneMetadataStore {
         this.current = { ...small(doc, host), sheets: nextSheets, sheetOrder, media: media.update(mediaChanges), preservedMediaRefs: refs.update(refChanges) };
     }
     pin(): SceneMetadata { return this.current; }
-    /** Compaction publishes new layers only if no update raced it; existing pins retain their layers. */
     async materialize(signal?: AbortSignal, cooperate?: () => Promise<void>): Promise<SceneMetadata> {
         const pinned = this.current, tick = ticker(cooperate, signal);
         const flatten = async <K, V>(map: ReadonlyMap<K, V>): Promise<LayerMap<K, V>> => {

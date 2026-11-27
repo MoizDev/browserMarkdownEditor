@@ -14,8 +14,6 @@ export function projectCanonical(root:Element):CanonicalText {
   const skip=excluded||node.hasAttribute('hidden')||node.getAttribute('aria-hidden')==='true'||['code','pre','kbd','samp','var','svg','math','ruby','rt','rp','b','strong'].includes(tag)||node.namespaceURI!=='http://www.w3.org/1999/xhtml'||node.getAttribute('dir')==='rtl'||/font-weight\s*:\s*(?:bold|[6-9]00)/i.test(node.getAttribute('style')??'')||/writing-mode\s*:\s*vertical/i.test(node.getAttribute('style')??'');
   for(const child of [...node.childNodes])walk(child,skip);
   if(tag==='br'||blocks.has(tag)&&result.text&&!result.text.endsWith('\n')){
-   // Real app-owned LF nodes make synthetic boundaries addressable in both directions,
-   // including native cross-section selections. No duplicated hidden text layer.
    const lf=node.ownerDocument.createTextNode('\n');node.append(lf);add(lf,true,false);
   }
   result.elements.set(node,{from,to:result.text.length});
@@ -24,8 +22,6 @@ export function projectCanonical(root:Element):CanonicalText {
 }
 export function renderCanonical(root:Element,canonical:CanonicalText):RenderMap {
  const map:RenderMap={root:null as unknown as Element,fragments:new WeakMap(),offsets:new WeakMap(),elements:new WeakMap()};
- // One text node per source interval for the lifetime of this mounted section.
- // Native highlight ranges never enter this map or alter its UTF-16 coordinates.
  function clone(node:Node):Node {
   if(node.nodeType===3){const text=node as Text,t=document.createTextNode(text.data),interval=canonical.byNode.get(node);
    if(interval){map.fragments.set(node,[{node:t,from:0,to:text.length}]);map.offsets.set(t,{from:interval.from,to:interval.to})}return t;

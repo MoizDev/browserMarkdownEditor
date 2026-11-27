@@ -17,13 +17,11 @@ export class BoardBoundsUncertified extends Error {
     constructor(readonly reason: string) { super(`Board geometry bounds are not certified: ${reason}`); this.name = 'BoardBoundsUncertified'; }
 }
 export interface BoardPaintBoundsOptions {
-    /** The caller's allocator from the shared application governor. */
     readonly memory: MemoryAllocator;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
     readonly toleranceWorld?: number;
     readonly includeInvisible?: boolean;
-    /** Called only after this same certified pass found nonempty paint for an item. */
     readonly onPaintedItem?: (item: PaintItem, sourceIndex: number) => void;
 }
 export interface BoardPaintBounds { readonly bounds: Box | null; readonly errorWorld: number }
@@ -33,7 +31,6 @@ const flipLine = (line: ExactLine): ExactLine => ({ a: { n: -line.a.n, e: line.a
 const union = (a: Box | null, b: Box): Box => a
     ? [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])] : b;
 const pointBox = (p: Vec2): Box => [p.x, p.y, p.x, p.y];
-// default, calibration cut by owner: 64 KiB per path command, capped at the 32 MiB ceiling.
 const CURVED_CLIP_BYTES_PER_COMMAND = 64 * 1024, CURVED_CLIP_RESERVE_CEILING = 32 * 1024 * 1024;
 const curvedClipReserveBytes = (commands: number): number =>
     Math.min(CURVED_CLIP_RESERVE_CEILING, Math.max(1, commands) * CURVED_CLIP_BYTES_PER_COMMAND);
@@ -63,9 +60,6 @@ function* curves(path: readonly PathOp[], fill: boolean): Generator<TubeCurve> {
     }
     if (fill && start && last && (start.x !== last.x || start.y !== last.y)) yield [last, start];
 }
-/** Measures the canonical immutable paint producer, not Scene slots, native b,
- * an unclipped node box, or a temporary viewport raster. The source's lease is
- * the caller's responsibility and remains held through every cooperative await. */
 function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions): Generator<void, BoardPaintBounds> {
     const tolerance = options.toleranceWorld ?? 0.01;
     if (!Number.isFinite(tolerance) || tolerance <= 0 || !Number.isSafeInteger(source.nodeCount) || source.nodeCount < 0) throw new RangeError('Invalid board paint bounds input');
@@ -140,9 +134,6 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
             }
             if (!closed) throw new BoardBoundsUncertified(`Open clip ${clip.key}`);
             if (curved) {
-                // The inner curve polygon is a genuine subset; the outer
-                // control hull is a superset. Never turn a flattened ellipse's
-                // midpoint error into an exact clipping authority.
                 hasCurve = true; temporary.push(reserve(curvedClipReserveBytes(clip.d.length)));
                 const envelope = yield* finishJob(createConvexPathEnvelopeJob((yield* readPath(clip.d)), clip.localToWorld,
                     tolerance / 4, { maxLeaves: 4096, maxPoints: 32768 }));
@@ -157,8 +148,6 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
         let plans: ClipPlan[] = [{ inner: innerPolygons, outer: outerPolygons, planes: [] }];
         for (const operands of differences) {
             const next: ClipPlan[] = [];
-            // Even/odd with two convex contours is their SYMMETRIC difference,
-            // not just subtraction: a halo can extend outside the outer box.
             for (const plan of plans) for (let side = 0; side < 2; side++) {
                 const positive = operands[side], negative = operands[1 - side];
                 for (let edge = 0; edge < negative.edges.length; edge++) {
@@ -230,9 +219,6 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
         } finally { release(lease); }
     };
     const fill = function* (path: readonly PathOp[], matrix: Affine, clip: ClippedTubeClip, rule: 'nonzero' | 'evenodd', rectangleSource = false): Generator<void, BoardPaintBounds> {
-        // These paths are constructed here from positive-size image/text rects.
-        // Their closed boundary is genuine filled area, not a heuristic winding
-        // answer at a curve boundary (which remains uncertain in fillPoint).
         const corners = rectangleSource ? path.flatMap(op => op.op === 'M' || op.op === 'L' ? [exactAffinePoint(matrix, op.p)] : []) : [];
         const edges = corners.map((point, i) => exactLineBetween(point, corners[(i + 1) % corners.length]));
         const winding = corners.length >= 3 ? exactSide(edges[0], corners[2]) : 0;
@@ -258,9 +244,6 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
             if (value.bounds) { upper = union(upper, value.bounds); witness(value.bounds, value.errorWorld); }
             yield* checkpoint();
         }
-        // Boundary curves alone miss a filled shape that completely contains the
-        // clip. Inner vertices are real witnesses; ambiguous OUTER vertices only
-        // enlarge the enclosure and can never authorize a false inner extremum.
         for (const point of clipPoints(clip, 'outer')) { if ((yield* classify(point)) !== 'outside') upper = union(upper, pointBox(point)); yield* checkpoint(); }
         if (!upper) return { bounds: null, errorWorld: 0 };
         const error = nextUp(Math.max(0, minX - upper[0], minY - upper[1], upper[2] - maxX, upper[3] - maxY));
@@ -274,13 +257,7 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
                 const base = coverage.boundsLocal;
                 const clip = envelope ?? (yield* unboundedClip((yield* readPath(rectangle({ x: base.x, y: base.y, width: base.w, height: base.h }))), item.localToWorld, 1));
                 const s = coverage.segments, d = coverage.discs, segments = s.length / 6, count = segments + d.length / 3;
-                // Each piece's certified tube is exact arithmetic, the cost of the whole measure (profiled: a synchronous Cmd+C of
-                // 4,000 notebook strokes, 61 of 63 s in the clipped tube jobs). A piece whose padded outer box already lies inside what
-                // this item has measured cannot move the union, so its job is skipped; the extreme pieces go first so the box is
-                // reached early. The pad (the full tolerance, twice what a job may exceed its tube by) keeps the bounds identical.
                 const boxes = new Float64Array(count * 4), m = item.localToWorld, scale = affineRadiusScale(m).hi;
-                // A piece's tube is measured in world space as discs of its radius times the matrix's largest stretch (the job's
-                // affineRadiusScale), centred on its mapped centre line: this box holds that whole tube.
                 const stretch = Math.abs(m[0]) + Math.abs(m[1]) + Math.abs(m[2]) + Math.abs(m[3]), shift = Math.abs(m[4]) + Math.abs(m[5]);
                 for (let k = 0; k < count; k++) {
                     const segment = k < segments, i = segment ? k * 6 : (k - segments) * 3, src = segment ? s : d;
@@ -289,7 +266,6 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
                     const px = m[0] * ax + m[2] * ay + m[4], py = m[1] * ax + m[3] * ay + m[5];
                     const qx = m[0] * bx + m[2] * by + m[4], qy = m[1] * bx + m[3] * by + m[5];
                     const x0 = Math.min(px - ar, qx - br), y0 = Math.min(py - ar, qy - br), x1 = Math.max(px + ar, qx + br), y1 = Math.max(py + ar, qy + br);
-                    // Float rounding here is far below 1e-9 of the magnitudes summed; the tolerance covers how far a job's bound may exceed its tube.
                     const pad = tolerance + 1e-9 * (1 + shift + stretch * (Math.abs(ax) + Math.abs(ay) + Math.abs(bx) + Math.abs(by)) + ar + br);
                     boxes[k * 4] = x0 - pad; boxes[k * 4 + 1] = y0 - pad; boxes[k * 4 + 2] = x1 + pad; boxes[k * 4 + 3] = y1 + pad;
                 }
@@ -366,7 +342,6 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
     }
 }
 
-/** Both entry points consume exactly the same measured geometry and clip jobs. */
 export async function measureBoardPaintBounds(source: PaintNodeSource, options: BoardPaintBoundsOptions): Promise<BoardPaintBounds> {
     const steps = measureSteps(source, options);
     const cooperate = options.cooperate ?? yieldToHost;
@@ -383,7 +358,6 @@ export async function measureBoardPaintBounds(source: PaintNodeSource, options: 
     } finally { if (!complete) steps.return(undefined as never); }
 }
 
-/** Used only where a browser event requires its exact result synchronously. */
 export function measureBoardPaintBoundsNow(source: PaintNodeSource, options: BoardPaintBoundsOptions): BoardPaintBounds {
     const steps = measureSteps(source, options); let complete = false;
     try {

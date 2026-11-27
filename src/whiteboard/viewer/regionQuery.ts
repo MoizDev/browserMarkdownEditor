@@ -34,8 +34,6 @@ import type { createBoardRenderServices } from '../render/services';
 import { selectableAtFocus } from '../selection';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: Scene spatial cursor, GE-3 region providers, C7 stamps and
-// nonzero clipping contracts; independent composition, no third-party source.
 export class BoardRegionUncertain extends Error {
     constructor(message: string) { super(message); this.name = 'BoardRegionUncertain'; }
 }
@@ -57,15 +55,12 @@ function rectPath(x: number, y: number, w: number, h: number): readonly PathOp[]
     return [{ op: 'M', p: { x, y } }, { op: 'L', p: { x: x + w, y } },
         { op: 'L', p: { x: x + w, y: y + h } }, { op: 'L', p: { x, y: y + h } }, { op: 'Z' }];
 }
-// The mapping is what a query depends on. The view epoch also ticks for a motion flag with an unchanged
-// camera (seen when an Eraser drag ends), which made every erase sweep throw "stale".
 function stampView(a: ViewState, b: ViewState): boolean {
     return a.camera.x === b.camera.x && a.camera.y === b.camera.y && a.camera.z === b.camera.z
         && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height && a.viewport.dpr === b.viewport.dpr;
 }
 function stale(): DOMException { return new DOMException('Board region query became stale', 'AbortError'); }
 function clipPolygon(subject: readonly Vec2[], clip: readonly ExactPoint[]): Vec2[] {
-    // A single polygon cannot represent a disconnected intersection of a concave lasso and frame.
     if (subject.length < 3 || subject.length > 4) throw new BoardRegionUncertain('Frame clipping requires a certified convex region');
     let winding = 0;
     for (let i = 0; i < subject.length; i++) {
@@ -96,10 +91,6 @@ function clipPolygon(subject: readonly Vec2[], clip: readonly ExactPoint[]): Vec
     });
 }
 const yieldToTask = yieldToHost;
-/** A figure's narrow parts for a query that touches only what is painted: with no fill, its body is its lines alone. Dashed
- * or dotted lines are touched along their whole length, the marks inside the shape (an x-box's cross) as well as its outline:
- * their gaps are narrower than an eraser, and a sweep that happened to cross in one missed. A figure that paints neither fill
- * nor outline keeps its inside: nothing else of it can be touched. */
 function paintedFigure(node: Readonly<FigureNode>, descriptor: VectorNarrowDescriptor | undefined): VectorNarrowDescriptor | undefined {
     if (!descriptor || node.fill !== 'none' || node.dash === 'none') return descriptor;
     return { parts: descriptor.parts.map(part => part.part !== 'body' ? part
@@ -112,13 +103,6 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
     // once nested, so most of the wall time was idle and a marquee around two shapes needed about a second; a press
     // in that second cancelled it (measured: no selection, the shapes moved one at a time). A message yield is not clamped.
     const cooperate = options.cooperate ?? yieldToTask;
-    /** `at`: the view the query's points were mapped through. Given, the answer is of that view and stands wherever the
-     * live view has gone by the time it is known (an eraser's path is kept in world units, so it loses nothing); absent,
-     * the query reads the live view and is stale once that moves (a marquee is drawn on the screen).
-     *
-     * `painted`: only what an item paints counts. A figure with no fill is then touched through its outline and its label,
-     * not through its empty inside, as a selecting query touches it: an eraser taken to a word written inside a drawn box
-     * removed the box with it. */
     async function region(query: RegionQuery, signal: AbortSignal, how?: { readonly at?: ViewState; readonly painted?: boolean }): Promise<readonly NodeId[]> {
         const at = how?.at, painted = how?.painted === true;
         let cursor: ReturnType<NonNullable<typeof runtime.scene>['spatialCursor']> | undefined;
@@ -126,8 +110,6 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
             signal.throwIfAborted();
             const doc = runtime.session.doc, scene = runtime.scene;
             if (!scene) throw new BoardRegionUncertain('Board scene is not ready');
-            // A sweep that starts while the scene still absorbs the previous commit waits for it, as a point query does.
-            // It threw before, and the eraser's next drag right after an erase lost every hit with a notice.
             while (!scene.ready) {
                 scene.step(32, performance.now() + 3); await cooperate(); signal.throwIfAborted();
                 if (runtime.scene !== scene || runtime.session.doc !== doc) throw stale();
@@ -160,8 +142,6 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     for (;;) {
                         const value = triangulation.step({ deadline: performance.now() + 3, maxWork: 128 });
                         if (value.status === 'pending') { await cooperate(); check(); continue; }
-                        // A polygon that cannot be triangulated (a box dragged exactly along one axis has no area) is queried whole:
-                        // the narrow jobs take it as it is, winding and boundary included.
                         if (value.status === 'uncertain') break;
                         let convex = points.length <= 64, winding = 0;
                         for (let i = 0; i < points.length; i++) {
@@ -204,16 +184,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         const bounds = record && (record.quality === BoundsQuality.Exact || record.quality === BoundsQuality.Conservative)
                             ? record.selectable : null;
                         if (!toFrame) throw new BoardRegionUncertain('Frame-clipped selection has no certified bounds');
-                        // The bounds only say whether the frame can be left out of the question. Without them the frame is kept
-                        // in it, for every kind whose narrow job takes the frame's clip (the same kinds as below). Refused instead,
-                        // an arrow inside a frame was never touched: its bounds come from its layout and are not certified until
-                        // something asks for them exactly, so an eraser or a lasso drawn across it found nothing (measured: 0 of 3
-                        // sweeps erased it, with no sign; the same arrow outside a frame went every time).
                         if (!bounds && (node.kind === 'connector' || node.kind === 'figure' || hasCertifiedVector || prepared.ink)) { partialFrame = true; continue; }
-                        // Every other kind is measured by the geometry just prepared for this very question. The scene's own
-                        // record of a text or a note stays uncertified on a board opened from disk until the item is next changed
-                        // (its box needs a layout, scene/bounds.ts ColdLayout), and refusing for that left every text and note in
-                        // a frame beyond the eraser, a box and a lasso on a reopened board (measured: 0 of 3 each, with no sign).
                         const own = prepared.bounds.hit ?? prepared.bounds.ink, ink = prepared.bounds.ink;
                         const box = bounds ?? [Math.min(own[0], ink[0]), Math.min(own[1], ink[1]), Math.max(own[2], ink[2]), Math.max(own[3], ink[3])];
                         const boxToFrame = bounds ? toFrame : compose(toFrame, ref.localToWorld);
@@ -223,9 +194,6 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                         const fullyVisible = corners.every(p => p.x.lo > 0 && p.y.lo > 0 && p.x.hi < frame.w && p.y.hi < frame.h);
                         if (!fullyVisible) {
                             if (node.kind === 'connector' || node.kind === 'figure' || hasCertifiedVector || prepared.ink) partialFrame = true;
-                            // A sweep over an item its frame cuts off is asked of the item's parts, clipped to the frame. It was
-                            // refused: the part of a text, a note, a picture or a line still showing at its frame's edge could
-                            // not be erased (measured: 0 of 3 sweeps over such a text; the same sweep took a shape or a stroke).
                             else if (query.kind === 'swept' && prepared.vector && clippedNarrowDescriptor(prepared.vector)) partialFrame = true;
                             else {
                                 if (query.kind === 'swept' || query.containment) throw new BoardRegionUncertain('Frame-clipped region needs visible-extent certification');
@@ -245,12 +213,6 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     : { kind: 'swept', points: localPoints, localToSurface, radiusCss: query.radiusCss };
                 let hit = false, whole = false, empty = false;
                 if (prepared.ink) {
-                    // An ink answer with no witness either way is a tangency within the coverage error (a fraction of a device
-                    // pixel, INK_PICK_TOLERANCE_DEVICE_PX plus the outline's certified error): the eraser or lasso edge touches
-                    // the painted edge. It is decided here, per stroke, rather than failing the query: touching counts as a hit for
-                    // an eraser, a lasso or a box that selects what it touches, and as "not inside" for a containment box. It
-                    // rejected the whole query before: one stroke tangent to an eraser sample discarded every other stroke the drag
-                    // had clearly crossed, behind the notice "Ink region intersection is numerically ambiguous".
                     const runInk = async (region: RegionQuery): Promise<{ hit: boolean; empty: boolean }> => {
                         let any = false, all = true, visible = false;
                         const containment = region.kind === 'polygon' && region.containment;
@@ -465,10 +427,6 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     }
                     await cooperate(); check();
                 }
-                // A node whose geometry cannot be decided (a frame clip without a certified extent, a vector at its exact edge, a
-                // containment that spans two pieces of a non-convex lasso) is a miss for this one node: it stays, the person can
-                // sweep it again, and every node that WAS decided keeps its answer. One such node rejected the whole query before,
-                // and the eraser or marquee lost everything it had found, behind a notice in geometry jargon.
                 if (!result?.hit && !result?.whole && !result?.empty && uncertain) {
                     const selected = selectableAtFocus(doc, resolved.id, focus, sheet);
                     result = selected ? { selected, hit: false, rank: resolved.rank, whole: false, empty: false } : undefined;
@@ -566,7 +524,6 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
             for (const [id] of ordered) { result.push(id); if (due()) await yieldSort(); }
             check(); return Object.freeze(result);
         } catch (error) {
-            // A marquee the person ended (Escape, ⌘Z, a click) aborts its own signal: never theirs to see (isCancellation).
             if (!isCancellation(error) && !signal.aborted) { try { options.onError(error); } catch { /* preserve query failure */ } }
             throw error;
         } finally { cursor?.cancel(); }

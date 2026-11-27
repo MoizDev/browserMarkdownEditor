@@ -28,8 +28,6 @@ const REASONS: Record<NonNullable<PageProbeResult['reason']>, string> = {
     'no-visible-change': 'No visible emphasis change was found at the bounded proof resolution.',
 };
 
-/** One controller belongs to one immutable document session, never a tile or pane.
- * Its abort signals own only its own pool waiters, not other consumers of the source. */
 export function createPdfEmphasisController(document: PdfPoolDocument): PdfEmphasisController {
     const locale = new Intl.Segmenter(undefined, { granularity: 'word' }).resolvedOptions().locale;
     const emphasis: EmphasisSpec = Object.freeze({ algorithm: EMPHASIS_ALGORITHM, revision: EMPHASIS_REVISION,
@@ -95,8 +93,6 @@ export function createPdfEmphasisController(document: PdfPoolDocument): PdfEmpha
                 pages.every((page, index) => page === unique[index])) return;
             const wasVisible = visible;
             pages = unique; focused = focusedPage; visible = isVisible;
-            // A huge viewport has an explicit bounded working set, not an eviction loop
-            // that repeatedly reprobes the same pages and never settles.
             scheduled = pages.length <= SCHEDULE_LIMIT ? pages : [...pages]
                 .sort((a, b) => Math.abs(a - focused) - Math.abs(b - focused) || a - b).slice(0, SCHEDULE_LIMIT);
             if (!visible && wasVisible) {

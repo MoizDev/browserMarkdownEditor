@@ -2,7 +2,6 @@ import { gifHeader, jpegHeader, pngHeader, webpHeader } from './headers';
 import { isoHeader } from './isoHeaders';
 import { sniffMedia } from './sniff';
 
-// Run the lexical cap before passing bytes to the opaque XML profile.
 export function preflightSvgText(text: string): number {
     if (new TextEncoder().encode(text).length > 5 * 1024 * 1024 || /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(text)) throw new Error('Unsafe SVG');
     let depth = 0, elements = 0;

@@ -1,4 +1,3 @@
-/** Await a shared producer without allowing one cancelled consumer to keep its export lease alive. */
 export function awaitOutlineResource<T>(work: Promise<T>, signal: AbortSignal, timeoutMs?: number, label = 'Export resource'): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         let settled = false, timer: ReturnType<typeof setTimeout> | undefined;

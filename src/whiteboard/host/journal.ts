@@ -9,8 +9,6 @@ import { createBoardRecoveryCapture } from './recoveryCapture';
 import { recoverBoardJournal } from './recoveryReplay';
 import { isCancellation } from '../../platform/workers/envelope';
 
-// Provenance: C-20 journal transport, cumulative board recipe and transactional
-// replay contracts; independent composition without third-party source.
 export interface BoardJournalOptions {
     readonly capture: Parameters<typeof createBoardRecoveryCapture>[0];
     readonly doc: BoardDoc;
@@ -20,7 +18,6 @@ export interface BoardJournalOptions {
     projectMedia?: (entry: MediaEntry) => MediaEntry;
     prepareMedia?: (payload: unknown, signal: AbortSignal, isCurrent: () => boolean) => Promise<{ readonly files: ReadonlyMap<MediaId, string>; release(): void }>;
     isCurrent?: () => boolean;
-    /** App re-reads disk and compares its stat/hash with the session baseline. */
     assertDiskBaseline(signal: AbortSignal): Promise<void>;
     onError(error: unknown): void;
     cooperate?: () => Promise<void>;
@@ -44,7 +41,6 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
             if (barrier) await barrier.catch(() => {});
             await options.append(snapshot, source);
         });
-        // A superseded or cancelled append is not a failure: a later dirty batch journals the same content again.
         tail = task.then(() => {}, error => {
             if (isCancellation(error)) return;
             failure ??= error; report(error);
@@ -55,8 +51,6 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
     return {
         record(applied, revision) {
             if (disposed) throw new Error('Board journal disposed');
-            // Recovery is itself one normal committed transaction. Keep its new
-            // cumulative delta; only the transport waits until replay returns.
             capture.record(applied, revision);
         },
         capture(source, context) {
@@ -85,7 +79,6 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
                 if (!(source instanceof Blob) || (typeof File !== 'undefined' && source instanceof File) || source.size !== baselineBytes.size) {
                     throw new Error('Recovery baseline differs; save a copy instead');
                 }
-                // Compare the exact source in bounded chunks before staging media or model edits.
                 for (let offset = 0; offset < baselineBytes.size; offset += 1024 * 1024) {
                     if (!current()) throw new DOMException('Board recovery is no longer current', 'AbortError');
                     const [left, right] = await Promise.all([
@@ -119,7 +112,6 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
             if (baseline) baselineBytes = baseline.baseline;
         },
         async drain() {
-            // A recovery can enqueue its cumulative append only after replay commits.
             for (;;) {
                 const currentReplay = replay, pending = tail;
                 if (currentReplay) await currentReplay;

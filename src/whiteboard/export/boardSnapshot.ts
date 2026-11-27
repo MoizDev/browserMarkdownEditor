@@ -12,10 +12,8 @@ export interface BoardExportSnapshotOptions {
     readonly runtime: BoardRuntime;
     readonly request: ScenePaintRequest;
     readonly selectedNodeIds?: readonly string[];
-    /** Whole-page exports may include every sheet and the procedural notebook paper. */
     readonly sheetIds?: readonly SheetId[];
     readonly includeNotebookPaper?: boolean;
-    /** App supplies a reader whose authority survives the originating pane. */
     readMedia(entry: Readonly<MediaEntry>, signal: AbortSignal): Promise<Blob>;
     onError(error: unknown): void;
 }
@@ -26,7 +24,6 @@ function mediaId(key: string): MediaId {
     return `sha256:${match[1] ?? match[2]}`;
 }
 
-/** Factory for snapshotExport: pin the canonical scene and media before any asynchronous work. */
 export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): PinExportSnapshot {
     const request = { ...options.request, world: options.request.world && { ...options.request.world } };
     const requestedSelection = options.selectedNodeIds && [...options.selectedNodeIds];
@@ -145,7 +142,6 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
                     }
                     const ends: number[] = [];
                     let count = pages.length;
-                    // Each sheet's underlay precedes its own content, while later sheets stay above earlier sheets.
                     for (const source of sources) { count += source.nodeCount * 2; ends.push(count); }
                     if (!Number.isSafeInteger(count)) throw new RangeError('Export paint count exceeds limits');
                     return { token, sceneRevision: pin.revision, nodeCount: count,

@@ -1,5 +1,3 @@
-// Entirely authored Type3 programs/text/structure. No fonts, app modules or
-// existing PDF bytes are copied. Proposed licence CC0-1.0 awaits the owner.
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../../lib/cli.mjs';
@@ -32,7 +30,6 @@ export async function generateType3(out, seed) {
     ];
     doc.page({ lines: firstLines, resources: `/F1 ${unmapped} 0 R /F2 ${mapped} 0 R` });
 
-    // Two real Form XObject levels; only the inner form owns the text font.
     const inner = doc.stream(`BT /F0 12 Tf 1 0 0 1 14 20 Tm ${literal('NESTED-FORM-TEXT')} Tj ET`, `/Type /XObject /Subtype /Form /BBox [0 0 300 60] /Resources << /Font << /F0 ${doc.courier} 0 R >> >>`);
     const outer = doc.stream('q 1 0 0 1 10 10 cm /Inner Do Q', `/Type /XObject /Subtype /Form /BBox [0 0 320 80] /Resources << /XObject << /Inner ${inner} 0 R >> >>`);
     doc.page({ lines: [
@@ -68,9 +65,6 @@ export async function generateType3(out, seed) {
     const roles = ['H1', 'FixtureHeading', 'H3', 'Figure', 'Code', 'Span'];
     structure.forEach((id, i) => doc.set(id, `<< /Type /StructElem /S /${roles[i]} /P ${structureRoot} 0 R /Pg ${taggedPage} 0 R /K ${i} ${i === 3 ? `/Alt ${unicodeString('An authored blue square.')}` : ''} >>`));
 
-    // Syntactically valid PDF objects with deliberately bad structural metadata.
-    // Their displayed/canonical text is still independently known. Never call
-    // the malformed/cyclic trees a successful accessibility representation.
     const malformedPage = doc.page({ lines: [
         { text: 'Malformed structure control', x: 42, y: 56, size: 16 },
         { text: 'MALFORMED-STRUCTURE-TEXT', x: 42, y: 180, size: 16, prefix: '/P << /MCID 9 >> BDC', suffix: 'EMC' },

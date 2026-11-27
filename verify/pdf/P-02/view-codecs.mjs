@@ -1,4 +1,3 @@
-// Browser gate: the real app's picker, tree, typed note, search and painted pixels.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -63,14 +62,9 @@ async function session() {
     page.on('request', r => network.push(r.url()));
     page.on('console', m => consoleMessages.push({ type: m.type(), text: m.text() }));
     page.on('pageerror', e => errors.push(String(e)));
-    // The run is offline apart from its own static origin. Attempted off-origin
-    // traffic is still counted, never hidden by the abort.
     await context.route('**/*', route => {
         const requested = route.request().url();
         if (new URL(requested).origin !== origin.origin) return route.abort();
-        // Functional-only raw-byte binding (vr-lead ruling): route.fetch's
-        // bytes are bound, then the identical response is fulfilled unchanged.
-        // CDP response.body can re-encode some initiators' binary bodies.
         const binding = (async () => {
             try {
                 const response = await route.fetch();
@@ -146,8 +140,6 @@ const browser = await chromium.launch({ headless: true, executablePath });
 try {
     report.browser = browser.version();
     if (report.browser !== pin.version) throw new Error('Browser does not match the run pin');
-    // X-LAZY negative control: a real editable/searchable Markdown-only vault,
-    // held beyond the app's 4 s idle-prefetch deadline plus a 1 s margin.
     const baseline = await session();
     await seed(baseline.page, 'note.md', Buffer.from('# Codec network baseline\n\nA searchable note.\n'));
     await baseline.page.locator('.tree-item').filter({ hasText: 'note' }).first().click();

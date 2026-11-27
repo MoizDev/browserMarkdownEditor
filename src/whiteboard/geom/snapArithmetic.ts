@@ -13,21 +13,16 @@ export function snapDeltaFromDyadic(value: Dyadic): ExactSnapDelta {
     return Object.freeze({ value, rounded: finite ? (interval.lo === interval.hi ? interval.lo : interval.lo / 2 + interval.hi / 2) : 0,
         representable: finite && interval.lo === interval.hi });
 }
-/** Coordinate operands are the actual binary64 positions used by the board. */
 export function exactSnapDisplacement(target: number, source: number): ExactSnapDelta {
     return snapDeltaFromDyadic(dyadicSubtract(dyadic(target), dyadic(source)));
 }
-/** Equal gaps are computed before rounding, including the half-gap division. */
 export function exactGapDisplacement(beforeEnd: number, afterStart: number, size: number, start: number): ExactSnapDelta | null {
     const spare = dyadicSubtract(dyadicSubtract(dyadic(afterStart), dyadic(beforeEnd)), dyadic(size));
     if (spare.n < 0n) return null;
     const half: Dyadic = { n: spare.n, e: spare.e - 1 };
     return snapDeltaFromDyadic(dyadicSubtract(plus(dyadic(beforeEnd), half), dyadic(start)));
 }
-/** The exact size of the space between two binary64 edges. */
 export function exactGapSize(from: number, to: number): Dyadic { return dyadicSubtract(dyadic(to), dyadic(from)); }
-/** A duplicate gap: the moving box sits one `gap` away from an anchor edge. `after` puts it past the anchor's right edge,
- * `before` puts its far edge one gap short of the anchor's left edge. Exact until the final rounding. */
 export function exactDuplicateDisplacement(anchor: number, gap: Dyadic, start: number, size: number, side: 'before' | 'after'): ExactSnapDelta {
     const a = dyadic(anchor), s = dyadic(start);
     const value = side === 'after' ? signedSum([a, 1], [gap, 1], [s, -1]) : signedSum([a, 1], [gap, -1], [dyadic(size), -1], [s, -1]);

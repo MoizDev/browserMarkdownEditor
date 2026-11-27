@@ -9,7 +9,6 @@ const geometryWorker = workerScript(geometryWorkerUrl, { keep: true });
 let nextRebuild = 0;
 type Phase = 'idle' | 'count' | 'copy' | 'waiting' | 'ready' | 'cleanup';
 
-/** Builds from per-entry versioned snapshots; newer edits remain in HybridIndex's overlay. */
 export class ScenePackedRebuild {
     private readonly client: WorkerClient;
     private phase: Phase = 'idle';
@@ -103,8 +102,6 @@ export class ScenePackedRebuild {
                     if (this.eligible(this.cursor++)) this.count++;
                 }
                 if (this.cursor === this.highWater) {
-                    // Slots may become bounded between passes. Reserve by high-water,
-                    // not the first count, so unchanged late entries are never omitted.
                     this.slots = new Uint32Array(this.highWater); this.generations = new Uint32Array(this.highWater);
                     this.versions = new Uint32Array(this.highWater); this.bounds = new Float64Array(this.highWater * 4);
                     this.cursor = 0; this.count = 0; this.phase = 'copy';

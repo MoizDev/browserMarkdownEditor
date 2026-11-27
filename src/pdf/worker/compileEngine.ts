@@ -1,8 +1,6 @@
 import { PdfEngineError } from '../engine/types';
 import type { EngineInitArgs } from './protocol';
 
-/** The trusted host already authenticated the immutable WASM Blob. Its URL is
- * minted by the opaque broker; network origins remain forbidden in worker CSP. */
 export async function compilePdfEngine(args: EngineInitArgs, signal?: AbortSignal): Promise<WebAssembly.Module> {
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {

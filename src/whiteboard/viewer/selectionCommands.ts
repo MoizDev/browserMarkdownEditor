@@ -13,7 +13,6 @@ export interface SelectionCommandDriverOptions {
     readonly runtime: BoardRuntime;
     readonly zoom: () => number;
     current(): boolean;
-    /** The view's editable gate; document commands are refused while it is false. */
     canMutateView(): boolean;
     registerPending(cancel: () => void): () => void;
     error(error: unknown): void;
@@ -21,8 +20,6 @@ export interface SelectionCommandDriverOptions {
     cooperate?(): Promise<void>;
 }
 
-/** Keyboard, menu and accessibility routes can share these exact semantic
- * commands. Work is serialized and never opens a transaction before geometry. */
 export function createSelectionCommandDriver(options: SelectionCommandDriverOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     const cooperate = options.cooperate ?? yieldToHost;
@@ -94,7 +91,6 @@ export function createSelectionCommandDriver(options: SelectionCommandDriverOpti
         'align.top': 'top', 'align.middle': 'middle', 'align.bottom': 'bottom' };
     const orders: Readonly<Record<string, SelectionOrder>> = { 'arrange.back': 'back', 'arrange.backward': 'backward',
         'arrange.forward': 'forward', 'arrange.front': 'front' };
-    /** Enter on a selection of one group selects its children, the children reachable from the group's own focus (K§10.2). */
     const enterGroup = (): boolean => {
         if (!live() || session.isGestureActive) return false;
         const state = runtime.selection.getSnapshot();
@@ -110,8 +106,6 @@ export function createSelectionCommandDriver(options: SelectionCommandDriverOpti
     const run = (id: string): boolean => {
         if (id === 'select.all') return selectAll();
         if (id === 'edit.start') return enterGroup();
-        // Escape unwinds one layer at a time (K§10.1): a focused group with something selected pops out to its parent with the group selected;
-        // otherwise it clears the selection. Session state only, so it is never a document step or a write.
         if (id === 'escape') {
             const state = runtime.selection.getSnapshot();
             const focus = doc.nodes.get(state.focus as NodeId);
@@ -129,14 +123,10 @@ export function createSelectionCommandDriver(options: SelectionCommandDriverOpti
         const count = runtime.selection.getSnapshot().selected.length;
         if (!count) return false;
         if (id === 'delete') return schedule(remove);
-        // Cmd/Ctrl+G groups two or more selected items and ungroups a single selected group (K§4.4).
         if (id === 'group') {
             if (count >= 2) return schedule((ids, signal) => selection.group(ids, signal).then(() => {}));
             return doc.nodes.get(runtime.selection.getSnapshot().selected[0])?.kind === 'group' ? schedule((ids, signal) => selection.ungroup(ids, signal).then(() => {})) : false;
         }
-        // The menu's own rule (ungroupEligibility): a selection that is not all groups leaves the key unhandled, as the menu shows
-        // Ungroup disabled; a locked or otherwise blocked group still reaches the command and its own message. Scheduled anyway,
-        // Select All then ⌘⇧G on a page holding a group and a text showed the command's internal "Ungroup requires groups".
         if (id === 'ungroup') {
             const state = runtime.selection.getSnapshot(), reason = ungroupEligibility(doc, state.selected, state).reason;
             if (reason === 'not-groups' || reason === 'no-selection') return false;

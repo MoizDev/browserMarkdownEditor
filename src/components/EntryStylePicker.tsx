@@ -4,40 +4,15 @@ import { ENTRY_COLORS, entryColorVar, type IconNode } from '../utils/entryStyle'
 import { loadLucideIcons, searchIcons, type LucideIcon } from '../utils/lucideIcons';
 
 interface FolderStylePickerProps {
-    /** The folder's current icon name, if it has one. */
     icon?: string;
-    /** The folder's current colour key, if it has one. */
     color?: string;
-    /** Called on every choice — the tree updates live, so a pick can be seen
-     *  against the real sidebar before the menu is dismissed. */
     onChange: (icon: string | undefined, color: string | undefined, nodes?: IconNode[]) => void;
-    /** Close the flyout and hand the keyboard back to the menu row. */
     onClose: () => void;
 }
 
-/**
- * How many icons are rendered at once.
- *
- * All 1,818 mount as 1,818 inline SVGs of several nodes each, which is tens of
- * thousands of DOM elements for a panel showing about forty — measured at over a
- * second to open. The list is capped instead, and search is what reaches the
- * rest: typing three letters brings any icon within the first screen.
- */
 const VISIBLE_ICONS = 180;
 
-/**
- * "Choose icon / colour", as a flyout beside the folder's context-menu row.
- *
- * A flyout for the same reasons the table size picker is one (see ContextMenu):
- * no backdrop, no focus round trip, and it hangs off the row it belongs to. The
- * icon set is fetched on mount — this component is the only thing in the app
- * that pulls it, which is what keeps 91KB of icon data out of the main bundle.
- */
 export default function EntryStylePicker({ icon: initialIcon, color: initialColor, onChange, onClose }: FolderStylePickerProps) {
-    /* The picker owns the selection while it is open, seeded from the folder's
-       current look. The context-menu entry that carries those in is built once,
-       when the menu is raised, so reading them on every render would freeze the
-       highlight at whatever the folder looked like before the first pick. */
     const [icon, setIcon] = useState(initialIcon);
     const [color, setColor] = useState(initialColor);
 
@@ -64,8 +39,6 @@ export default function EntryStylePicker({ icon: initialIcon, color: initialColo
         return () => { cancelled = true; };
     }, []);
 
-    // Take the keyboard as the flyout opens: it is reached by ArrowRight from
-    // the menu row, and searching is the first thing anyone wants to do.
     useEffect(() => { searchRef.current?.focus({ preventScroll: true }); }, [icons]);
 
     const results = useMemo(
@@ -80,8 +53,6 @@ export default function EntryStylePicker({ icon: initialIcon, color: initialColo
         <div
             className="folder-style-picker"
             onKeyDown={(e: React.KeyboardEvent) => {
-                // Escape closes the flyout, not the whole menu — the menu's own
-                // window-level Escape would otherwise take both at once.
                 if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); }
             }}
         >
@@ -138,9 +109,6 @@ export default function EntryStylePicker({ icon: initialIcon, color: initialColo
                                 role="option"
                                 aria-selected={icon === entry.name}
                                 className={`folder-style-icon${icon === entry.name ? ' selected' : ''}`}
-                                // Picking the icon already chosen clears it, so
-                                // the way back to a plain folder is the same
-                                // gesture rather than a separate row.
                                 onClick={() => (icon === entry.name
                                     ? apply(undefined, color)
                                     : apply(entry.name, color, entry.nodes))}

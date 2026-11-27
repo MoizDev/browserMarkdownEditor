@@ -6,11 +6,8 @@ import type { PictureNode } from '../model/nodes';
 import { missingPictureSentence } from './missingMedia';
 import { planPictureCrop, planPictureWindow, type CropWindow, type PictureCropPreset } from './crop';
 
-// Provenance: media edit gestures and session-owned transaction contracts;
-// independent commands, no upstream engine source.
 export interface PictureCommands {
     crop(id: NodeId, preset: PictureCropPreset, zoom?: number): void;
-    /** The crop editor's window, applied as one step. */
     cropWindow(id: NodeId, window: CropWindow, circle: boolean): void;
     flip(id: NodeId, axis: 'x' | 'y'): void;
     invert(id: NodeId): void;

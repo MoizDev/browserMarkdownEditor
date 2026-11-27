@@ -22,8 +22,6 @@ export interface FlipLeavesOptions {
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
-    /** Gesture holds the caller keeps open around this flip (the keyboard transform holds one). A flip refuses only holds it
-     * does not own: a pointer gesture that starts meanwhile would otherwise commit ops staged against the old geometry. */
     readonly heldGestures?: number;
 }
 export interface FlipLeavesPlan {
@@ -47,8 +45,6 @@ function provisional(doc: BoardDoc, node: Readonly<Node>, world: WorldPose): Nod
         { t: 'set', id: node.id, key: 'rotation', value: normalizedRotation(rotation) }];
 }
 
-/** Stage reflection in parent-before-child levels. Siblings share one sparse
- * projection, avoiding a growing whole-operation replay for every node. */
 export async function prepareFlipBoardLeaves(options: FlipLeavesOptions): Promise<FlipLeavesPlan> {
     const { runtime, axis } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
@@ -133,7 +129,6 @@ export async function prepareFlipBoardLeaves(options: FlipLeavesOptions): Promis
                     }
                     shape.push({ t: 'set', id: node.id, key: 'bend', value: -node.bend }); break;
                 }
-                // Default, calibration cut by owner: readable glyphs and media surfaces are not mirrored.
                 case 'text': case 'sticky': case 'clip': case 'linkcard': case 'embed': case 'frame': case 'group': break;
                 case 'opaque': throw new Error('Opaque descendants cannot be reflected');
             }

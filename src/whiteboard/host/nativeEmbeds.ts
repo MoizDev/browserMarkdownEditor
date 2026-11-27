@@ -8,7 +8,6 @@ import { attachEmbedInteraction } from './embedInteraction';
 
 export type NativeEmbedState = 'inert' | 'loading' | 'loaded';
 export interface NativeEmbedController {
-    /** Explicit user consent for this exact node, source URL and view lifetime. */
     load(nodeId: string): Promise<EmbedHostingLease>;
     unload(nodeId: string): Promise<void>;
     state(nodeId: string): NativeEmbedState;
@@ -21,11 +20,9 @@ type Entry = { readonly source: string; readonly controller: AbortController; re
 const sameToken = (a: RenderToken, b: RenderToken) => a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId
     && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 
-/** Session-only consent. This never writes a model flag, so undo, copy, restore and reopen cannot activate a provider. */
 export function createNativeEmbedController(options: {
     readonly runtime: BoardRuntime;
     readonly token: RenderToken;
-    /** Borrowed from the same viewer/compositor; the viewer, not this controller, owns this port. */
     readonly presentation: EmbedPresentationPort;
     readonly manifest: EmbedManifest;
     readonly containment: EmbedContainmentFactory;
@@ -49,7 +46,6 @@ export function createNativeEmbedController(options: {
         entry.controller.abort(new DOMException('Embed consent ended', 'AbortError'));
         entry.interaction?.(); entry.interaction = undefined;
         entry.foreign?.dispose();
-        // Acquisition can ignore cancellation and finish late; wait for that exact task and close its actual hosting lease.
         const work = (async () => {
             try { await entry.task; } catch { /* The load caller receives the failure. */ }
             entry.foreign?.dispose(); await entry.hosting?.dispose();
@@ -68,7 +64,6 @@ export function createNativeEmbedController(options: {
                 return Promise.reject(new Error('This embed is not available in the current view'));
             }
             const source = value.url, controller = new AbortController();
-            // Start in a microtask so the consent entry exists before any acquisition callback can revoke it.
             const task = Promise.resolve().then(async () => {
                 const hosting = await options.presentation.acquire(id, controller.signal);
                 entry.hosting = hosting;

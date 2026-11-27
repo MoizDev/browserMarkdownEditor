@@ -15,8 +15,6 @@ import { yieldToHost } from '../../platform/yieldToHost';
 
 function cancelled(signal?: AbortSignal): void { signal?.throwIfAborted(); }
 
-/** Repaired and unrepaired parse results use this same inert wire dialect. The
- * projection itself carries no admission authority or receiving-store handles. */
 export async function projectLoad(draft: LoadRepairDraft, sampleWire: (ref: SampleRef) => LoadSampleWire,
     cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<LoadProjection> {
     const yieldWork = cooperate ?? yieldToHost;
@@ -59,9 +57,6 @@ function checkProjection(value: unknown): asserts value is LoadProjection {
     if (p.sheets.length < 1 || p.sheets.length > SECURITY_LIMITS.sheets) throw new RangeError('Invalid sheet count');
 }
 
-/** Re-admission owns all newly allocated leases until the host has installed
- * live ownership. Every worker field is copied through the inert decoder, then
- * the complete receiving model is validated, not trusted because it has a tag. */
 export async function rehydrateLoad(projection: LoadProjection,
     admit: (pts: string, header: PointInspectionHeader) => SampleLease, samples: SampleStoreReader,
     cooperate?: () => Promise<void>, signal?: AbortSignal): Promise<RehydratedLoad> {
@@ -116,8 +111,6 @@ export async function rehydrateLoad(projection: LoadProjection,
             if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || mediaIds.has(entry.id)) throw new TypeError('Invalid or duplicate projected media');
             mediaIds.add(entry.id);
         }
-        // The decoder reconstructs tagged ExtBag Maps; the top-level reference
-        // count remains a pair array by contract and is validated before Map creation.
         const counts = new Map();
         let countOrdinal = 0;
         for (const pair of p.preservedMediaRefs) {

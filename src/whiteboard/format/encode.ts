@@ -19,11 +19,10 @@ import type { EncodedRecord, RecordIdentity, WriteResult } from './writeTypes';
 export interface SavedView { readonly sheet: string; readonly x: number; readonly y: number; readonly zoom: number; }
 export interface EncoderContext {
     readonly bounds: (node: Node) => Bounds;
-    readonly zMax: number; // Host's maximum CSS-px/world-unit scale, before the stroke's own sx/sy.
-    readonly stroke: (node: StrokeNode) => PointSamples; // Stroke-local, pinned SampleStoreReader values; requested only on cache miss.
-    readonly readEncoded: (node: StrokeNode) => { readonly pts: string; readonly header: PointHeader; } | null; // R-W34: native admission only, not authored quantization.
+    readonly zMax: number;
+    readonly stroke: (node: StrokeNode) => PointSamples;
+    readonly readEncoded: (node: StrokeNode) => { readonly pts: string; readonly header: PointHeader; } | null;
     readonly savedView: () => SavedView | undefined;
-    // R-W22/25: the pinned model owns these indices; a save never scans nodes or RawJson values.
     readonly mediaRefs: ReadonlyMap<MediaId, ReadonlySet<NodeId>>;
     readonly preservedMediaRefs: ReadonlyMap<MediaId, number>;
 }
@@ -41,7 +40,6 @@ function angle(value: number): number {
     const turn = 2 * Math.PI;
     let normalized = value % turn;
     if (normalized < 0) normalized += turn;
-    // A negative subnormal can round up to a whole turn when added to 2π.
     return normalized === 0 || normalized >= turn ? 0 : normalized;
 }
 function marks(value: RichText['blocks'][number]['runs'][number]['marks']): unknown {
@@ -81,8 +79,6 @@ function richText(value: RichText): unknown {
                 || !Number.isInteger(carrier.level) || carrier.level < 0 || carrier.level > 7 || (carrier.kind === 'p' && carrier.level !== 0)
                 || !['auto', 'ltr', 'rtl'].includes(carrier.dir) || carrier.start !== undefined && !Number.isFinite(carrier.start)
                 || !compactRaw(carrier.tail).startsWith('[') || !compactRaw(carrier.tail).endsWith(']')) refuseWrite('invalid', 'Invalid opaque block carrier');
-            // The original tail stays an independent array with its original
-            // block attributes, never appended to another positional tuple.
             carriers.push([index, carrier.from, carrier.to, carrier.kind, carrier.level, carrier.dir, carrier.start ?? null, rawValue(carrier.tail)]);
         }
         const items: unknown[] = [block.kind, block.level, block.dir, runs];
@@ -120,9 +116,6 @@ function nodeProperty(node: Node, key: string, context: EncoderContext): unknown
                 }
                 if (header.k >= required.value) return native.pts;
             }
-            // An admitted native payload may need finer quantization after scaling. Decode that
-            // original, not the store's translated runs: opaque channels and explicit run boundaries
-            // still belong to the file even though the current renderer does not understand them.
             let samples: PointSamples;
             if (native) {
                 const decoded = decodePoints(native.pts);
@@ -247,7 +240,6 @@ export function encodeHeader(kind: BoardKind, preserved: PreservedBlock): WriteR
         if (major !== NATIVE_VERSION[0] || !Number.isSafeInteger(minor) || minor < 0) refuseWrite('invalid', 'Cannot write an unsupported source format version');
         const fields: Field[] = [['format', NATIVE_FORMAT_ID], ['version', [major, Math.max(NATIVE_VERSION[1], minor)]], ['kind', kind]];
         if (kind !== 'pdf-ink') fields.push(['fence', COMPATIBILITY_FENCE], ['document', fenceDocument()]);
-        // Keep reserved header names out of the unknown-field channel, even on PDF ink.
         for (const key of ['format', 'version', 'kind', 'fence', 'document', 'records']) {
             if (preserved.fields.has(key)) refuseWrite('invalid', 'Unknown header field collides with the envelope', key);
         }
@@ -258,7 +250,6 @@ export function encodeHeader(kind: BoardKind, preserved: PreservedBlock): WriteR
 export function encodeEnd(count: number, endExt: ExtBag | null = null): WriteResult<string> {
     return guardWrite(() => {
         if (!Number.isSafeInteger(count) || count < 0 || count >= FORMAT_LIMITS.records) refuseWrite('limit', 'End count exceeds the native record limit');
-        // R-W30: only unknown end fields are preserved; neither type nor count may be shadowed.
         if (endExt?.raw.size) refuseWrite('invalid', 'End count belongs to the session, not preserved data');
         return jsonText(objectValue([['type', 'end'], ['count', count]], endExt));
     });
@@ -306,7 +297,6 @@ export function* encodeDocumentRecords(doc: BoardDoc, context: EncoderContext): 
     yield encodeView(doc.view, context.savedView());
     if (doc.host.kind === 'notebook') yield encodePaper(doc.host);
     if (doc.host.kind === 'pdf-ink') yield encodeHost(doc.host);
-    // R-W22: retained history/clipboard media is not live; the model maintains this index per transaction.
     for (const entry of doc.media.values()) if (mediaReferenced(entry.id, context)) yield encodeMedia(entry);
     for (const sheet of doc.sheets.values()) yield encodeSheet(sheet);
     for (const node of doc.nodes.values()) yield encodeNode(node, doc, context);

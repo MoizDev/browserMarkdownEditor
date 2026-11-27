@@ -6,8 +6,6 @@ import type { RehydratedLoad } from '../model/loadTypes';
 import type { BoardDoc } from '../model/doc';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-// Provenance: native raw-token preservation, opaque node and PDF flattening
-// contracts; independent conservative model inspection, no third-party source.
 export type PdfVisualIssue =
     | Readonly<{ kind: 'opaque-node'; nodeId: NodeId }>
     | Readonly<{ kind: 'node-raw'; nodeId: NodeId; field: string }>
@@ -25,7 +23,6 @@ const nonvisualRaw = new Set(['locked', 'alt', 'url']);
 export async function inspectPdfVisualDoc(doc: BoardDoc, options: {
     readonly signal: AbortSignal;
     cooperate?(): Promise<void>;
-    /** Selection captures still check their ancestors and all global preserved records. */
     readonly includeNodes?: ReadonlySet<NodeId>;
 }): Promise<PdfVisualPreflight> {
     options.signal.throwIfAborted();
@@ -54,7 +51,6 @@ export async function inspectPdfVisualDoc(doc: BoardDoc, options: {
     }
     for (const record of doc.preserved.records) {
         if (due()) await tick();
-        // The old-board importer's own records are provenance and bookkeeping, never an undrawn visual (legacyRecords.ts).
         if (!isKnownLegacyMetadata(record) && !isImportedLegacyRecord(record)) issues.push({ kind: 'preserved-record', type: record.type, id: record.id });
     }
     options.signal.throwIfAborted();
@@ -82,9 +78,6 @@ export async function inspectPdfVisualModel(load: RehydratedLoad, options: {
     return { status: issues.length ? 'unknown' : 'known', issues: Object.freeze(issues) };
 }
 
-/** What a refused print, export, preview or minimap tells the person, in their words: what is on the board that this
- * version cannot draw, and that the output would leave it out. Old boards' own records are never among these
- * (legacyRecords.ts); what is left is an item or field from a newer version of the app. */
 export function visualRefusal(preflight: PdfVisualPreflight, output: string): string {
     const items = new Set<string>();
     for (const issue of preflight.issues) {

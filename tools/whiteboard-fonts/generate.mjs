@@ -1,4 +1,3 @@
-// Build-only extraction: the pinned WOFF2 tables are read, never modified.
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { brotliDecompressSync } from 'node:zlib';
@@ -15,7 +14,6 @@ const expected = manifest.faces.map(face => face.file).sort();
 const actual = readdirSync(fonts).filter(name => name.endsWith('.woff2')).sort();
 if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error('Font directory does not match the pinned manifest');
 
-// WOFF2 §4.1 known tag indices; hhea, head, OS/2 and post have null transforms.
 const tags = ['cmap','head','hhea','hmtx','maxp','name','OS/2','post','cvt ','fpgm','glyf','loca','prep','CFF ','VORG','EBDT','EBLC','gasp','hdmx','kern','LTSH','PCLT','VDMX','vhea','vmtx','BASE','GDEF','GPOS','GSUB','EBSC','JSTF','MATH','CBDT','CBLC','COLR','CPAL','SVG ','sbix','acnt','avar','bdat','bloc','bsln','cvar','fdsc','feat','fmtx','fvar','gvar','hsty','just','lcar','mort','morx','opbd','prop','trak','Zapf','Silf','Glat','Gloc','Feat','Sill'];
 function metrics(buf) {
     if (buf.toString('ascii', 0, 4) !== 'wOF2' || buf.toString('ascii', 4, 8) === 'ttcf') throw new Error('Expected a single WOFF2 font');
@@ -55,7 +53,6 @@ function metrics(buf) {
     if (!head || !hhea || !os || !post || os.readUInt16BE(0) < 2) throw new Error('Missing font metrics tables or x-height');
     return { metrics: { unitsPerEm: head.readUInt16BE(18), ascent: hhea.readInt16BE(4), descent: -hhea.readInt16BE(6), xHeight: os.readInt16BE(86), underlinePosition: post.readInt16BE(8), underlineThickness: post.readInt16BE(10), strikePosition: os.readInt16BE(28), strikeThickness: os.readInt16BE(26) }, coverage: cmapCoverage(tables.get('cmap')) };
 }
-// OpenType cmap format 4 and 12: glyph zero is the missing-glyph sentinel.
 function cmapCoverage(cmap) {
     if (!cmap) throw new Error('Missing cmap');
     const codepoints = new Set();

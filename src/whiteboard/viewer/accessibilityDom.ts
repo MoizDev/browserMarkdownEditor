@@ -18,14 +18,11 @@ export interface BoardAccessibilityDomOptions {
     readonly visible: () => boolean;
     readonly schedule: (callback: () => void) => () => void;
     readonly reveal: (id: NodeId | null) => void;
-    /** Absent for a view with no menu of its own: the mirror then leaves the browser's menu alone. */
     readonly contextMenu?: (event: MouseEvent) => void;
     readonly error: (error: unknown) => void;
-    /** A read-only board: no drawing cursor and no pen-mode helper, and the skip link selects nothing. */
     readonly readOnly?: boolean;
 }
 
-/** One bounded screen-reader mirror and one visual keyboard cursor per attached view. */
 export function createBoardAccessibilityDom(options: BoardAccessibilityDomOptions) {
     if (options.engine.session !== options.runtime.session) throw new Error('Accessibility requires the existing board session');
     const root = document.createElement('section');
@@ -37,14 +34,12 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     cursorButton.type = 'button'; cursorButton.textContent = 'Use keyboard drawing cursor';
     cursorButton.setAttribute('aria-label', 'Use keyboard drawing cursor');
     const description = document.createElement('p');
-    // A read-only board has no drawing cursor, so its mirror says how to read the list instead.
     const readOnly = !!options.readOnly;
     description.textContent = readOnly ? 'This board is read-only. Choose an object to select it and bring it into view.'
         : 'Move the cursor with arrow keys. Press Enter to start or finish, and Escape to cancel or leave cursor mode.';
     const heading = document.createElement('h2'); heading.textContent = 'Board objects';
     const summary = document.createElement('p');
     const list = document.createElement('ul'); list.setAttribute('aria-label', 'Board objects');
-    // The keyboard drawing cursor is an editing tool: a read-only board never shows its button (it stays detached).
     root.append(status, ...(readOnly ? [] : [cursorButton]), description, heading, summary, list);
     options.overlay.append(root);
     const enterCanvas = document.createElement('button');
@@ -53,9 +48,6 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     options.overlay.append(enterCanvas);
     const canvasFocus = () => { enterCanvas.style.clipPath = 'none'; enterCanvas.style.outline = '2px solid #75b7ff'; };
     const canvasBlur = () => { enterCanvas.style.clipPath = 'inset(50%)'; enterCanvas.style.outline = ''; };
-    // The skip link (tldraw's "Move focus to canvas"): the first object in reading order is selected and brought into view,
-    // and focus moves to the canvas, so a keyboard user lands on content rather than an empty canvas.
-    // A read-only board's skip link only moves focus: selecting is an edit-free act, but the reader asked for the canvas, not an object.
     const enter = () => {
         if (!active()) return;
         if (!readOnly) {
@@ -71,7 +63,6 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     cursor.setAttribute('aria-hidden', 'true');
     cursor.style.cssText = 'position:absolute;left:0;top:0;width:12px;height:12px;border:2px solid #75b7ff;border-radius:50%;box-shadow:0 0 0 1px #fff;transform:translate(-50%,-50%);pointer-events:none;display:none;z-index:1';
     if (!readOnly) options.overlay.append(cursor);
-    // A helper button: it shows while pen mode has latched, in the helper column under the top bar (helperButtons.ts).
     const exitPenMode = document.createElement('button');
     exitPenMode.type = 'button'; exitPenMode.className = 'board-helper-button board-helper-exit-pen';
     exitPenMode.append(helperIcon(helperIconPaths.close), 'Exit pen mode');

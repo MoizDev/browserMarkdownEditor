@@ -5,14 +5,11 @@ import type { IncrementalEmittedPdf } from './incrementalTypes';
 import { validNotebookSourcePath } from './notebookPointer';
 const writerWorker = workerScript(writerWorkerUrl, { keep: true });
 
-// This generated-only finalizer is selected before work in a no-engine build.
-// Imported PDFs and native ink never enter this worker.
 const client = createWorkerClient({
     name: 'generated-notebook-writer', protocol: 1,
     spawn: () => writerWorker.start(),
 });
 
-/** Finalize generated incremental notebook pages without selecting a PDF engine. */
 export async function finishGeneratedNotebookPdf(emitted: IncrementalEmittedPdf, notebookSource: { readonly path: string },
     options: { readonly signal: AbortSignal }): Promise<Uint8Array> {
     options.signal.throwIfAborted();

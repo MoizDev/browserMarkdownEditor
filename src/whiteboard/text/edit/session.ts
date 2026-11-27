@@ -26,9 +26,7 @@ export interface EditLayout {
 }
 export interface EditSessionServices extends Omit<EditTransactions, 'typing' | 'completeTyping' | 'markTransformation' | 'rememberTransformation'> {
     readonly history: HistoryController;
-    /** A single-line name (a frame title): Enter commits the edit instead of adding a paragraph. */
     readonly singleLine?: boolean;
-    /** Ends this note's edit and opens its directional neighbour; false where no neighbour flow applies. */
     stickyNeighbour?(direction: 'left' | 'right' | 'up' | 'down'): boolean;
     prepareCut(transaction: import('../../change/ops').Transaction): { commit(): void; release(): void };
     plainText(): string;
@@ -50,13 +48,9 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     menu(x: number, y: number): void;
     openLink(url: string): void;
     isStandaloneText(): boolean;
-    /** The creation step token for a text node created by this edit session. */
     readonly creationToken?: number;
-    /** Runs as the editor closes, before its element leaves the page: focus left on a removed element falls to
-     *  <body>, and every board shortcut listens on the board's root, so the keyboard must go back there first. */
     returnFocus(): void;
     finish(): void;
-    /** Opens the command palette once the edit has finished (Cmd/Ctrl+K). */
     commandPalette?(): void;
 }
 
@@ -64,8 +58,6 @@ function point(transform: TextTransform, x: number, y: number): { x: number; y: 
     return { x: transform.a * x + transform.c * y + transform.e, y: transform.b * x + transform.d * y + transform.f };
 }
 
-// One session per editing pane. The host owns the input endpoint, while the
-// session's model/history and TX-3 layout stay shared with the board view.
 export class TextEditSession {
     readonly host: EditHost;
     readonly pointer: TextPointerSelection;
@@ -82,9 +74,7 @@ export class TextEditSession {
     private compositionSelection: EditSelection | null = null;
     private compositionRange: { from: number; to: number } | null = null;
     private closed = false;
-    /** The last rich value this session saw: external changes are diffed on these immutable values, never a flattened copy. */
     private lastRich: RichText;
-    /** Bumped by every user or own-edit action, so a pending external mapping that lost the race is discarded. */
     private mapping = 0;
 
     constructor(container: HTMLElement, label: string, private readonly id: NodeId, private readonly key: 'text' | 'label', selection: EditSelection,
@@ -238,12 +228,10 @@ export class TextEditSession {
         return stop.offset;
     }
 
-    /** External actions cannot race a composition, including the interval before its first update. */
     canEdit(): boolean {
         return !this.closed && this.services.alive() && !this.host.isComposing && !this.compositionSelection && !this.compositionRange;
     }
 
-    /** The keyboard and Core's text menu use the same controller and transaction path. */
     command(name: string): boolean {
         if (!this.canEdit()) return false;
         if (name === 'enter' && this.services.singleLine) return this.command('finish');
@@ -291,7 +279,6 @@ export class TextEditSession {
         } catch (error) { this.services.reportError(error); return false; }
     }
 
-    /** Tab types a tab character over the selection; Shift+Tab removes the tab character just before a collapsed caret. */
     private tab(outdent: boolean): boolean {
         const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
         if (outdent) {
@@ -388,8 +375,6 @@ export class TextEditSession {
         const before = this.lastRich, after = this.services.readText();
         this.lastRich = after;
         if (before !== after) {
-            // The caret is clamped to both values at once, so it never names an offset past the new text. The bounded,
-            // rich-aware mapping then refines it in host-yielding slices; a result that lost a race with the user is dropped.
             const serial = ++this.mapping, bound = Math.min(projectionLength(before), projectionLength(after));
             const clamped = { anchor: Math.min(this.selection.anchor, bound), focus: Math.min(this.selection.focus, bound) };
             this.setExternalSelection(clamped);
@@ -408,7 +393,6 @@ export class TextEditSession {
         this.services.changed(next);
     }
     getSelection(): EditSelection { return this.selection; }
-    /** Local boxes share the same caret index as selection and IME geometry. */
     rangeRects(from: number, to: number): readonly Rect[] { return this.services.layout().caret.selection(from, to); }
     rangeBounds(from: number, to: number): Rect | null { return this.services.layout().caret.selectionBounds(from, to); }
     visitRange(from: number, to: number, visit: (rect: Rect) => void): void { this.services.layout().caret.forEachSelection(from, to, visit); }
@@ -466,9 +450,6 @@ export class TextEditSession {
         finally { this.services.history.close(); }
     }
 
-    /** A paste is one canonical C2 `set` of the whole value. The new value and selection are prepared in host-yielding
-     * slices from the captured immutable value; the commit is synchronous and taken only if the value, the selection and
-     * the caller's owner still match. Small replacements (spelling) keep the synchronous splice path. */
     async pasteCooperative(fragment: RichFragment, options: FragmentSnapshotOptions): Promise<boolean> {
         if (!this.canEdit()) return false;
         const text = this.services.readText(), before = { anchor: this.selection.anchor, focus: this.selection.focus };
@@ -502,7 +483,6 @@ export class TextEditSession {
     pointerMove(pointer: TextPointer): void { this.pointer.move(pointer); }
     pointerUp(id: number): void { this.pointer.up(id); }
     focus(): void { this.sync(); this.host.focus(); }
-    /** False once focus has left the editor (a chrome control, the tree): a press on the shape then moves it instead of editing. */
     hasFocus(): boolean { return this.host.hasFocus(); }
     insertText(text: string): void {
         if (this.closed || !text) return;

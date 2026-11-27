@@ -3,8 +3,6 @@ import type { EngineLimits, PageComplexity } from '../types';
 import type { PdfiumRuntime } from './loader';
 import { heapView, withPdfiumMemory } from './memory';
 
-/** PDFium's public image metadata may itself parse or decode; the worker heap
- * ceiling remains the backstop for inline images and unobservable masks. */
 export function pdfiumComplexity(runtime: PdfiumRuntime, page: number, limits: Readonly<EngineLimits>): PageComplexity {
     const result: PageComplexity = { objects: 0, textObjects: 0, imageObjects: 0, imagePixels: 0, pathObjects: 0, formObjects: 0 };
     const maxObjects = Math.min(limits.maxOutlineNodes, 20_000);
@@ -54,14 +52,9 @@ export function pdfiumComplexity(runtime: PdfiumRuntime, page: number, limits: R
                     if (reportedWidth !== width || reportedHeight !== height) {
                         throw new PdfEngineError('PageError', 'PDF image dimensions changed during preflight');
                     }
-                    // GetImageMetadata returns CPDF_DIB's decoded format, not PDF
-                    // BitsPerComponent. Only formats emitted by the pinned DIB are
-                    // known; an unavailable or unfamiliar format uses 32 bpp.
                     if (reported === 1 || reported === 8 || reported === 24 || reported === 32) bpp = reported;
                 }
                 const row = ((BigInt(width) * BigInt(bpp) + 7n) / 8n + 3n) & ~3n;
-                // Public metadata loads with bHasMask=false: separate soft masks,
-                // decoder auxiliaries and inline images remain unknown, not zero.
                 if (row * BigInt(height) > BigInt(limits.maxDecodedImageBytes)) {
                     throw new PdfEngineError('ResourceLimit', 'PDF image is too large to draw');
                 }

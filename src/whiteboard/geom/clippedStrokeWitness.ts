@@ -14,8 +14,6 @@ function inside(u: number, v: number, radius: number): boolean {
     return dyadicSubtract(add(dyadicMultiply(x, x), dyadicMultiply(y, y)), dyadicMultiply(r, r)).n <= 0n;
 }
 
-/** Find an actual point of an affine round stroke that survives all clips and
- * lies within the CSS halo. Exhausting samples is not a miss certificate. */
 export function createClippedStrokeWitnessJob(curve: ExactCurve, matrix: Affine, radius: number, query: Vec2, margin: number,
     frames: readonly CertifiedClipRegion[], exclusions: readonly CertifiedClipRegion[], options: {
         readonly maxSamples?: number; readonly maxWork?: number;

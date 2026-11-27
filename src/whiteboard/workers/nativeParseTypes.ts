@@ -5,13 +5,11 @@ import type { BoardKind } from '../model/doc';
 import type { JsonObject } from '../model/json';
 import type { LoadSampleWire } from '../model/loadTypes';
 
-/** The Blob is copied from opened bytes, never a disk-backed File. */
 export interface ParseNativeRequest {
     readonly bytes: Blob;
     readonly expectedKind?: BoardKind;
     readonly pdfPages?: readonly (readonly [number, number])[];
 }
-/** Unrepaired, non-authoritative worker data; only C5 repair can admit it to a session. */
 export interface ParsedNativeDraft {
     readonly version: 1;
     readonly kind: BoardKind;

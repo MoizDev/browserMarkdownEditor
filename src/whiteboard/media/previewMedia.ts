@@ -12,12 +12,9 @@ import { inspectMedia } from './inspect';
 import { resolveMediaStorage } from './storage';
 import type { StoreMedia } from './storage.types';
 
-// Provenance: media §11 and security §8.2 as amended by the t21 ruling (A): the explicit Fetch preview job's
-// two secondary requests, a declared preview image and its icon, admitted like pasted pictures and stored by hash.
 export const PREVIEW_IMAGE_BYTES = 2 * 1024 * 1024, PREVIEW_ICON_BYTES = 256 * 1024;
 export type PreviewRole = 'image' | 'favicon';
 
-/** A declared image or icon address, resolved against the page and admitted only as https on a public host. */
 export function previewAddress(declared: string, page: string, environment: UrlEnvironment, fallback: string | null = null): string | null {
     const raw = declared || fallback;
     if (!raw) return null;
@@ -28,7 +25,6 @@ export function previewAddress(declared: string, page: string, environment: UrlE
     return decision.ok ? decision.url : null;
 }
 
-/** One bounded GET with the preview's fixed options: no credentials, no referrer, no redirect, no cache, CORS only. */
 export async function fetchPreviewBytes(url: string, limit: number, memory: MemoryAllocator, signal: AbortSignal): Promise<Blob> {
     const lease = memory.reserve(limit);
     if (!lease) throw new Error('insufficient memory');
@@ -56,10 +52,6 @@ export async function fetchPreviewBytes(url: string, limit: number, memory: Memo
     }
 }
 
-/**
- * Fetches one declared preview picture and stores it as board media by hash, then sets the card's preview to it, in its own
- * commit. A failure throws before anything is committed, so the card keeps its title, description and what already succeeded.
- */
 export async function attachPreviewMedia(options: {
     readonly runtime: BoardRuntime; readonly memory: MemoryAllocator; readonly storeMedia: StoreMedia; readonly context: JobContext;
     readonly id: NodeId; readonly url: string; readonly role: PreviewRole; readonly limit: number; readonly current: () => boolean;
@@ -83,9 +75,6 @@ export async function attachPreviewMedia(options: {
     const isCurrent = (value: BoardJobIdentity) => value.session === identity.session && value.epoch === identity.epoch && live(value);
     check(identity);
     const info = await inspectMedia(bytes, { memory: options.memory, identity, isCurrent, signal }); check(identity);
-    // An SVG icon is admitted as an inserted SVG picture is: inspectMedia parsed its header in the contained SVG frame under the
-    // same preflight and 5 MiB SVG limit (the icon's own fetch limit is smaller), and the board decodes it as an image, never as
-    // markup in the page. Sites commonly declare only an SVG icon; it was refused ('not a supported picture'). Preview images stay raster.
     const svg = info.mime === 'image/svg+xml';
     if (!info.mime.startsWith('image/') || (svg && options.role !== 'favicon') || info.duration !== null || !checkMediaDimensions(info.width, info.height).ok) {
         throw new Error('it is not a supported picture');
@@ -99,7 +88,6 @@ export async function attachPreviewMedia(options: {
     const stored: MediaEntry = { ...entry, file: existing ? (location === undefined ? existing.file : location) : null };
     const proof = { runtime, context, inspection: info };
     const result = await options.storeMedia(stored, bytes, signal, proof);
-    // Resolved before any further check, so an issued receipt is released by the finally below if the commit never happens.
     const storage = resolveMediaStorage(result, { ...proof, entry: stored, blob: bytes });
     let lease: { release(): void } | undefined;
     try {

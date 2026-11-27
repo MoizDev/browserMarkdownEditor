@@ -1,38 +1,11 @@
-// The AI agent panel's footprint INSIDE the vault: one hidden folder at the
-// root, `.VaultAgent/`, holding
-//
-//   vault.json  { version: 1, id }        the vault's permanent agent id
-//   chats.json  { version: 1, chats: [] } which chats the panel started here
-//
-// Everything else about a chat — the conversation itself — is the agent CLI's
-// own session, kept where that CLI keeps it (~/.claude, ~/.codex, OpenCode's
-// database), under the working folder ~/.bme-agent-sessions/<id>/. The id lives
-// IN the vault, not in browser storage, so the same vault maps to the same
-// working folder in every browser and on every machine it is synced to; the
-// browser's own vault ids (recentVaults) differ per browser.
-//
-// Pure parsing plus the folder's name; App does the reads and writes.
-
 import type { ChatIndex, ChatMeta } from '../types/vaultAgent';
 import { AGENT_IDS, isUuid, type AgentId } from '../../shared/vaultAgentProtocol';
 
 export const VAULT_AGENT_DIR = '.VaultAgent';
 export const VAULT_ID_FILE = 'vault.json';
 export const CHAT_INDEX_FILE = 'chats.json';
-/** One file per chat, holding that chat's message TREE (utils/chatTree.ts).
- *  A folder rather than more keys in chats.json: a transcript with its branches
- *  is the big thing here, and rewriting every chat's history to record one
- *  message would be the panel's slowest act. */
 export const CHAT_TREE_DIR = 'chats';
 
-/**
- * Folders hidden from the file tree AT THE VAULT ROOT ONLY (and so from vault
- * search and the graph, which are built from the tree). The app's own
- * `.VaultAgent`, and the agent CLIs' per-project folders — a user who drops
- * skills or settings into `.claude`/`.agents` put them there for the agent,
- * not as notes. Root-only because that is the only place the CLIs look; a
- * `.claude` deeper down is the user's own business and stays visible.
- */
 export const ROOT_HIDDEN_DIRS: ReadonlySet<string> = new Set([VAULT_AGENT_DIR, '.claude', '.agents', '.codex', '.opencode']);
 
 export function emptyChatIndex(): ChatIndex {
@@ -90,7 +63,6 @@ export function serializeChatIndex(index: ChatIndex): string {
     return JSON.stringify(index, null, 2) + '\n';
 }
 
-/** The vault id from `vault.json`, or null when missing/invalid. */
 export function parseVaultId(text: string | null): string | null {
     if (!text) return null;
     try {

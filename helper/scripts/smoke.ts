@@ -1,20 +1,3 @@
-// Smoke-test a COMPILED helper, the way the release workflow does on each OS:
-//
-//   bun helper/scripts/smoke.ts <path/to/vaultagent> [--expect-version X]
-//
-// 1. `serve --no-register` with HOME pointed at a scratch folder, then raw HTTP
-//    against it: /health CORS, the Private Network Access preflight, Host and
-//    Origin checks on /health, /ws and /mcp. Raw sockets, because fetch will not
-//    send an arbitrary Host header. Then the terminal over a real WebSocket: open a
-//    shell, run an echo, see its output, let it exit, close it.
-// 2. `install --root` / `uninstall --root` in a scratch folder: the exact layout,
-//    and that nothing is left. `--root` registers nothing with the OS. On macOS the
-//    layout holds the PTY host the compiled helper embeds: it is run from there on
-//    a scratch socket and one shell is spawned through it, so a compiled helper
-//    that embedded a broken (or no) host fails here.
-//
-// Never touches the real home folder; safe to run on a developer machine.
-
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -41,7 +24,6 @@ function check(name: string, ok: boolean, detail = ''): void {
 
 interface RawResponse { status: number; headers: Record<string, string>; body: string }
 
-/** One HTTP/1.1 request over a plain socket, headers exactly as given. */
 function raw(port: number, method: string, path: string, headers: Record<string, string>): Promise<RawResponse> {
     return new Promise((resolve, reject) => {
         const sock = connect(port, '127.0.0.1');
@@ -56,8 +38,6 @@ function raw(port: number, method: string, path: string, headers: Record<string,
         });
         sock.on('data', d => {
             data += d.toString('latin1');
-            // Done once the head and Content-Length bytes are in: a 101 keeps the socket
-            // open by definition, and Bun keeps a refused Upgrade request's socket open too.
             const end = data.indexOf('\r\n\r\n');
             if (end < 0) return;
             const length = Number(/\r\ncontent-length:\s*(\d+)/i.exec(data.slice(0, end))?.[1] ?? 0);
@@ -83,21 +63,10 @@ function raw(port: number, method: string, path: string, headers: Record<string,
 
 const scratch = mkdtempSync(join(tmpdir(), 'vaultagent-smoke-'));
 const home = join(scratch, 'home');
-mkdirSync(home, { recursive: true });   // the terminal starts in ~, which must exist
+mkdirSync(home, { recursive: true });
 
-/** A random word, for output that cannot be the shell echoing our own keystrokes back. */
 const rand = () => Math.random().toString(36).slice(2, 10);
 
-/**
- * The terminal, over the same WebSocket the panel uses (production Origin). On macOS
- * and Linux the helper's shell is forced to a plain one (see TERMINAL_SHELL_OVERRIDE):
- * the scratch HOME has no .zshrc, and zsh would answer with its first-run wizard. The
- * marker is typed with an empty quote (`a''b`) or, in cmd.exe, a caret (`a^b`) in the
- * middle and printed without it, so seeing it means the shell RAN the command — the
- * echo of our keystrokes cannot match. Which one is decided by the shell the helper
- * REPORTS: sh and PowerShell (pwsh, powershell.exe) join `a''b`, cmd prints it as typed
- * and only drops `^`, which PowerShell prints (CI, windows-latest: pwsh echoed `a^b`).
- */
 async function smokeTerminal(port: number): Promise<void> {
     const windows = helperPlatform() === 'windows';
     const word = rand();
@@ -128,7 +97,6 @@ async function smokeTerminal(port: number): Promise<void> {
         check('terminal.open ok', !!opened && opened.type === 'response' && opened.ok, JSON.stringify(opened));
         const shell = opened?.type === 'response' && opened.ok ? String((opened.result as { shell?: unknown }).shell ?? '') : '';
         const typed = /(^|[\\/])cmd(\.exe)?$/i.test(shell) ? `echo smoke-a^b-${word}` : `echo smoke-a''b-${word}`;
-        // Let the shell print its prompt first: a Windows ConPTY drops input that beats its init.
         await Bun.sleep(windows ? 1500 : 300);
         ws.send(JSON.stringify({ type: 'terminal.input', termId, data: `${typed}\r` }));
         check('terminal: the shell ran the command', await waitFor(() => output.includes(marker), 15_000), output.slice(-200));
@@ -141,7 +109,6 @@ async function smokeTerminal(port: number): Promise<void> {
     }
 }
 
-/** macOS: the host the compiled helper embedded, run as a LaunchAgent would run it, on a scratch socket. */
 async function smokePtyHost(l: InstallLayout): Promise<void> {
     check('the PTY host was embedded and written', !!l.ptyHostBinary && existsSync(l.ptyHostBinary), String(l.ptyHostBinary));
     if (!l.ptyHostBinary || !existsSync(l.ptyHostBinary)) return;
@@ -151,7 +118,7 @@ async function smokePtyHost(l: InstallLayout): Promise<void> {
         for (let i = 0; i < 100 && !existsSync(socket); i++) await Bun.sleep(50);
         const word = rand();
         let out = '';
-        let exit = null as { code: number | null; signal: string | null } | null;   // assigned from a callback: keep TS from narrowing it to `never`
+        let exit = null as { code: number | null; signal: string | null } | null;
         const proc = await ptyHostBackend(socket).spawn(
             { file: '/bin/sh', args: [], env: { PATH: '/usr/bin:/bin' }, cwd: home, cols: 80, rows: 24 },
             { onData: b => (out += new TextDecoder().decode(b)), onExit: e => (exit = e) },
@@ -172,8 +139,6 @@ async function smokeServe(): Promise<void> {
     if (expectVersion) check(`--version is ${expectVersion}`, version === expectVersion, version);
 
     const proc = Bun.spawn([binary, 'serve', '--no-register'], {
-        // Windows runs the shell users get (pwsh, else Windows PowerShell, else cmd): an
-        // override must be an absolute path, so the `cmd.exe` once passed here was ignored.
         env: { ...process.env, HOME: home, USERPROFILE: home, ...(process.platform === 'win32' ? {} : { [TERMINAL_SHELL_OVERRIDE]: '/bin/sh' }) },
         stdout: 'pipe',
         stderr: 'inherit',

@@ -27,17 +27,14 @@ export interface LegacyRecordOptions {
     readonly kind: 'whiteboard' | 'notebook' | 'pdf-ink';
     readonly samples: SampleStore;
     readonly admitMedia: AdmitLegacyMedia;
-    /** Copied bytes bound to this source record, never a filesystem or network port. */
     readonly resolveAsset?: (asset: LegacyObject, sourceOrdinal: number, signal?: AbortSignal) => Promise<Blob | null>;
     readonly signal?: AbortSignal;
     readonly assertCurrent: () => void;
-    // Uses the mapped nodes' world bounds, including descendants, and the saved legacy page layout.
     readonly preparePages?: (shapes: readonly LegacyShape[], nodes: readonly Node[], sheets: readonly Sheet[],
         paper: LegacyObject | null) => Promise<(node: Node) => {
         readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd?: boolean;
     }>;
 }
-/** What a left-out shape cost the person, as the board notice counts it ("2 embeds, 1 unknown shape"). */
 const ITEM_NAMES: Readonly<Record<string, string>> = {
     draw: 'stroke', highlight: 'highlighter stroke', geo: 'shape', note: 'sticky note', text: 'text', arrow: 'arrow',
     line: 'line', frame: 'frame', group: 'group', image: 'picture', video: 'video', bookmark: 'link card', embed: 'embed',
@@ -60,7 +57,6 @@ export interface LegacyRecordDraft {
     readonly converted: false;
 }
 
-// IMP-1/5: produces an ordered draft; loading/repair must not first deduplicate it into a Map.
 export async function readLegacyRecords(text: string, options: LegacyRecordOptions): Promise<LegacyRecordDraft | { readonly kind: 'failure'; readonly report: ImportReport }> {
     const report = new ReportBuilder(), envelope = readLegacyEnvelope(text, report);
     if (!envelope) return { kind: 'failure', report: report.finish() };
@@ -69,9 +65,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
     const bookmarks = new Map<string, LegacyObject>();
     const preservedRecords: { type: string; id: string; raw: RawJson }[] = [];
     const preservedIds = new Set<string>();
-    // A record is kept once however many reasons keep it (extra props, then an unknown kind, wrote it twice).
     const preservedSources = new WeakSet<LegacyObject>();
-    // Each family's meaning is fixed in legacyRecords.ts, which the PDF and print preflight reads: a new one is added there.
     const preserve = (record: LegacyObject, id: string, family: LegacyRecordFamily) => {
         if (preservedSources.has(record)) return;
         preservedSources.add(record);
@@ -101,7 +95,6 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                         break;
                     }
                     const upgraded = upgradeShapeProps(shape);
-                    // The record as written stays beside the node made from its filled-in props.
                     if (upgraded.upgraded) preserve(record, shape.id, 'shape');
                     shapes.push(upgraded.upgraded ? { ...shape, props: upgraded.props } : shape);
                     break;
@@ -120,8 +113,6 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                     break;
                 }
                 default:
-                    // Session-scope records (camera, instance, pointer, presence) and anything newer: kept as written in
-                    // the converted file, and none is a drawn item the person loses.
                     if (id) preserve(record, id, 'unknown-record');
                     report.repair(id, `Record type ${String(record.typeName)} preserved`);
             }
@@ -164,7 +155,6 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             if (id) {
                 try { preserve(record, id, 'unreadable-asset'); } catch { /* Original source remains available. */ }
             }
-            // Not an item of its own: each picture using it is counted where its shape is read (missing asset).
             report.refuse(id, error instanceof Error ? error.message : 'Invalid asset');
         }
     }
@@ -189,7 +179,6 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             if (role === 'ambiguous') report.repair(shape.id, 'Possible page backdrop retained as a picture');
             const extras = [...unknownShapeFields(shape), ...unknownShapeProperties(shape).map(key => `props.${key}`)];
             if (extras.length) {
-                // The node is made from the props it knows; the record as written keeps the rest.
                 preserve(shape.source, shape.id, 'shape');
                 report.repair(shape.id, `Unknown properties preserved: ${extras.join(', ')}`);
             }
@@ -211,7 +200,6 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             if (shape.type === 'draw' || shape.type === 'highlight') {
                 const stroke = readStroke(shape, base, options.samples, report);
                 if (!stroke) {
-                    // Nothing to draw (tldraw writes `path: ''` for a stroke of no points): a counted repair, kept as written.
                     preserve(shape.source, shape.id, 'shape');
                     report.repair(shape.id, 'Empty stroke removed');
                     continue;
@@ -235,8 +223,6 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                         const rich = convertLegacyRichText(value);
                         for (const reason of rich.repairs) report.repair(owner, reason);
                         if (rich.repairs.length || rich.unrepresentable.length) preserve(shape.source, owner, 'rich-text');
-                        // Formatting it cannot hold is simplified and the text kept (a repair); text it cannot represent at all is
-                        // left empty, so the notice counts it as text not shown, not as simplified (the record keeps the original).
                         for (const reason of rich.unrepresentable) report.refuse(owner, reason, 'text');
                         return rich.text;
                     }, endpoints);
@@ -252,16 +238,12 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
     }
     const byId = new Map<NodeId, Node>();
     for (const node of nodes) if (!byId.has(node.id)) byId.set(node.id, node);
-    // A board holds at most 64 nested containers (the model's V-2 limit); the old app had none. An item deeper than that is left
-    // out and named, as any item the board cannot hold is: past the limit, load repair could only open the board read-only,
-    // and an old board that cannot be admitted editable fails whole (measured: 70 nested groups, "Container nesting exceeds 64").
     const shapeById = new Map(shapes.map(shape => [shape.id as string, shape]));
     const tooDeep = (node: Node): boolean => {
         const seen = new Set<Node>([node]);
         for (let depth = 1, current = node; ; depth++) {
             if (depth > 64) return true;
             const parent = byId.get(current.parent as NodeId);
-            // A root, a missing parent or a cycle: repair decides those.
             if (!parent || seen.has(parent)) return false;
             seen.add(parent); current = parent;
         }
@@ -272,7 +254,6 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         for (const node of deep) {
             const shape = shapeById.get(node.id);
             if (shape) preserve(shape.source, shape.id, 'shape');
-            // Already named for another reason (a picture without its file, a text that cannot be shown): counted once, as that.
             if (!report.refused(node.id)) report.refuse(node.id, 'Nested more than 64 levels deep', legacyItemName(shape?.type));
             if (byId.get(node.id) === node) byId.delete(node.id);
         }

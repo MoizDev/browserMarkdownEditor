@@ -2,7 +2,6 @@ import type { NativeCanvasHost, NativeCanvasIdentity, NativeCanvasMedia } from '
 import { mediaExtension } from '../media/ingest';
 import { MEDIA_MIMES, type MediaEntry, type MediaMime } from '../model/media';
 
-/** The host owns asset IO and hash verification; this boundary only maps board identities. */
 export function createNativeMediaPorts(host: NativeCanvasHost, identity: NativeCanvasIdentity) {
     const assertCurrent = (signal: AbortSignal) => {
         signal.throwIfAborted();

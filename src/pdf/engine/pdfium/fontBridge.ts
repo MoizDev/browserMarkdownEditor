@@ -64,7 +64,6 @@ export function installPdfiumFontBridge(runtime: PdfiumRuntime, provider: FontPr
                 if (fonts.size >= MAX_HANDLES) throw new PdfEngineError('ResourceLimit', 'Too many PDF font handles');
                 const family = readName(face);
                 if (!family || [...family].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) || charset < 0 || charset > 255) throw new PdfEngineError('InvalidPdf', 'Invalid PDF font request');
-                // A Base-14 face requested for CJK still needs the regional fallback.
                 if (BASE14.test(family) && (charset === 0 || charset === 1 || charset === 2)) return 0;
                 const spec: FontSpec = { family, weight: Math.max(1, Math.min(1000, weight | 0)), italic: !!italic, charset: charset | 0,
                     ...(language ? { language } : {}) };

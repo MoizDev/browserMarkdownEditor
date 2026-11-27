@@ -15,8 +15,6 @@ function split(value: Work): readonly [Work, Work] {
     return [{ points: left as Cubic, depth }, { points: right as Cubic, depth }];
 }
 
-/** Exact cubic/closed-line-segment intersection. A Sturm-certified line root
- * plus the Bézier projection hull proves a witness lies on the finite segment. */
 export function createCubicLineCertificate(points: Cubic, start: ExactCurvePoint, end: ExactCurvePoint,
     limits: CubicLineLimits = {}): { step(budget: { readonly deadline: number; readonly maxWork: number }): CubicLineResult; cancel(): void } {
     const maxDepth = limits.maxDepth ?? 64, maxNodes = limits.maxNodes ?? 131072, maxWork = limits.maxWork ?? 1000000;

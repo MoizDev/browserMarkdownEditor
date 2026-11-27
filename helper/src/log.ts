@@ -9,7 +9,6 @@ import { dirname } from 'node:path';
 let logFile: string | null = null;
 const MAX_LOG_BYTES = 1024 * 1024;
 
-/** null = stderr only (dev / --no-register runs). */
 export function setLogFile(path: string | null): void {
     logFile = path;
 }
@@ -32,7 +31,6 @@ export function logError(context: string, err?: unknown): void {
     try {
         mkdirSync(dirname(logFile), { recursive: true });
         try {
-            // One rotation step keeps a busy failure loop from filling the disk.
             if (statSync(logFile).size > MAX_LOG_BYTES) renameSync(logFile, `${logFile}.1`);
         } catch { /* no log yet */ }
         appendFileSync(logFile, line);

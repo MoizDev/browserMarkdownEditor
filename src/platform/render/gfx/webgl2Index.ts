@@ -1,8 +1,5 @@
 import { ArenaError } from '../resourceArena';
 
-// Validate maximum accessed bytes before submission (rendering-design.md:243).
-// Range validation must not rescan an immutable mesh on every camera frame. Blocks
-// bound the endpoint work to 126 indices; interior maxima come from an updated tree.
 const BLOCK = 64;
 function leaves(elements: number): number {
     return 2 ** Math.ceil(Math.log2(Math.max(1, Math.ceil(elements / BLOCK))));
@@ -53,9 +50,6 @@ class IndexSummary {
     }
 }
 
-/** Index-only CPU mirror, charged BEFORE construction. Both formats are summarized because
- * writeBuffer also accepts raw bytes; the draw's index format is not part of BufferUse.
- */
 export class Webgl2IndexMirror {
     readonly #data: Uint8Array<ArrayBuffer>;
     readonly #short: IndexSummary;
@@ -91,8 +85,6 @@ export class Webgl2IndexMirror {
         const size = format === 'uint16' ? 2 : 4;
         if (offset % size || offset > this.#data.byteLength - length * size) throw new ArenaError('invalid-input');
         const value = (size === 2 ? this.#short : this.#long).maximum(offset, length);
-        // WebGL2 ALWAYS restarts at these values. The common API intentionally has
-        // no restart semantics; raw-byte uploads use the format-specific stored summary.
         if (value === (size === 2 ? 0xffff : 0xffffffff) || value > maxElement) throw new ArenaError('invalid-input');
         this.#cached = { offset, length, format, value };
         return value;

@@ -2,8 +2,6 @@ import type { Op } from '../change/ops';
 import type { MediaEntry } from '../model/media';
 import type { Crop, PictureNode } from '../model/nodes';
 
-// Provenance: media §7 crop presets and the picture's normalized source window;
-// independent geometry, no upstream engine source.
 export type PictureCropPreset = 'original' | 'square' | 'circle' | 'landscape' | 'portrait' | 'wide';
 const RATIOS: Readonly<Record<Exclude<PictureCropPreset, 'original'>, number>> = Object.freeze({
     square: 1, circle: 1, landscape: 4 / 3, portrait: 3 / 4, wide: 16 / 9,
@@ -37,12 +35,7 @@ export function planPictureCrop(node: Readonly<PictureNode>, media: Readonly<Med
         { t: 'set', id: node.id, key: 'h', value: h }, { t: 'set', id: node.id, key: 'x', value: x }, { t: 'set', id: node.id, key: 'y', value: y }];
 }
 
-/** A normalized window on the original picture: 0..1 on each axis, x0 < x1 and y0 < y1. */
 export interface CropWindow { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number }
-/**
- * Places a picture cropped to an explicit window (the crop editor's). The window's scale is the node's current scale, so
- * the visible part keeps its size on the board, and the node's centre stays where it was, as a preset crop keeps it.
- */
 export function planPictureWindow(node: Readonly<PictureNode>, media: Readonly<MediaEntry>, window: CropWindow, circle: boolean): readonly Op[] {
     if (![window.x0, window.y0, window.x1, window.y1].every(Number.isFinite) || window.x0 < 0 || window.y0 < 0
         || window.x1 > 1 || window.y1 > 1 || window.x1 - window.x0 <= 0 || window.y1 - window.y0 <= 0

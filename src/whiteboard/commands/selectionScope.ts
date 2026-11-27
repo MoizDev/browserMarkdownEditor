@@ -5,8 +5,6 @@ import type { Node } from '../model/nodes';
 import { selectedRootsAsync } from '../geom/selectedRootsAsync';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-/** Validate one immutable selection snapshot without rescanning overlapping
- * subtrees or sorting a large selection synchronously on the input thread. */
 export async function prepareSelectionScope(options: {
     readonly doc: BoardDoc; readonly ids: readonly NodeId[]; readonly sheet: SheetId; readonly focus: ParentId;
     readonly structural: boolean; readonly preserveNested?: boolean; readonly signal: AbortSignal;
@@ -58,7 +56,6 @@ export async function prepareSelectionScope(options: {
     check(); return nodes;
 }
 
-/** Capture ids without an unbounded synchronous map before geometry pinning. */
 export async function selectionNodeIds(doc: BoardDoc, nodes: readonly Node[], options: {
     readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<NodeId[]> {
@@ -72,7 +69,6 @@ export async function selectionNodeIds(doc: BoardDoc, nodes: readonly Node[], op
     check(); return result;
 }
 
-/** Resolve opaque-descendant flags once per shared subtree, cooperatively. */
 export async function inspectOpaqueSubtrees(doc: BoardDoc, roots: readonly NodeId[], options: {
     readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<ReadonlyMap<NodeId, boolean>> {

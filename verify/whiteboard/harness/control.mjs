@@ -1,4 +1,3 @@
-// Run control only: identity, deliberate served-build faults, and recorded human prompts.
 import {createHash}from'node:crypto';
 import {createInterface}from'node:readline/promises';
 import {referenceIdentity}from'./reference-identity.mjs';

@@ -3,13 +3,11 @@ import type { BoardDoc } from '../model/doc';
 import type { SampleStoreReader } from '../model/samples';
 import type { SessionGestureQueue } from './gestureQueue';
 
-// contracts C7.0: no path or diskRev is a session identity. The App store owns the serial.
 export interface SessionOwner {
     readonly documentId: string;
     readonly session: number;
 }
 
-// Structural C7 source types; the session implementation integrates core's canonical types.
 // A checkpoint pins one revision synchronously; a job must never read the live doc.
 export interface BuildJob {
     readonly kind: 'build';
@@ -25,7 +23,6 @@ export interface BoardContentSource {
 }
 export type SaveOutcome = 'written' | 'conflict' | 'failed';
 
-// change-and-history.md §3, H-4: delivered outside apply, at most once per frame.
 export interface ChangeNotice {
     readonly rev: number;
     readonly touched: TouchedSet;
@@ -36,16 +33,14 @@ export interface ChangeNotice {
 export interface BoardHistory {
     readonly canUndo: boolean;
     readonly canRedo: boolean;
-    /** True while a step is open (a gesture's group); Undo or Redo inside it closes the group. */
     readonly isOpen: boolean;
     undo(): void;
     redo(): void;
-    clearRedo(): void; // R-19: admitted pen/highlighter down, no step or content write.
+    clearRedo(): void;
     open(label: string): void;
     close(): void;
 }
 
-// Interface only: the apply/history/save packages supply the single implementation.
 export interface BoardSession extends Pick<SessionGestureQueue, 'enqueueAfterGesture' | 'beginGesture' | 'isGestureActive' | 'gestureHolds' | 'isInputGestureActive' | 'subscribeGesture'> {
     readonly owner: SessionOwner;
     readonly doc: BoardDoc;
@@ -55,7 +50,6 @@ export interface BoardSession extends Pick<SessionGestureQueue, 'enqueueAfterGes
     /** The revision of the last dirtying content change. Non-dirtying commits (tool, UI state) advance `doc.rev` but not
      * this, so a build pinned to content stays valid across them; fences compare against this, never raw `doc.rev`. */
     readonly contentRevision: number;
-    /** A change the person already made is still landing: a gesture hold is open, or a tracked edit (a paste) is running. */
     readonly isEditLanding: boolean;
     apply(transaction: Transaction): Applied;
     preflight(transaction: Transaction): { readonly ops: readonly Op[]; release(): void };

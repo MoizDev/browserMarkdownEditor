@@ -15,28 +15,18 @@ export interface BoardWorkerClient {
     on(event: string, handler: (payload: unknown, identity: BoardJobIdentity) => void): () => void;
     cancelSession(session: string, epoch: number): void;
     recycle(reason: string): Promise<void>;
-    /** The host's state: `'failed'` refuses every request until its cool-down has passed and a request revives it. */
     readonly state: ClientState;
-    /** Requests asked of the worker and not yet settled, every operation's. */
     readonly inFlight: number;
 }
 const clients = new Map<SharedBoardWorker, BoardWorkerClient>();
-// The geometry and picture workers import nothing, so every copy after the first starts from the bytes of the first and
-// keeps starting after a newer version replaced this one on the server (platform/workers/script.ts): a board that is
-// open keeps drawing and showing its pictures. The parser and exporter import shared code and fonts, so they cannot.
 const parseWorker = workerScript(parseWorkerUrl, { keep: false });
 const scripts = { parse: parseWorker, geometry: workerScript(geometryWorkerUrl, { keep: true }),
     decode: workerScript(decodeWorkerUrl, { keep: true }), export: workerScript(exportWorkerUrl, { keep: false }) };
 function spawn(kind: SharedBoardWorker): Promise<Worker> { return scripts[kind].start(); }
-/** Import deadline: 30 seconds per 100 MB, with a ten-second minimum. */
 export function importDeadline(byteLength: number): number {
     if (!Number.isSafeInteger(byteLength) || byteLength < 0) throw new RangeError('Invalid import length');
     return Math.max(10_000, Math.ceil(byteLength * 30_000 / 100_000_000));
 }
-/** A legacy (tldraw-format) load's request ceiling, the board workers' own absolute cap. A stalled load is caught by the
- * worker host's progress watchdog instead (every slice heartbeats; 20 s of silence at priority 0 kills the worker), so
- * this only bounds work that keeps making progress. Sized by bytes, as before, it failed real boards for being large:
- * `max(30 s, 0.3 ms/KB)` ended a 1.04 MB, ~2,000-shape board at 30.6 s ("Worker request deadline elapsed"). */
 export const LEGACY_LOAD_DEADLINE_MS = 600_000;
 function defaultDeadline(kind: SharedBoardWorker): number {
     return kind === 'decode' ? 10_000 : kind === 'export' ? 60_000 : 120_000;
@@ -49,8 +39,6 @@ export function boardWorker(kind: SharedBoardWorker): BoardWorkerClient {
     return client;
 }
 const pools = new Map<SharedBoardWorker, (BoardWorkerClient & { dispose(): void } | undefined)[]>();
-/** Member `index` of a small pool of `kind` workers: member 0 is the shared worker (`boardWorker`), each other member a worker of
- * its own, made on its first request and ended by `endBoardWorkerPoolMember` once its user has no more work for it. */
 export function boardWorkerPoolMember(kind: SharedBoardWorker, index: number): BoardWorkerClient {
     if (!Number.isSafeInteger(index) || index < 0) throw new RangeError('Invalid board worker pool member');
     if (index === 0) return boardWorker(kind);
@@ -58,14 +46,10 @@ export function boardWorkerPoolMember(kind: SharedBoardWorker, index: number): B
     if (!pool) pools.set(kind, pool = []);
     return pool[index - 1] ??= createBoardWorkerClient(kind, `whiteboard-${kind}-pool-${index}`);
 }
-/** The state of pool member `index` without making it: `'idle'` for a member that is not running. */
 export function boardWorkerPoolState(kind: SharedBoardWorker, index: number): ClientState {
     if (index === 0) return clients.get(kind)?.state ?? 'idle';
     return pools.get(kind)?.[index - 1]?.state ?? 'idle';
 }
-/** Ends idle pool member `index` (not the shared member 0), so its isolate and the garbage of its last requests go at once: an idle
- * isolate is seldom collected (see `dedicatedBoardWorker`). Its next request makes a new one. A member with a request in flight, or
- * one that has failed (its failure keeps it refused until its cool-down), is kept. */
 export function endBoardWorkerPoolMember(kind: SharedBoardWorker, index: number): void {
     const pool = pools.get(kind), member = index > 0 ? pool?.[index - 1] : undefined;
     if (!pool || !member || member.inFlight || member.state === 'failed') return;
@@ -73,10 +57,6 @@ export function endBoardWorkerPoolMember(kind: SharedBoardWorker, index: number)
     member.dispose();
 }
 let dedicatedSerial = 0;
-/** A board worker of its own for one job, whose `dispose` ends the worker and so returns its whole heap at once. An old board's
- * import builds the file's text, its object graph and the board in the worker's heap, and the shared worker kept that garbage long
- * after the load was done, since an isolate that stops allocating is seldom collected (measured, a 10,060-stroke board: 255 MB held
- * from the end of its import until a collection happened to run 23 s later). */
 export function dedicatedBoardWorker(kind: SharedBoardWorker): BoardWorkerClient & { dispose(): void } {
     return createBoardWorkerClient(kind, `whiteboard-${kind}-own-${++dedicatedSerial}`);
 }

@@ -183,8 +183,6 @@ try {
         }
         await page.evaluate(async () => {
             await document.fonts.ready;
-            // Mermaid requests a CM measure after its SVG lands; give that
-            // measure and the scroll-anchor settle their normal paint turns.
             await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         });
         await page.mouse.move(5, 450);
@@ -216,8 +214,6 @@ try {
         await page.waitForFunction(() => document.querySelector('.cm-content')?.contentEditable === 'true');
         const bodyLine = content.locator('.cm-line').filter({ hasText: item.caretQuery }).first();
         if (!await bodyLine.isVisible()) {
-            // Empty panels have no body glyph to click, and diagrams hide the
-            // source altogether. Enter through their real visible surface.
             const surface = await content.locator('.cm-mermaid-widget').count()
                 ? content.locator('.cm-mermaid-widget') : content.locator('.cm-live-codeblock-start');
             await surface.click({ position: { x: 120, y: 8 } });

@@ -6,7 +6,6 @@ const CACHE_BYTES = 2 * 1024 * 1024;
 const CACHE_DOCUMENTS = 8;
 interface Interval { from: number; to: number }
 
-/** Sorted disjoint intervals of blocks proved to contain no word-like segment. */
 class EmptyBlocks {
     private readonly intervals: Interval[] = [];
     get size(): number { return this.intervals.length; }
@@ -27,7 +26,6 @@ class EmptyBlocks {
         const interval = this.intervals[this.firstEndingAtOrAfter(index)];
         return interval && interval.from <= index ? direction < 0 ? interval.from - 1 : interval.to + 1 : index;
     }
-    /** Preserve only unchanged block ordinals when an immutable revision is spliced. */
     splice(first: number, removed: number, inserted: number): EmptyBlocks {
         const result = new EmptyBlocks(), oldEnd = first + removed, shift = inserted - removed;
         const append = (from: number, to: number) => {
@@ -55,7 +53,6 @@ class EmptyBlocks {
     }
 }
 
-/** Per-revision skip intervals retain no document or block objects. */
 export class WordBlockIndex {
     private readonly cache = new WeakIdentityLru<RichText, EmptyBlocks>(CACHE_BYTES, CACHE_DOCUMENTS);
 
@@ -75,7 +72,6 @@ export class WordBlockIndex {
     }
     inherit(before: RichText, after: RichText, first: number, removed: number, inserted: number): void {
         const previous = this.cache.get(before);
-        // Do not turn a keystroke into a scan of thousands of fragmented intervals.
         if (!previous || previous.size > 512) return;
         const next = previous.splice(first, removed, inserted);
         if (next.size) this.cache.set(after, next, 512 + next.size * 64);

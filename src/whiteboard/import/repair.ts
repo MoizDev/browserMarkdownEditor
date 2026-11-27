@@ -7,7 +7,6 @@ import { ReportBuilder } from './report';
 export interface RootPosition { readonly page: number; readonly x: number; readonly y: number }
 export type RootMapper = (node: Node) => RootPosition;
 
-// M-11: repair is a load-only draft transformation, never an edit transaction.
 export function repairLegacyTree(records: readonly Node[], sheets: readonly Sheet[], kind: BoardKind,
     rootPosition: RootMapper, report: ReportBuilder): readonly Node[] {
     if (!sheets.length) throw new Error('Cannot repair without a sheet');
@@ -34,7 +33,6 @@ export function repairLegacyTree(records: readonly Node[], sheets: readonly Shee
         nodes.set(node.id, { ...node, parent: root, ...pos });
         report.repair(node.id, reason);
     }
-    // Resolve each path once; a three-state walk detects cycles without recursion on hostile depth.
     const done = new Set<NodeId>();
     for (const id of order) {
         if (done.has(id)) continue;

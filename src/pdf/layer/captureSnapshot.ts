@@ -18,11 +18,9 @@ export interface PdfCaptureSource {
     readonly source: 'outer' | 'original';
     readonly variant: 'plain' | 'emphasis';
     readonly fontEpoch?: number;
-    /** Frozen by the source owner for the lifetime of this capture. */
     readonly pageVariant?: (page: number) => 'plain' | 'emphasis';
     readonly revision: string;
     readonly stack: Readonly<PageStack>;
-    /** Called immediately at snapshot creation, before the capture queue can wait. */
     retain(): Promise<PdfCaptureLease>;
 }
 
@@ -32,7 +30,6 @@ interface CapturedTile {
     readonly lease: ByteLease;
 }
 
-/** A capture owns a session source lease, never the displayed pane or its GPU resources (C4.5). */
 export function createPdfCaptureSnapshot(source: PdfCaptureSource, request: CaptureRequest,
     memory: MemoryAllocator): CaptureSnapshot {
     const token = Object.freeze({ ...source.token });
@@ -52,7 +49,6 @@ export function createPdfCaptureSnapshot(source: PdfCaptureSource, request: Capt
         else { lease.signal.addEventListener('abort', abort, { once: true }); detach = () => lease.signal.removeEventListener('abort', abort); }
         return lease;
     });
-    // A cancelled queued capture can release before its source promise settles.
     void pending.catch(() => {});
     const clear = () => {
         for (const tile of tiles.splice(0)) { tile.bitmap.close(); memory.release(tile.lease); }

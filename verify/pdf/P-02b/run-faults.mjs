@@ -1,5 +1,3 @@
-// One theme/DPR group is a bounded run. The outer serve-with launcher owns
-// preview only for this group; it is stopped before the run slot is released.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { resolve, join } from 'node:path';

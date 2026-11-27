@@ -9,8 +9,6 @@ import { QueryBuffer, SpatialQuery } from './query';
 import type { NearestVisitor, SpatialQuerySource } from './query';
 import type { SceneBounds, SceneQueryOptions } from './types';
 
-/** Read-side adapter over one completely published scene revision. The owner swaps the whole
- * publication only after spatial bounds, order and geometry all correspond to that revision. */
 export class LiveSceneView {
     private epochValue = 0;
     constructor(private readonly doc: BoardDoc, private scene: BootstrappedScene) {}
@@ -61,8 +59,6 @@ export class LiveSceneView {
                 while (remaining > 0 && performance.now() < budget.deadline) {
                     if (!current()) { stale = true; query.cancel(); return 'stale'; }
                     if (query.status === 'stale' || query.status === 'cancelled') return query.status;
-                    // Unordered results may stream as discovered; ordered requests must finish
-                    // their sort before exposure so progressive erasing never changes z semantics.
                     const output = query.output;
                     if (position < output.length && (!options.request.order || query.status === 'complete')) {
                         const slot = output.slots[position], generation = output.generations[position++];

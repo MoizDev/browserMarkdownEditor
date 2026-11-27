@@ -5,22 +5,18 @@ import type { NodeId } from '../model/ids';
 import type { MediaEntry, MediaId } from '../model/media';
 import type { VideoFrameRegistry } from './videoFrames';
 
-// Provenance: media §6 session playback, C4 visibility and verified-blob
-// authority; independent detached video lifecycle, no upstream engine source.
 export interface VideoPlaybackSource { readonly entry: MediaEntry; readonly blob: Blob }
 export interface VideoPlaybackState { readonly playing: boolean; readonly muted: boolean; readonly time: number; readonly visible: boolean }
 export interface VideoPlaybackHost {
     readonly memory: MemoryAllocator;
     readonly mode?: 'detached' | 'hidden-dom';
     readonly overlay?: HTMLElement;
-    /** Real pane-relative on-screen box; required by the hidden-DOM decoder fallback. */
     videoRect?(id: NodeId): Readonly<{ x: number; y: number; width: number; height: number }> | null;
     /** Only session-owned bytes already verified against this entry may be returned. */
     source(id: NodeId): VideoPlaybackSource | null;
     current(): boolean;
     invalidate(id: NodeId): void;
     error(id: NodeId, message: string): void;
-    /** Where each presented frame goes as an immutable bitmap. Without it the view repaints the live element instead. */
     readonly frames?: VideoFrameRegistry;
 }
 interface Player {
@@ -30,21 +26,15 @@ interface Player {
     readonly url: string;
     readonly memory: ByteLease;
     callback: number | null;
-    /** The frame callback, made once per player: arming it allocates nothing. */
     readonly deliver: VideoFrameRequestCallback;
     closed: boolean;
-    /** The element's presented-frame count at the last callback. The video advancing is this count moving; an upload happens
-     * once per advance, so a paused picture uploads nothing. */
     presentedSeen: number;
-    /** An advance whose frame the registry refused: it is owed until a frame is presented. */
     owed: boolean;
-    /** The unsubscribe of the capacity wait that retries an owed frame; null when none is waiting. */
     roomWait: (() => void) | null;
 }
 interface State { playing: boolean; muted: boolean; time: number; visible: boolean; initialized: boolean; mediaId?: MediaId; player?: Player }
 let soundOwner: Player | null = null;
 
-/** Playback state is transient. A hidden pane owns no video element or frame reservation. */
 export class BoardVideoPlayback {
     private readonly states = new Map<NodeId, State>();
     private visible = true;
@@ -59,7 +49,6 @@ export class BoardVideoPlayback {
         const state = this.state(id), time = state.player?.video.currentTime;
         return Object.freeze({ playing: state.playing, muted: state.player?.video.muted ?? state.muted, time: Number.isFinite(time) ? time! : state.time, visible: this.visible && state.visible });
     }
-    /** `autoplay` is honored muted, only while the node and pane are visible. */
     show(id: NodeId, visible: boolean, autoplay = false): void {
         if (this.disposed) return;
         const state = this.state(id);
@@ -103,7 +92,6 @@ export class BoardVideoPlayback {
         const state = this.state(id); state.muted = true;
         if (state.player) { state.player.video.muted = true; if (soundOwner === state.player) soundOwner = null; }
     }
-    /** Valid only until the next visibility/lifetime change; callers do not retain it. */
     frame(id: NodeId): HTMLVideoElement | null {
         const state = this.states.get(id), player = state?.player;
         return !this.disposed && this.visible && state?.visible && player && !player.closed && this.host.current()
@@ -150,7 +138,6 @@ export class BoardVideoPlayback {
                     if (state.time > 0) video.currentTime = Number.isFinite(video.duration) ? Math.min(state.time, video.duration) : state.time;
                     this.host.invalidate(id);
                 });
-                // The picture changes on load and on a seek, paused or not: each arms one frame callback (see arm).
                 video.addEventListener('loadeddata', () => {
                     if (player.closed || !this.host.current()) return;
                     this.arm(player); this.host.invalidate(id);
@@ -179,13 +166,10 @@ export class BoardVideoPlayback {
             void player.video.play().catch(() => { if (!player.closed && this.host.current()) this.host.error(id, 'Video playback was blocked'); });
         } else state.player.video.pause();
     }
-    /** Asks the element for its next presented frame, once. Playing, every frame is asked for; paused, a callback is armed only by
-     * an event that changes the picture (load, seek), so an idle paused video requests no frames. */
     private arm(player: Player): void {
         if (player.closed || player.callback !== null) return;
         player.callback = player.video.requestVideoFrameCallback(player.deliver);
     }
-    /** A presented frame reached the callback. The picture is uploaded only when the element's count moved: a repeat is no new picture. */
     private deliver(player: Player, metadata: VideoFrameCallbackMetadata): void {
         player.callback = null;
         const state = this.states.get(player.id);
@@ -197,7 +181,6 @@ export class BoardVideoPlayback {
         }
         if (state.playing) this.arm(player);
     }
-    /** Retries an owed frame when the registry frees room. One wait per player: a second refusal while it waits adds nothing. */
     private awaitRoom(player: Player): void {
         const frames = this.host.frames;
         if (!frames || player.roomWait) return;
@@ -206,14 +189,10 @@ export class BoardVideoPlayback {
             if (!player.closed && player.owed) this.presentFrame(player);
         });
     }
-    /** Presents the element's current frame as a VideoFrame that refers to the decoded picture: no copy is made here, and the
-     * texture upload reads it where it is. Its lifetime is the registry's, not the element's. */
     private presentFrame(player: Player): void {
         const frames = this.host.frames, video = player.video;
         if (!frames || player.closed || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
         const bytes = video.videoWidth * video.videoHeight * 4;
-        // Charged before the frame is taken. A refused charge owes this frame: it is retried when the registry frees room, so a
-        // paused picture does not wait on an advance that never comes.
         const lease = frames.admitFrame(bytes);
         if (!lease) { player.owed = true; this.awaitRoom(player); return; }
         player.owed = false;
@@ -242,7 +221,6 @@ export class BoardVideoPlayback {
             player.video.pause(); player.video.removeAttribute('src'); player.video.load();
         } finally {
             player.video.remove();
-            // The decoder is stopped above; presented frames hold their own decoded pictures, not the object URL.
             URL.revokeObjectURL(player.url); this.host.memory.release(player.memory);
         }
     }

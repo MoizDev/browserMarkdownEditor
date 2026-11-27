@@ -2,8 +2,6 @@ import { createHash } from 'node:crypto';
 import { parseArgs } from '../../lib/cli.mjs';
 import { fixtureWriter, jsonBytes } from '../../lib/output.mjs';
 
-// The PDF is authored here, including its Unicode map: neither expected text nor
-// offsets come from the app's extraction. Bytes are independent of clock/locale.
 const options = parseArgs(process.argv.slice(2), ['fault', 'variant']);
 if ((options.fault !== undefined && options.fault !== 'content-xref') || (options.variant !== undefined && options.variant !== 'cap') || (options.fault && options.variant)) throw new Error('Choose --fault content-xref OR --variant cap, not both');
 const seed = options.seed, corrupt = options.fault === 'content-xref', cap = options.variant === 'cap';
@@ -54,7 +52,6 @@ for (let page = 1; page <= pageCount; page++) {
     content += '\nET';
     if (page === 15) content += `\nBT /F1 0.001 Tf 64 660 Td /Span BMC ${encoded('a'.repeat(600_000))} EMC ET`;
     if (cap) content = `BT /F1 0.001 Tf 64 700 Td ${encoded('a'.repeat(10_005))} ET`;
-    // Invalid Flate bytes exercise the real worker's corrupt-stream handling.
     const contents = page === 5 ? add(stream('not a deflate stream', '/Filter /FlateDecode')) : add(stream(content));
     if (page === 14 && corrupt) brokenContent = contents;
     kids.push(add(`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${contents} 0 R >>`));

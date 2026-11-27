@@ -7,7 +7,6 @@ import type { RegionQuery } from './types';
 type Sweep = Extract<RegionQuery, { kind: 'swept' }>;
 const PENDING: ClippedSweepResult = Object.freeze({ status: 'pending' });
 
-/** A filled closed head/label can be hit without crossing its boundary. */
 export function createClippedFilledSweepJob(path: readonly PathOp[], query: Sweep, options: {
     readonly frames: readonly PointClipContour[];
     readonly strokeRadiusLocal: number;
@@ -36,7 +35,6 @@ export function createClippedFilledSweepJob(path: readonly PathOp[], query: Swee
                     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new RangeError('Invalid sweep point');
                     const box = [point.x, point.y, point.x, point.y] as const;
                     if (frames.some(frame => classifyCertifiedClipBox(box, frame) !== 'inside')) {
-                        // A segment with an outside endpoint can enter both the frame and the fill between samples.
                         if (query.points.length > 1) uncertain = true;
                         fill = undefined; index++; continue;
                     }

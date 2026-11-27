@@ -3,7 +3,6 @@ import { isLocked } from '../change/commands';
 import { prepareBoardFrameFit } from '../commands/fitFrame';
 import type { BoardRuntime } from '../host/runtime';
 
-/** Which border a frame-local point sits on. A corner is on both edges and fits both axes; an edge fits its own axis. */
 export function frameBorderAxes(frame: Readonly<{ w: number; h: number }>, local: Readonly<{ x: number; y: number }>, band: number): 'both' | 'x' | 'y' | null {
     const inX = local.x >= -band && local.x <= frame.w + band, inY = local.y >= -band && local.y <= frame.h + band;
     const onLeftOrRight = inY && (Math.abs(local.x) <= band || Math.abs(local.x - frame.w) <= band);
@@ -14,8 +13,6 @@ export function frameBorderAxes(frame: Readonly<{ w: number; h: number }>, local
     return null;
 }
 
-/** Double-clicking the border of the one selected frame fits it to its children. The band is a screen distance, so
- * the border is as easy to hit at every zoom. False leaves the double-click to the other handlers (its body, its name). */
 export function fitFrameAtBorder(options: { readonly runtime: BoardRuntime; readonly point: Readonly<{ x: number; y: number }>; readonly bandWorld: number;
     readonly current: () => boolean; readonly registerPending: (cancel: () => void) => () => void; readonly error: (error: unknown) => void }): boolean {
     const { runtime } = options, doc = runtime.session.doc, selected = runtime.selection.getSnapshot().selected;

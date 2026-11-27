@@ -71,8 +71,6 @@ function childArray(records: SceneRecordPin, parent: ParentId, check: Check): re
     });
 }
 
-/** Secondary indexes are deliberately lazy: an explicit get scans pinned rows once per key;
- * enumerating a whole index builds it. This fallback is not a W-1M latency guarantee. */
 function lazyIndex<K>(records: SceneRecordPin, check: Check, keysOf: (node: Node) => readonly K[]): ReadonlyMap<K, ReadonlySet<NodeId>> {
     const cache = new Map<K, ReadonlySet<NodeId> | undefined>();
     let all: Map<K, ReadonlySet<NodeId>> | undefined;
@@ -108,7 +106,6 @@ function lazyIndex<K>(records: SceneRecordPin, check: Check, keysOf: (node: Node
     return new CheckedMap(check, lookup, entries);
 }
 
-/** Immutable read facade over one pinned record tree; it owns no model session or node copies. */
 export function createPinnedPaintDoc(records: SceneRecordPin, metadata: SceneMetadata, revision: number, check: Check): BoardDoc {
     check();
     if (!Number.isSafeInteger(revision) || revision < 0) throw new RangeError('Invalid pinned paint revision');

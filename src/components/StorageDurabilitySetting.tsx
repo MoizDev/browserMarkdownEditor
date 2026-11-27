@@ -1,19 +1,3 @@
-// Settings → Vault → "Keep this data on this device".
-//
-// The honest answer to "where does all this live, and can it disappear?": the
-// vault list (the folder handles themselves), the open tabs, reading positions,
-// every setting and the crash-recovery journal are in this browser's storage and nowhere else, and a
-// "best effort" origin can be evicted under storage pressure without a word.
-// utils/storagePersistence.ts has the mechanism; this row is the only place the
-// app says out loud which of the two it is living under (the recovery journal's own
-// refusal notice was removed: a status-line warning at every page load's first edit,
-// about something the user cannot act on), and the one place a
-// user can ask for the better one on purpose.
-//
-// Chrome grants persistence from engagement rather than a prompt, so the button
-// may simply not take. It says so instead of pretending, because a control that
-// silently does nothing is worse than one that reports a refusal.
-
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import {
     checkStorageDurability, getStorageDurability, requestPersistentStorage, subscribeStorageDurability,
@@ -23,8 +7,6 @@ export function StorageDurabilitySetting() {
     const durability = useSyncExternalStore(subscribeStorageDurability, getStorageDurability);
     const [asked, setAsked] = useState(false);
 
-    // Only while the panel is open: nothing else in the app reads this, and a
-    // check on every load would be a question asked for nobody.
     useEffect(() => { void checkStorageDurability(); }, []);
 
     const hint = {
@@ -45,9 +27,6 @@ export function StorageDurabilitySetting() {
                 </div>
             </div>
             <div className="setting-control">
-                {/* Plain and muted, not a `settings-value` chip: that chip is
-                    the accent, and beside an accent button a chip reads as a
-                    second button rather than as the state the button changes. */}
                 <span className="settings-status">
                     {durability === 'persisted' ? 'Kept' : durability === 'best-effort' ? 'Can be cleared' : 'Unknown'}
                 </span>
